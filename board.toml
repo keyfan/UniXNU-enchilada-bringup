@@ -1,0 +1,400 @@
+# Board description of the OnePlus 6 (enchilada, SDM845), read by the unixnu build driver.
+#
+# Nothing in this file has been confirmed on this board yet: it was derived from UniXNU-fajita (the
+# OnePlus 6T, same SoC) and no image built from it has been booted. Values marked "measured" below
+# came from the 6T or from a sibling SDM845 port and must be re-read from this phone with
+# scripts/dump-device-facts.sh before they are trusted.
+
+[board]
+name = "enchilada"
+soc = "SDM845"
+description = "OnePlus 6"
+kit = "enchilada"                     # the package/ of this repository appears as kits/enchilada in the build tree
+
+# The target OS image: the unchanged iPad7,1 iPadOS 17.7.11 restore image, the sheng target. SDM845 is ARMv8.2 without
+# pointer authentication, so it runs arm64 userlands only; iPadOS 17 on A10X is the newest one the XNU source matches.
+# iOS 16.7.16 for the iPhone X is the planned phone userland; see NOTES-ios16.md. Give --ipsw PATH to use a local file;
+# without it the remote url is read with range requests, only the members that are needed.
+[ipsw]
+url = "https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw"
+product = "iPad7,1"
+version = "17.7.11"
+build = "21H461"
+device_class = "j120ap"
+chip_id = 0x8011
+board_id = 12
+fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]   # the small components
+
+[ipsw.sha256]
+"044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
+"044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
+
+# The raw image for the userdata partition: the OS and SystemOS disk images of the IPSW behind a manifest.
+#
+# MEASURED ON THIS PHONE (serial 27f4f45d, OnePlus 6 A6000, 64 GB / 6 GiB SKU). Three independent
+# sources, all agreeing to the byte:
+#   1. fastboot getvar all -> (bootloader) partition-size:userdata: 0xC9A8BB000 = 54132453376 bytes
+#   2. the phone's own GPT, read from /dev/block/sda in recovery (recovery's adbd is root; Android's is
+#      not): entry 17, first_lba 1601344 = 0x186f40, last_lba 14817274 = 0xe217fa. The disk has
+#      4096-byte logical blocks, so `EFI PART` sits at byte 4096 and the entry array at byte 8192.
+#      Raw dump in notes/device-live/root-dump/sda-first64.bin, parsed by scripts/check_live_gpt.py.
+#   3. (last_lba - first_lba + 1) * 4096 = 54132453376, i.e. exactly this range.
+# The value inherited from UniXNU-fajita (a 256 GB OnePlus 6T) was 0x3ad1ffa = 229.17 GiB, which is
+# 4.5x larger than this partition -- writing that range would have run past the end of userdata.
+#
+# first_lba = 0x186f40 is the same on both, because everything before userdata is fixed by the
+# stock partition table; userdata is the last partition (its last_lba equals the GPT's last_usable),
+# so only its end differs with the storage SKU.
+#
+# The range is 50.41 GiB, which holds the 7.88 GiB of OS + SystemOS with room for the Data volume.
+# Re-read it on another phone with scripts/dump-device-facts.sh before flashing there.
+[userdata]
+first_lba = 0x186f40
+last_lba = 0xe217fa
+lba_bytes = 4096
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
+
+[kernel]
+defconfig = "enchilada_defconfig"
+# Archive builders of the kernel step, in order: the generic part of the sheng list.
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "build-arm-driver.py ArmDTPlatform",
+  "build-arm-driver.py ArmCpu",
+  "build-arm-driver.py NativeAES",
+  "build-native-aes-bindings.py",
+  "build-mockfs-fixture.py",
+  "build-libpthread-kernel.py",
+  "build-enchilada-storage.py",          # storage ABI audit and NativeVirtioBlock bindings (needs ENCHILADA_STORAGE_CANDIDATE)
+  "build-arm-driver.py NativeRamBlock",   # the RAM-backed Data volume (/private/var) from the Data seed
+  "build-native-virtio-bindings.py --component NativeRamBlock --directory build/native-ram-block",
+  "build-enchilada-verified-root.py",    # owner keys, OS and SystemOS policies, libVerifiedRootProbe.a (needs the OS images)
+  "build-arm-driver.py NativeUfs",
+  "build-enchilada-dwc3.py",             # NativeDwc3: SDM845 DWC3 USB device-mode probe (default-off; native-dwc3-probe=1), for the SSH-over-USB channel
+  "build-sheng-platform-power.py",
+  "build-boot-progress.py",          # kits/enchilada (from UniXNU-sheng d92e799): boot progress, fault probe, watchdog/lite job policy, diag export    # the PMGR the original AMFI needs, from UniXNU-sheng
+  "build-native-legacy-display.py",  # CPU-rendered display (NativeLegacyDisplay over the UEFI framebuffer), HID input, keystore stub
+  "build-enchilada-touch.py",           # libEnchiladaTouch.a: S3706B touch over GENI I2C (enchilada-touch=<stage>, default off), see NOTES-touch.md
+  "build-enchilada-cpufreq.py",         # libEnchiladaCpuFreq.a: OSM CPU clocks and per-core MHz (enchilada-cpufreq=<n>, default off)
+]
+
+# The pin and early initializer are the sheng values: the same 21H461 kernelcache. The roots are the sheng list,
+# known to prelink with it; trim them during bring-up.
+[kernel.prelink]
+tool = "kits/NativePrelink/emit_prelink.py"
+kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf"
+kernelcache_sha256 = "f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7"
+slide = "-0x1000000"
+early_security_init = "com.apple.driver.AppleMobileFileIntegrity=0xfffffff005ab4ae0"
+roots = [
+  "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
+  "com.apple.driver.AppleARMPlatform",
+  "com.apple.driver.AppleARMWatchdogTimer",
+  "com.apple.driver.AppleAudioClockLibs",
+  "com.apple.driver.AppleEffaceableStorage",
+  "com.apple.driver.AppleIISController",
+  "com.apple.driver.AppleM2ScalerCSCDriver",
+  "com.apple.driver.AppleMobileFileIntegrity",
+  "com.apple.driver.ApplePMGR",
+  "com.apple.driver.IODARTFamily",
+  "com.apple.filesystems.apfs",
+  "com.apple.iokit.CoreAnalyticsFamily",
+  "com.apple.iokit.IOAVFamily",
+  "com.apple.iokit.IOAudio2Family",
+  "com.apple.iokit.IOCECFamily",
+  "com.apple.iokit.IOCryptoAcceleratorFamily",
+  "com.apple.iokit.IOGPUFamily",
+  "com.apple.iokit.IOHDCPFamily",
+  "com.apple.iokit.IOMobileGraphicsFamily",
+  "com.apple.iokit.IOReportFamily",
+  "com.apple.iokit.IOSlowAdaptiveClockingFamily",
+  "com.apple.iokit.IOStorageFamily",
+  "com.apple.iokit.IOSurface",
+  "com.apple.kec.Libm",
+  "com.apple.kec.corecrypto",
+  "com.apple.kext.AppleMatch",
+  "com.apple.kext.CoreTrust",
+  "com.apple.security.AppleImage4",
+  "com.apple.security.sandbox",
+  "com.apple.iokit.IOHIDFamily",
+  "com.apple.iokit.IOHIDEventDriver",
+]
+
+# The Mu-Silicium checkout (--uefi) already ships Platforms/OnePlus/enchiladaPkg, so scripts/make-enchilada-uefi.py
+# patches that package in place instead of deriving one from another device. The preflight then cross-checks the
+# candidate platform intervals of MemoryMapLib.c against the device tree's reserved-memory before anything is flashed.
+[firmware]
+config = "enchilada"                  # Resources/Configs/enchilada.toml in the Mu-Silicium checkout (--uefi)
+dsc = "Platforms/OnePlus/enchiladaPkg/enchilada.dsc"
+fd = "Build/enchiladaPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+preflight = ["scripts/check-enchilada.py"]
+# Mu-Silicium's own patches to the shared edk2 checkout, applied for the build and reverted afterwards
+# (scripts/unixnu/firmware.py:56-60, which reads exactly this key). Upstream applies the same set from
+# build_uefi.py:508-511 and reverses it at :487-489; leaving them out produces a firmware that builds,
+# comes out at the right size, boots, and then misbehaves in the four places these patches fix:
+#   Auth-Service  the authorisation service has to start before the variable service
+#   Boot-Manager  keeps the boot manager menu reachable
+#   Timer         no timer reprogramming once the DXE core is up
+#   Usb-Bus       survive a device disappearing in the middle of enumeration
+# AsmMacroLib.patch is deliberately absent: MdePkg/Include/AArch64/AsmMacroLib.h already carries that
+# fix in a newer form ("CLANGPDB does not merge ELF style sections"), and applying the old patch on
+# top would undo it. scripts/check_mu_patches.py asserts this list matches what still applies.
+patches = [
+  "Resources/MuPatches/Auth-Service.patch",
+  "Resources/MuPatches/Boot-Manager.patch",
+  "Resources/MuPatches/Timer.patch",
+  "Resources/MuPatches/Usb-Bus.patch",
+]
+submodules = ["Binaries", "Common/Mu", "Common/Mu_OEM_Sample", "Silicium-ACPI", "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl"]
+packages = [
+  "{uefi}",
+  "{uefi}/Platforms/OnePlus",
+  "{tree}/package",
+  "{tree}/drivers/DarwinBoot",
+  "{edk2}",
+  "{uefi}/Common/Mu",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{uefi}/Silicon/Qualcomm",
+  "{uefi}/Silicon/Silicium",
+  "{uefi}/Silicium-ACPI",
+  "{uefi}/Silicium-ACPI/Platforms/OnePlus",
+  "{uefi}/Silicium-ACPI/Silicon/Qualcomm",
+]
+
+[firmware.defines]
+DEVICE_MODEL = "enchilada"
+BUILDID_STRING = "enchilada-bringup"
+# Defaults of Mu-Silicium build_uefi.py and DeviceBuild.py, which unixnu does not run.
+ENABLE_SECUREBOOT = 0
+MEMORY_PROTECTION = "TRUE"
+SHIP_MODE = "FALSE"
+
+# A FAT volume holding the UniXNU config, the kernel and its device tree. The loader (DarwinBoot) is part of the
+# firmware volume. First kernel boot: no storage driver, so XNU is expected to reach the video console and stop at
+# the root device.
+#
+# This volume reaches the phone by one of two routes, and they are not interchangeable:
+#
+#   as the ramdisk of the boot image (the default: `unixnu bootimg` picks up payload.img), or
+#   flashed to a partition of its own, with an empty ramdisk in the boot image
+#   (`fastboot flash system_a .../payload.img`, then `unixnu bootimg ... --ramdisk none`).
+#
+# **Route 2 is the one that works on this phone.** Measured 2026-10-28 (notes/device-live/ramdisk-budget.md):
+#
+#   no ramdisk        -> UniXNU menu on screen, "no boot entry found" in red
+#   16 MiB            -> menu reached; firmware came up on USB as VID_05C6:F000
+#   32 MiB            -> the SoC reset into EDL 9008 (68 s in, after a gap off the bus)
+#   192 MiB           -> no USB at all for 118 s, phone back in fastboot
+#
+# The ABL is not the limit: it loads a 203 MiB boot image without complaint. The limit is the initrd window the
+# bootloader reserves, which EnchiladaBootMemoryDxe reports as `initrd 0x8454D000-0x856FEF79` -- about 18 MiB.
+# Anything larger than that window is mapped as reserved only in part, and reading past it takes the SoC down.
+#
+# The kernel alone is 49.4 MiB, so no ramdisk this board can carry will ever hold this volume. size_mib is 64
+# because the kernel plus its ADT take 49.4 MiB (77% full) and a small volume flashes quickly; the size is no
+# longer constrained by the ramdisk, because there is not going to be one.
+#
+# One refusal is unrelated to size: the FIRST `fastboot boot` after entering fastboot is accepted and a second
+# one in the same bootloader session fails at "Load Error", whatever the image. `fastboot reboot-bootloader`
+# before every attempt.
+#
+# The stock ramdisk of this phone is 18376167 bytes (its own boot_a; LineageOS 22.2 ships 16340632) -- just under
+# the same 18 MiB window, which is a second reason to believe the window is real.
+[payload]
+volume = "ENCHILADAESP"
+size_mib = 64
+loader = "firmware"
+title = "enchilada first boot: XNU to console"
+# --skip-setup edits a copy of the Data seed so the Hello pages are skipped. payload.py requires the tool to be
+# named here; it mounts the seed read-write with hdiutil, so it only runs on macOS (the CI runner is).
+skip_setup_tool = "scripts/seed-data-skip-setup.py"
+# MEASURED ON THIS PHONE (2026-10-27): MemTotal 5767708 kB, ro.boot.msz = 6, ro.boot.stg = 64
+# -> this is the 6 GiB / 64 GB SKU, so the DDR size is 0x180000000, not the 8 GiB value that was
+# inherited from the 6T. The DDR size goes into the Apple device tree, and a wrong value makes XNU
+# size its own memory wrong (too large is worse: it maps RAM that is not there).
+# Read it on another phone with `adb shell head -1 /proc/meminfo` (MemTotal; 6 GiB shows ~5.5 GiB,
+# 8 GiB shows ~7.6 GiB) and cross-check `getprop ro.boot.msz`, which the bootloader fills with the
+# SKU's RAM size in GiB.
+dram_size = "0x180000000"
+# Patch a copy of the kernel with the sheng boot probes (scripts/patch-xnu-entry-probe.py --panic-screen --no-reset):
+# a blue band at kernel entry, a magenta band before the MMU is enabled, and panic() drawn on the screen.
+# 2026-10-28: the --no-reset build reached the magenta band (MMU enable) and then went silent with no panic
+# and no reboot, so a static screen cannot say whether the CPU got *through* `msr SCTLR_EL1, x0`. Stage 3
+# waits this many seconds after the MMU is on and then asks PSCI for SYSTEM_RESET: the reboot itself is the
+# signal. Remove this key to go back to --no-reset.
+# 2026-10-28 run 1 with 8 s: at 17:07:53.4 the firmware booted, at 17:08:33 ADB answered on stock
+# Android, so the phone reset on its own roughly 30 s after `fastboot boot`. That is consistent with
+# stage 3 but not proof of it: sheng-autoreset (2400 s) and the 60 s watchdog could also explain a
+# reset, so run 2 moved the delay to 24 s. Result: 8 s -> the phone reset 28.8 s after
+# `fastboot boot`; 24 s -> 45.0 s. The 16.2 s shift matches the 16 s parameter change, so the
+# reset does come from cave 3 and the CPU does get past `msr SCTLR_EL1, x0` + its ISB compare loop.
+# Stage 3 sits at 0xfffffff0073ee370, which is *before* CPACR_EL1 is set and before common_start
+# returns into _arm_init, so the next question is whether that return into C code happens at all:
+# stage 4 below resets after the first call _arm_init makes.
+# 2026-10-28 run 3 (stage 4 at _arm_set_kernel_tbi, 4 s): boot 17:16:50.3 -> Android kernel started
+# 17:17:15.3, i.e. 25.0 s, which is the 4 s delay plus the same ~20.8 s constant that the two stage 3
+# runs showed. So the return into _arm_init does happen and C code runs: the reset moved with the
+# probe, and _arm_set_kernel_tbi (a `ret` and nothing else) returned into cave 4 as intended.
+# Run 4 jumps to the far end of _arm_init. Everything before _arm_vm_init is timer plumbing,
+# SecureDT lookups and cpu/thread bootstrap; _arm_vm_init builds the kernel pmap and the CPU
+# structures, so a reset there means the first ~40 calls ran and the next thing to blame is the pmap.
+# Run 4 (stage 4 at _arm_vm_init, 4 s): also 25.0 s -> 17:20:27.6, so the reset fires there too and
+# every call _arm_init makes before _arm_vm_init returns normally.
+# Run 5 at _patch_low_glo (the call right after _arm_vm_init): again 25.0 s -> 17:21:36.5, so
+# _arm_vm_init returned. The pmap and CPU structures it builds are therefore not the blocker.
+# Run 6 at _early_random (the call one instruction before _machine_startup): again 25.0 s ->
+# 17:22:46.0, so the entire body of _arm_init ran and returned into _machine_startup.
+# Run 7 at _vm_mem_bootstrap (first real subsystem in _kernel_bootstrap): again 25.0 s -> 17:24:21.4,
+# so the pmap/VM bootstrap returns too. Console plumbing and VM are therefore both fine.
+# Run 11 at _load_context (call 85 of 87): NO reset in 218 s, and the phone sat on the UniXNU menu.
+# CORRECTION: that silence does NOT prove the site was missed. _load_context is the switch into the
+# first kernel thread and is not expected to return -- the call after it is `panic` (call 86,
+# 0xfffffff0072b4884), the "load_context returned" guard. A stage 4 probe there runs `bl _load_context`
+# and then waits for a reset that a *successful* switch never reaches, so "no reset" is what success
+# looks like. Run 11 is therefore not a bisect step and must not be counted as one.
+# Run 12 at _mach_absolute_time (call 80, right after _kernel_thread_create): 25.2 s -> reset, so
+# _kernel_thread_create returned and calls 81..85 are the remaining window.
+# Run 13 probes call 84 (_kernel_debug_string_early, occurrence 25 of 25 in this function, at
+# 0xfffffff0072b485c), one call before _load_context: a reset means 81..84 all returned and the only
+# thing left is the switch itself. (occurrence counts only calls to that symbol, so the site right
+# before the switch is #25, not the 23rd call overall -- verified against llvm-objdump.)
+# Run 16 at _initialize_screen (call 52 of 101): 25.9 s -> reset, so the screen init returns. The
+# surviving window is calls 53..93.
+# Run 17 at _kernel_startup_initialize_upto (occurrence 4, call 73): 25.9 s -> reset. So the trust
+# cache, the static trust cache load and the late kernel_startup stage all returned. Window: 74..93.
+# Run 18 at _kernel_do_post (call 84): 25.9 s -> reset. Window: 85..93.
+# Run 19 at _vm_set_restrictions (call 92): 25.9 s -> reset. Window: call 93 only.
+# Run 20 at _kperf_init_early (call 93): 25.9 s -> reset. So every call in
+# _kernel_bootstrap_thread before _bsd_init returns, and the wedge is inside _bsd_init or later.
+# NOTE on run 15: "no reset at _bsd_init" was never evidence. _bsd_init ends by calling
+# _bsd_utaskbootstrap, which has no `ret` at all -- the function does not return on success, so a
+# stage 4 probe installed at its call site can never reach its own wait. Same trap as _load_context
+# in run 11. Only sites whose callee really returns may be used as bisection points.
+# Run 21 at _IOKitBSDInit (call 74 of 133 in _bsd_init): 25.9 s -> reset. Window: 75..126.
+# Run 22 at _vfs_mountroot (call 92 of 133 in _bsd_init): NO reset in 195 s. So the kernel gets to
+# the root mount and never comes back out of it.
+# That is a very specific shape of failure, and there is a documented reason to expect it: the manual
+# still has stage 4 as "image built, NOT flashed" -- userdata-root.img (9382658048 B, sha256
+# fd43ee70...) has never been written to the phone. NativeUfs publishes the root windows only after
+# it validates the SHNGROOT manifest (NativeUfs.cpp:1093 `!gStoreGeometry.valid || !gHost.ready` ->
+# "no root layout"), and check_root_manifest.py confirms the manifest exists in the image but says
+# nothing about the phone. With no manifest on userdata, no root device is ever published and
+# _vfs_mountroot waits forever -- exactly the silent, panic-free, screen-unchanged hang we see.
+# Run 24: the same _vfs_mountroot site as run 22, which did not reset, but now userdata has actually
+# been flashed (2026-10-29 09:08, 9382658048 B via the sparse route below). If the root filesystem is
+# the missing piece, this probe now resets: cave4 calls _vfs_mountroot for real, so a reset means the
+# mount returned. Same site, same delay, one variable changed.
+# Note on flashing: the fastboot in C:\platform-tools is a 32-bit binary and dies with
+# `std::bad_alloc` on the 8.74 GiB raw image, so userdata goes in as a sparse image instead --
+# scripts/make_sparse_image.py converts and byte-verifies it, fastboot then sends 12 chunks.
+entry_probe_reset_delay = 4
+entry_probe_reset_after = "_vfs_mountroot"
+entry_probe_reset_in = "_bsd_init"
+entry_probe_reset_occurrence = 1
+# The panic screen and stage 3 cannot both be installed in this kernel: with stage 3 in use the probe caves
+# end at 0xfffffff0073ec620 and the panic screen (0x9ed bytes) would run 0x1d past the padding at
+# 0xfffffff0073ecff0 ("panic screen is 0x9ed bytes at 0xfffffff0073ec620, the padding ends at ...cff0").
+# One question per run: this build asks whether the CPU survives the MMU enable, and the previous --no-reset
+# run already showed there is no panic to draw. Turn this back on with entry_probe_reset_delay removed.
+panic_screen = false
+# The static and System trust caches of 21H461, for the userland stages.
+trust_cache_sha256 = [
+  "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
+  "8900d6a93d7a59ce1a872a5c081e559f4240a218f97e12d44d22dda46644d68f",
+]
+# No "-v": DarwinBoot then hands XNU v_display 1 (BootVideo.h), the console is in graphics mode, and NativeLegacyDisplay takes the
+# firmware framebuffer as the main display (startHardware: primary = v_display == 1). With "-v" the local DarwinBoot change clears
+# v_display, so the display never accepts a swap. boot-progress (below) shows the kernel console lines instead, until the display
+# takes the screen at its first presented frame (boot_progress_prepare_scanout).
+kernel_args = [
+  # This list is 976 bytes joined, against a hard limit of 1000 (`scripts/unixnu/payload.py:35`:
+  # DarwinBoot copies the command line into a 1024-byte buffer). That leaves 24 bytes, so a new
+  # argument of more than 23 characters will not fit: retire one of the "offline-legacy-*"
+  # switches in the same edit, or check with `python scripts/probe_board.py` in the parent
+  # checkout. Nothing here is confirmed on hardware yet, so dropping an argument is cheap.
+  "debug=0x14e",
+  "kt_fixed_zones=120",
+  "armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=2","sheng-log=1","sheng-autoreset=2400","pcpu=0xf0","enchilada-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","enchilada-cpufreq=2","native-data-writeback=1",
+  "-no_slto_panic",
+  "native-ufs-root=1",
+  
+  "native-ufs-smmu-stream=0x100",     # SDM845: iommus = <&apps_smmu 0x100 0xf>
+  "native-ufs-smmu-mask=0xf",
+  "native-ufs-smmu-size=0x80000",     # apps_smmu reg size
+  "native-ufs-smmu-adopt=1",          # the firmware leaves 0x800f0100 on its own bank 2 with translation off; keep it
+  "sheng-pmgr=2",
+  # CPU-rendered UI, the sheng set (UniXNU-sheng board.toml kernel_args) without its GPU, touch, cpufreq and SMP arguments.
+  "offline-mobile-graphics-load=1",   # load IOMobileGraphicsFamily, register NativeLegacyDisplay (offline-component-load-probes.patch)
+  "offline-mobile-graphics-client=1",
+  "offline-legacy-register=1",
+  "offline-legacy-phase=4",           # attach the GOP nub as /arm-io/gop-display (display-subsystem) and start the display there
+  "offline-legacy-gop=1",             # map the UEFI framebuffer (1080x2280, 32 bpp, stride 4320)
+  "offline-legacy-pm=1",
+  "offline-legacy-validate=1",        # accept one full-screen BGRA IOSurface (or a blank frame) per swap
+  "offline-legacy-transfer=1",        # CPU copy of each accepted surface into the framebuffer
+  "offline-legacy-cpu-present=1",     # retire each swap after its copy
+  "offline-legacy-unit-scale=2","enchilada-display-logical=2048x2732","enchilada-fb-wc=1","enchilada-fb-src-cached=1","sheng-fb-diff=1",      # /chosen/display-scale 1: 1080x2280 points, wider than any iPad portrait layout (sheng: 2)
+  "sheng-vsync=60",                   # software vsync for the render server; the samsung,sofef00 runs at 60 Hz (sheng: 144)
+  "sheng-banner=0",                   # no diagnostic painting over the system frames
+  "offline-hid-input=1",              # load IOHIDFamily and IOHIDEventDriver
+  "offline-hid-home=1",               # publish NativeHidInput (keyboard/Home collection; no touch until a enchilada touch driver)
+  "offline-key-events=1",             # the owned AppleKeyStore (NativeKeyStoreEvents): no SEP on this board
+  "sheng-aks=1",                      # it answers the keybag state queries: no passcode, unlocked
+  "sheng-gpu-addon=1",                # mount the PNG wallpaper of the payload's addon (scripts/make-enchilada-wallpaper-addon.py), if any
+]
+
+# Fixups of signed text, applied by the kernel after signature validation (patches/xnu/native-text-fixup.patch); they reach it as
+# /chosen/text-fixups, not on the command line. Each is <file name>,<file offset>,<original>,<replacement>, in hex.
+text_fixups = [
+  # +[AWAttentionAwarenessConfiguration initialize] (21H461) only forces +[AWClientPreferences initialize] and deadlocks
+  # SpringBoard startup against it (ABBA between the main thread and Siri's SASMyriadController); it returns at once instead.
+  "dyld_shared_cache_arm64.15,421e8bc,28ad1bb0008544f9,c0035fd6008544f9",
+  # PosterBoardServices: PRSPosterPathURLResourceValues and PRSPosterPathFileAttributes require NSFileProtectionNone, which a Data
+  # volume without data protection never reports, so PosterBoard's data store is never viable ("Failed to migrate to Version 61
+  # from 59") and no poster, hence no wallpaper, is ever made. Both dictionaries keep only their first entry (readable / POSIX mode).
+  "dyld_shared_cache_arm64.13,1b05bec,44008052,24008052",
+  "dyld_shared_cache_arm64.13,1b05b08,44008052,24008052",
+  # BTAudioHALPlugin's factory returns NULL, so audiomxd skips it: with bluetoothd disabled (sheng-lite) the plugin reconnects to the
+  # missing com.apple.BTAudioHALPlugin.xpc in a tight loop (about 2700 times a second, millions of log lines, one core busy).
+  "BTAudioHALPlugin,38bec,ffc300d1f44f01a9,000080d2c0035fd6",
+]
+
+[payload.adt]
+tool = "scripts/make-enchilada-adt.py"
+root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"   # the 21H461 OS volume, read from the image
+owned_memory_size = "0x130000000"   # 4.75 GiB, as sheng: 3 GiB ran out of memory 2 minutes into userland (2026-10-22)
+# The Data seed (data-seed.json, built by the Data seed workflow) arrives packed (DBRDISK1); NativeRamBlock serves it.
+packed_data_ramdisk = true
+# sheng-data-persist=2: Data writes go through to a store window at the end of userdata (NativeUfs), not to RAM.
+persistent_data = true
+# The iPad identity (model iPad7,1, target-type J120): libMobileGestalt prefix-matches hw.product against iPhone/iPod/iPad.
+ipad_identity = true
+# chip_id and the platform seed (/chosen/unique-chip-id) seed IOPlatformUUID; the seed is per device and kept out of Git
+# (UNIXNU_UNIQUE_CHIP_ID, .cache/platform-seed).
+chip_id = "207"
+unique_chip_id = "required"
+cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
+psci_method = "smc"
+
+# Measured on the boot image OnePlus ships for this phone, not inherited from anywhere: the LineageOS 22.2
+# nightly for enchilada (20261021) carries a stock-layout boot.img, 67108864 bytes, whose header reads
+# kernel_addr 0x8000, ramdisk_addr 0x1000000, tags_addr 0x100, pagesize 4096, header_version 1,
+# kernel_size 14687937, ramdisk_size 16340632. The load addresses below are therefore this phone's own.
+# header_version is 0 here on purpose: version 1 images were refused while version 0 ones loaded (the sibling
+# port's note), and postmarketOS also ships a version 0 image for enchilada. The padding differs, the layout does not.
+# The ABL also refuses fastboot boot ("Load Error") once the active slot is unbootable: every reset spends one retry
+# of that slot, so run "fastboot set_active b" (or a) before "fastboot boot" during bring-up.
+[bootimg.image]
+header_version = 0
+pagesize = 4096
+base = 0x0
+kernel_offset = 0x8000
+ramdisk_offset = 0x1000000
+tags_offset = 0x100
+
+# The continuous splash framebuffer the stock ABL leaves running, which SimpleFbDxe draws into, is already reserved
+# in Resources/DTBs/enchilada.dts as /reserved-memory/cont_splash_region@9d400000, so no [[bootimg.dtb_node]] is added.

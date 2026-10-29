@@ -1,0 +1,335 @@
+name: Build kernel, payload and boot image
+
+# Builds everything that needs macOS or a full EDK II toolchain, on a GitHub runner, and uploads
+# the three artefacts the phone needs:
+#   kernel.macho   the prelinked XNU the payload carries
+#   payload.img    the FAT volume UniXNU reads its configuration and the kernel from
+#   boot.img       the Android boot image for `fastboot boot`
+#
+# The firmware volume (SILICIUM_UEFI.fd) is built here too, from a Mu-Silicium checkout that this
+# workflow patches with device/scripts/make-enchilada-uefi.py, so no local Mac or Linux box is needed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: Defconfig name (configs/ of this repository)
+        required: true
+        default: enchilada_defconfig
+      xcode:
+        description: Xcode version of the macos-26 image (/Applications/Xcode_<version>.app)
+        required: true
+        default: "26.6"
+      unixnu_ref:
+        description: UniXNU ref to build against (empty = its default branch)
+        required: false
+        default: ""
+      mu_silicium_ref:
+        description: Mu-Silicium ref (empty = its default branch)
+        required: false
+        default: ""
+      unique_chip_id:
+        description: >-
+          Platform seed for the Apple device tree, 16 hex digits. Leave empty to use the
+          UNIXNU_UNIQUE_CHIP_ID secret; it is never committed to the repository.
+        required: false
+        default: ""
+      skip_payload:
+        description: Build only the kernel (skips the payload and boot image)
+        required: false
+        type: boolean
+        default: false
+      build_userdata:
+        description: >-
+          Also build the iPadOS userdata disk image. Downloads the whole IPSW and
+          writes an 8.7 GiB image, so it adds roughly half an hour and a large
+          artifact; only needed for the step after the kernel boots.
+        required: false
+        type: boolean
+        default: false
+      data_seed_run_id:
+        description: >-
+          Run id of a "Data seed" workflow whose data-seed-linux artifact should be put on the
+          payload as the writable Data volume. Leave empty for a read-only first boot. The seed's
+          APFS volume UUID has to equal CONFIG_XNU_OWNER_DATA_VOLUME_UUID of the defconfig, or the
+          kernel panics in load_init_program before launchd -- the build checks this.
+        required: false
+        default: ""
+      skip_setup:
+        description: >-
+          Mark Setup as done in the Data seed so the Hello pages are skipped. Needs data_seed_run_id.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: build-${{ github.ref }}-${{ inputs.defconfig }}
+  cancel-in-progress: false
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  HOMEBREW_NO_ENV_HINTS: 1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 360
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_${{ inputs.xcode }}.app/Contents/Developer
+      DEFCONFIG: ${{ inputs.defconfig }}
+    steps:
+      - name: Check out UniXNU (public upstream)
+        uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: ${{ inputs.unixnu_ref }}
+          persist-credentials: false
+
+      - name: Check out the device repository
+        uses: actions/checkout@v4
+        with:
+          path: device
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Check the inputs
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [ -f device/board.toml ] || fail "the device repository has no board.toml"
+          [ -f "device/configs/$DEFCONFIG" ] || fail "device/configs/$DEFCONFIG not found"
+          [ -d "$DEVELOPER_DIR" ] || fail "Xcode not found at $DEVELOPER_DIR"
+          [ -f device/scripts/make-enchilada-uefi.py ] || fail "device/scripts/make-enchilada-uefi.py missing"
+          # DarwinBoot provides gUniXNULoaderProtocolGuid, and [payload] loader = "firmware" means
+          # UniXNU finds it in the firmware volume rather than on the payload volume. Check it here,
+          # before the three-hour kernel build, rather than in the step that needs it.
+          [ -f device/scripts/build-darwinboot.sh ] || fail "device/scripts/build-darwinboot.sh missing"
+
+      - name: Install host tools
+        run: |
+          brew install llvm lld mtools dtc
+          if ! command -v unifdef >/dev/null; then
+            brew install unifdef
+            echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+          fi
+
+      # The Binaries submodule is not optional: Platforms/OnePlus/enchiladaPkg names 79 prebuilt
+      # Qualcomm DXE drivers under Binaries/enchilada and Binaries/generic, and without them the EDK II
+      # build stops halfway with a message that does not name the missing file. --shallow-submodules
+      # keeps the checkout to a single commit per submodule; the archives are still the full size.
+      - name: Check out Mu-Silicium and patch the OnePlus 6 platform package
+        run: |
+          git clone --recurse-submodules --shallow-submodules --depth 1 \
+            ${MU_REF:+--branch "$MU_REF"} https://github.com/Project-Silicium/Mu-Silicium ../Mu-Silicium
+          python3 device/scripts/make-enchilada-uefi.py ../Mu-Silicium
+        env:
+          MU_REF: ${{ inputs.mu_silicium_ref }}
+
+      - name: Verify the Qualcomm vendor binaries are present
+        run: |
+          files=$(find ../Mu-Silicium/Binaries/enchilada -name '*.efi' 2>/dev/null | wc -l)
+          echo "Binaries/enchilada: $files .efi file(s)"
+          if [ "$files" -lt 30 ]; then
+            echo "::error::the Binaries submodule is empty; the EDK II build cannot link the platform"
+            git -C ../Mu-Silicium submodule status Binaries || true
+            exit 1
+          fi
+
+      - name: Select the device
+        run: ./unixnu defconfig "$DEFCONFIG" -D "$GITHUB_WORKSPACE/device"
+
+      - name: Fetch sources
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./unixnu fetch
+
+      # The device repository's patches/xnu/ replaces UniXNU's shared series in the assembled tree
+      # instead of adding to it, so the board's patches live in patches/xnu-device/ and this
+      # composes the directory the format 1 build globs. Without it the kernel is built with the
+      # board's two patches and none of the shared sixty, and nothing fails here -- it fails on the
+      # phone. --check then proves the composed directory is what both halves say it should be.
+      - name: Compose the XNU patch series
+        run: |
+          python3 device/scripts/compose-xnu-patches.py --write --unixnu "$GITHUB_WORKSPACE"
+          python3 device/scripts/compose-xnu-patches.py --unixnu "$GITHUB_WORKSPACE"
+
+      - name: Build kernel
+        id: kernel
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./unixnu build kernel
+
+      - name: Build DarwinBoot
+        id: darwinboot
+        run: |
+          chmod +x device/scripts/build-darwinboot.sh
+          device/scripts/build-darwinboot.sh DEBUG
+          cp out/darwinboot/DarwinBoot.efi /tmp/DarwinBoot.efi
+
+      - name: Resolve the platform seed
+        if: ${{ !inputs.skip_payload }}
+        run: |
+          seed="${{ inputs.unique_chip_id }}"
+          if [ -z "$seed" ]; then
+            seed="${UNIXNU_UNIQUE_CHIP_ID:-}"
+          fi
+          if [ -z "$seed" ]; then
+            # A fixed seed is only a placeholder for a first console boot: it is not a secret and it is
+            # not derived from the phone. Replace it with the value from
+            # `device/scripts/dump-device-facts.sh` once the phone has been read.
+            seed=00000000$(printf '%08x' $(( RANDOM * RANDOM )))
+            echo "::warning::no platform seed given; using the disposable seed $seed"
+          fi
+          echo "UNIXNU_UNIQUE_CHIP_ID=$seed" >> "$GITHUB_ENV"
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+
+      - name: Fetch the Data seed
+        id: seed
+        if: ${{ !inputs.skip_payload && inputs.data_seed_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: data-seed-linux
+          path: /tmp/data-seed
+          run-id: ${{ inputs.data_seed_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The seed's volume UUID is compiled into the kernel, and a mismatch is a panic in
+      # load_init_program rather than a fallback, so it is checked here instead of on the phone.
+      - name: Check the Data seed against the kernel
+        id: seedcheck
+        if: ${{ !inputs.skip_payload && inputs.data_seed_run_id != '' }}
+        run: |
+          configured=$(grep -E '^CONFIG_XNU_OWNER_DATA_VOLUME_UUID=' device/configs/*defconfig | head -1 | cut -d'"' -f2)
+          python3 - "$configured" <<'PY'
+          import json, sys
+          expected = sys.argv[1].upper()
+          report = json.load(open('/tmp/data-seed/data-linux.json'))
+          actual = str(report['volume_uuid']).upper()
+          print('seed volume_uuid:', actual)
+          print('kernel compiled for:', expected)
+          print('seed role:', report.get('role'))
+          if actual != expected:
+              raise SystemExit(
+                  f'the seed carries {actual} but the kernel was compiled for {expected}; '
+                  'load_init_program would panic("offline scratch Data mount failed") before launchd')
+          if report.get('role') not in (None, [], ['None'], 'none'):
+              raise SystemExit(f'the seed carries role {report["role"]}; iOS panics on an unencrypted Data-role volume')
+          print('the seed matches the kernel')
+          PY
+
+      - name: Build payload
+        id: payload
+        if: ${{ !inputs.skip_payload }}
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ env.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          args=""
+          if [ -n "${{ inputs.data_seed_run_id }}" ]; then
+            args="$args --data-ramdisk /tmp/data-seed/data-linux.dbr"
+            if [ "${{ inputs.skip_setup }}" = "true" ]; then
+              args="$args --skip-setup"
+            fi
+          fi
+          # shellcheck disable=SC2086
+          ./unixnu build payload $args
+
+      # board.toml says loader = "firmware", so the DarwinBoot that installs the loader protocol is
+      # built into the firmware volume and UniXNU never looks for it on the FAT volume. The copy
+      # below is the fallback route: with loader = "payload" payload.py writes a [[driver]] section
+      # that makes UniXNU load Payloads/DarwinBoot.efi from the volume instead, and that file has to
+      # be staged by hand because the payload build only copies the kernel, the ADT and the data
+      # seed. Keeping it here means the fallback needs a rebuild of the payload, not a new step.
+      - name: Stage DarwinBoot on the payload volume for the loader = "payload" fallback
+        if: ${{ !inputs.skip_payload && steps.payload.outcome == 'success' && steps.darwinboot.outcome == 'success' }}
+        run: |
+          mcopy -i out/*/payload/payload.img /tmp/DarwinBoot.efi ::/EFI/UniXNU/Payloads/DarwinBoot.efi
+          echo "staged DarwinBoot.efi on the payload volume"
+
+      - name: Build UniXNU package and firmware volume
+        id: firmware
+        env:
+          # The board preflight (scripts/check-enchilada.py) is a subprocess of this step and has to
+          # find the patched Mu-Silicium checkout; give it the absolute path so it does not depend on
+          # the working directory it is invoked from.
+          UNIXNU_UEFI: ${{ github.workspace }}/../Mu-Silicium
+        run: ./unixnu build package firmware --uefi ../Mu-Silicium
+
+      # Two images, because it is not known yet whether this ABL takes the payload as a 192 MiB ramdisk.
+      # boot.img carries it; boot-noramdisk.img is empty and expects the payload volume on a partition
+      # (see README: flash payload.img, then boot with the empty-ramdisk image).
+      #
+      # They go into separate directories because bootimg.py writes boot.json next to the image: with
+      # both images in one directory the second overwrites the first's report, and the report is the
+      # only record of which firmware volume and device tree went into which image.
+      - name: Pack the boot images
+        id: bootimg
+        run: |
+          ./unixnu bootimg --uefi ../Mu-Silicium \
+            --dtb ../Mu-Silicium/Resources/DTBs/enchilada.dtb \
+            -o out/enchilada/boot/with-ramdisk/boot.img
+          ./unixnu bootimg --uefi ../Mu-Silicium \
+            --dtb ../Mu-Silicium/Resources/DTBs/enchilada.dtb \
+            --ramdisk none -o out/enchilada/boot/no-ramdisk/boot.img
+
+      - name: Build the userdata image
+        id: userdata
+        if: ${{ inputs.build_userdata }}
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ env.UNIXNU_UNIQUE_CHIP_ID }}
+        run: ./unixnu build userdata
+
+      - name: Upload kernel
+        if: always() && steps.kernel.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: enchilada-kernel
+          path: |
+            out/*/kernel/kernel.macho
+            out/*/kernel/*.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload payload
+        if: always() && steps.payload.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: enchilada-payload
+          path: |
+            out/*/payload/payload.img
+            out/*/payload/payload.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload boot image and firmware volume
+        if: always() && steps.bootimg.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: enchilada-bootimg
+          path: |
+            out/enchilada/boot/with-ramdisk/boot.img
+            out/enchilada/boot/with-ramdisk/boot.json
+            out/enchilada/boot/no-ramdisk/boot.img
+            out/enchilada/boot/no-ramdisk/boot.json
+            ../Mu-Silicium/Build/enchiladaPkg/DEBUG_CLANGPDB/FV/SILICIUM_UEFI.fd
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: enchilada-logs
+          path: out/*/logs/*.log
+          if-no-files-found: warn
+          retention-days: 7

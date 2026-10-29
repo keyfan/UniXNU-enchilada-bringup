@@ -1,0 +1,57 @@
+# The XNU patch directory the format 1 build globs is composed, not tracked: it is UniXNU's
+# shared series plus this board's patches from patches/xnu-device/. Committing it would make the
+# shared half drift silently whenever UniXNU updates a patch, and a device repository's own
+# patches/xnu/ *replaces* UniXNU's rather than adding to it (see 3.29). scripts/compose-xnu-patches.py
+# writes it; every build path, local and CI, runs that first.
+/patches/xnu/
+
+# Build outputs and caches (re-derivable; nothing important lives here)
+/build/
+/Build/
+/Conf/
+/out/
+/.cache/
+/refer/
+/.local*/
+/Mu_Basecore/
+
+# What scripts/dump-device-facts.sh writes. It is this phone's own dump and does not belong to the
+# repository: the values it produces are copied into board.toml by hand, on purpose.
+/enchilada-facts/
+/backup/
+
+# Local development files
+*.log
+*.terminal
+*.swp
+*.swo
+*~
+.DS_Store
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+*.dSYM/
+
+# Inputs, images and products that never belong in Git
+*.ipsw
+*.dmg
+*.im4p
+*.img
+*.dbr
+*.macho
+*.o
+*.a
+*.dylib
+*.efi
+*.dtb
+*.bc
+*.spv
+*.metallib
+*.bin
+*.mbn
+*.fw
+*.pem
+*.key
+.env
+local.toml

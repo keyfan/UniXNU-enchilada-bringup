@@ -1,0 +1,131 @@
+name: Data seed
+
+# Builds the writable Data volume seed (/private/var) from data-seed.json and uploads the packed DBRDISK1
+# image plus its report.
+#
+# The volume UUID is not cosmetic: the kernel compiles CONFIG_XNU_OWNER_DATA_VOLUME_UUID into
+# XNU_OWNER_DATA_VOLUME_UUID and NativeRamBlock matches IOMedia by it. When it does not match,
+# native_ram_block_volume_seed() returns ENOENT and load_init_program panics
+# ("offline scratch Data mount failed") just before launchd -- after the kernel, the root volume and the
+# SystemOS mount have all succeeded, so nothing earlier looks wrong.
+#
+# diskutil (macOS) invents the UUID and cannot be told which one to use, so the macOS job can only *report*
+# it. The Linux job pins it with mkapfs, which is why `linux` is the job whose output the kernel should be
+# built against: its UUID equals CONFIG_XNU_OWNER_DATA_VOLUME_UUID below, every time.
+on:
+  workflow_dispatch:
+    inputs:
+      volume_uuid:
+        description: >-
+          APFS volume UUID to build into the seed. Must equal CONFIG_XNU_OWNER_DATA_VOLUME_UUID
+          of the defconfig; defaults to that value.
+        required: false
+        default: ""
+      timestamp:
+        description: Unix seconds for every timestamp inside the seed (fixes the image bit for bit)
+        required: false
+        default: "1792540800"
+  push:
+    paths:
+      - data-seed.json
+      - scripts/make-data-seed-linux.py
+      - scripts/make-data-seed-macos.py
+      - .github/workflows/data-seed.yml
+
+permissions:
+  contents: read
+
+jobs:
+  # The authoritative seed: mkapfs takes both UUIDs, so this image always matches the defconfig.
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the UUID the kernel is compiled for
+        id: uuid
+        run: |
+          configured=$(grep -E '^CONFIG_XNU_OWNER_DATA_VOLUME_UUID=' configs/enchilada_defconfig | cut -d'"' -f2)
+          given="${{ inputs.volume_uuid }}"
+          uuid="${given:-$configured}"
+          if [ -z "$uuid" ]; then
+            echo "::error::CONFIG_XNU_OWNER_DATA_VOLUME_UUID is not set in configs/enchilada_defconfig and no input was given"
+            exit 1
+          fi
+          if [ -n "$given" ] && [ "$given" != "$configured" ]; then
+            echo "::error::input volume_uuid=$given but the defconfig says $configured; the kernel would panic on the seed"
+            exit 1
+          fi
+          echo "uuid=$uuid" >> "$GITHUB_OUTPUT"
+          echo "building the seed with volume UUID $uuid"
+      - name: Fetch the DBRDISK1 packer from UniXNU
+        run: |
+          mkdir -p tools
+          # The DarwinBoot commit UniXNU pins (components.toml, drivers/DarwinBoot): 3325e35. This
+          # used to say d099354, which is a later commit that components.toml does not pin, so the
+          # seed was packed by different code than the checkout the payload step builds against.
+          curl -fsSL https://raw.githubusercontent.com/UniXNU/DarwinBoot/3325e35/Test/packed_ramdisk.py -o tools/packed_ramdisk.py
+          head -3 tools/packed_ramdisk.py
+      - name: Build the seed with the pinned UUID
+        run: |
+          python3 scripts/make-data-seed-linux.py \
+            --packer tools/packed_ramdisk.py \
+            --fetch-apfsprogs .cache/apfsprogs \
+            --volume-uuid "${{ steps.uuid.outputs.uuid }}" \
+            --container-uuid 5F2C7A11-8B34-4E6D-9C10-3A7D5E9B2C41 \
+            --timestamp "${{ inputs.timestamp }}" \
+            --out out
+      - name: Check the seed against the kernel
+        run: |
+          python3 - "${{ steps.uuid.outputs.uuid }}" <<'PY'
+          import json, sys
+          expected = sys.argv[1].upper()
+          report = json.load(open('out/data-linux.json'))
+          actual = str(report['volume_uuid']).upper()
+          print('volume_uuid:', actual)
+          print('role:', report.get('role'))
+          if actual != expected:
+              raise SystemExit(f'the seed built with {actual}, the kernel wants {expected}')
+          if report.get('role') not in (None, [], ['None'], 'none'):
+              raise SystemExit(f'the seed carries role {report["role"]}; iOS panics on an unencrypted Data-role volume')
+          print('the seed matches the kernel')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: data-seed-linux
+          path: |
+            out/data-linux.dbr
+            out/data-linux.json
+
+  # Informational only. diskutil cannot be told which UUID to use, so this job can never produce a
+  # seed that matches a pinned CONFIG_XNU_OWNER_DATA_VOLUME_UUID -- it would be red on every run,
+  # and a permanently red job is one people learn to ignore. Instead it reports what diskutil chose
+  # and the exact defconfig line that would accept it; the linux job is the one that ships a seed.
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the DBRDISK1 packer from UniXNU
+        run: |
+          mkdir -p tools
+          # Same commit as the linux job, and the one components.toml pins: 3325e35.
+          curl -fsSL https://raw.githubusercontent.com/UniXNU/DarwinBoot/3325e35/Test/packed_ramdisk.py -o tools/packed_ramdisk.py
+          head -3 tools/packed_ramdisk.py
+      - name: Build the seed
+        id: seed
+        run: |
+          python3 scripts/make-data-seed-macos.py --packer tools/packed_ramdisk.py --out out
+      - name: Report what the kernel would have to be compiled for
+        run: |
+          configured=$(grep -E '^CONFIG_XNU_OWNER_DATA_VOLUME_UUID=' configs/enchilada_defconfig | cut -d'"' -f2)
+          produced=$(python3 -c "import json; print(json.load(open('out/data-macos.json'))['volume_uuid'])")
+          echo "diskutil produced volume UUID $produced"
+          echo "the defconfig pins $(printf '%s' "$configured")"
+          if [ "$produced" != "$configured" ]; then
+            echo "::warning title=Data seed UUID mismatch::diskutil chose $produced, the defconfig pins $configured. Use the data-seed-linux job (mkapfs pins the UUID), or set CONFIG_XNU_OWNER_DATA_VOLUME_UUID=\"$produced\" and rebuild the kernel."
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: data-seed-macos
+          path: |
+            out/data-macos.dbr
+            out/data-macos.json

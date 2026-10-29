@@ -1,0 +1,16 @@
+# Keep every text file LF in the repository and in the working tree.
+#
+# The build runs on a macOS runner and applies patches/xnu/*.patch with `git apply`; a CRLF
+# checkout would break both the shell scripts and the patches. Windows checkouts therefore get LF
+# too - the scripts are run with bash, never with cmd.exe.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.dbr binary
+*.img binary
+*.macho binary
+*.a binary
+*.o binary
+*.efi binary
+*.dtb binary
