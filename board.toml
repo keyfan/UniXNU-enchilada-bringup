@@ -317,19 +317,33 @@ trust_cache_sha256 = [
   "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
   "8900d6a93d7a59ce1a872a5c081e559f4240a218f97e12d44d22dda46644d68f",
 ]
-# No "-v": DarwinBoot then hands XNU v_display 1 (BootVideo.h), the console is in graphics mode, and NativeLegacyDisplay takes the
-# firmware framebuffer as the main display (startHardware: primary = v_display == 1). With "-v" the local DarwinBoot change clears
-# v_display, so the display never accepts a swap. boot-progress (below) shows the kernel console lines instead, until the display
-# takes the screen at its first presented frame (boot_progress_prepare_scanout).
+# No "-v". An earlier note here claimed a local DarwinBoot change clears v_display when "-v" is present; that
+# change is NOT in this tree. `drivers/DarwinBoot/DarwinBootPkg/Driver/BootVideo.h:31` hardcodes `Video[1] = 1`
+# and no patch in patches/ touches DarwinBoot.c or BootVideo.h, so v_display is 1 with or without "-v", and
+# `NativeLegacyDisplay.cpp:611` (`primary = video.v_display == 1`) takes the firmware framebuffer either way.
+# Adding "-v" would only spend 3 of the 30 spare command-line bytes on an argument nothing reads.
+# What actually shows kernel progress on screen is boot-progress=2 (below): BootProgress.c draws its own stage
+# bars and console lines until the display takes the screen at its first presented frame
+# (boot_progress_prepare_scanout), and the panic screen if --panic-screen is built in. The durable copy of the
+# same diagnostics goes to the UFS log window (package/BootLog.c, "SHLOG001"); read it with
+# scripts/read-ufs-log.py.
 kernel_args = [
-  # This list is 976 bytes joined, against a hard limit of 1000 (`scripts/unixnu/payload.py:35`:
-  # DarwinBoot copies the command line into a 1024-byte buffer). That leaves 24 bytes, so a new
-  # argument of more than 23 characters will not fit: retire one of the "offline-legacy-*"
+  # This list is 970 bytes joined, against a hard limit of 1000 (`scripts/unixnu/payload.py:35`:
+  # DarwinBoot copies the command line into a 1024-byte buffer). That leaves 30 bytes, so a new
+  # argument of more than 29 characters will not fit: retire one of the "offline-legacy-*"
   # switches in the same edit, or check with `python scripts/probe_board.py` in the parent
   # checkout. Nothing here is confirmed on hardware yet, so dropping an argument is cheap.
+  #
+  # `native-ufs-diagnostics=1` (23 bytes) was paid for by retiring
+  # `ml-timeout-lock-panic-scale=40` (30 bytes): a full-tree grep finds no consumer of that
+  # argument at all -- only this file and the `todo` row in NOTES-userland.md:31 -- while without
+  # the diagnostics switch drivers/NativeUfs/NativeUfs.cpp:43-51 compiles its 26 ROOT_STAGE and 2
+  # ROOT_LOG sites into no-ops, so a mountroot failure leaves no UFS stage trail in the log.
+  # `native-ufs-trace=1` was deliberately NOT added: the whole tree has exactly one ROOT_TRACE
+  # occurrence, and it is the macro definition itself, so it would spend 19 bytes on nothing.
   "debug=0x14e",
   "kt_fixed_zones=120",
-  "armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=2","sheng-log=1","sheng-autoreset=2400","pcpu=0xf0","enchilada-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","enchilada-cpufreq=2","native-data-writeback=1",
+  "armcpu-timer-intid=19","-apfs_shared_datavolume","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=2","sheng-log=1","sheng-autoreset=2400","pcpu=0xf0","enchilada-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","enchilada-cpufreq=2","native-data-writeback=1","native-ufs-diagnostics=1",
   "-no_slto_panic",
   "native-ufs-root=1",
   
