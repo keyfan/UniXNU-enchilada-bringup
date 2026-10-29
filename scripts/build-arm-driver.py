@@ -49,7 +49,7 @@ OUT_DIRS = {'ArmVirtPlatform': 'armvirt-platform', 'ArmDTPlatform': 'armdt-platf
             'NativeVirtioConsole': 'virtio-mmio-console', 'NativeLegacyDisplay': 'native-legacy-display',
             'NativeGOPPresenter': 'native-gop-presenter', 'NativeOfflineGPU': 'native-offline-gpu',
             'NativeOfflineAccelerator': 'native-offline-accelerator', 'NativeIOGPUProviderProbe': 'native-original-provider',
-            'NativeHidInput': 'native-hid-input', 'NativeKeyStoreEvents': 'apple-key-store-state',
+            'NativeHidInput': 'sheng-hid-input', 'NativeKeyStoreEvents': 'native-keystore-events',
             'NativeAdreno': 'native-adreno'}
 out = ROOT / 'build' / OUT_DIRS[component]
 if args.verified_root:

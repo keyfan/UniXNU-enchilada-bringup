@@ -371,7 +371,7 @@ probe_objs += [compile_with(c, pr, source) for source in c_sources]
 
 # The drivers: NativeHidInput through UniXNU's qualification of the original IOHIDDevice, then NativeKeyStoreEvents and the presenter.
 print(run(['python3', ROOT / 'scripts/build-native-hid-input.py'], text=True, env=env), end='')
-hid_dir = ROOT / 'build/native-hid-input'
+hid_dir = ROOT / 'build/sheng-hid-input'
 print(run(['python3', ROOT / 'scripts/build-arm-driver.py', 'NativeKeyStoreEvents'], text=True, env=env), end='')
 keyevents_late = late_init(ROOT / 'build/native-keystore-events', 'NativeKeyStoreEvents')
 print(run(['python3', ROOT / 'scripts/build-arm-driver.py', 'NativeGOPPresenter'], text=True, env=env), end='')
