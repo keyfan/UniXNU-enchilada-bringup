@@ -71,7 +71,7 @@ archives = [
   "build-libpthread-kernel.py",
   "build-enchilada-storage.py",          # storage ABI audit and NativeVirtioBlock bindings (needs ENCHILADA_STORAGE_CANDIDATE)
   "build-arm-driver.py NativeRamBlock",   # the RAM-backed Data volume (/private/var) from the Data seed
-  "build-native-virtio-bindings.py --component NativeRamBlock --directory build/native-ram-block",
+  "build-native-virtio-bindings.py --component NativeRamBlock --directory build/ram-block",
   "build-enchilada-verified-root.py",    # owner keys, OS and SystemOS policies, libVerifiedRootProbe.a (needs the OS images)
   "build-arm-driver.py NativeUfs",
   "build-enchilada-dwc3.py",             # NativeDwc3: SDM845 DWC3 USB device-mode probe (default-off; native-dwc3-probe=1), for the SSH-over-USB channel

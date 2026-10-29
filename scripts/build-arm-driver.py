@@ -26,11 +26,32 @@ if args.negative_verified_block and not args.verified_root:
 component = args.component
 recipe = ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'
 record = json.loads(recipe.read_text().strip().rstrip(','))
-source = ROOT / 'drivers' / ('NativeMobileDisplay' if component in ('NativeLegacyDisplay','NativeGOPPresenter') else 'NativeMetal' if component in ('NativeOfflineGPU','NativeOfflineAccelerator','NativeIOGPUProviderProbe') else component) / {'NativeAdreno':'NativeAdrenoService.cpp'}.get(component, component + '.cpp')
-out = ROOT / 'build' / {'ArmVirtPlatform': 'armvirt-platform', 'ArmDTPlatform': 'armdt-platform', 'ArmCpu': 'armcpu', 'NativeAES': 'native-aes',
-                        'NativeVirtioBlock': 'native-virtio-block', 'NativeRamBlock': 'native-ram-block',
-                        'NativeMobileDisplay': 'native-mobile-display', 'NativeVirtioConsole': 'native-virtio-console',
-                        'NativeLegacyDisplay': 'native-legacy-display', 'NativeGOPPresenter': 'native-gop-presenter', 'NativeOfflineGPU':'native-offline-gpu','NativeOfflineAccelerator':'native-offline-accelerator','NativeIOGPUProviderProbe':'native-original-provider', 'NativeUfs':'native-ufs', 'NativeHidInput':'native-hid-input', 'NativeKeyStoreEvents':'native-keystore-events', 'NativeAdreno':'native-adreno'}[component]
+# The source directory is components.toml's "path" and the file its "source_files": for the components
+# this board renames, the directory is the canonical one (drivers/SoftwareAES holds NativeAES.cpp), so
+# looking under the legacy name would find nothing.
+SOURCE_DIRS = {'NativeAES': 'SoftwareAES', 'NativeVirtioBlock': 'VirtioMmioBlock',
+               'NativeVirtioConsole': 'VirtioMmioConsole', 'NativeKeyStoreEvents': 'AppleKeyStoreState',
+               'NativeLegacyDisplay': 'NativeMobileDisplay', 'NativeGOPPresenter': 'NativeMobileDisplay',
+               'NativeOfflineGPU': 'NativeMetal', 'NativeOfflineAccelerator': 'NativeMetal',
+               'NativeIOGPUProviderProbe': 'NativeMetal'}
+SOURCE_FILES = {'NativeAdreno': 'NativeAdrenoService.cpp'}
+source = (ROOT / 'drivers' / SOURCE_DIRS.get(component, component)
+          / SOURCE_FILES.get(component, component + '.cpp'))
+# Output directory and archive name follow components.toml's outputs/legacy_outputs: the linker in
+# scripts/build-xnu-4k-baseline.sh names the canonical paths (build/sheng-ufs/libShengUfs.a,
+# build/ram-block/libRamBlock.a, build/software-aes/libSoftwareAES.a, ...), not the legacy spellings.
+CANONICAL = {'NativeAES': 'SoftwareAES', 'NativeVirtioBlock': 'VirtioMmioBlock',
+             'NativeVirtioConsole': 'VirtioMmioConsole', 'NativeRamBlock': 'RamBlock',
+             'NativeUfs': 'ShengUfs', 'NativeKeyStoreEvents': 'AppleKeyStoreState'}
+OUT_DIRS = {'ArmVirtPlatform': 'armvirt-platform', 'ArmDTPlatform': 'armdt-platform', 'ArmCpu': 'armcpu',
+            'NativeAES': 'software-aes', 'NativeVirtioBlock': 'virtio-mmio-block', 'NativeRamBlock': 'ram-block',
+            'NativeUfs': 'sheng-ufs', 'NativeMobileDisplay': 'native-mobile-display',
+            'NativeVirtioConsole': 'virtio-mmio-console', 'NativeLegacyDisplay': 'native-legacy-display',
+            'NativeGOPPresenter': 'native-gop-presenter', 'NativeOfflineGPU': 'native-offline-gpu',
+            'NativeOfflineAccelerator': 'native-offline-accelerator', 'NativeIOGPUProviderProbe': 'native-original-provider',
+            'NativeHidInput': 'native-hid-input', 'NativeKeyStoreEvents': 'apple-key-store-state',
+            'NativeAdreno': 'native-adreno'}
+out = ROOT / 'build' / OUT_DIRS[component]
 if args.verified_root:
     out = ROOT / ('build/native-virtio-block-verified-fault' if args.negative_verified_block else 'build/native-virtio-block-verified')
     if args.verified_root_bundle:
@@ -79,10 +100,10 @@ if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
     if args.verified_root_bundle:
         command += ['-DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1']
 if component == 'NativeUfs':
-    command += ['-I', str(ROOT / 'kits/VerifiedRoot/include'), '-I', str(ROOT / 'drivers/NativeVirtioBlock'),
+    command += ['-I', str(ROOT / 'kits/VerifiedRoot/include'), '-I', str(ROOT / 'drivers/VirtioMmioBlock'),
                 '-DNATIVE_VERIFIED_BLOCK=1', '-DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1', '-mgeneral-regs-only']
 if component=='NativeOfflineGPU':
-    command += ['-I',str(ROOT/'drivers/NativeVirtioConsole')]
+    command += ['-I',str(ROOT/'drivers/VirtioMmioConsole')]
 if component in ('NativeLegacyDisplay','NativeHidInput'):
     command += ['-I', str(out)]
 if component == 'NativeAdreno':
@@ -107,7 +128,16 @@ for _ in range(count):
     offset += length
 if deployment != (2, 0x110000):
     raise SystemExit(f'Unexpected platform deployment {deployment}')
-archive = out / ('lib' + component + '.a')
+archive = out / ('lib' + CANONICAL.get(component, component) + '.a')
 archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', archive, destination], check=True)
+# scripts/build-xnu-4k-baseline.sh re-checks the compiled object beside the archive by stripping the
+# "lib" prefix off the archive name (build/ram-block/libRamBlock.a -> RamBlock.o), while
+# build-native-virtio-bindings.py and build-native-aes-bindings.py read it under the runtime class name.
+# Keep one byte-identical copy per spelling so both readers find the same object.
+canonical = CANONICAL.get(component, component)
+if canonical != component:
+    alias = out / (canonical + '.o')
+    if not alias.exists() or alias.read_bytes() != data:
+        alias.write_bytes(data)
 print(f'{component}: -Werror build and actual ARM64/iOS 17 object audit passed')
