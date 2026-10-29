@@ -5,18 +5,23 @@ class name, so when the NativeDwc3 archive is not linked (any board that does no
 force_load libNativeDwc3.a) IOKit simply finds no such class and does not match.
 On enchilada the archive is linked (CONFIG_XNU_EXTRA_LD_ARCHIVES); the driver is still
 default-off, doing nothing unless the boot argument native-dwc3-probe=1 is set.
-Applies after native-aes-personality.patch, which adds the NativeUfs block above.
+
+Anchored on the IOExclaveProxy entry, which no other patch in the series touches, and
+inserted before that entry rather than after it.  The build re-runs every patch on the
+second pass and leaves alone any patch whose reverse check still applies, so a patch
+must not sit inside another patch's context: native-aes-personality.patch ends its
+guards just before the table's closing parenthesis, and armvirt-platform-personality.patch
+ends just before the IOPanicPlatform entry, so this board's block goes between them.
 diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
 --- a/iokit/KernelConfigTables.cpp
 +++ b/iokit/KernelConfigTables.cpp
-@@ -105,4 +105,10 @@
-     "     'IOProbeScore'    = 500:32;"
-     "   }"
- #endif
-+    "   ,{"
+@@ -42,3 +42,9 @@
++    "   {"
 +    "     'IOClass'         = NativeDwc3;"
 +    "     'IOMatchCategory' = NativeDwc3;"
 +    "     'IOProviderClass' = IOPlatformExpertDevice;"
 +    "     'IOProbeScore'    = 400:32;"
-+    "   }"
-     ")";
++    "   },"
+     "   {"
+     "     'IOClass'         = IOExclaveProxy;"
+     "     'IOProviderClass' = IOService;"
