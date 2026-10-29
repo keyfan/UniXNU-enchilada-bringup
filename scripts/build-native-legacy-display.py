@@ -86,9 +86,13 @@ require(candidate.is_file() and candidate.with_suffix('.json').is_file(),
         'ENCHILADA_DISPLAY_CANDIDATE (or ENCHILADA_STORAGE_CANDIDATE) must name a prelinked enchilada kernel.macho with its kernel.json beside it')
 prelink = ROOT / 'build/native-prelink'
 prelink.mkdir(parents=True, exist_ok=True)
-for name in ('native-owner-mobile-graphics-candidate', 'native-owner-ufs-cpu-desktop-enchilada-candidate'):
-    for suffix in ('.macho', '.json'):
-        shutil.copyfile(candidate.with_suffix(suffix), prelink / (name + suffix))
+# audit-mobile-graphics-legacy.py and build-native-hid-input.py read build/xnu-prelink, this script and
+# audit-amfi-pmgr-contract.py read build/native-prelink; stage the candidate under both names in both.
+for directory in (prelink, ROOT / 'build/xnu-prelink'):
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ('native-owner-mobile-graphics-candidate', 'native-owner-ufs-cpu-desktop-enchilada-candidate'):
+        for suffix in ('.macho', '.json'):
+            shutil.copyfile(candidate.with_suffix(suffix), directory / (name + suffix))
 analysis = ROOT / 'build/display-analysis/mobile-graphics-legacy-abi.json'
 if not analysis.exists():
     analysis.parent.mkdir(parents=True, exist_ok=True)

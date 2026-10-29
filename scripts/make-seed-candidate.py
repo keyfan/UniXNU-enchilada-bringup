@@ -9,8 +9,9 @@ original_executable_sha256, components).  This rebuilds that plan from the image
 _PrelinkInfoDictionary.
 
 The bindings that name our own kernel's addresses are only correct for the kernel they were
-read from, which is why the caller runs the kernel step twice: the first pass seeds the
-candidate, the second re-derives every binding against the kernel this build actually produced.
+read from, so a seed is only a stand-in for the *original Apple* side of the audits: it lets the
+storage and graphics builders run on a tree that has never been linked, and the kernel step that
+follows still derives its own bindings from the archive it compiles against this seed's plan.
 """
 import argparse
 import hashlib
@@ -58,8 +59,14 @@ def extraction(image, data, segment):
     return data[at:at + segment['filesize']]
 
 
-def build_plan(image, data):
-    """Describe the image the way emit_prelink.py describes a fresh candidate."""
+def build_plan(image, data, prelinked, slide):
+    """Describe the image the way emit_prelink.py describes a fresh candidate.
+
+    emit_prelink.py records `original_sha256` (the pinned kernelcache the Apple components come from) and
+    `slide` (the rebase it applied) beside the candidate, and some audits assert on them: the storage audit
+    requires `original_sha256` to be the pinned kernelcache, so the seed has to carry the same two facts
+    rather than implying them.
+    """
     components = []
     extents = []
     executables = {}
@@ -80,6 +87,10 @@ def build_plan(image, data):
         'original_executable_sha256': executables,
         'candidate_sha256': hashlib.sha256(data).hexdigest(),
         'candidate_bytes': len(data),
+        # The image was prelinked FROM this file with this rebase; both are checked against board.toml.
+        'original_sha256': hashlib.sha256(prelinked.read_bytes()).hexdigest(),
+        'slide': slide,
+        'images_modified': False,
         'source_inputs_modified': False,
         'runtime_qualified': False,
         'loadable': False,
@@ -91,6 +102,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--image', required=True, type=Path,
                         help='prelinked kernel.macho to describe')
+    parser.add_argument('--prelinked', type=Path,
+                        help='the pinned kernelcache the image was prelinked from; defaults to '
+                             'out/ipsw/<build>/kernelcache.decompressed beside the tree')
+    parser.add_argument('--slide', type=lambda value: int(value, 0), default=-0x1000000,
+                        help='the rebase emit_prelink.py applied ([kernel.prelink] slide)')
     parser.add_argument('--output', type=Path,
                         help='plan to write; defaults to <image>.json')
     parser.add_argument('--copy-image-to', type=Path,
@@ -101,7 +117,10 @@ def main():
     image = macho(data)
     if image['kind'] != 2:
         raise SystemExit(f'{args.image}: kind {image["kind"]} is not a kernel executable')
-    plan = build_plan(image, data)
+    prelinked = args.prelinked or (ROOT.parents[1] / 'ipsw/21H461/kernelcache.decompressed')
+    if not prelinked.is_file():
+        raise SystemExit(f'{prelinked}: not found; pass --prelinked with the pinned kernelcache')
+    plan = build_plan(image, data, prelinked, args.slide)
     output = args.output or args.image.with_suffix('.json')
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(plan, indent=2) + '\n', encoding='utf-8')
