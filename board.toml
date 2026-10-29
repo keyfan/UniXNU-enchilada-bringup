@@ -194,9 +194,20 @@ SHIP_MODE = "FALSE"
 # bootloader reserves, which EnchiladaBootMemoryDxe reports as `initrd 0x8454D000-0x856FEF79` -- about 18 MiB.
 # Anything larger than that window is mapped as reserved only in part, and reading past it takes the SoC down.
 #
-# The kernel alone is 49.4 MiB, so no ramdisk this board can carry will ever hold this volume. size_mib is 64
-# because the kernel plus its ADT take 49.4 MiB (77% full) and a small volume flashes quickly; the size is no
-# longer constrained by the ramdisk, because there is not going to be one.
+# The kernel alone is 49.4 MiB of text and prelink payload, so no ramdisk this board can carry will ever hold
+# this volume; the size is not constrained by the ramdisk, because there is not going to be one.
+#
+# MEASURED 2026-10-29 on the first build that actually linked libVerifiedRootProbe.a (CI run 40862774087):
+# the kernel is 120.0 MiB, not 49.4 MiB, because the verified-root probe carries the block hash tables of the
+# OS and SystemOS images as read-only data:
+#     _verified_root_manifest            47481664 B  45.3 MiB  (1483802 blocks x 32 B, 044-76040-038.dmg)
+#     _verified_root_systemos_manifest   25805344 B  24.6 MiB  ( 806417 blocks x 32 B, 044-76034-038.dmg)
+# Together that is 69.9 MiB of the image. It is real data the runtime needs to authenticate the root, so the
+# volume grows rather than the probe shrinking. Earlier builds reported 49.4 MiB because they linked no
+# verified-root archive at all; a 64 MiB volume can no longer hold the payload.
+#
+# 144 MiB leaves the kernel at 83% of the volume; `payload.py:203-206` refuses anything above 95%. Route 2
+# flashes this to `system_b`, which is 2998927360 bytes (2.79 GiB), so the only cost is a longer flash.
 #
 # One refusal is unrelated to size: the FIRST `fastboot boot` after entering fastboot is accepted and a second
 # one in the same bootloader session fails at "Load Error", whatever the image. `fastboot reboot-bootloader`
@@ -206,7 +217,7 @@ SHIP_MODE = "FALSE"
 # the same 18 MiB window, which is a second reason to believe the window is real.
 [payload]
 volume = "ENCHILADAESP"
-size_mib = 64
+size_mib = 144
 loader = "firmware"
 title = "enchilada first boot: XNU to console"
 # --skip-setup edits a copy of the Data seed so the Hello pages are skipped. payload.py requires the tool to be
