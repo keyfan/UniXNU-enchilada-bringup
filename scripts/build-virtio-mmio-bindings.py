@@ -61,8 +61,14 @@ for row, actual in zip(audit['methods'], compiled):
     expected = row['reference_name']
     own = actual.startswith(('__ZN' + mangled, '__ZNK' + mangled))
     if expected == '___cxa_pure_virtual':
-        if not own:
-            problems.append(f'slot {row["slot"]}: the original leaves this unimplemented, we dispatch to {actual}')
+        # Two different things read the same in the audit. A slot whose pointer resolves to an export
+        # named ___cxa_pure_virtual is a real BRK trap the concrete class must satisfy. A slot whose
+        # pointer lands in the original kext's own text has no name at all (kernel_names is empty):
+        # that is a base-class virtual the original inherited, and inheriting it is the correct answer,
+        # so the genuine base import is checked by the qualified-import test below instead.
+        if row['kernel_names']:
+            if not own:
+                problems.append(f'slot {row["slot"]}: the original traps here, we dispatch to {actual}')
     elif actual != expected:
         if not own or (row['slot'] not in (0, 1) and readable[actual].split('::', 1)[1] != readable[expected].split('::', 1)[1]):
             problems.append(f'slot {row["slot"]}: expected {expected}, we dispatch to {actual}')
@@ -78,7 +84,13 @@ kernel_path = ROOT / 'build/xnu-prelink/native-apfs-load-positive.macho'
 # missing candidate is accepted (the audit JSON is the pinned record) while a present one must still match.
 if kernel_path.exists() and hashlib.sha256(kernel_path.read_bytes()).hexdigest() != audit['candidate_sha256']:
     raise SystemExit('Original binding input identity changed')
-possible = {r['reference_name']: int(r['candidate_target'], 16) for r in audit['methods'] if not r['kernel_names']}
+# A slot the original leaves unnamed holds a base-class implementation the subclass inherits, so the
+# name to bind is whatever our own object references there, not the audit's placeholder. Slots that
+# really resolve to ___cxa_pure_virtual are traps and must never be bound.
+possible = {}
+for row, actual in zip(audit['methods'], compiled):
+    if not row['kernel_names']:
+        possible[actual] = int(row['candidate_target'], 16)
 possible.update({'__ZN20IOBlockStorageDeviceC2EPK11OSMetaClass': int(audit['original_protected_constructor'], 16),
                  '__ZN20IOBlockStorageDeviceD2Ev': int(audit['original_base_destructor'], 16),
                  '__ZN20IOBlockStorageDevice10gMetaClassE': int(audit['original_metaclass'], 16),
