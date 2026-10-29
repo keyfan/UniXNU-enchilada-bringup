@@ -21,8 +21,9 @@ Contents (sheng's list without its board parts):
 - drivers/NativeMobileDisplay (enchilada's copy in this repository, with enchilada-display-logical; see its README) NativeLegacyDisplay.cpp
   and NativeGOPPresenter.cpp (LegacyDisplayProbe registers both metaclasses;
   the presenter only acts with sheng-fb-gpu=1, which enchilada does not set);
-- drivers/NativeHidInput/NativeHidInput.cpp with its original-IOHIDDevice bindings (scripts/build-native-hid-input.py);
-- drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp (the owned AppleKeyStore of sheng-aks=1);
+- drivers/ShengHidInput/NativeHidInput.cpp with its original-IOHIDDevice bindings (scripts/build-native-hid-input.py),
+  vendored here at the component's pinned revision because this board selects no catalog components;
+- drivers/AppleKeyStoreState/NativeKeyStoreEvents.cpp (the owned AppleKeyStore of sheng-aks=1);
 - kits/enchilada LegacyDisplayProbe.cpp, HidInputProbe.cpp, KeyStoreProbe.cpp, BootProcessProbe.c and BootUiTraceProbe.c, copies of
   UniXNU-sheng package/ (d92e799); LegacyDisplayProbe.cpp without the cpufreq, GPU power and touch probe calls.
 Left out: BootLog.c and BootReset.c (scripts/build-boot-progress.py links enchilada's own), and sheng's TouchProbe.cpp with the Novatek
@@ -403,8 +404,8 @@ sources = [ROOT / 'drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp', ROOT / 
            ROOT / 'drivers/NativeMobileDisplay/NativeLegacyScale.h', ROOT / 'drivers/NativeMobileDisplay/EnchiladaDisplayLogical.h',
            ROOT / 'drivers/NativeMobileDisplay/NativeGOPPresenter.cpp', ROOT / 'drivers/NativeMobileDisplay/NativeGOPWire.h',
            *probes, *c_sources, KIT / 'BootUiTraceCore.h', KIT / 'BootUiTraceDetails.h',
-           ROOT / 'drivers/NativeHidInput/NativeHidInput.cpp', ROOT / 'scripts/build-native-hid-input.py',
-           ROOT / 'drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp', Path(__file__).resolve()]
+           ROOT / 'drivers/ShengHidInput/NativeHidInput.cpp', ROOT / 'scripts/build-native-hid-input.py',
+           ROOT / 'drivers/AppleKeyStoreState/NativeKeyStoreEvents.cpp', Path(__file__).resolve()]
 report = dict(
     source_sha256={str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p): sha(p) for p in sources},
     generated_abi_sha256=sha(OUT / 'OriginalLegacyFramebufferABI.h'),

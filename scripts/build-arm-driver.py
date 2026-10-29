@@ -31,6 +31,7 @@ record = json.loads(recipe.read_text().strip().rstrip(','))
 # looking under the legacy name would find nothing.
 SOURCE_DIRS = {'NativeAES': 'SoftwareAES', 'NativeVirtioBlock': 'VirtioMmioBlock',
                'NativeVirtioConsole': 'VirtioMmioConsole', 'NativeKeyStoreEvents': 'AppleKeyStoreState',
+               'NativeHidInput': 'ShengHidInput',
                'NativeLegacyDisplay': 'NativeMobileDisplay', 'NativeGOPPresenter': 'NativeMobileDisplay',
                'NativeOfflineGPU': 'NativeMetal', 'NativeOfflineAccelerator': 'NativeMetal',
                'NativeIOGPUProviderProbe': 'NativeMetal'}
