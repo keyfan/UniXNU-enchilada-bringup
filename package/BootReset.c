@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 // enchilada board glue for BootLog.c's "restart into fastboot" (boot argument sheng-autoreset=<seconds>). sheng writes a PMIC
-// reboot-reason cell first; enchilada needs none: boot_a and boot_b hold no boot image, so the OnePlus ABL lands in fastboot after any
-// reset. The reset is PSCI SYSTEM_RESET over SMC (the conduit of enchilada's device tree). Nothing here runs without BootLog's arguments.
+// reboot-reason cell first; enchilada needs none. The reset is PSCI SYSTEM_RESET over SMC (the conduit of enchilada's device tree).
+// Where a reset lands is the ABL's choice: slot a is the healthy slot and its boot_a holds the stock Android boot image (dumped
+// from the phone: magic "ANDROID!", 13,436,699-byte kernel, 18,376,167-byte ramdisk, an androidboot.hardware=qcom cmdline), so a
+// reset boots Android and adb comes back -- which is exactly what makes the UFS log window readable. Only an empty boot_a (the
+// fajita arrangement, notes/refs/fajita-README.md:22) would land in fastboot instead. Nothing here runs without BootLog's arguments.
 #include <kern/thread.h>
 #include <kern/clock.h>
 #include <machine/machine_routines.h>
