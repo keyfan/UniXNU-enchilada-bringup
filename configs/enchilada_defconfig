@@ -41,7 +41,16 @@ CONFIG_XNU_ARMVIRT_PLATFORM=n
 CONFIG_XNU_OWNER_CACHE_MOUNT=y
 CONFIG_XNU_OWNER_CACHE_STARTUP=y
 CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
-CONFIG_XNU_OWNER_BOOT_MANIFEST=y
-CONFIG_XNU_OWNER_DATA_MOUNT=y
+# The owner boot manifest publishes boot-manifest-hash/owner-boot-manifest-domain into /chosen after hashing the
+# OS (47,481,664 B) and SystemOS (25,805,344 B) manifest envelopes with SHA384. On the real OnePlus 6 (SDM845) that
+# is ~73 MiB of *software* SHA384 (device accelerated crypto: 0) in the prelinked corecrypto kext, and the first
+# device bring-up proved it deadlocks there (boot_log_rounds stuck at 1, enchilada-deadline timer never re-fires):
+# init pid 1 spins in SHA384_Update <- authenticatesVolume <- native_ufs_block_authenticates <- verifiedVolumeQuery
+# with interrupts masked. vfs_mountroot already mounted the root independently, so this DEVELOPMENT instrument
+# (offline-owner-boot-manifest.patch #errors unless DEVELOPMENT/DEBUG) is not required to reach console. Off.
+# Turning it off forces XNU_OWNER_DATA_MOUNT off too (offline-owner-systemos-mount.patch #errors otherwise), which
+# is fine: Data mount runs after cache_prepare returns and was never reached on-device anyway.
+CONFIG_XNU_OWNER_BOOT_MANIFEST=n
+CONFIG_XNU_OWNER_DATA_MOUNT=n
 CONFIG_XNU_OWNER_DATA_VOLUME_UUID="F24CB35D-F9D8-46C5-9164-F0655CCAFF9D"
 CONFIG_XNU_BOOT_PROGRESS=y
