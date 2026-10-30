@@ -1,4 +1,4 @@
-﻿Clear a refused exec MAC label update when the board asks for it (enchilada, off by default).
+Clear a refused exec MAC label update when the board asks for it (enchilada, off by default).
 
 load_init_program's exec of /sbin/launchd is refused by the exec-time MAC label update: the non-zero return
 of kauth_proc_label_update_execve lands in imgp->ip_mac_return and kern_exec.c kills the exec at the
