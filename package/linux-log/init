@@ -1,0 +1,102 @@
+#!/bin/busybox sh
+# enchilada log reader (see build-linux-log-boot.py)
+#
+# Copies the UniXNU diagnostic log window -- the last 8192 blocks of 4096 bytes of the
+# `userdata` partition, written by package/BootLog.c -- into RAM, then offers it on a USB
+# CDC ACM shell where scripts/read-enchilada-log.py fetches it and decodes it.
+#
+# Block devices are only read. Nothing is mounted, nothing is written: the APFS root
+# image that this port publishes on userdata is the thing we are reading *around*, so a
+# mount would both fail and risk writing to it.
+#
+# The geometry below has to match the writer exactly (/porting/log-capture step 4:
+# "the writer, reader and decoder must use the same block units and byte ranges"):
+#   writer  drivers/NativeUfs/NativeUfs.cpp:1183  first = gStoreGeometry.last + 1 - 8192
+#   reader  this file: skip = (partition_512_sectors / 8) - 8192, count = 8192, bs = 4096
+#   decoder scripts/read-enchilada-log.py: LOG_BLOCKS = 8192, BLOCK = 4096
+
+/bin/busybox --install -s /bin
+mkdir -p /proc /sys /dev /run /tmp
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+mount -t configfs configfs /sys/kernel/config 2>/dev/null
+mount -t tmpfs tmpfs /run
+
+L=/run/reader.log
+O=${logout:-/dev/tty0}          # logout=/dev/null on a headless check
+T=${logshell:-/dev/ttyGS0}      # the CDC ACM shell the host talks to
+say() { echo "$*" | tee -a $L > $O; }
+
+say "enchilada log reader $(uname -r)"
+say "cmdline: $(cat /proc/cmdline)"
+
+# The gadget function modules are not built into the postmarketOS kernel, so they have to
+# come from the initramfs, in dependency order: libcomposite <- u_serial <- usb_f_acm.
+for m in libcomposite u_serial usb_f_acm; do
+    f=/lib/modules/$m.ko
+    if [ -e "$f" ]; then
+        insmod "$f" && say "loaded $m" || say "insmod $m failed"
+    else
+        say "missing $f"
+    fi
+done
+
+gadget() {
+    # Put the controller into device mode first: sdm845 exposes a usb-role-switch, and
+    # without this the UDC never appears even though dwc3 is built in.
+    for r in /sys/class/usb_role/*/role; do [ -e "$r" ] && echo device > "$r"; done
+    G=/sys/kernel/config/usb_gadget/log
+    mkdir -p $G/strings/0x409 $G/configs/c.1 $G/functions/acm.usb0 || return
+    echo 0x1d6b > $G/idVendor; echo 0x0104 > $G/idProduct
+    echo enchilada-log > $G/strings/0x409/serialnumber
+    echo enchilada-log-reader > $G/strings/0x409/product
+    ln -s $G/functions/acm.usb0 $G/configs/c.1/ 2>/dev/null
+    for i in $(seq 1 20); do
+        U=$(ls /sys/class/udc 2>/dev/null | head -n1)
+        [ -n "$U" ] && break
+        sleep 1
+    done
+    if [ -n "$U" ]; then
+        echo "$U" > $G/UDC && say "usb: acm on $U" || say "usb: binding $U failed"
+    else
+        say "usb: no udc (no gadget shell this boot; the copy below still runs)"
+    fi
+}
+gadget
+
+# Find userdata by the name udev-free: the block device's uevent carries PARTNAME.
+P=
+for i in $(seq 1 30); do
+    for u in /sys/class/block/*/uevent; do
+        grep -q '^PARTNAME=userdata$' "$u" && P=$(basename $(dirname "$u")) && break
+    done
+    [ -n "$P" ] && break
+    sleep 1
+done
+
+if [ -n "$P" ]; then
+    S=$(cat /sys/class/block/$P/size)     # 512-byte sectors
+    B=$((S / 8))                          # 4096-byte blocks
+    say "userdata=$P sectors=$S blocks=$B"
+    if [ "$B" -gt 8192 ]; then
+        dd if=/dev/$P of=/run/log.bin bs=4096 skip=$((B - 8192)) count=8192 2>>$L
+        # head -c rather than dd for the magic: dd would put raw bytes into the command
+        # substitution, and the shell drops NULs out of the middle of a string.
+        say "window=$(wc -c < /run/log.bin) bytes magic=$(head -c 8 /run/log.bin)"
+    else
+        say "userdata too small for the log window ($B blocks)"
+    fi
+else
+    say "userdata not found: UFS did not enumerate"
+    say "block devices: $(ls /sys/class/block | tr '\n' ' ')"
+fi
+
+say "ready: shell on USB serial"
+
+# Keep respawning the shell: the host reconnects after every pull, and a closed ACM
+# channel leaves the tty in place but nobody reading it.
+while true; do
+    if [ -e $T ]; then setsid sh -c "exec sh -i <$T >$T 2>&1"; fi
+    sleep 1
+done
