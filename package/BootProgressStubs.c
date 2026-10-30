@@ -6,7 +6,6 @@
 #include <stddef.h>
 
 __attribute__((weak)) void boot_log_tick(unsigned p0) { (void)p0;  }
-__attribute__((weak)) char enchilada_cpufreq_rows[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char boot_process_attempts[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char boot_process_busy[4096] __attribute__((aligned(16)));
 __attribute__((weak)) void boot_process_capture(void) {   }
@@ -22,6 +21,7 @@ __attribute__((weak)) char boot_ui_trace_ready[4096] __attribute__((aligned(16))
 __attribute__((weak)) unsigned boot_ui_trace_role_rows(unsigned p0, char p1[][120], unsigned p2, unsigned p3) { (void)p0; (void)p1; (void)p2; (void)p3; return 0; }
 __attribute__((weak)) char boot_ui_trace_rows[4096] __attribute__((aligned(16)));
 __attribute__((weak)) void boot_ui_trace_snapshot(unsigned p0) { (void)p0;  }
+__attribute__((weak)) char enchilada_cpufreq_rows[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char enchilada_touch_rows[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_adreno_audit_attr[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_adreno_audit_ticks[4096] __attribute__((aligned(16)));
@@ -69,6 +69,17 @@ __attribute__((weak)) char native_gop_gpu_failures[4096] __attribute__((aligned(
 __attribute__((weak)) char native_gop_gpu_offers[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_gop_virtual[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_gop_wait_stats[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_gpu_addon2_stage[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_gpu_addon2_status[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_gpu_addon3_stage[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_gpu_addon3_status[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_gpu_addon_error[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_gpu_addon_failed[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_gpu_addon_files[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_gpu_addon_same[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_gpu_addon_stage[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_gpu_addon_status[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_gpu_addon_written[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_gpu_coherence_row[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_gpu_idle_sleeps[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_gpu_idle_spins[4096] __attribute__((aligned(16)));
@@ -127,6 +138,13 @@ __attribute__((weak)) char native_legacy_swap_validation_result[4096] __attribut
 __attribute__((weak)) char native_legacy_transfer_bytes[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_legacy_transfer_calls[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_legacy_transfer_status[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_staged_apps_dirs[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_staged_apps_error[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_staged_apps_failed[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_staged_apps_files[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_staged_apps_mib[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_staged_apps_path[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_staged_apps_stage[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_swipe_stats[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_touch_count[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_touch_edge_stats[4096] __attribute__((aligned(16)));
