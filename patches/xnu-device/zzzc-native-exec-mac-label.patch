@@ -1,0 +1,33 @@
+﻿Clear a refused exec MAC label update when the board asks for it (enchilada, off by default).
+
+load_init_program's exec of /sbin/launchd is refused by the exec-time MAC label update: the non-zero return
+of kauth_proc_label_update_execve lands in imgp->ip_mac_return and kern_exec.c kills the exec at the
+"unexpected but security framework does not approve" branch. That is a different hook from
+mac_proc_check_launch_constraints, which the kernel consults later, so sheng-no-lc cannot reach it.
+sheng-no-mac-label=1 clears the refused update; the checks that follow -- ip_cs_error,
+mac_proc_check_launch_constraints and proc_process_signature -- are untouched, so a binary that fails them
+is still refused. An option of the instrumented board only: the boot argument, not the default, decides.
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 8bba078..d0d7461 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -6613,6 +6613,7 @@ exec_handle_sugid(struct image_params *imgp)
+ #if CONFIG_MACF
+ 	int                     mac_transition, disjoint_cred = 0;
+ 	int             label_update_return = 0;
++	uint32_t                native_exec_mac_label = 0;
+ 
+ 	/*
+ 	 * Determine whether a call to update the MAC label will result in the
+@@ -6745,6 +6746,11 @@ handle_mac_transition:
+ 				leave_sugid_clear = 0;
+ 			}
+ 
++			if (label_update_return != 0 &&
++			    PE_parse_boot_argn("sheng-no-mac-label", &native_exec_mac_label, sizeof(native_exec_mac_label)) &&
++			    native_exec_mac_label != 0) {
++				label_update_return = 0;
++			}
+ 			imgp->ip_mac_return = label_update_return;
+ 		}
+ 
