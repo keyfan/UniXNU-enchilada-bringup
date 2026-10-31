@@ -121,10 +121,19 @@ extern char native_gpu_coherence_row[120] __attribute__((weak_import));
 // 3 = /private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld,
 // 4 = /System/Cryptexes/OS/System/Library/Caches/com.apple.dyld, 5 = /private/preboot,
 // 6 = /private/preboot/Cryptexes, 7 = /usr/lib/dyld.
-#define kCryptexRing 8
+#define kCryptexRing 10
 extern volatile int native_cryptex_dir_count __attribute__((weak_import));
 extern volatile int native_cryptex_dir_error[kCryptexRing] __attribute__((weak_import));
 extern volatile uint64_t native_cryptex_dir_size[kCryptexRing] __attribute__((weak_import));
+// The 4K signature hash cache (native-4k-signature-hash-cache.patch).  A growing "full" with a frozen
+// "pages" means launchd is still reading and hashing the 16K signature blocks of the dyld cache; pages
+// climbing means it has moved on to publishing 4K page hashes.  Either way it is progress, not a wedge.
+extern unsigned long cs_native4k_full_blocks __attribute__((weak_import));
+extern unsigned long cs_native4k_page_checks __attribute__((weak_import));
+extern unsigned long cs_native4k_ready_blobs __attribute__((weak_import));
+extern uint64_t cs_native4k_bytes __attribute__((weak_import));
+extern uint64_t cs_native4k_read_ticks __attribute__((weak_import));
+extern uint64_t cs_native4k_hash_ticks __attribute__((weak_import));
 extern size_t boot_progress_profile_rows(char *, size_t) __attribute__((weak_import));
 extern size_t boot_progress_spawn_rows(char *, size_t) __attribute__((weak_import));
 extern volatile uint64_t native_gpu_idle_sleeps __attribute__((weak_import));
@@ -350,7 +359,18 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       at = put(out, at, cap, row, sizeof row);
     }
   }
-  // The payload's GPU addon (kern_exec.c native_gpu_addon_install): files in it (-1 none), written, already equal, failed, last error; then
+  // The 4K signature hash cache (native-4k-signature-hash-cache.patch).  "C full= ready= pages= bytes=" answers
+  // whether launchd spends the boot inside cs_validate_codedirectory deriving 4K page hashes from the 16K
+  // signature blocks of the 2.8 GiB dyld cache.  A growing "full" with a frozen "pages" means it is still
+  // reading and hashing; pages climbing means it has moved on to publishing the page hashes.
+  if (&cs_native4k_full_blocks || &cs_native4k_ready_blobs) {
+    char row[120];
+    snprintf(row, sizeof row, "C full=%lu ready=%lu pages=%lu bytes=%llu rt=%llu ht=%llu",
+             (unsigned long)cs_native4k_full_blocks, (unsigned long)cs_native4k_ready_blobs,
+             (unsigned long)cs_native4k_page_checks, (unsigned long long)cs_native4k_bytes,
+             (unsigned long long)cs_native4k_read_ticks, (unsigned long long)cs_native4k_hash_ticks);
+    at = put(out, at, cap, row, sizeof row);
+  } (kern_exec.c native_gpu_addon_install): files in it (-1 none), written, already equal, failed, last error; then
   // the stage/status of the boot-time addon mounts (stage 5 = mounted and both entries visible): plugin, launchd job, wallpaper.
   if (&native_gpu_addon_files && &native_gpu_addon_stage) {
     char row[120];
