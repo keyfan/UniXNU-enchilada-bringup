@@ -1,0 +1,59 @@
+Report whether dyld ever asks the kernel to map the shared region (enchilada instrument).
+
+launchd is refused twice by shared_region_check_np with ENOMEM, which means the task owns a
+shared region whose sr_first_mapping is still -1: no mapping was ever established. Every
+failure branch behind shared_region_map_and_slide_2_np reports through SHARED_REGION_TRACE_ERROR,
+and shared_region_trace_level is already ERROR, so a refused map would be visible in the log.
+Nothing of the kind appears, so the question is whether the call is reached at all.
+
+These printfs answer it. map_and_slide_2 fires when dyld asks for the mapping and records the
+file and mapping counts; setup reports the error of shared_region_map_and_slide_setup; enter
+reports the shared region it looked up for the process root; first mapping reports the address
+that finally becomes sr_first_mapping. They are diagnostics only: no return value, no state and
+no policy changes, and each line is prefixed NATIVE_SR so it can be filtered out of a boot log.
+
+diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
+index 8696353..ddb5fcd 100644
+--- a/bsd/vm/vm_unix.c
++++ b/bsd/vm/vm_unix.c
+@@ -2740,6 +2740,8 @@ _shared_region_map_and_slide(
+ 	error = shared_region_map_and_slide_setup(p, files_count,
+ 	    files, mappings_count, mappings,
+ 	    &sr_file_mappings, &shared_region, rdir_vp);
++	printf("NATIVE_SR: setup error=%d files=%u mappings=%u\n",
++	    error, files_count, mappings_count);
+ 	if (error != 0) {
+ 		vnode_put(rdir_vp);
+ 		return error;
+@@ -2900,6 +2902,9 @@ shared_region_map_and_slide_2_np(
+ 	files_count = uap->files_count;
+ 	mappings_count = uap->mappings_count;
+ 
++	printf("NATIVE_SR: map_and_slide_2 files=%u mappings=%u p_comm=%s\n",
++	    files_count, mappings_count, p->p_comm);
++
+ 	if (files_count == 0) {
+ 		SHARED_REGION_TRACE_INFO(
+ 			("shared_region: %p [%d(%s)] map(): "
+diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
+index 0bb45c5..0b8f60e 100644
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -1842,6 +1842,8 @@ vm_shared_region_map_file_setup(
+ 				 * second file.
+ 				 */
+ 
++				printf("NATIVE_SR: first mapping idx=%u addr=0x%llx\n",
++				    i, (unsigned long long)target_address);
+ 				if (shared_region->sr_first_mapping == (mach_vm_offset_t)-1) {
+ 					shared_region->sr_first_mapping = target_address;
+ 				}
+@@ -2296,6 +2298,8 @@ vm_shared_region_enter(
+ 
+ 	/* lookup (create if needed) the shared region for this environment */
+ 	shared_region = vm_shared_region_lookup(fsroot, cpu, cpu_subtype, is_64bit, VM_MAP_PAGE_SHIFT(map), reslide, is_driverkit, rsr_version);
++	printf("NATIVE_SR: enter task=%p root=%p lookup=%p 64bit=%d\n",
++	    (void *)task, fsroot, (void *)shared_region, is_64bit);
+ 	if (shared_region == NULL) {
+ 		/* this should not happen ! */
+ 		SHARED_REGION_TRACE_ERROR(
