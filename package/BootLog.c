@@ -115,14 +115,16 @@ extern volatile uint32_t native_adreno_window_overflow[4][3] __attribute__((weak
 struct native_adreno_asker_record {char name[20]; uint32_t reads;};
 extern struct native_adreno_asker_record native_adreno_metal_askers[12] __attribute__((weak_import));
 extern char native_gpu_coherence_row[120] __attribute__((weak_import));
-// bsd/vm/vm_unix.c (boot-arg native-cryptex-dir, default on): the errno of each candidate directory
-// where dyld's shared cache is supposed to be, looked up once per boot from shared_region_check_np.
-// 0 = /System/Library/Caches/com.apple.dyld, 1 = /private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld,
-// 2 = /System/Cryptexes/OS/System/Library/Caches/com.apple.dyld, 3 = /private/preboot, 4 = /System/Library/dyld,
-// 5 = /usr/lib/dyld.
-#define kCryptexRing 6
+// bsd/vm/vm_unix.c (boot-arg native-cryptex-dir, default on): the errno and size of each path where
+// dyld's shared cache is supposed to be, looked up once per boot from shared_region_check_np.
+// 0 = /System/Library/Caches/com.apple.dyld, 1 = .../dyld_shared_cache_arm64, 2 = .../dyld_shared_cache_arm64e,
+// 3 = /private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld,
+// 4 = /System/Cryptexes/OS/System/Library/Caches/com.apple.dyld, 5 = /private/preboot,
+// 6 = /private/preboot/Cryptexes, 7 = /usr/lib/dyld.
+#define kCryptexRing 8
 extern volatile int native_cryptex_dir_count __attribute__((weak_import));
 extern volatile int native_cryptex_dir_error[kCryptexRing] __attribute__((weak_import));
+extern volatile uint64_t native_cryptex_dir_size[kCryptexRing] __attribute__((weak_import));
 extern size_t boot_progress_profile_rows(char *, size_t) __attribute__((weak_import));
 extern size_t boot_progress_spawn_rows(char *, size_t) __attribute__((weak_import));
 extern volatile uint64_t native_gpu_idle_sleeps __attribute__((weak_import));
@@ -327,17 +329,26 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     at = put(out, at, cap, "[data]", 8);
     at = put(out, at, cap, row, sizeof row);
   }
-  // Where dyld's shared cache is supposed to be: the errno of each candidate directory, looked up
-  // once per boot.  "D n=6 0 2 2 0 2 2" reads candidate 0 ok, candidate 1 and 2 ENOENT, /private/preboot
-  // present, and both dyld directories missing -- i.e. the union root has no cache dyld can see.
+  // Where dyld's shared cache is supposed to be: errno and size of each candidate, looked up once
+  // per boot.  "D n=8 e: 0 0 2 2 2 0 2 0 s: ... " reads candidate 0 present, the arm64 cache file
+  // present (or missing), the Cryptexes paths missing, /private/preboot present.
   if (&native_cryptex_dir_count && native_cryptex_dir_count > 0) {
     char row[160];
     int at2 = 0;
-    at2 += snprintf(row + at2, sizeof row - at2, "D n=%d", native_cryptex_dir_count);
+    at2 += snprintf(row + at2, sizeof row - at2, "D n=%d e:", native_cryptex_dir_count);
     for (int i = 0; i < kCryptexRing && at2 > 0 && at2 < (int)sizeof row - 8; ++i) {
       at2 += snprintf(row + at2, sizeof row - at2, " %d", native_cryptex_dir_error[i]);
     }
     at = put(out, at, cap, row, sizeof row);
+    if (&native_cryptex_dir_size[0]) {
+      at2 = 0;
+      at2 += snprintf(row + at2, sizeof row - at2, "D s:");
+      for (int i = 0; i < kCryptexRing && at2 > 0 && at2 < (int)sizeof row - 24; ++i) {
+        at2 += snprintf(row + at2, sizeof row - at2, " %llu",
+                        (unsigned long long)native_cryptex_dir_size[i]);
+      }
+      at = put(out, at, cap, row, sizeof row);
+    }
   }
   // The payload's GPU addon (kern_exec.c native_gpu_addon_install): files in it (-1 none), written, already equal, failed, last error; then
   // the stage/status of the boot-time addon mounts (stage 5 = mounted and both entries visible): plugin, launchd job, wallpaper.
