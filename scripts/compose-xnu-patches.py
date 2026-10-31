@@ -32,6 +32,16 @@ DEVICE_PATCHES = ROOT / 'patches/xnu-device'
 COMPOSED = ROOT / 'patches/xnu'
 UNIXNU = ROOT.parent / 'UniXNU'
 
+# A board patch may deliberately replace a shared one, but only when it is named here with the
+# reason.  Silently shadowing a shared patch is how a port ends up building a kernel nobody can
+# explain; an entry in this table is the audit trail.  The name is the patch filename, the value
+# is the one-line reason printed on every compose.
+OVERRIDES = {
+    'offline-owner-systemos-mount.patch':
+        'the union composition hands launchd no environment at all, so dyld never learns where the '
+        'shared cache is; this copy names the directory the cryptex probe proved is readable',
+}
+
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -54,9 +64,11 @@ def compose(unixnu, write):
     shared = shared_patches(unixnu)
     board = device_patches()
     clash = sorted(set(shared) & set(board))
-    if clash:
+    unexplained = [name for name in clash if name not in OVERRIDES]
+    if unexplained:
         raise SystemExit('a board patch has the same name as a shared one, so the shared '
-                         'version would be replaced: ' + ', '.join(clash))
+                         'version would be replaced: ' + ', '.join(unexplained) +
+                         ' (add it to OVERRIDES with a reason if that is intended)')
     expected = {**shared, **board}
 
     if write:
@@ -83,7 +95,8 @@ def compose(unixnu, write):
     # A shared patch copied once and then edited here would drift from UniXNU without any
     # other symptom, so compare the bytes rather than the names.
     drifted = [name for name in sorted(shared)
-               if name in present and digest(present[name]) != digest(shared[name])]
+               if name not in OVERRIDES and name in present
+               and digest(present[name]) != digest(shared[name])]
     if drifted:
         problems.append('{} shared patch(es) differ from the UniXNU copies: {}'.format(
             len(drifted), ', '.join(drifted[:8])))
@@ -102,7 +115,10 @@ def main():
     print('xnu patch series: {} shared + {} board = {} patch(es) in patches/xnu'.format(
         len(shared), len(board), len(expected)))
     for name in sorted(board):
-        print('  board:', name)
+        if name in OVERRIDES:
+            print('  board:', name, '(replaces the UniXNU copy:', OVERRIDES[name] + ')')
+        else:
+            print('  board:', name)
     for problem in problems:
         print('!!', problem)
     print('{} problem(s)'.format(len(problems)))
