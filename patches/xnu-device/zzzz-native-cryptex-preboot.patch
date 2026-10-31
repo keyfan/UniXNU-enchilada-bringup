@@ -22,7 +22,7 @@ turns it off.
 
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
-index 8696353..d1a1755 100644
+index 8696353..838ede5 100644
 --- a/bsd/vm/vm_unix.c
 +++ b/bsd/vm/vm_unix.c
 @@ -100,6 +100,8 @@
@@ -34,10 +34,10 @@ index 8696353..d1a1755 100644
  #include <mach/shared_region.h>
  #include <vm/vm_shared_region.h>
  
-@@ -2090,6 +2092,51 @@ SYSCTL_INT(_vm, OID_AUTO, shared_region_persistence, CTLFLAG_RW | CTLFLAG_LOCKED
+@@ -2089,6 +2091,51 @@ SYSCTL_INT(_vm, OID_AUTO, shared_region_persistence, CTLFLAG_RW | CTLFLAG_LOCKED
+  * ENOMEM	shared region is empty
   * EFAULT	bad address for "start_address"
   */
- int
 +/*
 + * Where the dyld shared cache is supposed to be.  The owner composition mounts
 + * the SystemOS cryptex as a read-only union over "/", while dyld searches the
@@ -83,9 +83,9 @@ index 8696353..d1a1755 100644
 +	native_cryptex_dir_count = NATIVE_CRYPTEX_RING;
 +}
 +
+ int
  shared_region_check_np(
  	__unused struct proc                    *p,
- 	struct shared_region_check_np_args      *uap,
 @@ -2116,6 +2163,9 @@ shared_region_check_np(
  		return 0;
  	}
