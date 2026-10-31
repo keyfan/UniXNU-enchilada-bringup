@@ -117,7 +117,7 @@ extern struct native_adreno_asker_record native_adreno_metal_askers[12] __attrib
 extern char native_gpu_coherence_row[120] __attribute__((weak_import));
 // bsd/vm/vm_unix.c (boot-arg native-cryptex-dir, default on): the errno and size of each path where
 // dyld's shared cache is supposed to be, looked up once per boot from shared_region_check_np.
-// 0 = /System/Library/Caches/com.apple.dyld, 1 = .../dyld_shared_cache_arm64, 2 = .../dyld_shared_cache_arm64e,
+// (t: rows are the vnode type: 1 = VREG file, 2 = VDIR directory, 0 = lookup failed)
 // 3 = /private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld,
 // 4 = /System/Cryptexes/OS/System/Library/Caches/com.apple.dyld, 5 = /private/preboot,
 // 6 = /private/preboot/Cryptexes, 7 = /usr/lib/dyld.
@@ -342,7 +342,7 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     at = put(out, at, cap, row, sizeof row);
     if (&native_cryptex_dir_size[0]) {
       at2 = 0;
-      at2 += snprintf(row + at2, sizeof row - at2, "D s:");
+      at2 += snprintf(row + at2, sizeof row - at2, "D t:");
       for (int i = 0; i < kCryptexRing && at2 > 0 && at2 < (int)sizeof row - 24; ++i) {
         at2 += snprintf(row + at2, sizeof row - at2, " %llu",
                         (unsigned long long)native_cryptex_dir_size[i]);

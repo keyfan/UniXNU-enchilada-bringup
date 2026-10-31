@@ -22,7 +22,7 @@ turns it off.
 
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
-index 8696353..d8eda0e 100644
+index 8696353..8e05865 100644
 --- a/bsd/vm/vm_unix.c
 +++ b/bsd/vm/vm_unix.c
 @@ -100,6 +100,8 @@
@@ -76,14 +76,14 @@ index 8696353..d8eda0e 100644
 +	}
 +	for (int i = 0; i < NATIVE_CRYPTEX_RING; i++) {
 +		vnode_t probe = NULLVP;
-+		int size_error = 0;
 +		int error = vnode_lookup(native_cryptex_candidates[i], 0, &probe,
 +		    vfs_context_current());
 +		native_cryptex_dir_error[i] = error;
-+		native_cryptex_dir_size[i] = 0;
 +		if (probe != NULLVP) {
-+			native_cryptex_dir_size[i] =
-+			    (uint64_t)vnode_size(probe, vfs_context_current(), &size_error);
++			/* Only the errno and the vnode's type: vnode_size on a union path
++			 * blocks long enough to wedge the boot, and whether the cache file
++			 * exists at all is the question being asked. */
++			native_cryptex_dir_size[i] = (uint64_t)vnode_vtype(probe);
 +			vnode_put(probe);
 +		}
 +	}
