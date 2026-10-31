@@ -1,106 +1,98 @@
-board: report the errno of every dyld shared cache open
+board: ask, once per boot, where dyld's shared cache is supposed to be
 
 The owner composition mounts the SystemOS cryptex as a read-only union over
-"/", so the dyld shared cache that lives on that volume is reachable through
-the plain System path. The Cryptexes namespace that dyld searches first
-(/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld) is built
-by zzyb-native-cryptex-os-view.patch, whose whole block sits inside the
-XNU_OWNER_DATA_MOUNT guard in this tree; with the Data mount disabled that
-block is not compiled and the namespace never appears, which leaves dyld with
-no cache and the process ending before main.
+"/", so the dyld shared cache that lives on that volume should be reachable
+through the plain System path.  dyld's own search table names only Cryptexes
+paths, and the Cryptexes namespace is built by
+zzyb-native-cryptex-os-view.patch, whose block sits inside
+XNU_OWNER_DATA_MOUNT and is not compiled in this configuration.  The result on
+the device is the fuxi v40 state: cache preparation succeeds, dyld finds no
+cache, and the process ends before main.
 
-This patch runs no mount and changes no state. It reports the errno of every
-open whose path mentions dyld, which is where the cache lookup fails first:
-the dyld diagnostics go to fd 2 and the boot log only records the kernel's own
-msgbuf, so the failure has been invisible on the device so far.
+This patch runs no mount and changes no state.  shared_region_check_np is called
+by dyld twice per boot, before it opens the cache, so the four candidate
+directories are looked up there and their errno is recorded for the boot log.
+An earlier version of this probe lived in openat_internal and wedged the boot:
+launchd opens thousands of files while holding vnode locks and a copyinstr on
+every one of them stalls it.  Measured on the device with the same kernel bytes:
+twelve rounds with the open probe off, zero rounds with it on.
 
-load_init_program has no free insertion point (all of it is context for the
-patches that touch kern_exec.c, and an insertion there breaks the reverse
-check the second build pass depends on), so the probe lives in the open path
-only.
+Controlled by boot-arg native-cryptex-dir, DEFAULT ON; native-cryptex-dir=0
+turns it off.
 
-Controlled by boot-arg native-open-probe, DEFAULT OFF.  Measured on the device:
-with the probe compiled in and left enabled, launchd never gets past the dyld
-cache read (no window at all past 22 s on k118), while the same kernel bytes with
-native-open-probe=0 write the full 12-round window and reach
-"launchd exec process signature accepted".  Printing from inside the open path of
-a process that opens thousands of files while holding vnode locks is what wedges
-it, so the probe must be asked for explicitly: native-open-probe=1.
-
-diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
-diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
-index 34c921b..51e85c4 100644
---- a/bsd/vfs/vfs_syscalls.c
-+++ b/bsd/vfs/vfs_syscalls.c
-@@ -5088,6 +5088,47 @@ open_dprotected_np(__unused proc_t p, struct open_dprotected_np_args *uap, int32
- 	           uap->class, uap->dpflags, AT_FDCWD, AUTH_OPEN_NOAUTHFD, UIO_USERSPACE, retval);
- }
+diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
+diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
+index 8696353..d1a1755 100644
+--- a/bsd/vm/vm_unix.c
++++ b/bsd/vm/vm_unix.c
+@@ -100,6 +100,8 @@
+ #include <vm/vm_kern.h>
+ #include <vm/vm_pageout.h>
  
-+#define NATIVE_OPEN_PROBES 4096
-+#define NATIVE_OPEN_RING 40
-+#define NATIVE_OPEN_RING_TEXT 112
-+static unsigned int native_open_probes;
-+static int native_open_state = -1;
-+/* Exported for BootLog: the errno and the path of every open that mentioned a
-+ * dyld cache or a Cryptex directory.  Nothing is printed from the open path. */
-+volatile unsigned int native_open_ring_count;
-+volatile int native_open_ring_error[NATIVE_OPEN_RING];
-+char native_open_ring[NATIVE_OPEN_RING][NATIVE_OPEN_RING_TEXT];
++#include <pexpert/pexpert.h>
 +
-+static boolean_t
-+native_open_enabled(void)
+ #include <mach/shared_region.h>
+ #include <vm/vm_shared_region.h>
+ 
+@@ -2090,6 +2092,51 @@ SYSCTL_INT(_vm, OID_AUTO, shared_region_persistence, CTLFLAG_RW | CTLFLAG_LOCKED
+  * EFAULT	bad address for "start_address"
+  */
+ int
++/*
++ * Where the dyld shared cache is supposed to be.  The owner composition mounts
++ * the SystemOS cryptex as a read-only union over "/", while dyld searches the
++ * Cryptexes paths its own table names.  Recording the errno of each candidate
++ * once per boot answers which of them this composition actually builds, which
++ * is the question the boot log could not answer before: dyld's diagnostics go
++ * to fd 2 and only the kernel's msgbuf reaches the log window.
++ */
++#define NATIVE_CRYPTEX_RING 6
++#define NATIVE_CRYPTEX_TEXT 96
++static const char *const native_cryptex_candidates[NATIVE_CRYPTEX_RING] = {
++	"/System/Library/Caches/com.apple.dyld",
++	"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
++	"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
++	"/private/preboot",
++	"/System/Library/dyld",
++	"/usr/lib/dyld",
++};
++volatile int native_cryptex_dir_count;
++volatile int native_cryptex_dir_error[NATIVE_CRYPTEX_RING];
++static int native_cryptex_dir_state = -1;
++
++static void
++native_cryptex_dir_probe(void)
 +{
-+	if (native_open_state < 0) {
-+		uint32_t enable = 0;
-+		if (PE_parse_boot_argn("native-open-probe", &enable, sizeof(enable)) && enable != 0) {
-+			native_open_state = 1;
-+		} else {
-+			native_open_state = 0;
++	if (native_cryptex_dir_state < 0) {
++		uint32_t enable = 1;
++		(void)PE_parse_boot_argn("native-cryptex-dir", &enable, sizeof(enable));
++		native_cryptex_dir_state = enable != 0 ? 1 : 0;
++	}
++	if (native_cryptex_dir_state != 1 || native_cryptex_dir_count != 0) {
++		return;
++	}
++	for (int i = 0; i < NATIVE_CRYPTEX_RING; i++) {
++		vnode_t probe = NULLVP;
++		int error = vnode_lookup(native_cryptex_candidates[i], 0, &probe,
++		    vfs_context_current());
++		native_cryptex_dir_error[i] = error;
++		if (probe != NULLVP) {
++			vnode_put(probe);
 +		}
 +	}
-+	return native_open_state == 1;
++	native_cryptex_dir_count = NATIVE_CRYPTEX_RING;
 +}
 +
-+static boolean_t
-+native_open_mentions(const char *text, const char *word)
-+{
-+	size_t limit = strlen(word);
-+	for (; *text; text++) {
-+		size_t index = 0;
-+		while (index < limit && text[index] == word[index]) {
-+			index++;
-+		}
-+		if (index == limit) {
-+			return TRUE;
-+		}
-+	}
-+	return FALSE;
-+}
+ shared_region_check_np(
+ 	__unused struct proc                    *p,
+ 	struct shared_region_check_np_args      *uap,
+@@ -2116,6 +2163,9 @@ shared_region_check_np(
+ 		return 0;
+ 	}
+ 
++	/* Record where dyld's shared cache is supposed to be, once per boot. */
++	native_cryptex_dir_probe();
 +
- static int
- openat_internal(vfs_context_t ctx, user_addr_t path, int flags, int mode,
-     int fd, enum uio_seg segflg, int *retval)
-@@ -5115,6 +5156,23 @@ openat_internal(vfs_context_t ctx, user_addr_t path, int flags, int mode,
- 	    segflg, path, ctx);
- 
- 	error = open1at(ctx, ndp, flags, vap, NULL, NULL, retval, fd, AUTH_OPEN_NOAUTHFD);
-+	if (native_open_probes < NATIVE_OPEN_PROBES && native_open_ring_count < NATIVE_OPEN_RING &&
-+	    native_open_enabled()) {
-+		char name[128];
-+		native_open_probes++;
-+		int copied = (segflg == UIO_SYSSPACE)
-+		    ? (strlcpy(name, (const char *)(uintptr_t)path, sizeof(name)), 0)
-+		    : copyinstr(path, name, sizeof(name), NULL);
-+		if (!copied && (native_open_mentions(name, "dyld") ||
-+		    native_open_mentions(name, "Cryptex"))) {
-+			unsigned int slot = native_open_ring_count;
-+			/* Record only: this runs in the open path of every process and
-+			 * printf here is what wedged the boot (see the patch header). */
-+			native_open_ring_error[slot] = error;
-+			strlcpy(native_open_ring[slot], name, NATIVE_OPEN_RING_TEXT);
-+			native_open_ring_count = slot + 1;
-+		}
-+	}
- 
- 	kfree_type(typeof(*__open_data), __open_data);
- 
+ 	/* retrieve the current tasks's shared region */
+ 	shared_region = vm_shared_region_get(task);
+ 	if (shared_region != NULL) {
