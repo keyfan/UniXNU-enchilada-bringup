@@ -1,0 +1,159 @@
+board: give dyld the shared cache directory the composed root really exposes
+
+The owner composition mounts the SystemOS cryptex as a read-only union over
+"/", so the dyld shared cache that lives on that volume is reachable through
+the plain System path. The Cryptexes namespace that dyld searches first
+(/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld) is built
+by zzyb-native-cryptex-os-view.patch, whose whole block sits inside the
+XNU_OWNER_DATA_MOUNT guard in this tree; with the Data mount disabled that
+block is not compiled and the namespace never appears, which leaves dyld with
+no cache and the process ending before main.
+
+This patch does not depend on that block. After the owner cache mount it
+
+  * reports, for every candidate directory dyld can search, whether the
+    composed root resolves it,
+  * exports DYLD_SHARED_CACHE_DIR pointing at the first candidate that exists,
+    so dyld stops searching paths this composition does not have,
+  * reports the owner cache mount state (stage/status/authorized/union/device),
+  * reports the errno of every dyld-related open, which is where the cache
+    lookup fails first.
+
+Controlled by boot-arg native-cryptex-dir, default on; native-cryptex-dir=0
+leaves both the environment and the probes out of the way.
+
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 1015636..b5b59f0 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8148,6 +8148,62 @@ static const char * init_programs[] = {
+ 	"/sbin/launchd",
+ };
+ 
++#if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
++static const char *const native_cryptex_candidates[] = {
++	"/System/Library/Caches/com.apple.dyld",
++	"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
++	"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
++	"/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld",
++};
++
++static void
++native_cryptex_report(proc_t p, user_addr_t scratch, user_addr_t *envp)
++{
++	vnode_t probe = NULLVP;
++	uint32_t enable = 1;
++	int chosen = -1;
++	if (PE_parse_boot_argn("native-cryptex-dir", &enable, sizeof(enable)) && enable == 0) {
++		return;
++	}
++	printf("NATIVECX owner stage=%d status=%d mount=%d auth=%d ro=%d union=%d "
++	    "sel=%d mnt=%d flags=0x%llx dyld=0x%llx path=%s\n",
++	    native_owner_cache_stage, native_owner_cache_status,
++	    native_owner_cache_mount_status, native_owner_cache_authorized,
++	    native_owner_cache_readonly, native_owner_cache_native_union,
++	    (int)native_owner_cache_selected_device, (int)native_owner_cache_mounted_device,
++	    (unsigned long long)native_owner_cache_actual_mount_flags,
++	    (unsigned long long)native_owner_cache_dyld_flags,
++	    native_owner_cache_device_path);
++	for (uint32_t index = 0;
++	    index < sizeof(native_cryptex_candidates) / sizeof(native_cryptex_candidates[0]);
++	    index++) {
++		int error = vnode_lookup(native_cryptex_candidates[index], 0, &probe, vfs_context_current());
++		printf("NATIVECX dir[%u] %s -> %d\n", index, native_cryptex_candidates[index], error);
++		if (!error) {
++			if (chosen < 0) {
++				chosen = (int)index;
++			}
++			vnode_put(probe);
++			probe = NULLVP;
++		}
++	}
++	if (chosen < 0) {
++		printf("NATIVECX no candidate directory resolves\n");
++		return;
++	}
++	char text[96];
++	user64_addr_t vector[2] = { scratch + 0x400, USER_ADDR_NULL };
++	snprintf(text, sizeof(text), "DYLD_SHARED_CACHE_DIR=%s", native_cryptex_candidates[chosen]);
++	if (copyout(text, scratch + 0x400, strlen(text) + 1) ||
++	    copyout(vector, scratch + 0x500, sizeof(vector))) {
++		printf("NATIVECX copyout failed\n");
++		return;
++	}
++	*envp = scratch + 0x500;
++	printf("NATIVECX chosen[%d] %s\n", chosen, text);
++}
++#endif
++
+ /*
+  * load_init_program
+  *
+@@ -8195,6 +8251,15 @@ load_init_program(proc_t p)
+ 	boot_progress_stage("SystemOS mount returned");
+ 	if (cache_error) panic("offline owner SystemOS mount failed: %d", cache_error);
+ #endif
++
++#if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
++	/* Report the owner cache mount and the dyld cache directories this
++	 * composition really resolves, then hand dyld the first one that exists.
++	 * The SystemOS cryptex is unioned over "/", so the cache is reachable
++	 * through the plain System path; the Cryptexes paths belong to a
++	 * namespace only the (here disabled) Data mount block builds. */
++	native_cryptex_report(p, (user_addr_t)scratch_addr, &init_envp);
++#endif
+ #if defined(XNU_OWNER_DATA_MOUNT) && XNU_OWNER_DATA_MOUNT
+ 	boot_progress_stage("Data mount enter");
+ 	int data_error = native_owner_data_prepare(p, (user_addr_t)scratch_addr);
+diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
+index 34c921b..e9ea534 100644
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -5088,6 +5088,27 @@ open_dprotected_np(__unused proc_t p, struct open_dprotected_np_args *uap, int32
+ 	           uap->class, uap->dpflags, AT_FDCWD, AUTH_OPEN_NOAUTHFD, UIO_USERSPACE, retval);
+ }
+ 
++#define NATIVE_OPEN_PROBES 2048
++#define NATIVE_OPEN_REPORTS 40
++static unsigned int native_open_probes;
++static unsigned int native_open_reports;
++
++static boolean_t
++native_open_mentions(const char *text, const char *word)
++{
++	size_t limit = strlen(word);
++	for (; *text; text++) {
++		size_t index = 0;
++		while (index < limit && text[index] == word[index]) {
++			index++;
++		}
++		if (index == limit) {
++			return TRUE;
++		}
++	}
++	return FALSE;
++}
++
+ static int
+ openat_internal(vfs_context_t ctx, user_addr_t path, int flags, int mode,
+     int fd, enum uio_seg segflg, int *retval)
+@@ -5115,6 +5136,18 @@ openat_internal(vfs_context_t ctx, user_addr_t path, int flags, int mode,
+ 	    segflg, path, ctx);
+ 
+ 	error = open1at(ctx, ndp, flags, vap, NULL, NULL, retval, fd, AUTH_OPEN_NOAUTHFD);
++	if (native_open_probes < NATIVE_OPEN_PROBES && native_open_reports < NATIVE_OPEN_REPORTS) {
++		char name[128];
++		native_open_probes++;
++		int copied = (segflg == UIO_SYSSPACE)
++		    ? (strlcpy(name, (const char *)(uintptr_t)path, sizeof(name)), 0)
++		    : copyinstr(path, name, sizeof(name), NULL);
++		if (!copied && native_open_mentions(name, "dyld")) {
++			native_open_reports++;
++			printf("NATIVE_OPEN %s [%s] -> %d\n", name,
++			    vfs_context_proc(ctx)->p_comm, error);
++		}
++	}
+ 
+ 	kfree_type(typeof(*__open_data), __open_data);
+ 
