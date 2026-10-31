@@ -370,7 +370,8 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              (unsigned long)cs_native4k_page_checks, (unsigned long long)cs_native4k_bytes,
              (unsigned long long)cs_native4k_read_ticks, (unsigned long long)cs_native4k_hash_ticks);
     at = put(out, at, cap, row, sizeof row);
-  } (kern_exec.c native_gpu_addon_install): files in it (-1 none), written, already equal, failed, last error; then
+  }
+  // The payload's GPU addon (kern_exec.c native_gpu_addon_install): files in it (-1 none), written, already equal, failed, last error; then
   // the stage/status of the boot-time addon mounts (stage 5 = mounted and both entries visible): plugin, launchd job, wallpaper.
   if (&native_gpu_addon_files && &native_gpu_addon_stage) {
     char row[120];
