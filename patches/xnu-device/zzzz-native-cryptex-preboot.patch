@@ -22,7 +22,7 @@ turns it off.
 
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
-index 8696353..27b3ae8 100644
+index 8696353..d8eda0e 100644
 --- a/bsd/vm/vm_unix.c
 +++ b/bsd/vm/vm_unix.c
 @@ -100,6 +100,8 @@
@@ -34,7 +34,7 @@ index 8696353..27b3ae8 100644
  #include <mach/shared_region.h>
  #include <vm/vm_shared_region.h>
  
-@@ -2089,6 +2091,56 @@ SYSCTL_INT(_vm, OID_AUTO, shared_region_persistence, CTLFLAG_RW | CTLFLAG_LOCKED
+@@ -2089,6 +2091,58 @@ SYSCTL_INT(_vm, OID_AUTO, shared_region_persistence, CTLFLAG_RW | CTLFLAG_LOCKED
   * ENOMEM	shared region is empty
   * EFAULT	bad address for "start_address"
   */
@@ -76,12 +76,14 @@ index 8696353..27b3ae8 100644
 +	}
 +	for (int i = 0; i < NATIVE_CRYPTEX_RING; i++) {
 +		vnode_t probe = NULLVP;
++		int size_error = 0;
 +		int error = vnode_lookup(native_cryptex_candidates[i], 0, &probe,
 +		    vfs_context_current());
 +		native_cryptex_dir_error[i] = error;
 +		native_cryptex_dir_size[i] = 0;
 +		if (probe != NULLVP) {
-+			native_cryptex_dir_size[i] = (uint64_t)vnode_size(probe);
++			native_cryptex_dir_size[i] =
++			    (uint64_t)vnode_size(probe, vfs_context_current(), &size_error);
 +			vnode_put(probe);
 +		}
 +	}
@@ -91,7 +93,7 @@ index 8696353..27b3ae8 100644
  int
  shared_region_check_np(
  	__unused struct proc                    *p,
-@@ -2116,6 +2168,9 @@ shared_region_check_np(
+@@ -2116,6 +2170,9 @@ shared_region_check_np(
  		return 0;
  	}
  
