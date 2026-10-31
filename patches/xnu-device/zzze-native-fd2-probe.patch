@@ -1,0 +1,82 @@
+board: forward launchd's stderr into msgbuf behind sheng-fd2-probe
+
+dyld writes its shared-cache diagnostics to fd 2, and a headless bring-up has
+no console to collect them.  With this probe the first writes to fd 1 or fd 2
+land in msgbuf as NATIVE_FD2 lines, which is the only way to see the reason
+dyld gives up before it ever calls shared_region_map_and_slide_2_np().
+
+Off unless the boot argument sheng-fd2-probe is 1.  Capped at 40 writes of at
+most 256 bytes so it cannot flood msgbuf.
+
+diff --git a/bsd/kern/sys_generic.c b/bsd/kern/sys_generic.c
+index f229fc1..a92d847 100644
+--- a/bsd/kern/sys_generic.c
++++ b/bsd/kern/sys_generic.c
+@@ -113,6 +113,7 @@
+ #include <kern/sched_prim.h>
+ #include <kern/mpsc_queue.h>
+ #include <kern/debug.h>
++#include <pexpert/pexpert.h>
+ 
+ #include <sys/mbuf.h>
+ #include <sys/domain.h>
+@@ -672,6 +673,50 @@ writev_internal(struct proc *p, int fd, uio_t uio, int flags,
+ 	return error;
+ }
+ 
++/*
++ * native_fd2_probe: copy the first few writes a process makes to stdout or
++ * stderr into the kernel message buffer.  launchd's dyld diagnostics go to
++ * fd 2, which a headless bring-up has nowhere to collect; copying them out
++ * here is the only way to see why dyld gives up on the shared cache.  On by
++ * default because the variant boot arguments have no room left for another
++ * switch, capped at NATIVE_FD2_PROBE_MAX writes so it cannot flood msgbuf,
++ * and silenced with sheng-fd2-probe=0.
++ */
++#define NATIVE_FD2_PROBE_MAX    40
++#define NATIVE_FD2_PROBE_BYTES  256
++
++static void
++native_fd2_probe(struct proc *p, int fd, user_addr_t buf, user_size_t nbyte)
++{
++	static unsigned int native_fd2_seen;
++	char text[NATIVE_FD2_PROBE_BYTES + 1];
++	uint32_t enable = 1;
++	size_t take;
++
++	if (fd != 1 && fd != 2) {
++		return;
++	}
++	if (native_fd2_seen >= NATIVE_FD2_PROBE_MAX) {
++		return;
++	}
++	if (PE_parse_boot_argn("sheng-fd2-probe", &enable, sizeof(enable)) &&
++	    enable == 0) {
++		return;
++	}
++	if (nbyte == 0) {
++		return;
++	}
++	take = (nbyte > NATIVE_FD2_PROBE_BYTES) ?
++	    (size_t)NATIVE_FD2_PROBE_BYTES : (size_t)nbyte;
++	if (copyin(buf, text, take) != 0) {
++		return;
++	}
++	text[take] = 0;
++	native_fd2_seen++;
++	printf("NATIVE_FD2 [%s pid %d fd %d %zu]: %s\n", p->p_comm, p->p_pid, fd,
++	    take, text);
++}
++
+ int
+ write_internal(struct proc *p, int fd, user_addr_t buf, user_size_t nbyte,
+     off_t offset, int flags, guardid_t *puguard, user_ssize_t *retval)
+@@ -680,6 +725,8 @@ write_internal(struct proc *p, int fd, user_addr_t buf, user_size_t nbyte,
+ 	uio_t uio;
+ 	int spacetype = IS_64BIT_PROCESS(p) ? UIO_USERSPACE64 : UIO_USERSPACE32;
+ 
++	native_fd2_probe(p, fd, buf, nbyte);
++
+ 	if (nbyte > INT_MAX) {
+ 		*retval = 0;
+ 		return EINVAL;
