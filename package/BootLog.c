@@ -115,6 +115,13 @@ extern volatile uint32_t native_adreno_window_overflow[4][3] __attribute__((weak
 struct native_adreno_asker_record {char name[20]; uint32_t reads;};
 extern struct native_adreno_asker_record native_adreno_metal_askers[12] __attribute__((weak_import));
 extern char native_gpu_coherence_row[120] __attribute__((weak_import));
+// bsd/vfs/vfs_syscalls.c open probe (boot-arg native-open-probe=1): the errno and path of every
+// open that mentioned a dyld cache or a Cryptex directory.  The open path only records into this
+// ring; printing from there wedged the boot, so the rows are emitted here instead.
+#define kOpenRing 40
+extern volatile unsigned int native_open_ring_count __attribute__((weak_import));
+extern volatile int native_open_ring_error[kOpenRing] __attribute__((weak_import));
+extern char native_open_ring[kOpenRing][112] __attribute__((weak_import));
 extern size_t boot_progress_profile_rows(char *, size_t) __attribute__((weak_import));
 extern size_t boot_progress_spawn_rows(char *, size_t) __attribute__((weak_import));
 extern volatile uint64_t native_gpu_idle_sleeps __attribute__((weak_import));
@@ -318,6 +325,19 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              (unsigned long long)native_data_persist_syncs, (unsigned long long)native_data_persist_errors, (unsigned long long)native_data_persist_pages);
     at = put(out, at, cap, "[data]", 8);
     at = put(out, at, cap, row, sizeof row);
+  }
+  // The open probe's ring: what dyld actually asked for and what the kernel answered.  Only rows
+  // that were recorded are printed, so an empty ring costs one "O n=0" line and nothing else.
+  if (&native_open_ring_count && &native_open_ring[0][0]) {
+    unsigned int rows = native_open_ring_count;
+    char row[160];
+    if (rows > kOpenRing) rows = kOpenRing;
+    snprintf(row, sizeof row, "O n=%u", rows);
+    at = put(out, at, cap, row, sizeof row);
+    for (unsigned i = 0; i < rows; ++i) {
+      snprintf(row, sizeof row, "O%u %d %.104s", i, native_open_ring_error[i], native_open_ring[i]);
+      at = put(out, at, cap, row, sizeof row);
+    }
   }
   // The payload's GPU addon (kern_exec.c native_gpu_addon_install): files in it (-1 none), written, already equal, failed, last error; then
   // the stage/status of the boot-time addon mounts (stage 5 = mounted and both entries visible): plugin, launchd job, wallpaper.

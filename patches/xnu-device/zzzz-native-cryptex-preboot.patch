@@ -19,33 +19,43 @@ patches that touch kern_exec.c, and an insertion there breaks the reverse
 check the second build pass depends on), so the probe lives in the open path
 only.
 
-Controlled by boot-arg native-open-probe, default on; native-open-probe=0
-leaves the probe out of the way.
+Controlled by boot-arg native-open-probe, DEFAULT OFF.  Measured on the device:
+with the probe compiled in and left enabled, launchd never gets past the dyld
+cache read (no window at all past 22 s on k118), while the same kernel bytes with
+native-open-probe=0 write the full 12-round window and reach
+"launchd exec process signature accepted".  Printing from inside the open path of
+a process that opens thousands of files while holding vnode locks is what wedges
+it, so the probe must be asked for explicitly: native-open-probe=1.
 
 diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
 diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
-index 34c921b..aefe4e3 100644
+index 34c921b..51e85c4 100644
 --- a/bsd/vfs/vfs_syscalls.c
 +++ b/bsd/vfs/vfs_syscalls.c
-@@ -5088,6 +5088,42 @@ open_dprotected_np(__unused proc_t p, struct open_dprotected_np_args *uap, int32
+@@ -5088,6 +5088,47 @@ open_dprotected_np(__unused proc_t p, struct open_dprotected_np_args *uap, int32
  	           uap->class, uap->dpflags, AT_FDCWD, AUTH_OPEN_NOAUTHFD, UIO_USERSPACE, retval);
  }
  
-+#define NATIVE_OPEN_PROBES 2048
-+#define NATIVE_OPEN_REPORTS 40
++#define NATIVE_OPEN_PROBES 4096
++#define NATIVE_OPEN_RING 40
++#define NATIVE_OPEN_RING_TEXT 112
 +static unsigned int native_open_probes;
-+static unsigned int native_open_reports;
 +static int native_open_state = -1;
++/* Exported for BootLog: the errno and the path of every open that mentioned a
++ * dyld cache or a Cryptex directory.  Nothing is printed from the open path. */
++volatile unsigned int native_open_ring_count;
++volatile int native_open_ring_error[NATIVE_OPEN_RING];
++char native_open_ring[NATIVE_OPEN_RING][NATIVE_OPEN_RING_TEXT];
 +
 +static boolean_t
 +native_open_enabled(void)
 +{
 +	if (native_open_state < 0) {
-+		uint32_t enable = 1;
-+		if (PE_parse_boot_argn("native-open-probe", &enable, sizeof(enable)) && enable == 0) {
-+			native_open_state = 0;
-+		} else {
++		uint32_t enable = 0;
++		if (PE_parse_boot_argn("native-open-probe", &enable, sizeof(enable)) && enable != 0) {
 +			native_open_state = 1;
++		} else {
++			native_open_state = 0;
 +		}
 +	}
 +	return native_open_state == 1;
@@ -70,25 +80,25 @@ index 34c921b..aefe4e3 100644
  static int
  openat_internal(vfs_context_t ctx, user_addr_t path, int flags, int mode,
      int fd, enum uio_seg segflg, int *retval)
-@@ -5115,6 +5151,23 @@ openat_internal(vfs_context_t ctx, user_addr_t path, int flags, int mode,
+@@ -5115,6 +5156,23 @@ openat_internal(vfs_context_t ctx, user_addr_t path, int flags, int mode,
  	    segflg, path, ctx);
  
  	error = open1at(ctx, ndp, flags, vap, NULL, NULL, retval, fd, AUTH_OPEN_NOAUTHFD);
-+	if (native_open_probes < NATIVE_OPEN_PROBES && native_open_reports < NATIVE_OPEN_REPORTS &&
++	if (native_open_probes < NATIVE_OPEN_PROBES && native_open_ring_count < NATIVE_OPEN_RING &&
 +	    native_open_enabled()) {
 +		char name[128];
 +		native_open_probes++;
 +		int copied = (segflg == UIO_SYSSPACE)
 +		    ? (strlcpy(name, (const char *)(uintptr_t)path, sizeof(name)), 0)
 +		    : copyinstr(path, name, sizeof(name), NULL);
-+		if (!copied && native_open_mentions(name, "dyld")) {
-+			native_open_reports++;
-+			printf("NATIVE_OPEN %s [%s] -> %d\n", name,
-+			    vfs_context_proc(ctx)->p_comm, error);
-+		} else if (!copied && native_open_mentions(name, "Cryptex")) {
-+			native_open_reports++;
-+			printf("NATIVE_OPEN %s [%s] -> %d\n", name,
-+			    vfs_context_proc(ctx)->p_comm, error);
++		if (!copied && (native_open_mentions(name, "dyld") ||
++		    native_open_mentions(name, "Cryptex"))) {
++			unsigned int slot = native_open_ring_count;
++			/* Record only: this runs in the open path of every process and
++			 * printf here is what wedged the boot (see the patch header). */
++			native_open_ring_error[slot] = error;
++			strlcpy(native_open_ring[slot], name, NATIVE_OPEN_RING_TEXT);
++			native_open_ring_count = slot + 1;
 +		}
 +	}
  
