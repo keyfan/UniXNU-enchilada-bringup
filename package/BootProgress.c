@@ -377,7 +377,16 @@ static void draw(unsigned now) {
     __asm__ volatile("mrs %0,cntv_cval_el0" : "=r"(cval));
     __asm__ volatile("mrs %0,cntv_ctl_el0" : "=r"(ctl));
     __asm__ volatile("mrs %0,daif" : "=r"(daif));
-    snprintf(b,sizeof(b),"TIMER vct=%llx cval=%llx ctl=%llx DAIF=%llx (read-only monitor sample)",vct,cval,ctl,daif);
+    // ICC_PMR_EL1 and ICC_IGRPEN1_EL1 are architectural reads (no MMIO, no locks), so the monitor may take them.
+    // A raised PMR blocks every interrupt that passes DAIF, which is the one state DAIF alone cannot show.
+    uint64_t pmr,igrp;
+    __asm__ volatile("isb\n\tmrs %0,icc_pmr_el1" : "=r"(pmr));
+    __asm__ volatile("isb\n\tmrs %0,icc_igrpen1_el1" : "=r"(igrp));
+    // A comparator that is already in the past and was never re-armed is the signature of a handler that has not run
+    // since expiry, so report the signed skew and how many timer periods it represents.
+    long long skew=(long long)(cval-vct);
+    snprintf(b,sizeof(b),"TIMER vct=%llx cval=%llx skew=%lld us=%lld ctl=%llx DAIF=%llx PMR=%llx IGRPEN1=%llx (read-only monitor sample)",
+      vct,cval,skew,skew/19200,ctl,daif,pmr,igrp);
     if(!(&native_touch_stage_req && native_touch_stage_req))line(42,b,0xffaaaaaa);
     snprintf(b,sizeof(b),"CPU IRQ phase=%u id=%u quiesce=%u halt=%u; phase 0=exit 2=clock 4=IPI 6=EOI",
       armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls);line(37,b,0xffffff00);
