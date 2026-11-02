@@ -1196,17 +1196,35 @@ extern "C" int native_ufs_log_open (uint64_t *firstLba, uint64_t *blocks, const 
   return ok;
 }
 
+// Rounds the log writer skipped because the transport lock was busy (launchd's cache verification holds it for minutes).
+volatile uint64_t native_ufs_log_skips = 0;
+
+// 1 = written, 0 = failed, 2 = skipped because the transport was busy. The caller must not treat 2 as an error:
+// a skipped round leaves the previous one on the medium and the next round can still be written.
 extern "C" int native_ufs_log_write (uint64_t rel, uint32_t blocks, const void *src)
 {
   if (!gLogRegionBlocks || !src || !blocks || rel >= gLogRegionBlocks || blocks > gLogRegionBlocks - rel) return 0;
+  gLogNoWait = true;
+  int result = 1;
   while (blocks) {
     uint32_t chunk = blocks > kDataMax / 4096 ? static_cast<uint32_t> (kDataMax / 4096) : blocks;
-    if (hostWrite4k (0, gLogRegionFirst + rel, chunk, src) != kIOReturnSuccess) return 0;
+    IOReturn status = hostWrite4k (0, gLogRegionFirst + rel, chunk, src);
+    if (status != kIOReturnSuccess) {
+      // A skipped round is not a failed round: report it separately so the window can still be written next time.
+      if (status == kIOReturnBusy) {
+        native_ufs_log_skips = native_ufs_log_skips + 1;
+        result = 2;
+      } else {
+        result = 0;
+      }
+      break;
+    }
     src = static_cast<const uint8_t *> (src) + chunk * 4096ULL;
     rel += chunk;
     blocks -= chunk;
   }
-  return 1;
+  gLogNoWait = false;
+  return result;
 }
 
 // The export region below the log window: its size in blocks once the log is open, else 0; writes at a block offset inside it.
@@ -1231,21 +1249,44 @@ extern "C" void native_ufs_panic_mode (void) { gPanicMode = true; }
 
 extern "C" int native_ufs_log_sync (void)
 {
-  return gLogRegionBlocks && hostSyncCache () == kIOReturnSuccess;
+  // Same reason as native_ufs_log_write: the writer must not queue behind launchd's cache verification. A
+  // skipped flush leaves the previous round's data on the medium, which is what the window already holds.
+  // 1 = flushed, 0 = failed, 2 = skipped because the transport was busy.
+  if (!gLogRegionBlocks) return 0;
+  gLogNoWait = true;
+  IOReturn status = hostSyncCache ();
+  gLogNoWait = false;
+  if (status == kIOReturnSuccess) return 1;
+  if (status == kIOReturnBusy) {
+    native_ufs_log_skips = native_ufs_log_skips + 1;
+    return 2;
+  }
+  return 0;
 }
 
 // Re-read the GPT header and entry array and compare their CRCs with what was recorded at root start. 0 = unchanged.
+// 6 = the transport was busy, so the check did not run: the caller must keep the previous result rather than read a
+// skip as a changed table, which would stop the writer for good.
 extern "C" unsigned native_ufs_store_gpt_check (void)
 {
   if (!gStoreGeometry.valid || !gHost.ready) return 1;
   static uint8_t block[4096];
-  if (hostRead4k (0, 1, 1, block) != kIOReturnSuccess) return 2;
+  gLogNoWait = true;
+  IOReturn header_status = hostRead4k (0, 1, 1, block);
+  gLogNoWait = false;
+  if (header_status == kIOReturnBusy) return 6;
+  if (header_status != kIOReturnSuccess) return 2;
   uint32_t headerBytes = le32 (block + 12);
   if (headerBytes < 92 || headerBytes > 4096 || rootCrc32 (block, headerBytes, true) != le32 (block + 16) ||
       le32 (block + 16) != gStoreGeometry.headerCrc) return 3;
   uint32_t blocks = (gStoreGeometry.entryCount * 128 + 4095) / 4096;
   static uint8_t entries[4096 * 4];
-  if (blocks > 4 || hostRead4k (0, gStoreGeometry.entriesLba, blocks, entries) != kIOReturnSuccess) return 4;
+  if (blocks > 4) return 4;
+  gLogNoWait = true;
+  IOReturn entries_status = hostRead4k (0, gStoreGeometry.entriesLba, blocks, entries);
+  gLogNoWait = false;
+  if (entries_status == kIOReturnBusy) return 6;
+  if (entries_status != kIOReturnSuccess) return 4;
   return rootCrc32 (entries, gStoreGeometry.entryCount * 128) == gStoreGeometry.entriesCrc ? 0 : 5;
 }
 

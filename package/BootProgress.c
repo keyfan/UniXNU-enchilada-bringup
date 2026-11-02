@@ -122,6 +122,7 @@ extern volatile uint64_t native_ufs_block_reads, native_ufs_verified_blocks;
 extern volatile uint64_t native_ufs_verify_ticks __attribute__((weak_import)), native_ufs_read_ticks __attribute__((weak_import));
 extern volatile uint64_t native_ufs_block_failures;
 extern volatile uint32_t native_ufs_integrity_failures, native_ufs_blocks_published;
+extern volatile uint64_t native_ufs_log_skips __attribute__((weak_import));
 extern volatile uint32_t native_ufs_probe_calls __attribute__((weak_import)), native_ufs_matched __attribute__((weak_import));
 extern volatile uint32_t native_ufs_root_step __attribute__((weak_import));
 extern const char *volatile native_ufs_root_failure __attribute__((weak_import));
@@ -277,6 +278,9 @@ static void draw(unsigned now) {
   snprintf(b,sizeof(b),"%s requests=%llu verified4K=%llu failures=%llu integrity=%u published=%u",
     native_virtio_ready && !native_ufs_blocks_published ? "OFFLINE VIRTIO" : "UFS",
     visible->reads,visible->verified,visible->failures,native_ufs_integrity_failures,native_ufs_blocks_published);
+  // Log rounds the writer skipped because launchd held the transport: a skipped round is not a failed one, and this
+  // counter is what distinguishes "the writer is alive but starved" from "the writer is dead".
+  if(&native_ufs_log_skips) {size_t n=strlen(b);snprintf(b+n,sizeof(b)-n," skips=%llu",native_ufs_log_skips);}
   if(&native_ufs_root_step && !native_ufs_blocks_published) {
     // Nothing published yet: how far the root start got (probe calls, match, step, last soft-failure reason).
     size_t n=strlen(b);const char *why=native_ufs_root_failure;

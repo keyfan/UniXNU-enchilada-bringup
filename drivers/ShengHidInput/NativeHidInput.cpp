@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // Explicit offline keyboard/consumer input source. Uses the unchanged original
 // HID parser and event dispatch; no user-client entitlement is substituted.
+//
+// PROVENANCE: ported from UniXNU-fajita (the OnePlus 6T, same SoC). The int-NNN issue numbers and
+// the multitouch/SpringBoard behaviour quoted in the comments below are the 6T's bring-up log, and
+// the HID report layout is the 6T panel's. Nothing in this file has run on an OnePlus 6: the touch
+// digitizer here is untested, and the edge-tip instrumentation exists because of what was observed
+// on the 6T, not on this board.
 #include "OriginalHidDeviceABI.h"
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOWorkLoop.h>

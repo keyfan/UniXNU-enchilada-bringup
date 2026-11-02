@@ -868,11 +868,16 @@ static void writer(void *arg, wait_result_t result) {
     // Text slot, then the message buffer, then the header that makes both visible.
     memset(boot_log_buffer, 0, LogSlotBlocks * LogBlock);
     compose((char *)boot_log_buffer, LogSlotBlocks * LogBlock, h.slots_written, now);
-    ok &= native_ufs_log_write(LogSlotFirst + (uint64_t)(h.slots_written % slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
+    int slot_ok = native_ufs_log_write(LogSlotFirst + (uint64_t)(h.slots_written % slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
     h.msg_bytes = copy_msgbuf(boot_log_buffer);
-    ok &= native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
+    int msg_ok = native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
+    // 2 means the transport was busy and the round was skipped, not that the medium refused it. A skip leaves the
+    // previous round intact, so it neither advances slots_written nor counts as a write error: counting it would
+    // stop the writer for good after LogMaxErrors rounds, which is worse than the block this replaced.
+    int slot_skip = slot_ok == 2, msg_skip = msg_ok == 2;
+    ok = (slot_ok == 1) && (msg_ok == 1);
     if (ok) ++h.slots_written;
-    else ++h.write_errors;
+    else if (!slot_skip && !msg_skip) ++h.write_errors;
     // The newest complete export is already on the medium; the header names it.
     IOLockLock(export_lock);
     h.export_generation = export_ready; h.export_bytes = export_ready_bytes; h.export_first = export_ready_first;
@@ -885,13 +890,20 @@ static void writer(void *arg, wait_result_t result) {
       else boot_diag_status = -10;
     }
     h.uptime_s = now; h.rounds = ++boot_log_rounds; h.state = boot_log_state;
-    // Every 30 rounds the GPT is read back; any change stops the writer for good.
-    if (&native_ufs_store_gpt_check && !(h.rounds % 30)) h.gpt_last = native_ufs_store_gpt_check();
+    // Every 30 rounds the GPT is read back; any change stops the writer for good. 6 means the transport was busy and
+    // the check could not run at all, which says nothing about the GPT: it must not be mistaken for a change.
+    if (&native_ufs_store_gpt_check && !(h.rounds % 30)) {
+      unsigned gpt = native_ufs_store_gpt_check();
+      if (gpt != 6) h.gpt_last = gpt;
+    }
     memset(boot_log_buffer, 0, LogBlock);
     memcpy(boot_log_buffer, &h, sizeof h);
-    ok &= native_ufs_log_write(0, 1, boot_log_buffer);
-    ok &= native_ufs_log_sync();
-    if (!ok) {boot_log_errors = ++errors;} else errors = 0;
+    int head_ok = native_ufs_log_write(0, 1, boot_log_buffer);
+    int sync_ok = native_ufs_log_sync();
+    // Same rule as the slots above: 2 is a skip, not a failure. Only a real refusal advances the error counter.
+    int skipped = (slot_skip || msg_skip || head_ok == 2 || sync_ok == 2);
+    ok = ok && head_ok == 1 && sync_ok == 1;
+    if (!ok && !skipped) {boot_log_errors = ++errors;} else if (ok) errors = 0;
     if (errors >= LogMaxErrors) {boot_log_live = 0; boot_log_state = 3; return;}
     if (h.gpt_last != h.gpt_open) {boot_log_live = 0; boot_log_state = 4; return;}
     if (autoreset && now >= autoreset && !reset_tried && ok) {
@@ -919,14 +931,14 @@ void boot_log_panic_flush(void) {
   memset(boot_log_buffer, 0, LogSlotBlocks * LogBlock);
   int n = snprintf((char *)boot_log_buffer, LogSlotBlocks * LogBlock, "[panic] round %u\n", h->rounds);
   if (&boot_progress_panic_text && n > 0) strlcat((char *)boot_log_buffer, boot_progress_panic_text, LogSlotBlocks * LogBlock);
-  ok &= native_ufs_log_write(LogSlotFirst + (uint64_t)(h->slots_written % boot_log_slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
+  ok &= native_ufs_log_write(LogSlotFirst + (uint64_t)(h->slots_written % boot_log_slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer) == 1;
   h->msg_bytes = copy_msgbuf(boot_log_buffer);
-  ok &= native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
+  ok &= native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer) == 1;
   if (ok) ++h->slots_written;
   h->state = 5;
   memset(boot_log_buffer, 0, LogBlock);
   memcpy(boot_log_buffer, h, sizeof *h);
-  ok &= native_ufs_log_write(0, 1, boot_log_buffer);
+  ok &= native_ufs_log_write(0, 1, boot_log_buffer) == 1;
   native_ufs_log_sync();
 }
 
