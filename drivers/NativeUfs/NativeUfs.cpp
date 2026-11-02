@@ -1199,6 +1199,12 @@ extern "C" int native_ufs_log_open (uint64_t *firstLba, uint64_t *blocks, const 
 // Rounds the log writer skipped because the transport lock was busy (launchd's cache verification holds it for minutes).
 volatile uint64_t native_ufs_log_skips = 0;
 
+// Transport lock contention, published for the boot progress pulse band. A waiter count that climbs while the
+// acquisitions stop is a writer parked behind the transport; both frozen means the transport is not being asked
+// for anything at all.
+extern "C" volatile uint64_t native_ufs_lock_waits = 0;
+extern "C" volatile uint64_t native_ufs_lock_acquisitions = 0;
+
 // 1 = written, 0 = failed, 2 = skipped because the transport was busy. The caller must not treat 2 as an error:
 // a skipped round leaves the previous one on the medium and the next round can still be written.
 extern "C" int native_ufs_log_write (uint64_t rel, uint32_t blocks, const void *src)
