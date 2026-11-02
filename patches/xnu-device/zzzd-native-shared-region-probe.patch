@@ -8,11 +8,21 @@ in proc_fdlock() or inside shared_region_map_and_slide_setup().
 
 On k138 the probe set narrowed it further: on the run that carries ready=53 the log walks all
 fifty-three files and stops after "setup file 52 fd=53 mappings=2", which is printed before the
-descriptor is resolved. So the stop is inside the last file's body, after fp_get_ftype and before
-setup returns. That body has six steps that can block, and they are now each reported: the
+descriptor is resolved. That body has six steps that can block, and they are each reported: the
 descriptor came back (file N fd ok), the ownership attribute is about to be read (attr enter),
 it came back with a uid (attr done), the size is about to be read (size enter) and came back
 (size done), the memory object is about to be taken (cs enter), and the loop finished (files done).
+
+On k139 the deep run cleared all of setup -- files done error=0, setup error=0 files=54 mappings=62
+-- entered vm_shared_region_map_file, laid down sixty-one of the sixty-two mappings (first mapping
+idx=0..3, one of them KERN_MEMORY_PRESENT) and then stopped without ever returning. So the stop
+moved inside that function and the five stages after it are now bracketed: the slide loop entry
+(map file setup enter), the end of the mapping pass (map file slides done), each region_slide
+call with its slide start and size (map file slide N of M), the tail that fixes up the map and
+calls vm_shared_region_map_file_final (map file final enter/done), and the authenticated remap
+(map file auth remap enter/kr). Those five divide the function into the copyin of the cache
+header, the region_slide pager installs, pmap_trim and the auth remap, which are the only things
+left that can park a boot CPU.
 
 Bracketing every step is the only way to tell those apart from a log that dies mid-call. map enter
 fires before the fd lock; map rdir reports the root directory the shared region must match once
@@ -176,7 +186,7 @@ index 8696353..5328cc9 100644
  	kfree_data(mappings, mappings_count * sizeof(mappings[0]));
  	return kr;
 diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
-index 0bb45c5..0b8f60e 100644
+index 0bb45c5..bad72fc 100644
 --- a/osfmk/vm/vm_shared_region.c
 +++ b/osfmk/vm/vm_shared_region.c
 @@ -1842,6 +1842,8 @@ vm_shared_region_map_file_setup(
@@ -188,7 +198,61 @@ index 0bb45c5..0b8f60e 100644
  				if (shared_region->sr_first_mapping == (mach_vm_offset_t)-1) {
  					shared_region->sr_first_mapping = target_address;
  				}
-@@ -2296,6 +2298,8 @@ vm_shared_region_enter(
+@@ -2003,6 +2005,8 @@ vm_shared_region_map_file(
+ 		    kalloc_type(struct shared_file_mapping_slide_np *, vmsr_num_slides, Z_WAITOK | Z_ZERO);
+ 	}
+ 
++	printf("NATIVE_SR: map file setup enter count=%d slides=%u\n",
++	    sr_file_mappings_count, vmsr_num_slides);
+ 	kr = vm_shared_region_map_file_setup(shared_region, sr_file_mappings_count, sr_file_mappings,
+ 	    &mappings_to_slide_cnt, mappings_to_slide, slid_mappings, slid_file_controls,
+ 	    &sfm_min_address, &sfm_max_address, &sr_map, &lowest_unnestable_addr, vmsr_num_slides);
+@@ -2039,6 +2043,10 @@ vm_shared_region_map_file(
+ 	}
+ #endif /* __has_feature(ptrauth_calls) */
+ 	for (i = 0; i < mappings_to_slide_cnt; ++i) {
++		printf("NATIVE_SR: map file slide %u of %u start=0x%llx size=0x%llx\n",
++		    i, mappings_to_slide_cnt,
++		    (unsigned long long)mappings_to_slide[i]->sms_slide_start,
++		    (unsigned long long)mappings_to_slide[i]->sms_slide_size);
+ 		kr = vm_shared_region_slide(shared_region->sr_slide,
+ 		    mappings_to_slide[i]->sms_file_offset,
+ 		    mappings_to_slide[i]->sms_size,
+@@ -2066,6 +2074,7 @@ vm_shared_region_map_file(
+ 	}
+ 
+ 	assert(kr == KERN_SUCCESS);
++	printf("NATIVE_SR: map file slides done to_slide=%u\n", mappings_to_slide_cnt);
+ 
+ 	/* adjust the map's "lowest_unnestable_start" */
+ 	lowest_unnestable_addr &= ~(pmap_shared_region_size_min(sr_map->pmap) - 1);
+@@ -2079,8 +2088,15 @@ vm_shared_region_map_file(
+ 	assert(shared_region->sr_ref_count > 0);
+ 	assert(shared_region->sr_mapping_in_progress == current_thread());
+ 
++	printf("NATIVE_SR: map file final enter base=0x%llx first=0x%llx uuid_copied=%d\n",
++	    (unsigned long long)shared_region->sr_base_address,
++	    (unsigned long long)shared_region->sr_first_mapping,
++	    (int)shared_region->sr_uuid_copied);
+ 	vm_shared_region_map_file_final(shared_region, sr_map, sfm_min_address, sfm_max_address);
++	printf("NATIVE_SR: map file final done uuid_copied=%d\n",
++	    (int)shared_region->sr_uuid_copied);
+ 
++	printf("NATIVE_SR: map file done kr=%d\n", kr);
+ done:
+ 	/*
+ 	 * We're done working on that shared region.
+@@ -2097,7 +2113,9 @@ done:
+ 		 * Since authenticated mappings were just added to the shared region,
+ 		 * go back and remap them into private mappings for this task.
+ 		 */
++		printf("NATIVE_SR: map file auth remap enter\n");
+ 		kr = vm_shared_region_auth_remap(shared_region);
++		printf("NATIVE_SR: map file auth remap kr=%d\n", kr);
+ 	}
+ #endif /* __has_feature(ptrauth_calls) */
+ 
+@@ -2296,6 +2314,8 @@ vm_shared_region_enter(
  
  	/* lookup (create if needed) the shared region for this environment */
  	shared_region = vm_shared_region_lookup(fsroot, cpu, cpu_subtype, is_64bit, VM_MAP_PAGE_SHIFT(map), reslide, is_driverkit, rsr_version);
