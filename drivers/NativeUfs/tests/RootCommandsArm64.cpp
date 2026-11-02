@@ -38,6 +38,9 @@ static void IODelay(uint32_t us) {
 // Single EL1 CPU, interrupts masked. This does not test XNU lock scheduling.
 static void IOLockLock(void *) {}
 static void IOLockUnlock(void *) {}
+// The header publishes lock contention as a counter pair; on this bare-metal CPU the lock is a no-op,
+// so the try always succeeds and the wait count stays zero by construction.
+static bool IOLockTryLock(void *) { return true; }
 static IOReturn recordTransport(IOReturn result,uint32_t ocs) {
   gRootDiagnostic.result=result; gRootDiagnostic.ocs=ocs; return result;
 }

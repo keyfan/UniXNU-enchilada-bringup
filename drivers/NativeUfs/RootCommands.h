@@ -35,13 +35,22 @@ static volatile bool gPanicMode = false, gHostBusy = false;
 // every race and the writer wrote one round instead of twelve (k128, mac2: slots_written=1 against k127's 12). The blocking
 // lock queues the writer fairly and is what the window needs; the skip accounting below stays because panic mode still
 // refuses a busy host and the writer must not mistake that for a medium error.
+// How long the writer waits for the transport lock is itself evidence, so the counter pair is published: a
+// writer parked in hostEnter shows a rising wait count and a stale acquire count, and a machine that simply
+// stopped shows neither. Without that pair the window cannot tell the two apart, because only the writer
+// writes the window.
+extern "C" volatile uint64_t native_ufs_lock_waits, native_ufs_lock_acquisitions;
 static bool hostEnter (void)
 {
   if (gPanicMode) {
     if (gHostBusy) return false;
   } else {
-    IOLockLock (gHost.lock);
+    if (!IOLockTryLock (gHost.lock)) {
+      native_ufs_lock_waits = native_ufs_lock_waits + 1;
+      IOLockLock (gHost.lock);
+    }
   }
+  native_ufs_lock_acquisitions = native_ufs_lock_acquisitions + 1;
   gHostBusy = true;
   return true;
 }

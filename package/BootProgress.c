@@ -124,6 +124,8 @@ extern volatile uint64_t native_ufs_block_failures;
 extern volatile uint32_t native_ufs_integrity_failures, native_ufs_blocks_published;
 extern volatile uint64_t native_ufs_log_skips __attribute__((weak_import));
 extern volatile uint32_t boot_log_step __attribute__((weak_import)), boot_log_rounds __attribute__((weak_import));
+extern volatile uint64_t native_ufs_lock_waits __attribute__((weak_import)),
+                        native_ufs_lock_acquisitions __attribute__((weak_import));
 extern volatile uint32_t native_ufs_probe_calls __attribute__((weak_import)), native_ufs_matched __attribute__((weak_import));
 extern volatile uint32_t native_ufs_root_step __attribute__((weak_import));
 extern const char *volatile native_ufs_root_failure __attribute__((weak_import));
@@ -832,11 +834,18 @@ static void pulse_monitor(void *arg, wait_result_t result) {
         // BASEPRI_PREEMPT_HIGH and never touches the writer's lock or the recorder; the page rows are painted
         // by the writer's own path, so a parked writer takes them with it. Reading them here is the only way
         // to tell a writer that stopped from a machine that stopped.
-        snprintf(text,sizeof(text),"P%u I%llu M%llu/%us lock%u/%u w%u r%u PC%llx",
+        // A weak import is a null address when the archive was not linked in, and dereferencing it would fault
+        // inside the one thread that must never fault, so every counter is read through a null test.
+        unsigned wstep = &boot_log_step ? __atomic_load_n(&boot_log_step,__ATOMIC_RELAXED) : 0u;
+        unsigned rounds = &boot_log_rounds ? __atomic_load_n(&boot_log_rounds,__ATOMIC_RELAXED) : 0u;
+        unsigned long long waits = &native_ufs_lock_waits ?
+          __atomic_load_n(&native_ufs_lock_waits,__ATOMIC_RELAXED) : 0ULL;
+        unsigned long long got = &native_ufs_lock_acquisitions ?
+          __atomic_load_n(&native_ufs_lock_acquisitions,__ATOMIC_RELAXED) : 0ULL;
+        snprintf(text,sizeof(text),"P%u I%llu M%llu/%us lock%u/%u w%u r%u L%llu/%llu PC%llx",
           ++turns,__atomic_load_n(&irq_entries,__ATOMIC_RELAXED),mon,now-seen_at,
           __atomic_load_n(&busy,__ATOMIC_RELAXED),__atomic_load_n(&render_busy,__ATOMIC_RELAXED),
-          (unsigned)__atomic_load_n(&boot_log_step,__ATOMIC_RELAXED),
-          (unsigned)__atomic_load_n(&boot_log_rounds,__ATOMIC_RELAXED),
+          wstep,rounds,waits,got,
           __atomic_load_n(&irq_entry_pc,__ATOMIC_RELAXED));
         bp_line(&pulse.screen,0,text,0xff00ff00);
       }
