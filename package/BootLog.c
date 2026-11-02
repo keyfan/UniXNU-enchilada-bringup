@@ -176,7 +176,7 @@ static char boot_log_reset_probe_text[1024], boot_log_reset_result[120], boot_lo
 struct boot_log_msgbuf {int msg_magic, msg_size, msg_bufx, msg_bufr; char *msg_bufc;};
 extern struct boot_log_msgbuf *msgbufp;
 
-enum {LogBlock = 4096, LogMsgFirst = 1, LogMsgBlocks = 32, LogSlotFirst = 33, LogSlotBlocks = 16, LogPeriodMs = 2000, LogMaxErrors = 3,
+enum {LogBlock = 4096, LogMsgFirst = 1, LogMsgBlocks = 32, LogSlotFirst = 33, LogSlotBlocks = 16, LogPeriodMs = 500, LogMaxErrors = 3,
       LogExportStage = 64};   // export bytes staged per write: 256 KiB
 struct boot_log_header {
   char magic[8];                 // "SHLOG001"
