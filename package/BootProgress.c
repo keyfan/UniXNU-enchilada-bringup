@@ -839,10 +839,15 @@ static void pulse_monitor(void *arg, wait_result_t result) {
           __atomic_load_n(&native_ufs_lock_waits,__ATOMIC_RELAXED) : 0ULL;
         unsigned long long got = &native_ufs_lock_acquisitions ?
           __atomic_load_n(&native_ufs_lock_acquisitions,__ATOMIC_RELAXED) : 0ULL;
-        snprintf(text,sizeof(text),"P%u I%llu M%llu/%us lock%u/%u w%u r%u L%llu/%llu PC%llx",
+        // R is the block counter the driver bumps on every read it completes. It is the same number the page
+        // prints, but the page is repainted by the writer and this band by this thread, so a band that keeps
+        // counting while the page is frozen is a machine that is still running the disk and a writer that is not.
+        unsigned long long rd = __atomic_load_n(&native_ufs_block_reads,__ATOMIC_RELAXED);
+        // The band shows about 78 columns at scale 2 on this panel, so the two recorder-lock flags that never
+        // varied (0/0 in every photograph) gave their room to the counters that do.
+        snprintf(text,sizeof(text),"P%u I%llu M%llu/%us w%u r%u L%llu/%llu R%llu PC%llx",
           ++turns,__atomic_load_n(&irq_entries,__ATOMIC_RELAXED),mon,now-seen_at,
-          __atomic_load_n(&busy,__ATOMIC_RELAXED),__atomic_load_n(&render_busy,__ATOMIC_RELAXED),
-          wstep,rounds,waits,got,
+          wstep,rounds,waits,got,rd,
           __atomic_load_n(&irq_entry_pc,__ATOMIC_RELAXED));
         bp_line(&pulse.screen,0,text,0xff00ff00);
       }
