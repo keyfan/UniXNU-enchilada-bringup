@@ -195,6 +195,9 @@ struct boot_log_header {
 };
 // Writer state for the board page: 0 off, 1 waiting for the window, 2 writing, 3 stopped after errors, 4 stopped (GPT changed).
 volatile uint32_t boot_log_state, boot_log_rounds, boot_log_errors;
+// Which stage of the round the writer last entered: 0 idle, 1 compose, 2 slot, 3 msg, 4 header, 5 sync,
+// 6 sleep. It is bumped before the call, not after, so a writer that never returns still says where it is.
+volatile uint32_t boot_log_step;
 volatile uint64_t boot_log_first_lba;
 static int boot_log_started;
 static struct boot_log_header *volatile boot_log_live;   // enchilada: the writer's header, for boot_log_panic_flush
@@ -866,9 +869,12 @@ static void writer(void *arg, wait_result_t result) {
     const unsigned now = (unsigned)((log_ticks() - start) / f);
     int ok = 1;
     // Text slot, then the message buffer, then the header that makes both visible.
+    boot_log_step = 1;
     memset(boot_log_buffer, 0, LogSlotBlocks * LogBlock);
     compose((char *)boot_log_buffer, LogSlotBlocks * LogBlock, h.slots_written, now);
+    boot_log_step = 2;
     int slot_ok = native_ufs_log_write(LogSlotFirst + (uint64_t)(h.slots_written % slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
+    boot_log_step = 3;
     h.msg_bytes = copy_msgbuf(boot_log_buffer);
     int msg_ok = native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
     // 2 means the transport was busy and the round was skipped, not that the medium refused it. A skip leaves the
@@ -898,7 +904,9 @@ static void writer(void *arg, wait_result_t result) {
     }
     memset(boot_log_buffer, 0, LogBlock);
     memcpy(boot_log_buffer, &h, sizeof h);
+    boot_log_step = 4;
     int head_ok = native_ufs_log_write(0, 1, boot_log_buffer);
+    boot_log_step = 5;
     int sync_ok = native_ufs_log_sync();
     // Same rule as the slots above: 2 is a skip, not a failure. Only a real refusal advances the error counter.
     int skipped = (slot_skip || msg_skip || head_ok == 2 || sync_ok == 2);
@@ -916,6 +924,7 @@ static void writer(void *arg, wait_result_t result) {
         strlcat(boot_log_reset_result, tail, sizeof boot_log_reset_result);
       }
     }
+    boot_log_step = 6;
     IOSleep(LogPeriodMs);
   }
 }

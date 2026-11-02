@@ -30,16 +30,15 @@ struct HardwareTransferPort {
 // Panic mode (native_ufs_panic_mode): the panic path writes its last log round with interrupts masked, where an IOLock must not be
 // taken. Each locked command marks the host busy; in panic mode a command runs without the lock only if no command was in flight.
 static volatile bool gPanicMode = false, gHostBusy = false;
-// The boot log writer must never wait for the transport lock: launchd's dyld cache verification keeps the single core and the
-// lock busy for minutes at a time (measured: 3.28 GB hashed in 22 s, 200k signed blocks), and a writer blocked in IOLockLock
-// would never write another round. A skipped round costs one line of history; a blocked writer costs the whole window.
-static volatile bool gLogNoWait = false;
+// The boot log writer used to take the transport lock without waiting, so that launchd's dyld cache verification could not
+// starve it. Measured on the device that is backwards: launchd issues ~1150 UFS commands a second, so a try-lock loses almost
+// every race and the writer wrote one round instead of twelve (k128, mac2: slots_written=1 against k127's 12). The blocking
+// lock queues the writer fairly and is what the window needs; the skip accounting below stays because panic mode still
+// refuses a busy host and the writer must not mistake that for a medium error.
 static bool hostEnter (void)
 {
   if (gPanicMode) {
     if (gHostBusy) return false;
-  } else if (gLogNoWait) {
-    if (!IOLockTryLock (gHost.lock)) return false;
   } else {
     IOLockLock (gHost.lock);
   }

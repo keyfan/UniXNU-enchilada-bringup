@@ -1204,7 +1204,6 @@ volatile uint64_t native_ufs_log_skips = 0;
 extern "C" int native_ufs_log_write (uint64_t rel, uint32_t blocks, const void *src)
 {
   if (!gLogRegionBlocks || !src || !blocks || rel >= gLogRegionBlocks || blocks > gLogRegionBlocks - rel) return 0;
-  gLogNoWait = true;
   int result = 1;
   while (blocks) {
     uint32_t chunk = blocks > kDataMax / 4096 ? static_cast<uint32_t> (kDataMax / 4096) : blocks;
@@ -1223,7 +1222,6 @@ extern "C" int native_ufs_log_write (uint64_t rel, uint32_t blocks, const void *
     rel += chunk;
     blocks -= chunk;
   }
-  gLogNoWait = false;
   return result;
 }
 
@@ -1253,9 +1251,7 @@ extern "C" int native_ufs_log_sync (void)
   // skipped flush leaves the previous round's data on the medium, which is what the window already holds.
   // 1 = flushed, 0 = failed, 2 = skipped because the transport was busy.
   if (!gLogRegionBlocks) return 0;
-  gLogNoWait = true;
   IOReturn status = hostSyncCache ();
-  gLogNoWait = false;
   if (status == kIOReturnSuccess) return 1;
   if (status == kIOReturnBusy) {
     native_ufs_log_skips = native_ufs_log_skips + 1;
@@ -1271,9 +1267,7 @@ extern "C" unsigned native_ufs_store_gpt_check (void)
 {
   if (!gStoreGeometry.valid || !gHost.ready) return 1;
   static uint8_t block[4096];
-  gLogNoWait = true;
   IOReturn header_status = hostRead4k (0, 1, 1, block);
-  gLogNoWait = false;
   if (header_status == kIOReturnBusy) return 6;
   if (header_status != kIOReturnSuccess) return 2;
   uint32_t headerBytes = le32 (block + 12);
@@ -1282,9 +1276,7 @@ extern "C" unsigned native_ufs_store_gpt_check (void)
   uint32_t blocks = (gStoreGeometry.entryCount * 128 + 4095) / 4096;
   static uint8_t entries[4096 * 4];
   if (blocks > 4) return 4;
-  gLogNoWait = true;
   IOReturn entries_status = hostRead4k (0, gStoreGeometry.entriesLba, blocks, entries);
-  gLogNoWait = false;
   if (entries_status == kIOReturnBusy) return 6;
   if (entries_status != kIOReturnSuccess) return 4;
   return rootCrc32 (entries, gStoreGeometry.entryCount * 128) == gStoreGeometry.entriesCrc ? 0 : 5;

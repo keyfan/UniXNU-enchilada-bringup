@@ -123,6 +123,7 @@ extern volatile uint64_t native_ufs_verify_ticks __attribute__((weak_import)), n
 extern volatile uint64_t native_ufs_block_failures;
 extern volatile uint32_t native_ufs_integrity_failures, native_ufs_blocks_published;
 extern volatile uint64_t native_ufs_log_skips __attribute__((weak_import));
+extern volatile uint32_t boot_log_step __attribute__((weak_import));
 extern volatile uint32_t native_ufs_probe_calls __attribute__((weak_import)), native_ufs_matched __attribute__((weak_import));
 extern volatile uint32_t native_ufs_root_step __attribute__((weak_import));
 extern const char *volatile native_ufs_root_failure __attribute__((weak_import));
@@ -281,6 +282,9 @@ static void draw(unsigned now) {
   // Log rounds the writer skipped because launchd held the transport: a skipped round is not a failed one, and this
   // counter is what distinguishes "the writer is alive but starved" from "the writer is dead".
   if(&native_ufs_log_skips) {size_t n=strlen(b);snprintf(b+n,sizeof(b)-n," skips=%llu",native_ufs_log_skips);}
+  // Where the writer is right now: a writer parked inside a stage keeps the window frozen, and the stage
+  // number is the only trace of it that reaches the page (the slot it would have written cannot).
+  if(&boot_log_step) {size_t n=strlen(b);snprintf(b+n,sizeof(b)-n," wstep=%u",boot_log_step);}
   if(&native_ufs_root_step && !native_ufs_blocks_published) {
     // Nothing published yet: how far the root start got (probe calls, match, step, last soft-failure reason).
     size_t n=strlen(b);const char *why=native_ufs_root_failure;
