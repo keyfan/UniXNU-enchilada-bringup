@@ -9,11 +9,16 @@ Nothing of the kind appears, so the question is whether the call is reached at a
 These printfs answer it. map_and_slide_2 fires when dyld asks for the mapping and records the
 file and mapping counts; setup reports the error of shared_region_map_and_slide_setup; enter
 reports the shared region it looked up for the process root; first mapping reports the address
-that finally becomes sr_first_mapping. They are diagnostics only: no return value, no state and
+that finally becomes sr_first_mapping; exit reports what the syscall handed back to dyld.
+
+The exit line exists because the enter/setup/mapping lines alone cannot separate two states that
+look identical from the outside: dyld maps the cache and then dies before main, and dyld is
+refused after the setup succeeded. Only the return value tells them apart, and it is the one
+number the earlier probes never printed. They are diagnostics only: no return value, no state and
 no policy changes, and each line is prefixed NATIVE_SR so it can be filtered out of a boot log.
 
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
-index 8696353..ddb5fcd 100644
+index 8696353..43ebeab 100644
 --- a/bsd/vm/vm_unix.c
 +++ b/bsd/vm/vm_unix.c
 @@ -2740,6 +2740,8 @@ _shared_region_map_and_slide(
@@ -35,6 +40,15 @@ index 8696353..ddb5fcd 100644
  	if (files_count == 0) {
  		SHARED_REGION_TRACE_INFO(
  			("shared_region: %p [%d(%s)] map(): "
+@@ -3004,6 +3009,8 @@ shared_region_map_and_slide_2_np(
+ 
+ 	kr = _shared_region_map_and_slide(p, files_count, shared_files, mappings_count, mappings);
+ done:
++	printf("NATIVE_SR: map_and_slide_2 exit kr=%d files=%u mappings=%u p_comm=%s\n",
++	    kr, files_count, mappings_count, p->p_comm);
+ 	kfree_data(shared_files, files_count * sizeof(shared_files[0]));
+ 	kfree_data(mappings, mappings_count * sizeof(mappings[0]));
+ 	return kr;
 diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
 index 0bb45c5..0b8f60e 100644
 --- a/osfmk/vm/vm_shared_region.c

@@ -123,7 +123,7 @@ extern volatile uint64_t native_ufs_verify_ticks __attribute__((weak_import)), n
 extern volatile uint64_t native_ufs_block_failures;
 extern volatile uint32_t native_ufs_integrity_failures, native_ufs_blocks_published;
 extern volatile uint64_t native_ufs_log_skips __attribute__((weak_import));
-extern volatile uint32_t boot_log_step __attribute__((weak_import)), boot_log_rounds __attribute__((weak_import));
+extern volatile uint32_t boot_log_step __attribute__((weak_import)), boot_log_rounds __attribute__((weak_import)), boot_log_exit_reason __attribute__((weak_import));
 extern volatile uint64_t native_ufs_lock_waits __attribute__((weak_import)),
                         native_ufs_lock_acquisitions __attribute__((weak_import));
 extern volatile uint32_t native_ufs_probe_calls __attribute__((weak_import)), native_ufs_matched __attribute__((weak_import));
@@ -843,11 +843,17 @@ static void pulse_monitor(void *arg, wait_result_t result) {
         // prints, but the page is repainted by the writer and this band by this thread, so a band that keeps
         // counting while the page is frozen is a machine that is still running the disk and a writer that is not.
         unsigned long long rd = __atomic_load_n(&native_ufs_block_reads,__ATOMIC_RELAXED);
+        // x is the writer's exit reason, and it is here rather than on the page for the same reason w and r are:
+        // the writer's own printfs only reach the medium when the writer writes another round, so a writer that
+        // returned would take the explanation with it. 0 = still running, 1 = the open loop refused,
+        // 2 = the write error budget ran out, 3 = the GPT changed.
+        unsigned xreason = &boot_log_exit_reason ?
+          __atomic_load_n(&boot_log_exit_reason,__ATOMIC_RELAXED) : 0u;
         // The band shows about 78 columns at scale 2 on this panel, so the two recorder-lock flags that never
         // varied (0/0 in every photograph) gave their room to the counters that do.
-        snprintf(text,sizeof(text),"P%u I%llu M%llu/%us w%u r%u L%llu/%llu R%llu PC%llx",
+        snprintf(text,sizeof(text),"P%u I%llu M%llu/%us w%u r%u x%u L%llu/%llu R%llu PC%llx",
           ++turns,__atomic_load_n(&irq_entries,__ATOMIC_RELAXED),mon,now-seen_at,
-          wstep,rounds,waits,got,rd,
+          wstep,rounds,xreason,waits,got,rd,
           __atomic_load_n(&irq_entry_pc,__ATOMIC_RELAXED));
         bp_line(&pulse.screen,0,text,0xff00ff00);
       }

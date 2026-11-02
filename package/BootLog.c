@@ -198,6 +198,10 @@ volatile uint32_t boot_log_state, boot_log_rounds, boot_log_errors;
 // Which stage of the round the writer last entered: 0 idle, 1 compose, 2 slot, 3 msg, 4 header, 5 sync,
 // 6 sleep. It is bumped before the call, not after, so a writer that never returns still says where it is.
 volatile uint32_t boot_log_step;
+// Set just before the writer returns, for the same reason as boot_log_step: the pulse band is drawn by a
+// thread that outranks the writer, so it is the only reader that still works once the writer is gone.
+// 1 = the open loop refused, 2 = the write error budget ran out, 3 = the GPT changed under us.
+volatile uint32_t boot_log_exit_reason;
 volatile uint64_t boot_log_first_lba;
 static int boot_log_started;
 static struct boot_log_header *volatile boot_log_live;   // enchilada: the writer's header, for boot_log_panic_flush
@@ -826,7 +830,9 @@ static void writer(void *arg, wait_result_t result) {
   boot_log_state = 1;
   // The window exists once NativeUfs has read the root layout; until then the open is refused ("no root layout").
   while (!native_ufs_log_open(&first, &blocks, &why)) {
-    if (strcmp(why, "no root layout")) {boot_log_state = 3; return;}
+    if (strcmp(why, "no root layout")) {
+      printf("NATIVE_SR: writer exit open why=%s\n", why);
+      boot_log_exit_reason = 1; boot_log_state = 3; return;}
     IOSleep(1000);
   }
   boot_log_first_lba = first;
@@ -912,8 +918,14 @@ static void writer(void *arg, wait_result_t result) {
     int skipped = (slot_skip || msg_skip || head_ok == 2 || sync_ok == 2);
     ok = ok && head_ok == 1 && sync_ok == 1;
     if (!ok && !skipped) {boot_log_errors = ++errors;} else if (ok) errors = 0;
-    if (errors >= LogMaxErrors) {boot_log_live = 0; boot_log_state = 3; return;}
-    if (h.gpt_last != h.gpt_open) {boot_log_live = 0; boot_log_state = 4; return;}
+    if (errors >= LogMaxErrors) {
+      printf("NATIVE_SR: writer exit budget errors=%u steps slot=%d msg=%d head=%d sync=%d rounds=%u\n",
+          errors, slot_ok, msg_ok, head_ok, sync_ok, h.rounds);
+      boot_log_exit_reason = 2; boot_log_live = 0; boot_log_state = 3; return;}
+    if (h.gpt_last != h.gpt_open) {
+      printf("NATIVE_SR: writer exit gpt last=%u open=%u rounds=%u\n",
+          h.gpt_last, h.gpt_open, h.rounds);
+      boot_log_exit_reason = 3; boot_log_live = 0; boot_log_state = 4; return;}
     if (autoreset && now >= autoreset && !reset_tried && ok) {
       reset_tried = 1;
       if (!reset_ok) strlcpy(boot_log_reset_result, "autoreset skipped: the probe found no writable cell", sizeof boot_log_reset_result);
