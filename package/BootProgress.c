@@ -123,7 +123,7 @@ extern volatile uint64_t native_ufs_verify_ticks __attribute__((weak_import)), n
 extern volatile uint64_t native_ufs_block_failures;
 extern volatile uint32_t native_ufs_integrity_failures, native_ufs_blocks_published;
 extern volatile uint64_t native_ufs_log_skips __attribute__((weak_import));
-extern volatile uint32_t boot_log_step __attribute__((weak_import));
+extern volatile uint32_t boot_log_step __attribute__((weak_import)), boot_log_rounds __attribute__((weak_import));
 extern volatile uint32_t native_ufs_probe_calls __attribute__((weak_import)), native_ufs_matched __attribute__((weak_import));
 extern volatile uint32_t native_ufs_root_step __attribute__((weak_import));
 extern const char *volatile native_ufs_root_failure __attribute__((weak_import));
@@ -282,9 +282,6 @@ static void draw(unsigned now) {
   // Log rounds the writer skipped because launchd held the transport: a skipped round is not a failed one, and this
   // counter is what distinguishes "the writer is alive but starved" from "the writer is dead".
   if(&native_ufs_log_skips) {size_t n=strlen(b);snprintf(b+n,sizeof(b)-n," skips=%llu",native_ufs_log_skips);}
-  // Where the writer is right now: a writer parked inside a stage keeps the window frozen, and the stage
-  // number is the only trace of it that reaches the page (the slot it would have written cannot).
-  if(&boot_log_step) {size_t n=strlen(b);snprintf(b+n,sizeof(b)-n," wstep=%u",boot_log_step);}
   if(&native_ufs_root_step && !native_ufs_blocks_published) {
     // Nothing published yet: how far the root start got (probe calls, match, step, last soft-failure reason).
     size_t n=strlen(b);const char *why=native_ufs_root_failure;
@@ -388,8 +385,10 @@ static void draw(unsigned now) {
     snprintf(b,sizeof(b),"TIMER vct=%llx cval=%llx skew=%lld us=%lld ctl=%llx DAIF=%llx PMR=%llx IGRPEN1=%llx (read-only monitor sample)",
       vct,cval,skew,skew/19200,ctl,daif,pmr,igrp);
     if(!(&native_touch_stage_req && native_touch_stage_req))line(42,b,0xffaaaaaa);
-    snprintf(b,sizeof(b),"CPU IRQ phase=%u id=%u quiesce=%u halt=%u; phase 0=exit 2=clock 4=IPI 6=EOI",
-      armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls);line(37,b,0xffffff00);
+    // wstep belongs on this short line, not on the UFS row: that row is longer than the screen and its tail (where
+    // wstep used to sit) was never painted, so the one number that says where the writer is could not be read.
+    snprintf(b,sizeof(b),"wstep=%u CPU IRQ phase=%u id=%u quiesce=%u halt=%u",
+      boot_log_step,armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls);line(37,b,0xffffff00);
     if(&armcpu_smp_requested){
       unsigned n=(unsigned)snprintf(b,sizeof(b),"SMP req=%u run=%u cond=%u boot=%x |",
         armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,armcpu_boot_mpidr&0xffffff);
@@ -828,10 +827,16 @@ static void pulse_monitor(void *arg, wait_result_t result) {
     if(bp_pulse_enter(&pulse)) {
       if(pulse.ready && !pulse.closed) {
         char text[BP_COLS];
-        snprintf(text,sizeof(text),"P%u I%llu M%llu/%us B%u:%u d%u @%llx lock%u/%u PC%llx",
+        // wstep and the writer's round pair belong on this band and nowhere else. The band sits at the bottom
+        // of the framebuffer in double-size text and is repainted by this thread, which runs at
+        // BASEPRI_PREEMPT_HIGH and never touches the writer's lock or the recorder; the page rows are painted
+        // by the writer's own path, so a parked writer takes them with it. Reading them here is the only way
+        // to tell a writer that stopped from a machine that stopped.
+        snprintf(text,sizeof(text),"P%u I%llu M%llu/%us lock%u/%u w%u r%u PC%llx",
           ++turns,__atomic_load_n(&irq_entries,__ATOMIC_RELAXED),mon,now-seen_at,
-          last_bind,last_result,last_depth,last_base,
           __atomic_load_n(&busy,__ATOMIC_RELAXED),__atomic_load_n(&render_busy,__ATOMIC_RELAXED),
+          (unsigned)__atomic_load_n(&boot_log_step,__ATOMIC_RELAXED),
+          (unsigned)__atomic_load_n(&boot_log_rounds,__ATOMIC_RELAXED),
           __atomic_load_n(&irq_entry_pc,__ATOMIC_RELAXED));
         bp_line(&pulse.screen,0,text,0xff00ff00);
       }
