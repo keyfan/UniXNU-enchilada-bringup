@@ -818,14 +818,11 @@ static void pulse_monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
   // No thread-name allocation or BSD dependency on this heartbeat path.
   __atomic_store_n(&pulse_worker_status,2,__ATOMIC_RELEASE);
-  unsigned turns=0,last_bind=0,last_result=3,last_depth=0,seen_at=0;
-  uint64_t last_monitor=~0ULL,last_base=0;
+  unsigned turns=0, seen_at=0;
+  uint64_t last_monitor=~0ULL;
   for(;;) {
     unsigned now=seconds();uint64_t mon=__atomic_load_n(&thread_count,__ATOMIC_RELAXED);
     if(mon!=last_monitor){last_monitor=mon;seen_at=now;}
-    if(take()) {
-      last_bind=bind_count;last_result=bind_result;last_depth=bind_depth;last_base=bind_base;release();
-    }
     if(bp_pulse_enter(&pulse)) {
       if(pulse.ready && !pulse.closed) {
         char text[BP_COLS];
