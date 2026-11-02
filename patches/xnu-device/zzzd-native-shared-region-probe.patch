@@ -2,39 +2,44 @@ Report where the shared-cache mapping stops on the way into the kernel (enchilad
 
 launchd is refused twice by shared_region_check_np with ENOMEM, which means the task owns a
 shared region whose sr_first_mapping is still -1: no mapping was ever established. On k136 dyld
-finally asked for the mapping and the log carries map_and_slide_2 files=54 mappings=62 -- and
-then nothing. The line that would follow it, setup error=, never appears, so the machine stopped
-either in proc_fdlock() or inside shared_region_map_and_slide_setup().
+finally asked for the mapping -- the log carries map_and_slide_2 files=54 mappings=62 -- and then
+nothing. The line that would follow it, setup error=, never appears, so the machine stopped either
+in proc_fdlock() or inside shared_region_map_and_slide_setup().
 
 Bracketing every step is the only way to tell those apart from a log that dies mid-call. map enter
 fires before the fd lock; map rdir reports the root directory the shared region must match once
-the lock is released; setup sr reports the shared region, its root dir and sr_first_mapping;
-setup file reports each file walked, before its descriptor is resolved; map file brackets the call
-that installs the mappings; first mapping reports the address that becomes sr_first_mapping; exit
-reports what the syscall handed back to dyld.
+the lock is released; setup sr reports the shared region and its root dir; setup file reports each
+file walked, before its descriptor is resolved; map file brackets the call that installs the
+mappings; first mapping reports the address that becomes sr_first_mapping; exit reports what the
+syscall handed back to dyld; enter reports the shared region looked up for the process root.
 
 The exit line exists because the enter/setup/mapping lines alone cannot separate two states that
 look identical from the outside: dyld maps the cache and then dies before main, and dyld is
 refused after the setup succeeded. Only the return value tells them apart, and it is the one
-number the earlier probes never printed. They are diagnostics only: no return value, no state and
-no policy changes, and each line is prefixed NATIVE_SR so it can be filtered out of a boot log.
+number the earlier probes never printed.
+
+sr_first_mapping is deliberately not printed. bsd/vm/vm_unix.c only sees the forward declaration
+of struct vm_shared_region, so reading the field there does not compile; k137 failed on exactly
+that line, which is why setup sr stops at the pointer and the root dir.
+
+These are diagnostics only: no return value, no state and no policy changes, and each line is
+prefixed NATIVE_SR so it can be filtered out of a boot log.
 
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
-index 8696353..a41cdd6 100644
+index 8696353..545b9ae 100644
 --- a/bsd/vm/vm_unix.c
 +++ b/bsd/vm/vm_unix.c
-@@ -2290,6 +2290,10 @@ shared_region_map_and_slide_setup(
+@@ -2290,6 +2290,9 @@ shared_region_map_and_slide_setup(
  	/* get the process's shared region (setup in vm_map_exec()) */
  	shared_region = vm_shared_region_trim_and_get(current_task());
  	*shared_region_ptr = shared_region;
-+	printf("NATIVE_SR: setup sr=%p root_dir=%p first=%lld\n",
++	printf("NATIVE_SR: setup sr=%p root_dir=%p\n",
 +	    (void *)shared_region,
-+	    (void *)(shared_region ? vm_shared_region_root_dir(shared_region) : NULL),
-+	    (long long)(shared_region ? shared_region->sr_first_mapping : -1));
++	    (void *)(shared_region ? vm_shared_region_root_dir(shared_region) : NULL));
  	if (shared_region == NULL) {
  		SHARED_REGION_TRACE_ERROR(
  			("shared_region: %p [%d(%s)] map(): "
-@@ -2365,6 +2369,9 @@ shared_region_map_and_slide_setup(
+@@ -2365,6 +2368,9 @@ shared_region_map_and_slide_setup(
  			continue;
  		}
  
@@ -44,7 +49,7 @@ index 8696353..a41cdd6 100644
  		/* get file structure from file descriptor */
  		error = fp_get_ftype(p, srfmp->fd, DTYPE_VNODE, EINVAL, &srfmp->fp);
  		if (error) {
-@@ -2721,6 +2728,9 @@ _shared_region_map_and_slide(
+@@ -2721,6 +2727,9 @@ _shared_region_map_and_slide(
  	struct vnode                    *rdir_vp = NULL;
  	struct vm_shared_region         *shared_region = NULL;
  
@@ -54,7 +59,7 @@ index 8696353..a41cdd6 100644
  	/*
  	 * Get a reference to the current proc's root dir.
  	 * Need this to prevent racing with chroot.
-@@ -2733,6 +2743,8 @@ _shared_region_map_and_slide(
+@@ -2733,6 +2742,8 @@ _shared_region_map_and_slide(
  	assert(rdir_vp != NULL);
  	vnode_get(rdir_vp);
  	proc_fdunlock(p);
@@ -63,7 +68,7 @@ index 8696353..a41cdd6 100644
  
  	/*
  	 * Turn files, mappings into sr_file_mappings and other setup.
-@@ -2740,13 +2752,17 @@ _shared_region_map_and_slide(
+@@ -2740,13 +2751,17 @@ _shared_region_map_and_slide(
  	error = shared_region_map_and_slide_setup(p, files_count,
  	    files, mappings_count, mappings,
  	    &sr_file_mappings, &shared_region, rdir_vp);
@@ -81,7 +86,7 @@ index 8696353..a41cdd6 100644
  	if (kr != KERN_SUCCESS) {
  		SHARED_REGION_TRACE_ERROR(("shared_region: %p [%d(%s)] map(): "
  		    "vm_shared_region_map_file() failed kr=0x%x\n",
-@@ -2900,6 +2916,9 @@ shared_region_map_and_slide_2_np(
+@@ -2900,6 +2915,9 @@ shared_region_map_and_slide_2_np(
  	files_count = uap->files_count;
  	mappings_count = uap->mappings_count;
  
@@ -91,7 +96,7 @@ index 8696353..a41cdd6 100644
  	if (files_count == 0) {
  		SHARED_REGION_TRACE_INFO(
  			("shared_region: %p [%d(%s)] map(): "
-@@ -3004,6 +3023,8 @@ shared_region_map_and_slide_2_np(
+@@ -3004,6 +3022,8 @@ shared_region_map_and_slide_2_np(
  
  	kr = _shared_region_map_and_slide(p, files_count, shared_files, mappings_count, mappings);
  done:
