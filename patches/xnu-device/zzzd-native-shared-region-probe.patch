@@ -6,6 +6,14 @@ finally asked for the mapping -- the log carries map_and_slide_2 files=54 mappin
 nothing. The line that would follow it, setup error=, never appears, so the machine stopped either
 in proc_fdlock() or inside shared_region_map_and_slide_setup().
 
+On k138 the probe set narrowed it further: on the run that carries ready=53 the log walks all
+fifty-three files and stops after "setup file 52 fd=53 mappings=2", which is printed before the
+descriptor is resolved. So the stop is inside the last file's body, after fp_get_ftype and before
+setup returns. That body has six steps that can block, and they are now each reported: the
+descriptor came back (file N fd ok), the ownership attribute is about to be read (attr enter),
+it came back with a uid (attr done), the size is about to be read (size enter) and came back
+(size done), the memory object is about to be taken (cs enter), and the loop finished (files done).
+
 Bracketing every step is the only way to tell those apart from a log that dies mid-call. map enter
 fires before the fd lock; map rdir reports the root directory the shared region must match once
 the lock is released; setup sr reports the shared region and its root dir; setup file reports each
@@ -22,11 +30,15 @@ sr_first_mapping is deliberately not printed. bsd/vm/vm_unix.c only sees the for
 of struct vm_shared_region, so reading the field there does not compile; k137 failed on exactly
 that line, which is why setup sr stops at the pointer and the root dir.
 
+Every per-file line is emitted fifty-three times per run, so a deep run adds about three hundred
+short lines. They are still worth it: the alternative is guessing which of vnode_getattr,
+ubc_getobject or the code-signature walk parks the boot CPU.
+
 These are diagnostics only: no return value, no state and no policy changes, and each line is
 prefixed NATIVE_SR so it can be filtered out of a boot log.
 
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
-index 8696353..545b9ae 100644
+index 8696353..5328cc9 100644
 --- a/bsd/vm/vm_unix.c
 +++ b/bsd/vm/vm_unix.c
 @@ -2290,6 +2290,9 @@ shared_region_map_and_slide_setup(
@@ -49,7 +61,65 @@ index 8696353..545b9ae 100644
  		/* get file structure from file descriptor */
  		error = fp_get_ftype(p, srfmp->fd, DTYPE_VNODE, EINVAL, &srfmp->fp);
  		if (error) {
-@@ -2721,6 +2727,9 @@ _shared_region_map_and_slide(
+@@ -2376,6 +2382,8 @@ shared_region_map_and_slide_setup(
+ 			goto done;
+ 		}
+ 
++		printf("NATIVE_SR: file %u fd ok fp=%p\n",
++		    (unsigned)(srfmp - &(*sr_file_mappings)[0]), (void *)srfmp->fp);
+ 		/* we need at least read permission on the file */
+ 		if (!(srfmp->fp->fp_glob->fg_flag & FREAD)) {
+ 			SHARED_REGION_TRACE_ERROR(
+@@ -2483,6 +2491,9 @@ shared_region_map_and_slide_setup(
+ root_check:
+ #endif /* XNU_TARGET_OS_OSX && defined(__arm64__) */
+ 
++		printf("NATIVE_SR: file %u attr enter vp=%p type=%d mount=%p\n",
++		    (unsigned)(srfmp - &(*sr_file_mappings)[0]), (void *)srfmp->vp,
++		    srfmp->vp->v_type, (void *)srfmp->vp->v_mount);
+ 		/* The shared cache file must be owned by root */
+ 		VATTR_INIT(&va);
+ 		VATTR_WANTED(&va, va_uid);
+@@ -2499,6 +2510,8 @@ root_check:
+ 				error));
+ 			goto done;
+ 		}
++		printf("NATIVE_SR: file %u attr done uid=%u\n",
++		    (unsigned)(srfmp - &(*sr_file_mappings)[0]), (unsigned)va.va_uid);
+ 		if (va.va_uid != 0) {
+ 			SHARED_REGION_TRACE_ERROR(
+ 				("shared_region: %p [%d(%s)] map(%p:'%s'): "
+@@ -2625,6 +2638,8 @@ after_root_check:
+ 		}
+ scdir_ok:
+ 
++		printf("NATIVE_SR: file %u size enter\n",
++		    (unsigned)(srfmp - &(*sr_file_mappings)[0]));
+ 		/* get vnode size */
+ 		error = vnode_size(srfmp->vp, &fs, vfs_context_current());
+ 		if (error) {
+@@ -2639,8 +2654,12 @@ scdir_ok:
+ 			goto done;
+ 		}
+ 		srfmp->file_size = fs;
++		printf("NATIVE_SR: file %u size done\n",
++		    (unsigned)(srfmp - &(*sr_file_mappings)[0]));
+ 
+ 		/* get the file's memory object handle */
++		printf("NATIVE_SR: file %u cs enter\n",
++		    (unsigned)(srfmp - &(*sr_file_mappings)[0]));
+ 		srfmp->file_control = ubc_getobject(srfmp->vp, UBC_HOLDOBJECT);
+ 		if (srfmp->file_control == MEMORY_OBJECT_CONTROL_NULL) {
+ 			SHARED_REGION_TRACE_ERROR(
+@@ -2687,6 +2706,7 @@ scdir_ok:
+ 				goto done;
+ 			}
+ 		}
++		printf("NATIVE_SR: files done error=%d\n", error);
+ 	}
+ done:
+ 	if (error != 0) {
+@@ -2721,6 +2741,9 @@ _shared_region_map_and_slide(
  	struct vnode                    *rdir_vp = NULL;
  	struct vm_shared_region         *shared_region = NULL;
  
@@ -59,7 +129,7 @@ index 8696353..545b9ae 100644
  	/*
  	 * Get a reference to the current proc's root dir.
  	 * Need this to prevent racing with chroot.
-@@ -2733,6 +2742,8 @@ _shared_region_map_and_slide(
+@@ -2733,6 +2756,8 @@ _shared_region_map_and_slide(
  	assert(rdir_vp != NULL);
  	vnode_get(rdir_vp);
  	proc_fdunlock(p);
@@ -68,7 +138,7 @@ index 8696353..545b9ae 100644
  
  	/*
  	 * Turn files, mappings into sr_file_mappings and other setup.
-@@ -2740,13 +2751,17 @@ _shared_region_map_and_slide(
+@@ -2740,13 +2765,17 @@ _shared_region_map_and_slide(
  	error = shared_region_map_and_slide_setup(p, files_count,
  	    files, mappings_count, mappings,
  	    &sr_file_mappings, &shared_region, rdir_vp);
@@ -86,7 +156,7 @@ index 8696353..545b9ae 100644
  	if (kr != KERN_SUCCESS) {
  		SHARED_REGION_TRACE_ERROR(("shared_region: %p [%d(%s)] map(): "
  		    "vm_shared_region_map_file() failed kr=0x%x\n",
-@@ -2900,6 +2915,9 @@ shared_region_map_and_slide_2_np(
+@@ -2900,6 +2929,9 @@ shared_region_map_and_slide_2_np(
  	files_count = uap->files_count;
  	mappings_count = uap->mappings_count;
  
@@ -96,7 +166,7 @@ index 8696353..545b9ae 100644
  	if (files_count == 0) {
  		SHARED_REGION_TRACE_INFO(
  			("shared_region: %p [%d(%s)] map(): "
-@@ -3004,6 +3022,8 @@ shared_region_map_and_slide_2_np(
+@@ -3004,6 +3036,8 @@ shared_region_map_and_slide_2_np(
  
  	kr = _shared_region_map_and_slide(p, files_count, shared_files, mappings_count, mappings);
  done:
