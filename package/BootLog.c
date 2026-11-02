@@ -822,6 +822,22 @@ static uint32_t copy_msgbuf(uint8_t *out) {
   return n;
 }
 
+// IOSleep is not a sleep: IOLib.cpp:1509 forwards it to delay_for_interval, which spins the CPU
+// on the time base.  The driver already learned this the hard way (RootCommands.h:22: "XNU's
+// delay waits in WFE, and on enchilada the poll never came back from it") and hand-rolled a
+// timebase spin instead.  The writer did not: it ran twelve rounds and was never seen again,
+// always parked at boot_log_step == 6, the value it sets immediately before IOSleep(LogPeriodMs).
+// Everything else on the machine kept running -- the monitor threads paint and take interrupts
+// because they use assert_wait_timeout + thread_block, which really does yield the CPU.  So the
+// writer loops the same way: a timeout on a private event, then block.  Nothing ever signals the
+// event, so every block runs its full timeout.
+static int boot_log_sleep_event;
+
+static void boot_log_sleep_ms(unsigned ms) {
+  assert_wait_timeout((event_t)&boot_log_sleep_event, THREAD_UNINT, ms, NSEC_PER_MSEC);
+  thread_block(THREAD_CONTINUE_NULL);
+}
+
 static void writer(void *arg, wait_result_t result) {
   (void)arg; (void)result;
   thread_set_thread_name(current_thread(), "boot_log");
@@ -833,7 +849,7 @@ static void writer(void *arg, wait_result_t result) {
     if (strcmp(why, "no root layout")) {
       printf("NATIVE_SR: writer exit open why=%s\n", why);
       boot_log_exit_reason = 1; boot_log_state = 3; return;}
-    IOSleep(1000);
+    boot_log_sleep_ms(1000);
   }
   boot_log_first_lba = first;
   const uint32_t slot_count = (uint32_t)((blocks - LogSlotFirst) / LogSlotBlocks);
@@ -937,7 +953,7 @@ static void writer(void *arg, wait_result_t result) {
       }
     }
     boot_log_step = 6;
-    IOSleep(LogPeriodMs);
+    boot_log_sleep_ms(LogPeriodMs);
   }
 }
 
