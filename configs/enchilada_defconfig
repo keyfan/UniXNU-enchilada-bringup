@@ -40,19 +40,27 @@ CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
 CONFIG_XNU_ARMVIRT_PLATFORM=n
 CONFIG_XNU_OWNER_CACHE_MOUNT=y
 CONFIG_XNU_OWNER_CACHE_STARTUP=y
-# The union composition is the one that satisfies the shared-region gate: it mounts SystemOS over "/",
-# so the cache file sits on the same mount as the process root and shared_region_map_and_slide_setup's
-# "root volume or preboot cryptex" check passes.  The non-union composition mounts SystemOS at
-# /private/preboot instead, which would put the file on a different mount and be refused with EPERM.
-# What the union composition does not do is tell dyld where the file is: it passes no environment at
-# all (*envp = USER_ADDR_NULL).  Measured with the cryptex probe on k124:
+# Two compositions were measured.  k124-k133 used the union one, which mounts SystemOS over "/":
+# the cache file then sits on the same mount as the process root, so shared_region_map_and_slide_setup's
+# "root volume or preboot cryptex" check would pass -- but dyld never gets that far.  The cryptex probe
+# reports the file as present and readable through the union root:
 #   /System/Library/Caches/com.apple.dyld                            -> 0, VDIR
-#   /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64   -> 0, VREG   (the file is there)
-#   /private/preboot/Cryptexes                                      -> 2 (ENOENT)
-#   /private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld -> 2 (ENOENT)
-#   /System/Cryptexes/OS/System/Library/Caches/com.apple.dyld       -> 2 (ENOENT)
-# dyld's search table names only the Cryptexes paths, so it never opens a file that is right there.
-CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
+#   /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64   -> 0, VREG
+# Yet on every union kernel launchd ends at the same place: two shared_region_check_np refusals and no
+# call to shared_region_map_and_slide_2_np.  dyld reaches that syscall only from mapSplitCacheSystemWide,
+# whose first step is openat(cacheDirFD, "dyld_shared_cache_arm64") on a directory it opened itself.
+# A directory-fd relative lookup runs through union_lookup with the union root vnode as the starting
+# point, which is the one step the absolute-path probe does not exercise -- so the union composition
+# leaves the cache reachable by vnode_lookup and still unreachable by dyld.
+# The non-union composition puts SystemOS at /private/preboot instead, and the kernel hands dyld
+# DYLD_SHARED_CACHE_DIR=/private/preboot/System/Library/Caches/com.apple.dyld in its environment.
+# That path lives on an ordinary APFS mount, so the openat that dyld performs is a normal one.  The file
+# is then on a different mount than the process root, which shared_region_map_and_slide_setup refuses
+# with EPERM -- unless XNU_OWNER_CACHE_CARRIER accepts it, which is what offline-owner-cache-carrier.patch
+# exists for (its positive checkpoint is exactly stage=6, dyld_flags bit 3 set, accepts=53, and
+# shared_region_map_and_slide_2_np returning 0).  That is the configuration below.
+CONFIG_XNU_OWNER_UNION_SYSTEMOS=n
+CONFIG_XNU_OWNER_CACHE_CARRIER=y
 # The owner boot manifest publishes boot-manifest-hash/owner-boot-manifest-domain into /chosen after hashing the
 # OS (47,481,664 B) and SystemOS (25,805,344 B) manifest envelopes with SHA384. On the real OnePlus 6 (SDM845) that
 # is ~73 MiB of *software* SHA384 (device accelerated crypto: 0) in the prelinked corecrypto kext, and the first
