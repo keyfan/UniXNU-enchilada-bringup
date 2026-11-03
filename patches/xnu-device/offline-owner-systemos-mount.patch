@@ -18,7 +18,7 @@ the complete trees in the process root.  The union composition reaches them
 through its own union and needs no bind.  Never fatal:
 native_owner_system_bind_stage/status go to the boot log (3 = both bound).
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 8bba078..90742ee 100644
+index 8bba078..52d1666 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
 @@ -183,7 +183,7 @@
@@ -30,7 +30,7 @@ index 8bba078..90742ee 100644
  
  #include <mach/exclaves.h>
  
-@@ -7013,8 +7013,316 @@ create_unix_stack(vm_map_t map, load_result_t* load_result,
+@@ -7013,8 +7013,324 @@ create_unix_stack(vm_map_t map, load_result_t* load_result,
   *		word width of the kernel. Once the self-exec completes, the
   *		initproc might be different.
   */
@@ -95,8 +95,7 @@ index 8bba078..90742ee 100644
 +	return error;
 +}
 +
- static int
--load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
++static int
 +native_owner_cache_prepare(proc_t p, user_addr_t scratch, user_addr_t *envp)
 +{
 +#ifndef XNU_OWNER_CACHE_VOLUME_UUID
@@ -205,16 +204,24 @@ index 8bba078..90742ee 100644
 +#endif
 +	*envp = scratch + 0x500;
 +	/* Bind the cryptex's System and usr trees over the root's so dyld's
-+	 * absolute-path dlopens see the complete contents.  Non-fatal. */
-+	native_owner_system_bind_stage = 1;
-+	native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x700,
-+	    "/private/preboot/System", "/System");
-+	if (!native_owner_system_bind_status) {
-+		native_owner_system_bind_stage = 2;
-+		native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x900,
-+		    "/private/preboot/usr", "/usr");
-+		if (!native_owner_system_bind_status)
-+			native_owner_system_bind_stage = 3;
++	 * absolute-path dlopens see the complete contents.  Off by default: the
++	 * k146 run proved both mounts succeed (stage 3, status 0) and the boot
++	 * then dies in execve with OS_REASON_EXEC/BAD_MACHO, so the mount has to
++	 * be separated from every other difference by one argument.
++	 * sheng-system-bind=1 turns it on.  Non-fatal either way. */
++	uint64_t system_bind = 0;
++	if (PE_parse_boot_argn("sheng-system-bind", &system_bind,
++	    sizeof(system_bind)) && system_bind == 1) {
++		native_owner_system_bind_stage = 1;
++		native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x700,
++		    "/private/preboot/System", "/System");
++		if (!native_owner_system_bind_status) {
++			native_owner_system_bind_stage = 2;
++			native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x900,
++			    "/private/preboot/usr", "/usr");
++			if (!native_owner_system_bind_status)
++				native_owner_system_bind_stage = 3;
++		}
 +	}
 +#else
 +	if ((error = copyout(union_environment, environment_vector[0],
@@ -278,7 +285,8 @@ index 8bba078..90742ee 100644
 +uint8_t native_owner_data_seed_sha256[32];
 +char native_owner_data_device_path[64];
 +
-+static int
+ static int
+-load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
 +native_owner_data_prepare(proc_t p, user_addr_t scratch)
 +{
 +	uint64_t base = 0, size = 0;
@@ -348,7 +356,7 @@ index 8bba078..90742ee 100644
  {
  	int retval[2];
  	int error;
-@@ -7086,7 +7394,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
+@@ -7086,7 +7402,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
  	 */
  	init_exec_args.fname = argv0;
  	init_exec_args.argp = scratch_addr;
@@ -357,7 +365,7 @@ index 8bba078..90742ee 100644
  
  	/*
  	 * So that init task is set with uid,gid 0 token
-@@ -7148,6 +7456,15 @@ load_init_program(proc_t p)
+@@ -7148,6 +7464,15 @@ load_init_program(proc_t p)
  	mach_vm_size_t map_page_size = vm_map_page_size(map);
  
  	(void) mach_vm_allocate_kernel(map, &scratch_addr, map_page_size, VM_FLAGS_ANYWHERE, VM_KERN_MEMORY_NONE);
@@ -373,7 +381,7 @@ index 8bba078..90742ee 100644
  #if CONFIG_MEMORYSTATUS
  	(void) memorystatus_init_at_boot_snapshot();
  #endif /* CONFIG_MEMORYSTATUS */
-@@ -7162,7 +7479,7 @@ load_init_program(proc_t p)
+@@ -7162,7 +7487,7 @@ load_init_program(proc_t p)
  
  		if (is_release_suffix) {
  			printf("load_init_program: attempting to load /sbin/launchd\n");
@@ -382,7 +390,7 @@ index 8bba078..90742ee 100644
  			if (!error) {
  				return;
  			}
-@@ -7173,7 +7490,7 @@ load_init_program(proc_t p)
+@@ -7173,7 +7498,7 @@ load_init_program(proc_t p)
  			strlcat(launchd_path, launchd_suffix, sizeof(launchd_path));
  
  			printf("load_init_program: attempting to load %s\n", launchd_path);
@@ -391,7 +399,7 @@ index 8bba078..90742ee 100644
  			if (!error) {
  				return;
  			} else if (error != ENOENT) {
-@@ -7186,7 +7503,7 @@ load_init_program(proc_t p)
+@@ -7186,7 +7511,7 @@ load_init_program(proc_t p)
  	error = ENOENT;
  	for (i = 0; i < sizeof(init_programs) / sizeof(init_programs[0]); i++) {
  		printf("load_init_program: attempting to load %s\n", init_programs[i]);
