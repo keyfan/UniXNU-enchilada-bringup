@@ -81,4 +81,9 @@ CONFIG_XNU_OWNER_DATA_MOUNT=y
 # by .github/workflows/data-seed.yml). A mismatch is not a visible error: native_ram_block_volume_seed returns
 # ENOENT and load_init_program panics "offline scratch Data mount failed" just before launchd.
 CONFIG_XNU_OWNER_DATA_VOLUME_UUID="18AB5557-DC2D-469B-8758-855E60F5B0DF"
+# The OS volume the boot manifest is computed over, i.e. the same UUID the payload's ADT matches the root with
+# (board.toml [payload.adt] root_match_volume_uuid). build-xnu-4k-baseline.sh refuses to build with the manifest on
+# and this unset ("The owner boot manifest needs XNU_OWNER_ROOT_VOLUME_UUID"); schema-2 boards get it from their
+# [root] profile, and this board is schema 1, so it is stated here.
+CONFIG_XNU_OWNER_ROOT_VOLUME_UUID="04769D26-2CA0-4825-B443-E2E5F88300F2"
 CONFIG_XNU_BOOT_PROGRESS=y
