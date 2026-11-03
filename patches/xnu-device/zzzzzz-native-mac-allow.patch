@@ -1,0 +1,269 @@
+Allow read-side MAC checks on the SystemOS volume
+
+The two dylibs outside the dyld shared cache are served from the SystemOS
+volume, but every immutable sandbox profile denies /private/preboot, so the
+processes that need them are refused the very paths the redirect hands out.
+The kernel answers "allowed" for read and metadata checks on that volume -- one
+only this kernel ever mounts -- and leaves write, create, unlink, setattr, exec
+and signature checks untouched.
+
+diff --git a/security/mac_vfs.c b/security/mac_vfs.c
+index 91376bf..564204b 100644
+--- a/security/mac_vfs.c
++++ b/security/mac_vfs.c
+@@ -88,10 +88,90 @@
+ #include <miscfs/devfs/fdesc.h>
+ 
+ #include <security/mac_internal.h>
++#include <pexpert/pexpert.h>
+ 
+ /* convert {R,W,X}_OK values to V{READ,WRITE,EXEC} */
+ #define ACCESS_MODE_TO_VNODE_MASK(m)    (m << 6)
+ 
++/*
++ * The two dylibs that sit outside the dyld shared cache are handed to processes
++ * from the SystemOS volume (see the namei redirect), yet every immutable
++ * sandbox profile denies /private/preboot because a stock system never reads
++ * the system tree from there.  Answer "allowed" in the kernel for vnode checks
++ * that land on the SystemOS volume -- a volume only this kernel mounts -- so
++ * the policy module is not consulted for those lookups.  Reads and metadata
++ * only: write, create, unlink, setattr, exec and signature hooks stay enforced.
++ *
++ * "sheng-mac-allow=0" turns it off for an A/B run.
++ */
++extern volatile dev_t native_owner_cache_mounted_device __attribute__((weak_import));
++
++volatile unsigned int native_owner_mac_allow_hits = 0;
++
++/*
++ * This runs on the lookup path, so remember the verdict per mount instead of
++ * asking the device layer every time.  The process root and SystemOS are the
++ * only mounts that ever matter here.
++ */
++#define NATIVE_MAC_ALLOW_SLOTS 8
++static mount_t native_mac_allow_mount[NATIVE_MAC_ALLOW_SLOTS];
++static int native_mac_allow_verdict[NATIVE_MAC_ALLOW_SLOTS];
++
++static int
++native_mac_allow_slot(mount_t mnt)
++{
++	return ((int)(((uintptr_t)mnt >> 4) & (NATIVE_MAC_ALLOW_SLOTS - 1)));
++}
++
++static int
++native_owner_mac_allow(struct vnode *vp)
++{
++	static int state = -1;
++	dev_t mounted;
++	mount_t mnt;
++	vnode_t devvp;
++	dev_t dev;
++	int slot;
++
++	if (state < 0) {
++		uint64_t enabled = 1;
++		if (!PE_parse_boot_argn("sheng-mac-allow", &enabled, sizeof(enabled))) {
++			enabled = 1;
++		}
++		state = (enabled != 0) ? 1 : 0;
++	}
++	if (state == 0 || vp == NULLVP) {
++		return 0;
++	}
++	mounted = native_owner_cache_mounted_device;
++	if (mounted == NODEV) {
++		return 0;
++	}
++	mnt = vnode_mount(vp);
++	if (mnt == NULL) {
++		return 0;
++	}
++	slot = native_mac_allow_slot(mnt);
++	if (native_mac_allow_mount[slot] == mnt) {
++		if (native_mac_allow_verdict[slot] != 0) {
++			native_owner_mac_allow_hits++;
++		}
++		return native_mac_allow_verdict[slot];
++	}
++	devvp = vfs_devvp(mnt);
++	if (devvp == NULL) {
++		return 0;
++	}
++	dev = vnode_specrdev(devvp);
++	vnode_put(devvp);
++	native_mac_allow_verdict[slot] = (dev == mounted) ? 1 : 0;
++	native_mac_allow_mount[slot] = mnt;
++	if (native_mac_allow_verdict[slot] != 0) {
++		native_owner_mac_allow_hits++;
++	}
++	return native_mac_allow_verdict[slot];
++}
++
+ 
+ /*
+  * Optional tracing of policy operations. Define VFS_TRACE_POLICY_OPS to trace the operations.
+@@ -963,6 +1043,10 @@ mac_vnode_check_access(vfs_context_t ctx, struct vnode *vp,
+ 	}
+ 	/* Convert {R,W,X}_OK values to V{READ,WRITE,EXEC} for entry points */
+ 	mask = ACCESS_MODE_TO_VNODE_MASK(acc_mode);
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(29, vp);
+ 	MAC_CHECK(vnode_check_access, cred, vp, mac_vnode_label(vp), mask);
+ 	VFS_KERNEL_DEBUG_END1(29, vp);
+@@ -1196,6 +1280,10 @@ mac_vnode_check_getattr(vfs_context_t ctx, struct ucred *file_cred,
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(39, vp);
+ 	MAC_CHECK(vnode_check_getattr, cred, file_cred, vp, mac_vnode_label(vp), va);
+ 	VFS_KERNEL_DEBUG_END1(39, vp);
+@@ -1219,6 +1307,10 @@ mac_vnode_check_getattrlist(vfs_context_t ctx, struct vnode *vp,
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(40, vp);
+ 	MAC_CHECK(vnode_check_getattrlist, cred, vp, mac_vnode_label(vp), alist, options);
+ 	VFS_KERNEL_DEBUG_END1(40, vp);
+@@ -1318,6 +1410,10 @@ mac_vnode_check_fsgetpath(vfs_context_t ctx, struct vnode *vp)
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(42, vp);
+ 	MAC_CHECK(vnode_check_fsgetpath, cred, vp, mac_vnode_label(vp));
+ 	VFS_KERNEL_DEBUG_END1(42, vp);
+@@ -1496,6 +1592,10 @@ mac_vnode_check_getextattr(vfs_context_t ctx, struct vnode *vp,
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(45, vp);
+ 	MAC_CHECK(vnode_check_getextattr, cred, vp, mac_vnode_label(vp),
+ 	    name, uio);
+@@ -1519,6 +1619,10 @@ mac_vnode_check_ioctl(vfs_context_t ctx, struct vnode *vp, u_long cmd)
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(46, vp);
+ 	MAC_CHECK(vnode_check_ioctl, cred, vp, mac_vnode_label(vp), cmd);
+ 	VFS_KERNEL_DEBUG_END1(46, vp);
+@@ -1590,6 +1694,10 @@ mac_vnode_check_listextattr(vfs_context_t ctx, struct vnode *vp)
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(49, vp);
+ 	MAC_CHECK(vnode_check_listextattr, cred, vp, mac_vnode_label(vp));
+ 	VFS_KERNEL_DEBUG_END1(49, vp);
+@@ -1613,6 +1721,10 @@ mac_vnode_check_lookup_preflight(vfs_context_t ctx, struct vnode *dvp,
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(dvp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(50, dvp);
+ 	MAC_CHECK(vnode_check_lookup_preflight, cred, dvp, mac_vnode_label(dvp), path, pathlen);
+ 	VFS_KERNEL_DEBUG_END1(50, dvp);
+@@ -1636,6 +1748,10 @@ mac_vnode_check_lookup(vfs_context_t ctx, struct vnode *dvp,
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(dvp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(51, dvp);
+ 	MAC_CHECK(vnode_check_lookup, cred, dvp, mac_vnode_label(dvp), cnp);
+ 	VFS_KERNEL_DEBUG_END1(51, dvp);
+@@ -1658,6 +1774,10 @@ mac_vnode_check_open(vfs_context_t ctx, struct vnode *vp, int acc_mode)
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(52, vp);
+ 	MAC_CHECK(vnode_check_open, cred, vp, mac_vnode_label(vp), acc_mode);
+ 	VFS_KERNEL_DEBUG_END1(52, vp);
+@@ -1681,6 +1801,10 @@ mac_vnode_check_read(vfs_context_t ctx, struct ucred *file_cred,
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(53, vp);
+ 	MAC_CHECK(vnode_check_read, cred, file_cred, vp,
+ 	    mac_vnode_label(vp));
+@@ -1705,6 +1829,10 @@ mac_vnode_check_readdir(vfs_context_t ctx, struct vnode *dvp)
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(dvp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(54, dvp);
+ 	MAC_CHECK(vnode_check_readdir, cred, dvp, mac_vnode_label(dvp));
+ 	VFS_KERNEL_DEBUG_END1(54, dvp);
+@@ -1727,6 +1855,10 @@ mac_vnode_check_readlink(vfs_context_t ctx, struct vnode *vp)
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(55, vp);
+ 	MAC_CHECK(vnode_check_readlink, cred, vp, mac_vnode_label(vp));
+ 	VFS_KERNEL_DEBUG_END1(55, vp);
+@@ -1837,6 +1969,10 @@ mac_vnode_check_searchfs(vfs_context_t ctx, struct vnode *vp, struct attrlist *r
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(59, vp);
+ 	MAC_CHECK(vnode_check_searchfs, cred, vp, mac_vnode_label(vp), returnattrs, searchattrs);
+ 	VFS_KERNEL_DEBUG_END1(59, vp);
+@@ -2043,6 +2179,10 @@ mac_vnode_check_stat(vfs_context_t ctx, struct ucred *file_cred,
+ 	if (!mac_cred_check_enforce(cred)) {
+ 		return 0;
+ 	}
++	/* SystemOS vnodes carry the cached-out dylibs; see native_owner_mac_allow. */
++	if (native_owner_mac_allow(vp)) {
++		return 0;
++	}
+ 	VFS_KERNEL_DEBUG_START1(68, vp);
+ 	MAC_CHECK(vnode_check_stat, cred, file_cred, vp,
+ 	    mac_vnode_label(vp));

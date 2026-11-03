@@ -137,6 +137,10 @@ extern volatile uint64_t native_cryptex_dir_size[kCryptexRing] __attribute__((we
 // rewrite fired at all and whether it ran out of path space.
 extern volatile unsigned int native_namei_redirect_hits __attribute__((weak_import));
 extern volatile unsigned int native_namei_redirect_error __attribute__((weak_import));
+// The MAC allowance (zzzzzz-native-mac-allow.patch) answers read-side vnode checks on the SystemOS volume
+// itself, because every immutable sandbox profile denies /private/preboot while both cached-out dylibs are
+// served from there.  "K allow=" counts those checks.
+extern volatile unsigned int native_owner_mac_allow_hits __attribute__((weak_import));
 // The 4K signature hash cache (native-4k-signature-hash-cache.patch).  A growing "full" with a frozen
 // "pages" means launchd is still reading and hashing the 16K signature blocks of the dyld cache; pages
 // climbing means it has moved on to publishing 4K page hashes.  Either way it is progress, not a wedge.
@@ -387,6 +391,15 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     snprintf(row, sizeof row, "R hits=%u err=%u",
              native_namei_redirect_hits,
              &native_namei_redirect_error ? native_namei_redirect_error : 0);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  // The MAC allowance: "K allow=" counts read-side vnode checks on the SystemOS volume that the kernel
+  // answered itself instead of asking the policy modules.  It is set only while sheng-mac-allow is on, so a
+  // frozen counter next to a rising deny count means the checks never reached mac_vfs.c, not that the hook
+  // was skipped.
+  if (&native_owner_mac_allow_hits) {
+    char row[64];
+    snprintf(row, sizeof row, "K allow=%u", native_owner_mac_allow_hits);
     at = put(out, at, cap, row, sizeof row);
   }
   // The 4K signature hash cache (native-4k-signature-hash-cache.patch).  "C full= ready= pages= bytes=" answers
