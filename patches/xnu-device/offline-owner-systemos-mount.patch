@@ -18,7 +18,7 @@ the complete trees in the process root.  The union composition reaches them
 through its own union and needs no bind.  Never fatal:
 native_owner_system_bind_stage/status go to the boot log (3 = both bound).
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 8bba078..e0b7052 100644
+index 8bba078..b592d38 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
 @@ -183,7 +183,7 @@
@@ -30,7 +30,7 @@ index 8bba078..e0b7052 100644
  
  #include <mach/exclaves.h>
  
-@@ -7013,8 +7013,335 @@ create_unix_stack(vm_map_t map, load_result_t* load_result,
+@@ -7013,8 +7013,354 @@ create_unix_stack(vm_map_t map, load_result_t* load_result,
   *		word width of the kernel. Once the self-exec completes, the
   *		initproc might be different.
   */
@@ -112,7 +112,14 @@ index 8bba078..e0b7052 100644
 +	const char *mountpoint = "/private/preboot";
 +#endif
 +#if !defined(XNU_OWNER_UNION_SYSTEMOS) || !XNU_OWNER_UNION_SYSTEMOS
-+	const char *environment = "DYLD_SHARED_CACHE_DIR=/private/preboot/System/Library/Caches/com.apple.dyld";
++	/* sheng-system-bind=4 moves the cache to the canonical path, so dyld has to
++	 * be pointed there instead of at /private/preboot.  Every other value keeps
++	 * the variable exactly as it was. */
++	uint64_t system_bind = 0;
++	(void)PE_parse_boot_argn("sheng-system-bind", &system_bind, sizeof(system_bind));
++	const char *environment = (system_bind == 4)
++	    ? "DYLD_SHARED_CACHE_DIR=/System/Library/Caches/com.apple.dyld"
++	    : "DYLD_SHARED_CACHE_DIR=/private/preboot/System/Library/Caches/com.apple.dyld";
 +#else
 +	/* The union composition mounts the cache on "/", so the directory dyld has to be
 +	 * pointed at is the plain System one.  It is the same directory the non-union
@@ -204,36 +211,48 @@ index 8bba078..e0b7052 100644
 +	if ((error = copyout(fallback, scratch + 0x600, strlen(fallback) + 1)) != 0) goto done;
 +#endif
 +	*envp = scratch + 0x500;
-+	/* Bind the cryptex's System and usr trees over the root's so dyld's
-+	 * absolute-path dlopens see the complete contents.  Off by default, and
-+	 * split in two so one build can name the mount that breaks the boot:
-+	 *   sheng-system-bind=1  bind /private/preboot/System over /System only
-+	 *   sheng-system-bind=2  bind /private/preboot/usr    over /usr    only
-+	 *   sheng-system-bind=3  bind both
-+	 * k146/k147 evidence: with both bound the log shows "B stage=3 status=0"
-+	 * (both mounts returned 0) and the boot then dies in execve with
-+	 * OS_REASON_EXEC / EXEC_EXIT_REASON_BAD_MACHO on /sbin/launchd, while the
-+	 * same kernel with the bind off runs the full 898 s.  mach_loader.c:3013
-+	 * DEFAULT_DYLD_PATH "/usr/lib/dyld" resolves through the process root, so
-+	 * the usr bind is the one that can change which dyld is loaded.  Non-fatal
-+	 * either way. */
-+	uint64_t system_bind = 0;
-+	if (PE_parse_boot_argn("sheng-system-bind", &system_bind,
-+	    sizeof(system_bind)) && system_bind != 0) {
-+		/* status starts at -1 (nothing attempted); 0 means the last mount worked. */
-+		native_owner_system_bind_status = 0;
-+		if (system_bind & 1) {
-+			native_owner_system_bind_stage = 1;
-+			native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x700,
-+			    "/private/preboot/System", "/System");
-+		}
-+		if (!native_owner_system_bind_status && (system_bind & 2)) {
-+			native_owner_system_bind_stage = 2;
-+			native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x900,
-+			    "/private/preboot/usr", "/usr");
-+		}
-+		if (!native_owner_system_bind_status && system_bind == 3)
-+			native_owner_system_bind_stage = 3;
++	/* Bind parts of the cryptex over the root's so dyld and the sandbox see one
++	 * tree.  Off by default; one bit per mount so a single build can name the
++	 * mount that matters:
++	 *   sheng-system-bind=1  /private/preboot/System -> /System
++	 *   sheng-system-bind=2  /private/preboot/usr    -> /usr
++	 *   sheng-system-bind=3  both of the above
++	 *   sheng-system-bind=4  /private/preboot/System/Library/Caches/com.apple.dyld
++	 *                        -> /System/Library/Caches/com.apple.dyld
++	 * Evidence.  k146/k147: modes 1-3 return 0 ("B stage=3 status=0") and the
++	 * boot then dies in execve with OS_REASON_EXEC / EXEC_EXIT_REASON_BAD_MACHO
++	 * on /sbin/launchd, while the same kernel with the bind off runs 898 s;
++	 * mach_loader.c:3013 DEFAULT_DYLD_PATH "/usr/lib/dyld" is resolved through
++	 * the process root, so binding /usr replaces the dyld that loads launchd.
++	 * k147 diag2: 84 x "Sandbox: <proc> deny(1) file-read-metadata
++	 * /private/preboot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64"
++	 * and 135 corpses.  The OS volume has no com.apple.dyld at all (0 hits) while
++	 * SystemOS has 70, so the cache only exists on the mount the sandbox refuses.
++	 * Mode 4 moves just that directory to the canonical path the sandbox allows
++	 * and leaves /usr and /System alone, so the dyld that loads launchd is still
++	 * the root volume's own.  Non-fatal either way. */
++	/* -1 means nothing attempted; each mount overwrites it.  Start at 0 so a
++	 * mode that skips the first two mounts (4) still reaches its own branch. */
++	native_owner_system_bind_status = 0;
++	if (system_bind & 1) {
++		native_owner_system_bind_stage = 1;
++		native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x700,
++		    "/private/preboot/System", "/System");
++	}
++	if (!native_owner_system_bind_status && (system_bind & 2)) {
++		native_owner_system_bind_stage = 2;
++		native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x900,
++		    "/private/preboot/usr", "/usr");
++	}
++	if (!native_owner_system_bind_status && system_bind == 3)
++		native_owner_system_bind_stage = 3;
++	if (!native_owner_system_bind_status && system_bind == 4) {
++		native_owner_system_bind_stage = 4;
++		native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x900,
++		    "/private/preboot/System/Library/Caches/com.apple.dyld",
++		    "/System/Library/Caches/com.apple.dyld");
++		if (!native_owner_system_bind_status)
++			native_owner_system_bind_stage = 5;
 +	}
 +#else
 +	if ((error = copyout(union_environment, environment_vector[0],
@@ -367,7 +386,7 @@ index 8bba078..e0b7052 100644
  {
  	int retval[2];
  	int error;
-@@ -7086,7 +7413,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
+@@ -7086,7 +7432,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
  	 */
  	init_exec_args.fname = argv0;
  	init_exec_args.argp = scratch_addr;
@@ -376,7 +395,7 @@ index 8bba078..e0b7052 100644
  
  	/*
  	 * So that init task is set with uid,gid 0 token
-@@ -7148,6 +7475,15 @@ load_init_program(proc_t p)
+@@ -7148,6 +7494,15 @@ load_init_program(proc_t p)
  	mach_vm_size_t map_page_size = vm_map_page_size(map);
  
  	(void) mach_vm_allocate_kernel(map, &scratch_addr, map_page_size, VM_FLAGS_ANYWHERE, VM_KERN_MEMORY_NONE);
@@ -392,7 +411,7 @@ index 8bba078..e0b7052 100644
  #if CONFIG_MEMORYSTATUS
  	(void) memorystatus_init_at_boot_snapshot();
  #endif /* CONFIG_MEMORYSTATUS */
-@@ -7162,7 +7498,7 @@ load_init_program(proc_t p)
+@@ -7162,7 +7517,7 @@ load_init_program(proc_t p)
  
  		if (is_release_suffix) {
  			printf("load_init_program: attempting to load /sbin/launchd\n");
@@ -401,7 +420,7 @@ index 8bba078..e0b7052 100644
  			if (!error) {
  				return;
  			}
-@@ -7173,7 +7509,7 @@ load_init_program(proc_t p)
+@@ -7173,7 +7528,7 @@ load_init_program(proc_t p)
  			strlcat(launchd_path, launchd_suffix, sizeof(launchd_path));
  
  			printf("load_init_program: attempting to load %s\n", launchd_path);
@@ -410,7 +429,7 @@ index 8bba078..e0b7052 100644
  			if (!error) {
  				return;
  			} else if (error != ENOENT) {
-@@ -7186,7 +7522,7 @@ load_init_program(proc_t p)
+@@ -7186,7 +7541,7 @@ load_init_program(proc_t p)
  	error = ENOENT;
  	for (i = 0; i < sizeof(init_programs) / sizeof(init_programs[0]); i++) {
  		printf("load_init_program: attempting to load %s\n", init_programs[i]);
