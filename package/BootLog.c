@@ -70,6 +70,8 @@ extern volatile int native_gpu_addon2_stage __attribute__((weak_import));
 extern volatile int native_gpu_addon2_status __attribute__((weak_import));
 extern volatile int native_gpu_addon3_stage __attribute__((weak_import));
 extern volatile int native_gpu_addon3_status __attribute__((weak_import));
+extern volatile int native_owner_system_bind_stage __attribute__((weak_import));
+extern volatile int native_owner_system_bind_status __attribute__((weak_import));
 extern volatile uint64_t native_data_persist_present __attribute__((weak_import));
 extern volatile int native_staged_apps_stage __attribute__((weak_import));
 extern volatile int32_t native_buttons_stats[10] __attribute__((weak_import));
@@ -376,6 +378,14 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              (unsigned long)cs_native4k_full_blocks, (unsigned long)cs_native4k_ready_blobs,
              (unsigned long)cs_native4k_page_checks, (unsigned long long)cs_native4k_bytes,
              (unsigned long long)cs_native4k_read_ticks, (unsigned long long)cs_native4k_hash_ticks);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  // The non-union cryptex System/usr bindfs mounts (offline-owner-systemos-mount.patch):
+  // stage 3 = both /System and /usr bound over the root; status is the last mount(2) errno (0 ok).
+  if (&native_owner_system_bind_stage) {
+    char row[120];
+    snprintf(row, sizeof row, "B stage=%d status=%d", native_owner_system_bind_stage,
+             native_owner_system_bind_status);
     at = put(out, at, cap, row, sizeof row);
   }
   // The payload's GPU addon (kern_exec.c native_gpu_addon_install): files in it (-1 none), written, already equal, failed, last error; then

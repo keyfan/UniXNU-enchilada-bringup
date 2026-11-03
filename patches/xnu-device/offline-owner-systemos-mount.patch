@@ -1,31 +1,24 @@
-board: tell dyld where the shared cache is under the union composition
+board: point dyld at the cache, let the owner pick ignition, and bind the cryptex System/usr trees over the root
 
 This replaces the UniXNU copy of offline-owner-systemos-mount.patch.  The
-composition itself is unchanged: the SystemOS cryptex is still mounted as a
-read-only union over "/", which is what puts the cache file on the same mount as
-the process root and satisfies the shared-region gate in
-shared_region_map_and_slide_setup.
+composition is unchanged: the SystemOS cryptex is mounted read-only (non-union
+at /private/preboot), the Data seed mounts /private/var, and launchd is handed
+DYLD_SHARED_CACHE_DIR naming the cryptex's cache directory.
 
-What changes is the environment handed to launchd.  The union branch used to set
-*envp = USER_ADDR_NULL, so dyld searched the Cryptexes paths its own table names,
-found none of them, and ended the process before main -- the fuxi v40 state.
-The cryptex probe measured, on the device, that the file is right there:
-
-  /System/Library/Caches/com.apple.dyld                          -> 0, VDIR
-  /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64 -> 0, VREG
-  /private/preboot/Cryptexes                                    -> 2 (ENOENT)
-  /private/preboot/Cryptexes/OS/.../com.apple.dyld              -> 2 (ENOENT)
-  /System/Cryptexes/OS/.../com.apple.dyld                       -> 2 (ENOENT)
-
-The union branch now passes DYLD_SHARED_CACHE_DIR=/System/Library/Caches/com.apple.dyld
-and nothing else.  It costs no mount and no state change: the same string goes
-through the same scratch offsets (0x400 for the text, 0x500 for the vector) the
-non-union branch already uses, and the two mounts above are the ones the union
-composition already authorised.
-
+The non-union composition now also binds the cryptex's /System and /usr over
+the root's so dyld's absolute-path dlopens resolve.  The root (OS) volume
+carries only a sparse, decmpfs-compressed /System and /usr; the cryptex holds
+the real trees.  dyld's dlopen("/usr/lib/libobjc-trampolines.dylib") and the
+pkd load of /System/Library/PrivateFrameworks/PlugInKitDaemon.framework/
+PlugInKitDaemon both miss the cryptex and abort (the "couldn't dlopen
+libobjc-trampolines.dylib" abort and the pkd "Library not loaded" abort
+recorded on the device).  Two read-only bindfs mounts (source
+/private/preboot/System -> /System, source /private/preboot/usr -> /usr) put
+the complete trees in the process root.  The union composition reaches them
+through its own union and needs no bind.  Never fatal:
+native_owner_system_bind_stage/status go to the boot log (3 = both bound).
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 8bba078..d67b202 100644
+index 8bba078..90742ee 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
 @@ -183,7 +183,7 @@
@@ -37,7 +30,7 @@ index 8bba078..d67b202 100644
  
  #include <mach/exclaves.h>
  
-@@ -7013,8 +7013,276 @@ create_unix_stack(vm_map_t map, load_result_t* load_result,
+@@ -7013,8 +7013,316 @@ create_unix_stack(vm_map_t map, load_result_t* load_result,
   *		word width of the kernel. Once the self-exec completes, the
   *		initproc might be different.
   */
@@ -72,6 +65,34 @@ index 8bba078..d67b202 100644
 +native_owner_cache_checkpoint(int status, int authorized)
 +{
 +	__asm__ volatile("" : : "r"(status), "r"(authorized) : "memory");
++}
++
++/* Non-union composition: the SystemOS cryptex is mounted at /private/preboot, so
++ * the process root (the OS volume) does not carry the cryptex's /System and /usr
++ * trees.  dyld's absolute-path dlopens -- /usr/lib/libobjc-trampolines.dylib and
++ * the PlugInKitDaemon framework -- resolve against the root and miss the cryptex,
++ * which is the "couldn't dlopen libobjc-trampolines.dylib" abort and the pkd
++ * "Library not loaded" abort recorded on the device.  Bind the cryptex's two
++ * trees read-only over the root's so the complete contents win.  The union
++ * composition reaches them through its own union and needs no bind here.  Never
++ * fatal: stage/status go to the boot log. */
++extern volatile int native_bindfs_boot_mount;
++volatile int native_owner_system_bind_stage = 0;
++volatile int native_owner_system_bind_status = -1;
++static int
++native_owner_system_bind(proc_t p, user_addr_t scratch, user_addr_t base, const char *source, const char *point)
++{
++	struct mount_args request = {.type = base, .path = base + 0x20, .flags = MNT_RDONLY, .data = base + 0x100};
++	int32_t result = 0;
++	int error;
++	if ((error = copyout("bindfs", request.type, 7)) != 0 ||
++	    (error = copyout(point, request.path, strlen(point) + 1)) != 0 ||
++	    (error = copyout(source, request.data, strlen(source) + 1)) != 0)
++		return error;
++	native_bindfs_boot_mount = 1;
++	error = mount(p, &request, &result);
++	native_bindfs_boot_mount = 0;
++	return error;
 +}
 +
  static int
@@ -183,6 +204,18 @@ index 8bba078..d67b202 100644
 +	if ((error = copyout(fallback, scratch + 0x600, strlen(fallback) + 1)) != 0) goto done;
 +#endif
 +	*envp = scratch + 0x500;
++	/* Bind the cryptex's System and usr trees over the root's so dyld's
++	 * absolute-path dlopens see the complete contents.  Non-fatal. */
++	native_owner_system_bind_stage = 1;
++	native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x700,
++	    "/private/preboot/System", "/System");
++	if (!native_owner_system_bind_status) {
++		native_owner_system_bind_stage = 2;
++		native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x900,
++		    "/private/preboot/usr", "/usr");
++		if (!native_owner_system_bind_status)
++			native_owner_system_bind_stage = 3;
++	}
 +#else
 +	if ((error = copyout(union_environment, environment_vector[0],
 +	    strlen(union_environment) + 1)) != 0 ||
@@ -315,7 +348,7 @@ index 8bba078..d67b202 100644
  {
  	int retval[2];
  	int error;
-@@ -7086,7 +7354,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
+@@ -7086,7 +7394,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
  	 */
  	init_exec_args.fname = argv0;
  	init_exec_args.argp = scratch_addr;
@@ -324,7 +357,7 @@ index 8bba078..d67b202 100644
  
  	/*
  	 * So that init task is set with uid,gid 0 token
-@@ -7148,6 +7416,15 @@ load_init_program(proc_t p)
+@@ -7148,6 +7456,15 @@ load_init_program(proc_t p)
  	mach_vm_size_t map_page_size = vm_map_page_size(map);
  
  	(void) mach_vm_allocate_kernel(map, &scratch_addr, map_page_size, VM_FLAGS_ANYWHERE, VM_KERN_MEMORY_NONE);
@@ -340,7 +373,7 @@ index 8bba078..d67b202 100644
  #if CONFIG_MEMORYSTATUS
  	(void) memorystatus_init_at_boot_snapshot();
  #endif /* CONFIG_MEMORYSTATUS */
-@@ -7162,7 +7439,7 @@ load_init_program(proc_t p)
+@@ -7162,7 +7479,7 @@ load_init_program(proc_t p)
  
  		if (is_release_suffix) {
  			printf("load_init_program: attempting to load /sbin/launchd\n");
@@ -349,7 +382,7 @@ index 8bba078..d67b202 100644
  			if (!error) {
  				return;
  			}
-@@ -7173,7 +7450,7 @@ load_init_program(proc_t p)
+@@ -7173,7 +7490,7 @@ load_init_program(proc_t p)
  			strlcat(launchd_path, launchd_suffix, sizeof(launchd_path));
  
  			printf("load_init_program: attempting to load %s\n", launchd_path);
@@ -358,7 +391,7 @@ index 8bba078..d67b202 100644
  			if (!error) {
  				return;
  			} else if (error != ENOENT) {
-@@ -7186,7 +7463,7 @@ load_init_program(proc_t p)
+@@ -7186,7 +7503,7 @@ load_init_program(proc_t p)
  	error = ENOENT;
  	for (i = 0; i < sizeof(init_programs) / sizeof(init_programs[0]); i++) {
  		printf("load_init_program: attempting to load %s\n", init_programs[i]);
