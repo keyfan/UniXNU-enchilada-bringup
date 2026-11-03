@@ -10,19 +10,30 @@ the device is the fuxi v40 state: cache preparation succeeds, dyld finds no
 cache, and the process ends before main.
 
 This patch runs no mount and changes no state.  shared_region_check_np is called
-by dyld twice per boot, before it opens the cache, so the four candidate
-directories are looked up there and their errno is recorded for the boot log.
+by dyld twice per boot, before it opens the cache, so the candidate paths are
+looked up there and their errno is recorded for the boot log.
 An earlier version of this probe lived in openat_internal and wedged the boot:
 launchd opens thousands of files while holding vnode locks and a copyinstr on
 every one of them stalls it.  Measured on the device with the same kernel bytes:
 twelve rounds with the open probe off, zero rounds with it on.
 
+Candidates 10-15 answer the next question rather than the cache one.  Every
+userland process that touches Objective-C aborts in imp_implementationWithBlock,
+because libobjc dlopens /usr/lib/libobjc-trampolines.dylib by absolute path and
+dyld reports "(no such file, not in dyld cache)"; pkd aborts likewise on
+/System/Library/PrivateFrameworks/PlugInKitDaemon.framework/PlugInKitDaemon.
+Both names appear in the SystemOS volume and neither appears in the shared cache
+image list, so the question is whether the composed root has them at all.  A
+lookup that returns 0 with vnode type 1 (VREG) says the file is there and the
+failures happen later, in decmpfs or in the sandbox; ENOENT says the OS volume
+of this image simply does not carry them and the fix has to supply the files.
+candidates 14 and 15 are libobjc.A.dylib, a file that is known to work, so a
+lookup that fails there means the probe itself is wrong.
+
 Controlled by boot-arg native-cryptex-dir, DEFAULT ON; native-cryptex-dir=0
 turns it off.
-
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
-diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
-index 8696353..74b54d9 100644
+index 8696353..dd4d2af 100644
 --- a/bsd/vm/vm_unix.c
 +++ b/bsd/vm/vm_unix.c
 @@ -100,6 +100,8 @@
@@ -34,7 +45,7 @@ index 8696353..74b54d9 100644
  #include <mach/shared_region.h>
  #include <vm/vm_shared_region.h>
  
-@@ -2089,6 +2091,60 @@ SYSCTL_INT(_vm, OID_AUTO, shared_region_persistence, CTLFLAG_RW | CTLFLAG_LOCKED
+@@ -2089,6 +2091,68 @@ SYSCTL_INT(_vm, OID_AUTO, shared_region_persistence, CTLFLAG_RW | CTLFLAG_LOCKED
   * ENOMEM	shared region is empty
   * EFAULT	bad address for "start_address"
   */
@@ -46,7 +57,7 @@ index 8696353..74b54d9 100644
 + * is the question the boot log could not answer before: dyld's diagnostics go
 + * to fd 2 and only the kernel's msgbuf reaches the log window.
 + */
-+#define NATIVE_CRYPTEX_RING 10
++#define NATIVE_CRYPTEX_RING 16
 +#define NATIVE_CRYPTEX_TEXT 96
 +static const char *const native_cryptex_candidates[NATIVE_CRYPTEX_RING] = {
 +	"/System/Library/Caches/com.apple.dyld",
@@ -59,6 +70,14 @@ index 8696353..74b54d9 100644
 +	"/usr/lib/dyld",
 +	"/private/preboot/System/Library/Caches/com.apple.dyld",
 +	"/private/preboot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
++	/* The two files whose absence aborts Objective-C and pkd, and controls that
++	 * are known to work so a failure of the probe itself is visible. */
++	"/usr/lib/libobjc-trampolines.dylib",
++	"/System/Library/PrivateFrameworks/PlugInKitDaemon.framework/PlugInKitDaemon",
++	"/System/Library/PrivateFrameworks/PlugInKitDaemon.framework",
++	"/usr/libexec/pkd",
++	"/usr/lib/libobjc.A.dylib",
++	"/usr/lib",
 +};
 +volatile int native_cryptex_dir_count;
 +volatile int native_cryptex_dir_error[NATIVE_CRYPTEX_RING];
@@ -95,7 +114,7 @@ index 8696353..74b54d9 100644
  int
  shared_region_check_np(
  	__unused struct proc                    *p,
-@@ -2116,6 +2172,9 @@ shared_region_check_np(
+@@ -2116,6 +2180,9 @@ shared_region_check_np(
  		return 0;
  	}
  

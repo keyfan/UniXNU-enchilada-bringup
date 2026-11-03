@@ -117,13 +117,17 @@ extern volatile uint32_t native_adreno_window_overflow[4][3] __attribute__((weak
 struct native_adreno_asker_record {char name[20]; uint32_t reads;};
 extern struct native_adreno_asker_record native_adreno_metal_askers[12] __attribute__((weak_import));
 extern char native_gpu_coherence_row[120] __attribute__((weak_import));
-// bsd/vm/vm_unix.c (boot-arg native-cryptex-dir, default on): the errno and size of each path where
+// bsd/vm/vm_unix.c (boot-arg native-cryptex-dir, default on): the errno and type of each path where
 // dyld's shared cache is supposed to be, looked up once per boot from shared_region_check_np.
 // (t: rows are the vnode type: 1 = VREG file, 2 = VDIR directory, 0 = lookup failed)
 // 3 = /private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld,
 // 4 = /System/Cryptexes/OS/System/Library/Caches/com.apple.dyld, 5 = /private/preboot,
 // 6 = /private/preboot/Cryptexes, 7 = /usr/lib/dyld.
-#define kCryptexRing 10
+// 10 = /usr/lib/libobjc-trampolines.dylib, 11 = PlugInKitDaemon.framework/PlugInKitDaemon,
+// 12 = PlugInKitDaemon.framework, 13 = /usr/libexec/pkd, 14 = /usr/lib/libobjc.A.dylib (control),
+// 15 = /usr/lib.  10 and 11 are the two files whose absence aborts every Objective-C process and
+// pkd; 14 and 15 are the controls that prove the lookup itself works.
+#define kCryptexRing 16
 extern volatile int native_cryptex_dir_count __attribute__((weak_import));
 extern volatile int native_cryptex_dir_error[kCryptexRing] __attribute__((weak_import));
 extern volatile uint64_t native_cryptex_dir_size[kCryptexRing] __attribute__((weak_import));
