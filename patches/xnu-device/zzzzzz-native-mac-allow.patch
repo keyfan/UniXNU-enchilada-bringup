@@ -7,11 +7,54 @@ The kernel answers "allowed" for read and metadata checks on that volume -- one
 only this kernel ever mounts -- and leaves write, create, unlink, setattr, exec
 and signature checks untouched.
 
+The vnode hooks cover file-read-data and file-read-metadata; the mapping check
+the sandbox reports as file-map-executable arrives through mac_file_check_mmap
+with a fileglob instead of a vnode, so it resolves the vnode and asks the same
+question.  kernel-153 measured what was left: K allow=7246343 with every
+read-side deny gone and all of the remaining 203 denies file-map-executable on
+the same two paths.
+
+diff --git a/security/mac_file.c b/security/mac_file.c
+index 4019395..671fa9d 100644
+--- a/security/mac_file.c
++++ b/security/mac_file.c
+@@ -46,6 +46,11 @@
+ #include <sys/file_internal.h>
+ 
+ #include <security/mac_internal.h>
++#include <pexpert/pexpert.h>
++
++/* security/mac_vfs.c answers read-side vnode checks on the SystemOS
++ * volume; see native_owner_mac_allow there. */
++extern int native_owner_mac_allow(struct vnode *vp);
+ 
+ int
+ mac_file_check_create(struct ucred *cred)
+@@ -177,6 +182,19 @@ mac_file_check_mmap(struct ucred *cred, struct fileglob *fg, int prot,
+ 	int error;
+ 	int maxp;
+ 
++	/* The cached-out libobjc trampolines are mapped executable straight from the
++	 * SystemOS volume, so answer the mapping check the same way the read-side
++	 * vnode checks are answered.  A/B: sheng-mac-allow=0. */
++	if (fg != NULL && FILEGLOB_DTYPE(fg) == DTYPE_VNODE) {
++		struct vnode *mvp = (struct vnode *)fg_get_data(fg);
++		if (mvp != NULL && vnode_getwithref(mvp) == 0) {
++			int allowed = native_owner_mac_allow(mvp);
++			vnode_put(mvp);
++			if (allowed) {
++				return 0;
++			}
++		}
++	}
+ 	maxp = *maxprot;
+ 	MAC_CHECK(file_check_mmap, cred, fg, NULL, prot, flags, offset, &maxp);
+ 	if ((maxp | *maxprot) != *maxprot) {
 diff --git a/security/mac_vfs.c b/security/mac_vfs.c
-index 91376bf..564204b 100644
+index 91376bf..7d4fe33 100644
 --- a/security/mac_vfs.c
 +++ b/security/mac_vfs.c
-@@ -88,10 +88,90 @@
+@@ -88,10 +88,94 @@
  #include <miscfs/devfs/fdesc.h>
  
  #include <security/mac_internal.h>
@@ -44,13 +87,17 @@ index 91376bf..564204b 100644
 +static mount_t native_mac_allow_mount[NATIVE_MAC_ALLOW_SLOTS];
 +static int native_mac_allow_verdict[NATIVE_MAC_ALLOW_SLOTS];
 +
++/* Called from security/mac_file.c as well, so this one is not static. */
++int
++native_owner_mac_allow(struct vnode *vp);
++
 +static int
 +native_mac_allow_slot(mount_t mnt)
 +{
 +	return ((int)(((uintptr_t)mnt >> 4) & (NATIVE_MAC_ALLOW_SLOTS - 1)));
 +}
 +
-+static int
++int
 +native_owner_mac_allow(struct vnode *vp)
 +{
 +	static int state = -1;
@@ -102,7 +149,7 @@ index 91376bf..564204b 100644
  
  /*
   * Optional tracing of policy operations. Define VFS_TRACE_POLICY_OPS to trace the operations.
-@@ -963,6 +1043,10 @@ mac_vnode_check_access(vfs_context_t ctx, struct vnode *vp,
+@@ -963,6 +1047,10 @@ mac_vnode_check_access(vfs_context_t ctx, struct vnode *vp,
  	}
  	/* Convert {R,W,X}_OK values to V{READ,WRITE,EXEC} for entry points */
  	mask = ACCESS_MODE_TO_VNODE_MASK(acc_mode);
@@ -113,7 +160,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(29, vp);
  	MAC_CHECK(vnode_check_access, cred, vp, mac_vnode_label(vp), mask);
  	VFS_KERNEL_DEBUG_END1(29, vp);
-@@ -1196,6 +1280,10 @@ mac_vnode_check_getattr(vfs_context_t ctx, struct ucred *file_cred,
+@@ -1196,6 +1284,10 @@ mac_vnode_check_getattr(vfs_context_t ctx, struct ucred *file_cred,
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -124,7 +171,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(39, vp);
  	MAC_CHECK(vnode_check_getattr, cred, file_cred, vp, mac_vnode_label(vp), va);
  	VFS_KERNEL_DEBUG_END1(39, vp);
-@@ -1219,6 +1307,10 @@ mac_vnode_check_getattrlist(vfs_context_t ctx, struct vnode *vp,
+@@ -1219,6 +1311,10 @@ mac_vnode_check_getattrlist(vfs_context_t ctx, struct vnode *vp,
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -135,7 +182,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(40, vp);
  	MAC_CHECK(vnode_check_getattrlist, cred, vp, mac_vnode_label(vp), alist, options);
  	VFS_KERNEL_DEBUG_END1(40, vp);
-@@ -1318,6 +1410,10 @@ mac_vnode_check_fsgetpath(vfs_context_t ctx, struct vnode *vp)
+@@ -1318,6 +1414,10 @@ mac_vnode_check_fsgetpath(vfs_context_t ctx, struct vnode *vp)
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -146,7 +193,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(42, vp);
  	MAC_CHECK(vnode_check_fsgetpath, cred, vp, mac_vnode_label(vp));
  	VFS_KERNEL_DEBUG_END1(42, vp);
-@@ -1496,6 +1592,10 @@ mac_vnode_check_getextattr(vfs_context_t ctx, struct vnode *vp,
+@@ -1496,6 +1596,10 @@ mac_vnode_check_getextattr(vfs_context_t ctx, struct vnode *vp,
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -157,7 +204,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(45, vp);
  	MAC_CHECK(vnode_check_getextattr, cred, vp, mac_vnode_label(vp),
  	    name, uio);
-@@ -1519,6 +1619,10 @@ mac_vnode_check_ioctl(vfs_context_t ctx, struct vnode *vp, u_long cmd)
+@@ -1519,6 +1623,10 @@ mac_vnode_check_ioctl(vfs_context_t ctx, struct vnode *vp, u_long cmd)
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -168,7 +215,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(46, vp);
  	MAC_CHECK(vnode_check_ioctl, cred, vp, mac_vnode_label(vp), cmd);
  	VFS_KERNEL_DEBUG_END1(46, vp);
-@@ -1590,6 +1694,10 @@ mac_vnode_check_listextattr(vfs_context_t ctx, struct vnode *vp)
+@@ -1590,6 +1698,10 @@ mac_vnode_check_listextattr(vfs_context_t ctx, struct vnode *vp)
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -179,7 +226,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(49, vp);
  	MAC_CHECK(vnode_check_listextattr, cred, vp, mac_vnode_label(vp));
  	VFS_KERNEL_DEBUG_END1(49, vp);
-@@ -1613,6 +1721,10 @@ mac_vnode_check_lookup_preflight(vfs_context_t ctx, struct vnode *dvp,
+@@ -1613,6 +1725,10 @@ mac_vnode_check_lookup_preflight(vfs_context_t ctx, struct vnode *dvp,
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -190,7 +237,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(50, dvp);
  	MAC_CHECK(vnode_check_lookup_preflight, cred, dvp, mac_vnode_label(dvp), path, pathlen);
  	VFS_KERNEL_DEBUG_END1(50, dvp);
-@@ -1636,6 +1748,10 @@ mac_vnode_check_lookup(vfs_context_t ctx, struct vnode *dvp,
+@@ -1636,6 +1752,10 @@ mac_vnode_check_lookup(vfs_context_t ctx, struct vnode *dvp,
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -201,7 +248,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(51, dvp);
  	MAC_CHECK(vnode_check_lookup, cred, dvp, mac_vnode_label(dvp), cnp);
  	VFS_KERNEL_DEBUG_END1(51, dvp);
-@@ -1658,6 +1774,10 @@ mac_vnode_check_open(vfs_context_t ctx, struct vnode *vp, int acc_mode)
+@@ -1658,6 +1778,10 @@ mac_vnode_check_open(vfs_context_t ctx, struct vnode *vp, int acc_mode)
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -212,7 +259,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(52, vp);
  	MAC_CHECK(vnode_check_open, cred, vp, mac_vnode_label(vp), acc_mode);
  	VFS_KERNEL_DEBUG_END1(52, vp);
-@@ -1681,6 +1801,10 @@ mac_vnode_check_read(vfs_context_t ctx, struct ucred *file_cred,
+@@ -1681,6 +1805,10 @@ mac_vnode_check_read(vfs_context_t ctx, struct ucred *file_cred,
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -223,7 +270,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(53, vp);
  	MAC_CHECK(vnode_check_read, cred, file_cred, vp,
  	    mac_vnode_label(vp));
-@@ -1705,6 +1829,10 @@ mac_vnode_check_readdir(vfs_context_t ctx, struct vnode *dvp)
+@@ -1705,6 +1833,10 @@ mac_vnode_check_readdir(vfs_context_t ctx, struct vnode *dvp)
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -234,7 +281,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(54, dvp);
  	MAC_CHECK(vnode_check_readdir, cred, dvp, mac_vnode_label(dvp));
  	VFS_KERNEL_DEBUG_END1(54, dvp);
-@@ -1727,6 +1855,10 @@ mac_vnode_check_readlink(vfs_context_t ctx, struct vnode *vp)
+@@ -1727,6 +1859,10 @@ mac_vnode_check_readlink(vfs_context_t ctx, struct vnode *vp)
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -245,7 +292,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(55, vp);
  	MAC_CHECK(vnode_check_readlink, cred, vp, mac_vnode_label(vp));
  	VFS_KERNEL_DEBUG_END1(55, vp);
-@@ -1837,6 +1969,10 @@ mac_vnode_check_searchfs(vfs_context_t ctx, struct vnode *vp, struct attrlist *r
+@@ -1837,6 +1973,10 @@ mac_vnode_check_searchfs(vfs_context_t ctx, struct vnode *vp, struct attrlist *r
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
@@ -256,7 +303,7 @@ index 91376bf..564204b 100644
  	VFS_KERNEL_DEBUG_START1(59, vp);
  	MAC_CHECK(vnode_check_searchfs, cred, vp, mac_vnode_label(vp), returnattrs, searchattrs);
  	VFS_KERNEL_DEBUG_END1(59, vp);
-@@ -2043,6 +2179,10 @@ mac_vnode_check_stat(vfs_context_t ctx, struct ucred *file_cred,
+@@ -2043,6 +2183,10 @@ mac_vnode_check_stat(vfs_context_t ctx, struct ucred *file_cred,
  	if (!mac_cred_check_enforce(cred)) {
  		return 0;
  	}
