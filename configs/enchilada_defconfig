@@ -61,16 +61,24 @@ CONFIG_XNU_OWNER_CACHE_STARTUP=y
 # shared_region_map_and_slide_2_np returning 0).  That is the configuration below.
 CONFIG_XNU_OWNER_UNION_SYSTEMOS=n
 CONFIG_XNU_OWNER_CACHE_CARRIER=y
-# The owner boot manifest publishes boot-manifest-hash/owner-boot-manifest-domain into /chosen after hashing the
-# OS (47,481,664 B) and SystemOS (25,805,344 B) manifest envelopes with SHA384. On the real OnePlus 6 (SDM845) that
-# is ~73 MiB of *software* SHA384 (device accelerated crypto: 0) in the prelinked corecrypto kext, and the first
-# device bring-up proved it deadlocks there (boot_log_rounds stuck at 1, enchilada-deadline timer never re-fires):
-# init pid 1 spins in SHA384_Update <- authenticatesVolume <- native_ufs_block_authenticates <- verifiedVolumeQuery
-# with interrupts masked. vfs_mountroot already mounted the root independently, so this DEVELOPMENT instrument
-# (offline-owner-boot-manifest.patch #errors unless DEVELOPMENT/DEBUG) is not required to reach console. Off.
-# Turning it off forces XNU_OWNER_DATA_MOUNT off too (offline-owner-systemos-mount.patch #errors otherwise), which
-# is fine: Data mount runs after cache_prepare returns and was never reached on-device anyway.
-CONFIG_XNU_OWNER_BOOT_MANIFEST=n
-CONFIG_XNU_OWNER_DATA_MOUNT=n
-CONFIG_XNU_OWNER_DATA_VOLUME_UUID="F24CB35D-F9D8-46C5-9164-F0655CCAFF9D"
+# The owner boot manifest publishes boot-manifest-hash/owner-boot-manifest-domain into /chosen. The shared
+# implementation does that by hashing the OS (47,481,664 B) and SystemOS (25,805,344 B) manifest envelopes with
+# SHA384 first. On the real OnePlus 6 (SDM845) that is ~73 MiB of *software* SHA384 (device accelerated
+# crypto: 0) in the prelinked corecrypto kext, and the first device bring-up proved it deadlocks there
+# (boot_log_rounds stuck at 1, enchilada-deadline timer never re-fires): init pid 1 spins in SHA384_Update <-
+# authenticatesVolume <- native_ufs_block_authenticates <- verifiedVolumeQuery with interrupts masked.
+# patches/xnu-device/offline-owner-boot-manifest.patch therefore reads /chosen first and treats an identity the
+# payload device tree already carries as success. The ADT supplies that identity (kernel.macho.adt
+# /chosen/boot-manifest-hash), which is where Apple's own boot loader puts it, so mount(8) reads
+# kern.bootobjectspath instead of failing with "failed to get boot-manifest-hash" and exiting 66 -- which
+# launchd treats as a fatal mount-phase-1 failure and panics on.
+# On is required for XNU_OWNER_DATA_MOUNT (offline-owner-systemos-mount.patch #errors otherwise), and the
+# writable Data volume is what /private/var needs: with only the read-only OS volume, tzinit exits 30 on
+# /var/db/timezone/zoneinfo and launchd panics with "Boot task failed: tzinit".
+CONFIG_XNU_OWNER_BOOT_MANIFEST=y
+CONFIG_XNU_OWNER_DATA_MOUNT=y
+# Must equal the volume UUID of the Data seed on the payload (scripts/make-data-seed-linux.py --volume-uuid, run
+# by .github/workflows/data-seed.yml). A mismatch is not a visible error: native_ram_block_volume_seed returns
+# ENOENT and load_init_program panics "offline scratch Data mount failed" just before launchd.
+CONFIG_XNU_OWNER_DATA_VOLUME_UUID="18AB5557-DC2D-469B-8758-855E60F5B0DF"
 CONFIG_XNU_BOOT_PROGRESS=y

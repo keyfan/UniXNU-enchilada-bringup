@@ -37,6 +37,14 @@ UNIXNU = ROOT.parent / 'UniXNU'
 # explain; an entry in this table is the audit trail.  The name is the patch filename, the value
 # is the one-line reason printed on every compose.
 OVERRIDES = {
+    # The shared publisher hashes 73 MiB of manifest envelopes in software SHA384 before it looks at
+    # /chosen, which deadlocks on this board (device accelerated crypto: 0).  This copy reads /chosen
+    # first and treats an identity the payload device tree already supplied as success, so
+    # XNU_OWNER_BOOT_MANIFEST can stay on and XNU_OWNER_DATA_MOUNT (the writable /private/var that
+    # tzinit needs) can be compiled in without paying that hash.
+    'offline-owner-boot-manifest.patch':
+        'checks /chosen before hashing and accepts an identity the device tree already carries, so the '
+        '73 MiB software SHA384 that deadlocks this board is never run',
     'offline-owner-systemos-mount.patch':
         'the union composition hands launchd no environment at all, so dyld never learns where the '
         'shared cache is; this copy names the directory the cryptex probe proved is readable',

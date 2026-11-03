@@ -94,6 +94,15 @@ def main():
     parser.add_argument('--persistent-data', action='store_true',
                         help='The Data disk keeps its writes across boots (sheng-data-persist): no ephemeral-storage, so first-boot data migration runs')
     parser.add_argument('--trust-cache', action='store_true', help='Zeroed TrustCache sidecar handoff placeholder')
+    parser.add_argument('--boot-manifest-hash', default=None,
+                        help='/chosen/boot-manifest-hash: 48 bytes as hex. kern.bootobjectspath '
+                             '(bsd/kern/kern_sysctl.c:2992 -> IOGetBootManifestHash, '
+                             'iokit/bsddev/IOKitBSDInit.cpp:540) reads this property and nothing else; without '
+                             'it mount -P 1 exits 66 and launchd panics. On Apple hardware the boot loader '
+                             'writes it; here it is the pinned VerifiedRoot.OwnerBootSet.v1 digest of the '
+                             'signed root image, a constant of that image rather than something to recompute '
+                             'at every boot (the 73 MiB of software SHA384 the in-kernel publisher needs is '
+                             'what deadlocked SDM845 bring-up).')
     parser.add_argument('--gpu-addon', action='store_true', help='Zeroed GpuAddon sidecar handoff placeholder (the loader fills in kernel.macho.gpuaddon)')
     parser.add_argument('--text-fixup', action='append', default=[],
                         help='/chosen/text-fixups entry <file name>,<file offset>,<original>,<replacement> for the kernel\'s signed-text fixups')
@@ -102,6 +111,15 @@ def main():
         parser.error('--unique-chip-id and --chip-id must be supplied together')
     if args.unique_chip_id is not None and not (0 < args.unique_chip_id < 1 << 64 and 0 < args.chip_id < 1 << 32):
         parser.error('--unique-chip-id must fit 8 bytes and --chip-id 4 bytes, both nonzero')
+    if args.boot_manifest_hash is not None:
+        try:
+            digest = bytes.fromhex(args.boot_manifest_hash)
+        except ValueError:
+            parser.error('--boot-manifest-hash must be hex')
+        if len(digest) != 48:
+            parser.error('--boot-manifest-hash must be 48 bytes (SHA-384), got %d' % len(digest))
+    else:
+        digest = None
     if args.owned_memory_size is not None and (
             not 0x10000000 <= args.owned_memory_size <= 0x200000000
             or args.owned_memory_size % 0x200000):
@@ -154,6 +172,7 @@ def main():
                         # Image4 hash algorithm. The target iPad's DT specifies sha2-384 in /chosen; this
                         # selects the algorithm only and asserts nothing about Apple silicon or fuses.
                         ('crypto-hash-method', b'sha2-384\0'),
+                        *([('boot-manifest-hash', digest)] if digest else []),
                         *( [('root-matching', ('<dict><key>IOProviderClass</key><string>IOMedia</string>'
                                                '<key>IOPropertyMatch</key><dict><key>UUID</key><string>' +
                                                args.root_match_volume_uuid.upper() + '</string></dict></dict>\0').encode())]
