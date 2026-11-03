@@ -18,7 +18,7 @@ the complete trees in the process root.  The union composition reaches them
 through its own union and needs no bind.  Never fatal:
 native_owner_system_bind_stage/status go to the boot log (3 = both bound).
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 8bba078..b592d38 100644
+index 8bba078..7277e32 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
 @@ -183,7 +183,7 @@
@@ -30,7 +30,7 @@ index 8bba078..b592d38 100644
  
  #include <mach/exclaves.h>
  
-@@ -7013,8 +7013,354 @@ create_unix_stack(vm_map_t map, load_result_t* load_result,
+@@ -7013,8 +7013,365 @@ create_unix_stack(vm_map_t map, load_result_t* load_result,
   *		word width of the kernel. Once the self-exec completes, the
   *		initproc might be different.
   */
@@ -246,6 +246,17 @@ index 8bba078..b592d38 100644
 +	}
 +	if (!native_owner_system_bind_status && system_bind == 3)
 +		native_owner_system_bind_stage = 3;
++	/* Mode 8 is the surgical one: /usr/lib is the only directory that has to
++	 * gain libobjc-trampolines.dylib, and it is also where the kernel looks
++	 * for dyld (mach_loader.c:3013).  Binding the whole /usr replaces far
++	 * more than that, so this mode keeps the change to one directory. */
++	if (!native_owner_system_bind_status && system_bind == 8) {
++		native_owner_system_bind_stage = 6;
++		native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x900,
++		    "/private/preboot/usr/lib", "/usr/lib");
++		if (!native_owner_system_bind_status)
++			native_owner_system_bind_stage = 7;
++	}
 +	if (!native_owner_system_bind_status && system_bind == 4) {
 +		native_owner_system_bind_stage = 4;
 +		native_owner_system_bind_status = native_owner_system_bind(p, scratch, scratch + 0x900,
@@ -386,7 +397,7 @@ index 8bba078..b592d38 100644
  {
  	int retval[2];
  	int error;
-@@ -7086,7 +7432,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
+@@ -7086,7 +7443,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
  	 */
  	init_exec_args.fname = argv0;
  	init_exec_args.argp = scratch_addr;
@@ -395,7 +406,7 @@ index 8bba078..b592d38 100644
  
  	/*
  	 * So that init task is set with uid,gid 0 token
-@@ -7148,6 +7494,15 @@ load_init_program(proc_t p)
+@@ -7148,6 +7505,15 @@ load_init_program(proc_t p)
  	mach_vm_size_t map_page_size = vm_map_page_size(map);
  
  	(void) mach_vm_allocate_kernel(map, &scratch_addr, map_page_size, VM_FLAGS_ANYWHERE, VM_KERN_MEMORY_NONE);
@@ -411,7 +422,7 @@ index 8bba078..b592d38 100644
  #if CONFIG_MEMORYSTATUS
  	(void) memorystatus_init_at_boot_snapshot();
  #endif /* CONFIG_MEMORYSTATUS */
-@@ -7162,7 +7517,7 @@ load_init_program(proc_t p)
+@@ -7162,7 +7528,7 @@ load_init_program(proc_t p)
  
  		if (is_release_suffix) {
  			printf("load_init_program: attempting to load /sbin/launchd\n");
@@ -420,7 +431,7 @@ index 8bba078..b592d38 100644
  			if (!error) {
  				return;
  			}
-@@ -7173,7 +7528,7 @@ load_init_program(proc_t p)
+@@ -7173,7 +7539,7 @@ load_init_program(proc_t p)
  			strlcat(launchd_path, launchd_suffix, sizeof(launchd_path));
  
  			printf("load_init_program: attempting to load %s\n", launchd_path);
@@ -429,7 +440,7 @@ index 8bba078..b592d38 100644
  			if (!error) {
  				return;
  			} else if (error != ENOENT) {
-@@ -7186,7 +7541,7 @@ load_init_program(proc_t p)
+@@ -7186,7 +7552,7 @@ load_init_program(proc_t p)
  	error = ENOENT;
  	for (i = 0; i < sizeof(init_programs) / sizeof(init_programs[0]); i++) {
  		printf("load_init_program: attempting to load %s\n", init_programs[i]);
