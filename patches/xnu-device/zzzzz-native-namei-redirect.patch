@@ -1,0 +1,121 @@
+Redirect the two dylibs that live outside the dyld shared cache to the SystemOS tree
+
+The base system's /usr/lib holds only dyld: every other dylib is in the shared
+cache.  libobjc-trampolines.dylib and PlugInKitDaemon are the two exceptions
+that are loaded by absolute path anyway, so without a redirect every
+Objective-C process aborts in imp_implementationWithBlock and pkd fails to
+start.  Both files are on SystemOS, mounted at /private/preboot.  Rewriting
+only these two names leaves /usr/lib/dyld -- and therefore the dyld that loads
+launchd -- exactly as it was; binding directories over the process root was
+measured and rejected because it replaced that dyld and the boot died in
+execve with OS_EXEC_REASON_BAD_MACHO.
+
+diff --git a/bsd/vfs/vfs_lookup.c b/bsd/vfs/vfs_lookup.c
+index 3db098f..ab2fc0e 100644
+--- a/bsd/vfs/vfs_lookup.c
++++ b/bsd/vfs/vfs_lookup.c
+@@ -94,6 +94,7 @@
+ #include <security/mac_framework.h>
+ #endif
+ #include <os/atomic_private.h>
++#include <pexpert/pexpert.h>
+ 
+ #include <sys/paths.h>
+ 
+@@ -113,6 +114,83 @@ static int vfs_getrealpath(const char * path, char * realpath, size_t bufsize, v
+ #endif
+ 
+ static int              lookup_traverse_mountpoints(struct nameidata *ndp, struct componentname *cnp, vnode_t dp, int vbusyflags, vfs_context_t ctx);
++/*
++ * Two dylibs are loaded by absolute path yet are not in the dyld shared cache:
++ * libobjc-trampolines.dylib (dlopened by libobjc from
++ * imp_implementationWithBlock) and PlugInKitDaemon (loaded by pkd at startup).
++ * The base system keeps an effectively empty /usr/lib -- every other dylib is
++ * in the shared cache and only dyld itself is a file there -- so both lookups
++ * fail with ENOENT and every Objective-C process aborts.  Both files are on
++ * the SystemOS volume, which is mounted at /private/preboot; rewrite exactly
++ * these two names to that tree and leave every other path alone, so dyld keeps
++ * resolving /usr/lib/dyld to the base system's own file.
++ *
++ * "sheng-namei-redirect=0" turns the rewrite off for an A/B run.
++ */
++static const char * const native_namei_redirect[][2] = {
++	{ "/usr/lib/libobjc-trampolines.dylib",
++	  "/private/preboot/usr/lib/libobjc-trampolines.dylib" },
++	{ "/System/Library/PrivateFrameworks/PlugInKitDaemon.framework/PlugInKitDaemon",
++	  "/private/preboot/System/Library/PrivateFrameworks/PlugInKitDaemon.framework/PlugInKitDaemon" },
++};
++
++volatile unsigned int native_namei_redirect_hits = 0;
++volatile unsigned int native_namei_redirect_error = 0;
++
++static int
++native_namei_redirect_enabled(void)
++{
++	static int state = -1;
++
++	if (state < 0) {
++		uint64_t enabled = 1;
++		if (!PE_parse_boot_argn("sheng-namei-redirect", &enabled, sizeof(enabled))) {
++			enabled = 1;
++		}
++		state = (enabled != 0) ? 1 : 0;
++	}
++	return state;
++}
++
++static void
++native_namei_redirect_path(struct nameidata *ndp, struct componentname *cnp)
++{
++	const char *target = NULL;
++	unsigned int i;
++
++	if (!native_namei_redirect_enabled()) {
++		return;
++	}
++	for (i = 0; i < (unsigned int)(sizeof(native_namei_redirect) / sizeof(native_namei_redirect[0])); i++) {
++		if (strcmp(cnp->cn_pnbuf, native_namei_redirect[i][0]) == 0) {
++			target = native_namei_redirect[i][1];
++			break;
++		}
++	}
++	if (target == NULL) {
++		return;
++	}
++	{
++		size_t len = strlen(target) + 1;
++		char *path = zalloc(ZV_NAMEI);
++
++		if (len > MAXPATHLEN) {
++			zfree(ZV_NAMEI, path);
++			native_namei_redirect_error = ENAMETOOLONG;
++			return;
++		}
++		memcpy(path, target, len);
++		if (cnp->cn_flags & HASBUF) {
++			zfree(ZV_NAMEI, cnp->cn_pnbuf);
++		}
++		cnp->cn_pnbuf = path;
++		cnp->cn_pnlen = MAXPATHLEN;
++		ndp->ni_pathlen = (u_int)len;
++		cnp->cn_flags |= HASBUF;
++		native_namei_redirect_hits++;
++	}
++}
++
+ static int              lookup_handle_symlink(struct nameidata *ndp, vnode_t *new_dp, bool* dp_has_iocount, vfs_context_t ctx);
+ static int              lookup_authorize_search(vnode_t dp, struct componentname *cnp, int dp_authorized_in_cache, vfs_context_t ctx);
+ static void             lookup_consider_update_cache(vnode_t dvp, vnode_t vp, struct componentname *cnp, int nc_generation);
+@@ -319,6 +397,12 @@ retry_copy:
+ 	}
+ #endif /* CONFIG_VOLFS */
+ 
++	/*
++	 * Redirect the two cached-out dylibs to the SystemOS tree before the
++	 * pathname is split into components.  See native_namei_redirect above.
++	 */
++	native_namei_redirect_path(ndp, cnp);
++
+ #if CONFIG_AUDIT
+ 	/* If we are auditing the kernel pathname, save the user pathname */
+ 	if (cnp->cn_flags & AUDITVNPATH1) {

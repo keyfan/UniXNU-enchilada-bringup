@@ -131,6 +131,12 @@ extern char native_gpu_coherence_row[120] __attribute__((weak_import));
 extern volatile int native_cryptex_dir_count __attribute__((weak_import));
 extern volatile int native_cryptex_dir_error[kCryptexRing] __attribute__((weak_import));
 extern volatile uint64_t native_cryptex_dir_size[kCryptexRing] __attribute__((weak_import));
+// The namei redirect (zzzzz-native-namei-redirect.patch) rewrites the two dylibs that are loaded by
+// absolute path but live only in the dyld shared cache's absence -- libobjc-trampolines.dylib and
+// PlugInKitDaemon -- to the SystemOS tree at /private/preboot.  "R hits= errors=" answers whether the
+// rewrite fired at all and whether it ran out of path space.
+extern volatile unsigned int native_namei_redirect_hits __attribute__((weak_import));
+extern volatile unsigned int native_namei_redirect_error __attribute__((weak_import));
 // The 4K signature hash cache (native-4k-signature-hash-cache.patch).  A growing "full" with a frozen
 // "pages" means launchd is still reading and hashing the 16K signature blocks of the dyld cache; pages
 // climbing means it has moved on to publishing 4K page hashes.  Either way it is progress, not a wedge.
@@ -371,6 +377,17 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       }
       at = put(out, at, cap, row, sizeof row);
     }
+  }
+  // The namei redirect: "R hits=" counts how many times one of the two cached-out dylib paths was
+  // rewritten to the SystemOS tree; "err=" is set only if the longer path did not fit in MAXPATHLEN.
+  // hits climbing means libobjc and pkd are resolving; hits staying 0 with an ENOTDIR/ENOENT boot
+  // means the two names never reached namei as absolute paths.
+  if (&native_namei_redirect_hits) {
+    char row[80];
+    snprintf(row, sizeof row, "R hits=%u err=%u",
+             native_namei_redirect_hits,
+             &native_namei_redirect_error ? native_namei_redirect_error : 0);
+    at = put(out, at, cap, row, sizeof row);
   }
   // The 4K signature hash cache (native-4k-signature-hash-cache.patch).  "C full= ready= pages= bytes=" answers
   // whether launchd spends the boot inside cs_validate_codedirectory deriving 4K page hashes from the 16K
