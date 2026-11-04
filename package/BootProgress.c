@@ -678,7 +678,8 @@ void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t
 // The description the dying process handed to abort_with_payload (kern_exit.c reads it out of the exit reason and
 // passes it here).  This is the only place the text of an uncaught exception can be read from: _objc_fatal formats
 // into its own stack frame, so the heap scan that fills exit_records.reason finds nothing (kernel-158: 991 of 1169
-// crash reports were one _objc_fatalv abort with an empty REASON row).  Off unless sheng-exit-reason is 1.
+// crash reports were one _objc_fatalv abort with an empty REASON row).  On by default, because a run that dies
+// without the text has to be repeated to learn nothing; sheng-exit-reason=0 turns it off.
 void boot_progress_exit_desc(int pid,const char *desc) {
   // The pid is kept in the signature so a later pass can match the description to its own record; the
   // reason string alone is what the REASON row needs.
@@ -686,7 +687,7 @@ void boot_progress_exit_desc(int pid,const char *desc) {
   static int enabled=-1;
   if(enabled<0) {
     unsigned value=0;
-    enabled=(PE_parse_boot_argn("sheng-exit-reason",&value,sizeof(value)) && value)?1:0;
+    enabled=(PE_parse_boot_argn("sheng-exit-reason",&value,sizeof(value)) && !value)?0:1;
   }
   if(!enabled || !desc || !desc[0])return;
   if(__atomic_exchange_n(&exit_lock,1,__ATOMIC_ACQUIRE)) {
