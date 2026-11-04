@@ -175,6 +175,30 @@ void native_legacy_frame_observed(unsigned kind,uint64_t count,uint64_t minx,uin
     }
     native_legacy_frame_count=n+1;
 }
+// Late frames: one in every lateScanEvery swaps, long after the first-32 budget is gone.  Without these the only
+// description of the picture came from t=20..21 s, when nothing had drawn yet; the OS can be swapping for
+// fifteen minutes and the log would still show an empty screen.  Sixteen samples over a run say whether the
+// compositor ever produced content, and the time of each says when.
+#define NATIVE_LEGACY_LATE 16
+volatile uint32_t native_legacy_late_count;
+volatile uint32_t native_legacy_late_time[NATIVE_LEGACY_LATE];
+volatile uint64_t native_legacy_late_stats[NATIVE_LEGACY_LATE][5];
+volatile uint32_t native_legacy_late_colors[NATIVE_LEGACY_LATE][4];
+volatile uint64_t native_legacy_late_color_counts[NATIVE_LEGACY_LATE][4];
+void native_legacy_late_frame_observed(uint64_t count,uint64_t minx,uint64_t miny,uint64_t maxx,uint64_t maxy,
+    const uint32_t *colors,const uint64_t *counts) {
+    uint32_t n=native_legacy_late_count;
+    uint64_t now,frequency;
+    __asm__ volatile("isb\n\tmrs %0, cntpct_el0":"=r"(now));__asm__ volatile("mrs %0, cntfrq_el0":"=r"(frequency));
+    if(!frameEpoch)frameEpoch=now;
+    uint32_t slot=n%NATIVE_LEGACY_LATE;
+    native_legacy_late_time[slot]=frequency?(uint32_t)((now-frameEpoch)/frequency):0;
+    native_legacy_late_stats[slot][0]=count;native_legacy_late_stats[slot][1]=minx;native_legacy_late_stats[slot][2]=miny;
+    native_legacy_late_stats[slot][3]=maxx;native_legacy_late_stats[slot][4]=maxy;
+    for(unsigned i=0;i<4;++i){native_legacy_late_colors[slot][i]=colors[i];native_legacy_late_color_counts[slot][i]=counts[i];}
+    __asm__ volatile("dmb ish" ::: "memory");
+    native_legacy_late_count=n+1;
+}
 volatile uint32_t native_legacy_frame_colors[8][4];
 volatile uint64_t native_legacy_frame_color_counts[8][4],native_legacy_frame_color_other[8];
 // Called right after the matching native_legacy_frame_observed(); fills slot count-1 (or the blank slot).

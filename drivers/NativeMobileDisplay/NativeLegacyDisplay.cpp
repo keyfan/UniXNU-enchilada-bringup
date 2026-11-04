@@ -32,6 +32,8 @@ extern "C" uint64_t native_legacy_surface_stride(OSObject *),native_legacy_surfa
 extern "C" uint32_t native_legacy_surface_format(OSObject *),native_legacy_surface_planes(OSObject *);
 extern "C" void native_legacy_frame_observed(unsigned kind,uint64_t count,uint64_t minx,uint64_t miny,uint64_t maxx,uint64_t maxy);
 extern "C" void native_legacy_frame_colors_observed(const uint32_t *colors,const uint64_t *counts,uint64_t other);
+extern "C" void native_legacy_late_frame_observed(uint64_t count,uint64_t minx,uint64_t miny,uint64_t maxx,uint64_t maxy,
+    const uint32_t *colors,const uint64_t *counts);
 extern "C" void native_legacy_swap_validation_observed(bool,unsigned,const void *,const void *);
 // The surface of a rejected swap, as the validator read it: width, height, format, planes, stride, allocation, descriptor length.
 extern "C" void native_legacy_surface_rejected(uint64_t,uint64_t,uint32_t,uint32_t,uint64_t,uint64_t,uint64_t);
@@ -141,6 +143,13 @@ class NativeLegacyDisplay : public IOMobileFramebufferLegacy {
         __asm__ volatile("dmb ish" ::: "memory");out.valid=1;
     }
     uint32_t scanBudget=32;
+    // The content scan reads every pixel twice, so the first frames are all it can afford.  After the
+    // budget is spent nothing described the picture again, and a phone at t=900 s could only be judged
+    // from a photograph.  One frame in every lateScanEvery swaps is scanned afterwards instead, into a
+    // small ring that BootLog prints: a late frame that is still empty after the compositor has been
+    // swapping for minutes is the difference between "the UI never drew" and "the scanout lost it".
+    uint32_t lateScanEvery=1024;
+    uint32_t lateScanCounter=0;
     void *shadow=nullptr;uint64_t shadowBytes=0;bool shadowValid=false;
     bool primary=false;
     bool logicalPM=false;
@@ -417,6 +426,14 @@ public:
             uint32_t colors[4];uint64_t counts[4],other=0;
             if(native_legacy_frame_colors(reinterpret_cast<const void *>(source->getVirtualAddress()),source->getLength(),sourceStride,width,height,colors,counts,&other))
                 native_legacy_frame_colors_observed(colors,counts,other);
+        } else if(lateScanEvery && ++lateScanCounter>=lateScanEvery) {
+            lateScanCounter=0;
+            uint64_t scan[5];
+            if(native_legacy_frame_scan(reinterpret_cast<const void *>(source->getVirtualAddress()),source->getLength(),sourceStride,width,height,scan)) {
+                uint32_t colors[4];uint64_t counts[4],other=0;
+                native_legacy_frame_colors(reinterpret_cast<const void *>(source->getVirtualAddress()),source->getLength(),sourceStride,width,height,colors,counts,&other);
+                native_legacy_late_frame_observed(scan[0],scan[1],scan[2],scan[3],scan[4],colors,counts);
+            }
         }
         if(!native_legacy_prepare_scanout()) {
             OSSafeReleaseNULL(source);native_legacy_transfer_observed(kIOReturnNotReady,request,0);return;

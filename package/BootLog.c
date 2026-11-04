@@ -141,6 +141,13 @@ extern volatile unsigned int native_namei_redirect_error __attribute__((weak_imp
 // itself, because every immutable sandbox profile denies /private/preboot while both cached-out dylibs are
 // served from there.  "K allow=" counts those checks.
 extern volatile unsigned int native_owner_mac_allow_hits __attribute__((weak_import));
+// Late presented frames (NativeLegacyDisplay.cpp lateScanEvery): sixteen samples of the composite after the
+// first-32 scan budget ran out, each with its non-zero pixel count and bounding box.
+extern volatile uint32_t native_legacy_late_count __attribute__((weak_import));
+extern volatile uint32_t native_legacy_late_time[16] __attribute__((weak_import));
+extern volatile uint64_t native_legacy_late_stats[16][5] __attribute__((weak_import));
+extern volatile uint32_t native_legacy_late_colors[16][4] __attribute__((weak_import));
+extern volatile uint64_t native_legacy_late_color_counts[16][4] __attribute__((weak_import));
 // The 4K signature hash cache (native-4k-signature-hash-cache.patch).  A growing "full" with a frozen
 // "pages" means launchd is still reading and hashing the 16K signature blocks of the dyld cache; pages
 // climbing means it has moved on to publishing 4K page hashes.  Either way it is progress, not a wedge.
@@ -401,6 +408,33 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     char row[64];
     snprintf(row, sizeof row, "K allow=%u", native_owner_mac_allow_hits);
     at = put(out, at, cap, row, sizeof row);
+  }
+  // Late presented frames: one sample in every lateScanEvery swaps after the first-32 budget is gone, so a phone
+  // that has been compositing for fifteen minutes is described too.  "L n= samples t=" is the ring's fill and the
+  // seconds since the first frame of each sample; each "L<n> t<n>s c=<nonzero pixels>/<total> x=.. y=.." row is one
+  // sample: c=0 with the compositor still swapping means the UI never drew, c large means scanout or panel.
+  if (&native_legacy_late_count) {
+    char row[200];
+    unsigned n = native_legacy_late_count;
+    if (n > 16) n = 16;
+    int at2 = 0;
+    at2 += snprintf(row + at2, sizeof row - at2, "L n=%u t:", n);
+    for (unsigned i = 0; i < n && at2 > 0 && at2 < (int)sizeof row - 12; ++i)
+      at2 += snprintf(row + at2, sizeof row - at2, " %u", native_legacy_late_time[i]);
+    at = put(out, at, cap, row, sizeof row);
+    for (unsigned i = 0; i < n; ++i) {
+      at2 = 0;
+      at2 += snprintf(row + at2, sizeof row - at2, "L%u t%us c=%llu m=%llx,%llx,%llx,%llx p=%08x:%llu",
+                      i, native_legacy_late_time[i],
+                      (unsigned long long)native_legacy_late_stats[i][0],
+                      (unsigned long long)native_legacy_late_stats[i][1],
+                      (unsigned long long)native_legacy_late_stats[i][2],
+                      (unsigned long long)native_legacy_late_stats[i][3],
+                      (unsigned long long)native_legacy_late_stats[i][4],
+                      (unsigned)native_legacy_late_colors[i][0],
+                      (unsigned long long)native_legacy_late_color_counts[i][0]);
+      at = put(out, at, cap, row, sizeof row);
+    }
   }
   // The 4K signature hash cache (native-4k-signature-hash-cache.patch).  "C full= ready= pages= bytes=" answers
   // whether launchd spends the boot inside cs_validate_codedirectory deriving 4K page hashes from the 16K
