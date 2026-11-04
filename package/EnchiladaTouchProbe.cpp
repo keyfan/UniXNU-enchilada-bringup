@@ -119,7 +119,7 @@ enum Pin {kSda, kScl, kVio, kRst, kInt, kPins};
 const unsigned kGpio[kPins] = {FTB_GPIO_SDA, FTB_GPIO_SCL, FTB_GPIO_VIO, FTB_GPIO_RST, FTB_GPIO_INT};
 
 struct Options {
-    unsigned stage, hz, power, pdt, rmiReset, maxX, maxY, orient, rate, irq, pollAll, letterbox, view;
+    unsigned stage, hz, power, pdt, rmiReset, maxX, maxY, orient, rate, irq, pollAll, letterbox, view, swipe;
 };
 
 // The outcome of the panel's power vote (see railPower below): the TCS it took and the registers it read back.
@@ -158,6 +158,10 @@ struct Session {
     struct ftb_view view;           // the display mapping of the last frame
     uint8_t lastStatus;
     int lastRc;
+    // The synthetic stroke (enchilada-touch-swipe): when the poll loop began (ms, see touchMs) and how many frames the
+    // stroke has played.  A zero startMs means the loop has not begun yet.
+    uint32_t startMs;
+    unsigned swipeFrames;
 };
 
 void fail(unsigned step, int code) {
@@ -560,6 +564,26 @@ void publish(Session &s, unsigned count, const struct rmi_contact *c) {
     if (void (*sink)(void *) = __atomic_load_n(&gTouchSink, __ATOMIC_ACQUIRE)) sink(gTouchSinkContext);
 }
 
+// One synthetic finger travelling up the panel: the welcome screen's "swipe up to open" gate, played through publish() so
+// the HID stack cannot tell it from a real one.  The path is a straight line from the bottom of the panel to the top over
+// 240 ms -- the speed of a person's swipe, because a drag the system reads as too slow is not a swipe at all.
+void playSwipe(Session &s, unsigned frame) {
+    const unsigned kFrames = 24;
+    if (frame == kFrames) {   // the stroke is over: lift the finger, once
+        publish(s, 0, nullptr);
+        return;
+    }
+    if (frame > kFrames) return;
+    struct rmi_contact c[1];
+    c[0] = rmi_contact{};
+    c[0].id = 1;
+    c[0].type = 1;            // finger
+    c[0].z = 40;
+    c[0].x = static_cast<uint16_t>(s.map.max_x ? s.map.max_x / 2 : 540);
+    c[0].y = static_cast<uint16_t>((static_cast<uint64_t>(s.map.max_y ? s.map.max_y : 2279) * (kFrames - 1 - frame)) / (kFrames - 1));
+    ++s.swipeFrames;
+    publish(s, 1, c);
+}
 void loopRow(const Session &s) {
     Out o(enchilada_touch_rows[6], sizeof enchilada_touch_rows[6]);
     o.add("FT4 polls%u irq%u fr%u cf%u c%u dn%u lb%u/%u raw%d,%d ext x%d..%d y%d..%d st%02x err%u back%u recfg%u gpio%u/%u",
@@ -567,6 +591,9 @@ void loopRow(const Session &s) {
           enchilada_touch_letterbox[0], enchilada_touch_letterbox[1], enchilada_touch_raw[0], enchilada_touch_raw[1], enchilada_touch_raw[2],
           enchilada_touch_raw[3], enchilada_touch_raw[4], enchilada_touch_raw[5], s.lastStatus, s.busErrors, s.backoffs, s.reconfigs,
           native_touch_irq_stats[1], native_touch_irq_stats[2]);
+    // The synthetic stroke, when one is configured: the frame counter is the only way to tell from the window whether the
+    // driver actually played it (the HID side counts it as an ordinary report).
+    if (s.opt.swipe) o.add(" sw%u", s.swipeFrames);
     // The HID side: NativeHidInput started, its event-driver checks, the touch reports the driver took (and the last IOReturn),
     // the reports counted here, the edge wrapper (installed, contacts begun, of them at an edge), and the event service:
     // checkpoints that found it, open (isOpen), DeviceOpenedByEventSystem, user clients, TouchDetectionMode (- = never set),
@@ -625,6 +652,15 @@ static void pollLoop(Session &s) {
     for (;;) {
         native_touch_loop_step = 1;
         ++s.polls;
+        if (s.opt.swipe) {
+            if (!s.startMs) s.startMs = touchMs();
+            // One stroke, `swipe` seconds in: the welcome screen has had time to draw by then, and the stroke is early
+            // enough that a person watching still sees the result.  The 4 s guard stops the stroke from replaying
+            // forever if the loop keeps running long after it.
+            const uint32_t elapsed = touchMs() - s.startMs;
+            const uint32_t start = s.opt.swipe * 1000;
+            if (elapsed >= start && elapsed < start + 4000) playSwipe(s, (elapsed - start) / 40);
+        }
         uint8_t status = 0;
         uint32_t irq = 0;
         int rc = rmi_read_irq(&r, &status, &irq);
@@ -695,6 +731,13 @@ static void readOptions(Options &o) {
     if (o.rate < 10 || o.rate > 250) o.rate = 100;
     PE_parse_boot_argn("enchilada-touch-irq", &o.irq, sizeof o.irq);
     PE_parse_boot_argn("enchilada-touch-poll-all", &o.pollAll, sizeof o.pollAll);
+    // enchilada-touch-swipe=<seconds>: the driver plays one upward swipe of its own, starting that many seconds after the
+    // poll loop begins, through publish() -- the same entry point a finger uses, so NativeHidInput sees an ordinary
+    // digitizer report.  The welcome screen's "swipe up to open" is the first thing Setup Assistant asks for and the one
+    // thing this bring-up cannot do without somebody at the phone; the gesture is a diagnostic, not a substitute for the
+    // panel (the touch controller is still read every period, and a real finger keeps working).
+    PE_parse_boot_argn("enchilada-touch-swipe", &o.swipe, sizeof o.swipe);
+    if (o.swipe > 3600) o.swipe = 3600;
 }
 
 static void touchThread(void *, wait_result_t) {
