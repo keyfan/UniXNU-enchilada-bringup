@@ -675,6 +675,25 @@ void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t
   }
   __atomic_store_n(&exit_lock,0,__ATOMIC_RELEASE);
 }
+// The description the dying process handed to abort_with_payload (kern_exit.c reads it out of the exit reason and
+// passes it here).  This is the only place the text of an uncaught exception can be read from: _objc_fatal formats
+// into its own stack frame, so the heap scan that fills exit_records.reason finds nothing (kernel-158: 991 of 1169
+// crash reports were one _objc_fatalv abort with an empty REASON row).  Off unless sheng-exit-reason is 1.
+void boot_progress_exit_desc(int pid,const char *desc) {
+  static int enabled=-1;
+  if(enabled<0) {
+    unsigned value=0;
+    enabled=(PE_parse_boot_argn("sheng-exit-reason",&value,sizeof(value)) && value)?1:0;
+  }
+  if(!enabled || !desc || !desc[0])return;
+  if(__atomic_exchange_n(&exit_lock,1,__ATOMIC_ACQUIRE)) {
+    __atomic_fetch_add(&exit_dropped,1,__ATOMIC_RELAXED);return;
+  }
+  // The spawn section prints this as its REASON row, right above the CRASH rows, so the text and the
+  // registers of the same death stay together.
+  strlcpy(exit_records.reason,desc,sizeof(exit_records.reason));
+  __atomic_store_n(&exit_lock,0,__ATOMIC_RELEASE);
+}
 // The log's [spawn] section (BootLog.c): the throw site of the last uncaught exception, then the census as name starts/exits@second of the first
 // start, three to a row.
 size_t boot_progress_spawn_rows(char *out,size_t cap) {
