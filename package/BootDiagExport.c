@@ -30,11 +30,14 @@ static char *diag_note;   // diag-skipped.txt
 static size_t diag_note_used;
 volatile uint32_t boot_diag_files, boot_diag_skipped, boot_diag_errors;
 
-// In the order of their worth: the format strings of earlier runs are on the host already, and the crash reports are rarely needed.
+// In the order of their worth, because worth() spends the budget by root first.  The crash reports lead: a run whose
+// process died leaves the answer in a .ips and nowhere else, while the tracev3 set is 100+ MB of mostly framework noise
+// that used to take the whole budget (kernel-157: 445 files kept, every CrashReporter entry skipped).  uuidtext format
+// strings trail because they only change with the binaries, so the host already keeps those of earlier runs.
 static const char *const diag_roots[] = {
+  "/private/var/mobile/Library/Logs/CrashReporter",
   "/private/var/db/diagnostics",
   "/private/var/db/uuidtext",
-  "/private/var/mobile/Library/Logs/CrashReporter",
 };
 extern volatile uint64_t native_gop_virtual __attribute__((weak_import));
 extern uint64_t armcpu_map_physical(uint64_t physical, uint64_t length) __attribute__((weak_import));
