@@ -680,6 +680,9 @@ void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t
 // into its own stack frame, so the heap scan that fills exit_records.reason finds nothing (kernel-158: 991 of 1169
 // crash reports were one _objc_fatalv abort with an empty REASON row).  Off unless sheng-exit-reason is 1.
 void boot_progress_exit_desc(int pid,const char *desc) {
+  // The pid is kept in the signature so a later pass can match the description to its own record; the
+  // reason string alone is what the REASON row needs.
+  (void)pid;
   static int enabled=-1;
   if(enabled<0) {
     unsigned value=0;
