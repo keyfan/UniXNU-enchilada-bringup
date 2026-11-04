@@ -24,6 +24,12 @@ extern "C" {
 
 #define FTB_CMD_DB_BASE 0x861e0000ULL
 #define FTB_CMD_DB_SIZE 0x20000u
+// enchilada.dts gives the cmd-db node reg = <0xc3f000c 0x08>: eight bytes in the AOSS message RAM, not the table itself. The
+// kernel asks that pointer where the database is; a build whose bootloader fills it differently leaves 0x861e0000 valid, so the
+// probe tests the node's own address first and this word second.
+#define FTB_CMD_DB_POINTER 0xc3f000cu
+#define FTB_CMD_DB_POINTER_PAGE 0xc3f0000ULL
+#define FTB_CMD_DB_POINTER_SIZE 0x1000u
 #define FTB_APPS_RSC_BASE 0x179e0000ULL
 #define FTB_APPS_RSC_SIZE 0x10000u
 #define FTB_RSC_TCS 0xd00u
@@ -54,9 +60,14 @@ static inline bool ftb_fits(size_t at, size_t length, size_t size) {return at <=
 // Header: u32 version, u32 magic, 8 slave records of 16 bytes (u16 id, header offset, data offset, entry count, ...), then the data
 // area every offset counts from (byte 144). Entries are 24 bytes: an 8-byte id, two u32 priorities, u32 address, u16 aux length,
 // u16 aux offset; the level list behind aux is a zero-padded u16 array. Returns false when the database has no such name.
+// A database starts with a header whose second word is the magic; both candidates are tested with this before either is parsed.
+static inline bool ftb_cmd_db_has_header(const uint8_t *db, size_t bytes) {
+    return db && bytes >= 144 && ftb_le32(db + 4) == FTB_CMD_DB_MAGIC;
+}
+
 static inline bool ftb_cmd_db_find(const uint8_t *db, size_t bytes, const char *name, ftb_rpmh_resource *out) {
     if (!db || !name || !out) return false;
-    if (bytes < 144 || ftb_le32(db + 4) != FTB_CMD_DB_MAGIC) return false;
+    if (!ftb_cmd_db_has_header(db, bytes)) return false;
     char id[8] = {0};
     for (unsigned i = 0; i < 8 && name[i]; i++) id[i] = name[i];
     for (unsigned s = 0; s < 8; s++) {

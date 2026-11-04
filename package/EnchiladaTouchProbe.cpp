@@ -127,6 +127,8 @@ struct Rail {
     int rc;                 // 0 = the vote went out
     uint32_t drvId, address, control, status;
     unsigned tcs, writes;
+    uint64_t db;            // the cmd-db base that carried the header (see railPower)
+    uint32_t dbWord;        // what the node's eight-byte reg held, when it was not the table itself
 };
 
 struct Session {
@@ -266,13 +268,34 @@ bool snapshot(Session &s) {
 // vreg_l28a_3p0 feeds the controller. Linux raises it with an RPMh regulator vote; this kernel had no RPMh user at all, so the rail
 // stayed wherever the bootloader left it. The 1.8 V enable on GPIO 88 is only the level shifter, which is why the ACK probe below
 // found two idle lines and a silent part instead of an address NACK. EnchiladaTouchRpmh.h holds the lookup and the write sequence.
+// Where the database is. enchilada.dts gives the cmd-db node reg = <0xc3f000c 0x08>, an eight-byte word in the AOSS message RAM
+// instead of the table: the kernel reads that word to find the table. Both readings are tried, the node's own address first, so a
+// bootloader that fills the word differently from the one this image expects still leaves the probe working.
+static uint64_t cmdDbBase(Session &s, uint32_t *word) {
+    *word = 0;
+    Region page;
+    if (mapRegion(FTB_CMD_DB_POINTER_PAGE, FTB_CMD_DB_POINTER_SIZE, page)) *word = rd32(page.va, FTB_CMD_DB_POINTER & 0xfff);
+    const uint64_t candidates[2] = {FTB_CMD_DB_BASE, (uint64_t)*word};
+    for (unsigned i = 0; i < 2; i++) {
+        const uint64_t base = candidates[i];
+        // A plausible table has to be in RAM and page aligned; anything else is the node's own unused address.
+        if (i && (base < 0x80000000ull || base > 0xffffffffull || (base & 0xfffull))) continue;
+        Region probe;
+        if (!mapRegion(base, FTB_CMD_DB_SIZE, probe)) continue;
+        if (ftb_cmd_db_has_header(reinterpret_cast<const uint8_t *>(probe.va), FTB_CMD_DB_SIZE)) return base;
+    }
+    return 0;
+}
+
 static Rail railPower(Session &s) {
     Rail rail = {};
     rail.rc = -12;
-    if (!mapRegion(FTB_CMD_DB_BASE, FTB_CMD_DB_SIZE, s.cmdDb) || !mapRegion(FTB_APPS_RSC_BASE, FTB_APPS_RSC_SIZE, s.rsc)) return rail;
+    rail.db = cmdDbBase(s, &rail.dbWord);
+    if (!rail.db) {rail.rc = -19; return rail;}   // neither address carries a cmd-db header
+    if (!mapRegion(rail.db, FTB_CMD_DB_SIZE, s.cmdDb) || !mapRegion(FTB_APPS_RSC_BASE, FTB_APPS_RSC_SIZE, s.rsc)) return rail;
     ftb_rpmh_resource res;
     if (!ftb_cmd_db_find(reinterpret_cast<const uint8_t *>(s.cmdDb.va), FTB_CMD_DB_SIZE, "ldoa28", &res)) {
-        rail.rc = -19;   // no such resource in the database
+        rail.rc = -19;   // the header is there but no ldoa28 entry is
         return rail;
     }
     rail.address = res.address;
@@ -343,8 +366,9 @@ bool enable(Session &s) {
         // the part is powered. The 1.8 V enable on GPIO 88 powers the level shifter, not the controller.
         native_touch_step = 21;
         s.rail = railPower(s);
-        o.add(" rail%d tcs%u drv%08x a%08x ctl%08x st%08x w%u", s.rail.rc, s.rail.tcs, s.rail.drvId, s.rail.address,
-              s.rail.control, s.rail.status, s.rail.writes);
+        Out r(enchilada_touch_rows[9], sizeof enchilada_touch_rows[9]);
+        r.add("RAIL rc%d db%llx w%08x tcs%u drv%08x a%08x ctl%08x st%08x n%u", s.rail.rc, s.rail.db, s.rail.dbWord,
+              s.rail.tcs, s.rail.drvId, s.rail.address, s.rail.control, s.rail.status, s.rail.writes);
         native_touch_step = 22;
         pinOut(s, kVio, true);
         pinWrite(s, kVio, ftb_pin_cfg(FTB_FUNC_GPIO, 2, FTB_PULL_NONE, 1));
