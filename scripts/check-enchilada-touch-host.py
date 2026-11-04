@@ -21,6 +21,7 @@ TESTS = [
     ('rmi4-test', [RMI / 'tests/rmi4-test.cpp'], ['Rmi4']),
     ('enchilada-touch-board-test', [PKG / 'tests/enchilada-touch-board-test.cpp'], ['GeniI2c', 'Rmi4']),
     ('enchilada-touch-chain-test', [PKG / 'tests/enchilada-touch-chain-test.cpp', I2C / 'tests/FakeGeniI2c.cpp'], ['GeniI2c', 'Rmi4']),
+    ('enchilada-touch-rpmh-test', [PKG / 'tests/enchilada-touch-rpmh-test.cpp'], []),
 ]
 SOURCES = {'GeniI2c': I2C / 'GeniI2c.c', 'Rmi4': RMI / 'Rmi4.c'}
 

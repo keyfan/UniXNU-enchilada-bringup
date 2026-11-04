@@ -3,14 +3,15 @@
 // `enchilada-touch=<n>`:
 //   1  read only: GCC votes, branch and DFS state, the five touch pins, and (only when the QUP clocks already run) the engine's
 //      firmware revision, FIFO geometry and FIFO-disable fuse
-//   2  vote the QUP clocks, claim the pins, raise the 1.8 V enable (GPIO 88), pulse reset (GPIO 99), GENI I2C init at 400 kHz,
-//      then probe 0x20 for an ACK (a write of the PDT pointer, nothing else)
+//   2  vote the QUP clocks, raise VDD (PM8998 LDO28 through RPMh), raise the 1.8 V enable (GPIO 88), claim the pins, pulse reset
+//      (GPIO 99), GENI I2C init at 400 kHz, then probe 0x20 for an ACK (a write of the PDT pointer, nothing else)
 //   3  read the RMI4 PDT (or the S3706B fixed table), F01 identity, F01 NoSleep/Configured and interrupt enable, F12 geometry
 //   4  poll F01/F12 at enchilada-touch-rate Hz (default 100) and publish the contacts for NativeHidInput
 // Every stage writes its result to enchilada_touch_rows (the UFS log, BootLog.c) and IOLog; the first failure stops the sequence and
 // is kept in native_touch_step / native_touch_error. The publication contract (native_touch_* seqlock, native_touch_set_sink)
 // is the one sheng's TouchProbe.cpp gives NativeHidInput, so the digitizer needs no change. Board facts are in EnchiladaTouchBoard.h.
-// Nothing here has run on the device yet.
+// Stage 1 and the GENI part of stage 2 have run on the device (kernel-155, 2026-11-04); the ACK probe stopped at step 25 with
+// GI2C_ERR_IO and two idle lines, which is what sent the bring-up at the VDD rail in stage 2.
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
@@ -24,6 +25,8 @@ extern "C" {
 #include "Rmi4.h"
 #include "EnchiladaTouchBoard.h"
 }
+// The RPMh half of the power sequence (PM8998 LDO28 over the apps RSC); it brings its own extern "C" guard.
+#include "EnchiladaTouchRpmh.h"
 // The display's logical mode (enchilada-display-logical=<W>x<H>): NativeLegacyDisplay of enchilada's NativeMobileDisplay copy exports
 // the logical size and the image rectangle on the panel. Until that copy is in the tree this file carries the same layout; the
 // weak zero definition below (valid 0: the identity mapping) gives way to the display's strong one when it is linked.
@@ -119,6 +122,13 @@ struct Options {
     unsigned stage, hz, power, pdt, rmiReset, maxX, maxY, orient, rate, irq, pollAll, letterbox, view;
 };
 
+// The outcome of the panel's power vote (see railPower below): the TCS it took and the registers it read back.
+struct Rail {
+    int rc;                 // 0 = the vote went out
+    uint32_t drvId, address, control, status;
+    unsigned tcs, writes;
+};
+
 struct Session {
     Options opt;
     Region gccLow, gccBranch, gccVote, pin[kPins], wrapper, se;
@@ -130,6 +140,8 @@ struct Session {
     int seRead;
     uint32_t fw, ifdis, hw0, geniStatus, wrapVer, clkSel, serClk, scl, dmaMode, seIrqEn, ios;
     // stage 2
+    Region cmdDb, rsc;
+    struct Rail rail;
     uint32_t voteAfter, waitedUs, ctlAfter[kPins], ioAfter[kPins];
     int ackRc;
     unsigned ackTries;
@@ -250,6 +262,55 @@ bool snapshot(Session &s) {
     return true;
 }
 
+// ---- the panel's VDD: PM8998 LDO28 through RPMh ----
+// vreg_l28a_3p0 feeds the controller. Linux raises it with an RPMh regulator vote; this kernel had no RPMh user at all, so the rail
+// stayed wherever the bootloader left it. The 1.8 V enable on GPIO 88 is only the level shifter, which is why the ACK probe below
+// found two idle lines and a silent part instead of an address NACK. EnchiladaTouchRpmh.h holds the lookup and the write sequence.
+static Rail railPower(Session &s) {
+    Rail rail = {};
+    rail.rc = -12;
+    if (!mapRegion(FTB_CMD_DB_BASE, FTB_CMD_DB_SIZE, s.cmdDb) || !mapRegion(FTB_APPS_RSC_BASE, FTB_APPS_RSC_SIZE, s.rsc)) return rail;
+    ftb_rpmh_resource res;
+    if (!ftb_cmd_db_find(reinterpret_cast<const uint8_t *>(s.cmdDb.va), FTB_CMD_DB_SIZE, "ldoa28", &res)) {
+        rail.rc = -19;   // no such resource in the database
+        return rail;
+    }
+    rail.address = res.address;
+    rail.drvId = rd32(s.rsc.va, 0);
+    // The DRV id picks the register layout, so an unreadable RSC (unclocked, or mapped but not powered) must not be turned into
+    // writes at made-up offsets: every bit set and nothing set are both rejected.
+    if (rail.drvId == 0 || rail.drvId == 0xffffffffu) {
+        rail.rc = -5;
+        return rail;
+    }
+    const ftb_rsc_layout layout = ftb_rsc_layout_for(rail.drvId);
+    // The TCS configuration is <2 2 0 3 1 3 3 1>: two ACTIVE TCSs first. A TCS is in use when its command enable is set; take the
+    // lowest free one so a repeated bring-up is deterministic.
+    rail.tcs = 8;
+    for (unsigned t = 0; t < 2; t++) {
+        if (rd32(s.rsc.va, FTB_RSC_TCS + layout.tcs_stride * t + layout.cmd_enable) == 0) {rail.tcs = t; break;}
+    }
+    if (rail.tcs == 8) {rail.rc = -16; return rail;}   // both ACTIVE TCSs busy
+    uint32_t addresses[3], values[3];
+    ftb_ldo28_votes(&res, addresses, values);
+    for (unsigned c = 0; c < 3; c++) {
+        ftb_rpmh_write request[16], done[3];
+        const unsigned n = ftb_rpmh_active_request(&layout, rail.tcs, &addresses[c], &values[c], 1, request, 16);
+        if (!n) {rail.rc = -22; break;}
+        for (unsigned i = 0; i < n; i++) wr32(s.rsc.va, FTB_RSC_TCS + request[i].offset, request[i].value);
+        rail.writes += n;
+        IOSleep(2);
+        const unsigned m = ftb_rpmh_finish(&layout, rail.tcs, done, 3);
+        for (unsigned i = 0; i < m; i++) wr32(s.rsc.va, FTB_RSC_TCS + done[i].offset, done[i].value);
+        rail.writes += m;
+        IOSleep(1);
+    }
+    rail.control = rd32(s.rsc.va, FTB_RSC_TCS + layout.tcs_stride * rail.tcs + layout.control);
+    rail.status = rd32(s.rsc.va, FTB_RSC_TCS + layout.tcs_stride * rail.tcs + layout.status);
+    if (rail.rc == -12) rail.rc = 0;
+    return rail;
+}
+
 // ---- stage 2: clocks, pins, power, reset, engine, ACK ----
 void pinWrite(Session &s, unsigned pin, uint32_t ctl) {wr32(s.pin[pin].va, 0, ctl);}
 void pinOut(Session &s, unsigned pin, bool high) {wr32(s.pin[pin].va, 4, high ? FTB_IO_OUT : 0);}
@@ -278,6 +339,12 @@ bool enable(Session &s) {
     pinWrite(s, kScl, ftb_pin_cfg(FTB_FUNC_QUP12, 2, FTB_PULL_NONE, 0));
     pinWrite(s, kInt, ftb_pin_cfg(FTB_FUNC_GPIO, 16, FTB_PULL_UP, 0));
     if (s.opt.power) {
+        // VDD first: the controller does not answer on the bus until LDO28 is on, and the reset pulse below is only meaningful once
+        // the part is powered. The 1.8 V enable on GPIO 88 powers the level shifter, not the controller.
+        native_touch_step = 21;
+        s.rail = railPower(s);
+        o.add(" rail%d tcs%u drv%08x a%08x ctl%08x st%08x w%u", s.rail.rc, s.rail.tcs, s.rail.drvId, s.rail.address,
+              s.rail.control, s.rail.status, s.rail.writes);
         native_touch_step = 22;
         pinOut(s, kVio, true);
         pinWrite(s, kVio, ftb_pin_cfg(FTB_FUNC_GPIO, 2, FTB_PULL_NONE, 1));

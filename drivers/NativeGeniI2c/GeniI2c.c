@@ -197,6 +197,9 @@ static int message(struct geni_i2c *g, unsigned op, uint8_t addr, const uint8_t 
         if (!st) {pause_us(g, 1); continue;}
         if (!err) err = classify(g, st, op);
         if (err) {
+            // Snapshot before the clear below, otherwise the registers read back as zeros and the error row cannot
+            // say which general-purpose bit fired.
+            if (!g->snap_valid) snapshot(g);
             if (op == GI2C_OP_WRITE) wr(g, GI2C_TX_WATERMARK, 0);   // stop feeding a failed write
         } else if (op == GI2C_OP_READ && (st & (GI2C_M_RX_FIFO_WATERMARK | GI2C_M_RX_FIFO_LAST))) {
             drain(g, &c);

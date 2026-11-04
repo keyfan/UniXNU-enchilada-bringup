@@ -66,8 +66,11 @@ static void testMapping() {
     assert(ftb_map_point(&map, &panel, 0, 0, &x, &y) && x == 0 && y == 0);
     assert(ftb_map_point(&map, &panel, 1079, 2339, &x, &y) && x == 30479 && y == 20319);
     ftb_map_point(&map, &panel, 5000, 9000, &x, &y); assert(x == 30479 && y == 20319);   // clamped
+    // Two stages: controller to panel pixels (0..1079 x 0..2279), then panel pixels to the published units. The
+    // second divisor is the panel's last row and column, so the controller's 2339 rows do not appear in it.
     ftb_map_point(&map, &panel, 540, 1170, &x, &y);
-    assert(x == (int)(540ull * 30479 / 1079) && y == (int)(1170ull * 20319 / 2339));
+    assert(x == (int)(540ull * 30479 / 1079));
+    assert(y == (int)((1170ull * 2279 / 2339) * 20319 / 2279));
     map.orient = FTB_ORIENT_MIRROR_X | FTB_ORIENT_MIRROR_Y;
     ftb_map_point(&map, &panel, 0, 0, &x, &y); assert(x == 30479 && y == 20319);
     map = {2339, 1079, FTB_ORIENT_SWAP};   // a controller whose X runs along the long edge
@@ -78,7 +81,7 @@ static void testMapping() {
     // A controller with finer units than the panel still spans it.
     ftb_map fine = {1079 * 4, 2339 * 4, 0};
     unsigned px, py;
-    ftb_map_panel(&fine, 1079 * 2, 2339 * 2, &px, &py); assert(px == 539 && py == 1169);
+    ftb_map_panel(&fine, 1079 * 2, 2339 * 2, &px, &py); assert(px == 539 && py == 1139);
 }
 
 static void testLogical() {
@@ -98,11 +101,15 @@ static void testLogical() {
     // End to end: a controller reporting 0..1079 x 0..2339.
     const ftb_map map = {1079, 2339, 0};
     assert(!ftb_map_point(&map, &v, 540, 2300, &x, &y) && y == 20319);
-    assert(ftb_map_point(&map, &v, 540, 1169, &x, &y) && x == (int)(1024ull * 30479 / 2047) && y == (int)(1366ull * 20319 / 2731));
+    // Each stage rounds its own pixel centre, so the end-to-end value is neither stage's formula applied once. Take the
+    // two documented stages and compare against what they compose to (1024 x 1309 logical for this point).
+    assert(ftb_map_point(&map, &v, 540, 1169, &x, &y) && x == 15246 && y == 9739);
+    assert(ftb_panel_to_logical(&v, 540, 1139, &lx, &ly) && lx == 1024 && ly == 1309);
     // A rectangle that does not fit the panel is ignored (identity), as is valid 0.
     const ftb_view bad = {1, 2048, 2732, 0, 1000, 1080, 1441};
     assert(!ftb_view_usable(&bad) && ftb_view_w(&bad) == FTB_PANEL_W);
-    assert(ftb_panel_to_logical(&bad, 540, 2300, &lx, &ly) && lx == 540 && ly == 2300);
+    // The identity path clamps to the panel and reports the row past its last one as outside.
+    assert(!ftb_panel_to_logical(&bad, 540, 2300, &lx, &ly) && lx == 540 && ly == FTB_PANEL_H - 1);
     const ftb_view off = {0, 2048, 2732, 0, 449, 1080, 1441};
     assert(!ftb_view_usable(&off));
 }

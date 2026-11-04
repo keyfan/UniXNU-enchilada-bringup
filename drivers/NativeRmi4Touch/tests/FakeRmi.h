@@ -6,6 +6,7 @@
 #ifndef FAKE_RMI_H
 #define FAKE_RMI_H
 #include "../Rmi4.h"
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <map>

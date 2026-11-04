@@ -90,7 +90,7 @@ def main():
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     if digest != previous:
         (OBJ_ROOT / 'mach.development.bcm2837.unstripped.noctf').unlink(missing_ok=True)
-    sources = [KIT / 'EnchiladaTouchProbe.cpp', KIT / 'EnchiladaTouchBoard.h', I2C / 'GeniI2c.c', I2C / 'GeniI2c.h', RMI / 'Rmi4.c',
+    sources = [KIT / 'EnchiladaTouchProbe.cpp', KIT / 'EnchiladaTouchBoard.h', KIT / 'EnchiladaTouchRpmh.h', I2C / 'GeniI2c.c', I2C / 'GeniI2c.h', RMI / 'Rmi4.c',
                RMI / 'Rmi4.h']
     display = ROOT / 'drivers/NativeMobileDisplay/EnchiladaDisplayLogical.h'
     if display.is_file():
