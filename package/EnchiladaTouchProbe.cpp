@@ -566,7 +566,9 @@ void publish(Session &s, unsigned count, const struct rmi_contact *c) {
 
 // One synthetic finger travelling up the panel: the welcome screen's "swipe up to open" gate, played through publish() so
 // the HID stack cannot tell it from a real one.  The path is a straight line from the bottom of the panel to the top over
-// 240 ms -- the speed of a person's swipe, because a drag the system reads as too slow is not a swipe at all.
+// 240 ms -- the speed of a person's swipe, because a drag the system reads as too slow is not a swipe at all.  It starts
+// at the bottom edge and ends at the top edge, so it is a full-height stroke and not the short flick a home-bar gesture
+// would be read as.
 void playSwipe(Session &s, unsigned frame) {
     const unsigned kFrames = 24;
     if (frame == kFrames) {   // the stroke is over: lift the finger, once
@@ -654,12 +656,18 @@ static void pollLoop(Session &s) {
         ++s.polls;
         if (s.opt.swipe) {
             if (!s.startMs) s.startMs = touchMs();
-            // One stroke, `swipe` seconds in: the welcome screen has had time to draw by then, and the stroke is early
-            // enough that a person watching still sees the result.  The 4 s guard stops the stroke from replaying
-            // forever if the loop keeps running long after it.
+            // The stroke repeats, because when the welcome screen appears is not fixed: after a Data discard it has been
+            // seen as early as t=260 s and as late as t=434 s, and a run that presents nothing at all (blank swaps only)
+            // never has a welcome screen to push.  So `swipe` names the first stroke and the same stroke replays every
+            // kSwipeRepeatMs; whichever one lands while the screen is up is the one that matters.  The 4 s guard is the
+            // part of the repeat interval during which frames are actually played (24 frames at 40 ms plus the lift).
+            const uint32_t kSwipeRepeatMs = 120000;
             const uint32_t elapsed = touchMs() - s.startMs;
             const uint32_t start = s.opt.swipe * 1000;
-            if (elapsed >= start && elapsed < start + 4000) playSwipe(s, (elapsed - start) / 40);
+            if (elapsed >= start) {
+                const uint32_t phase = (elapsed - start) % kSwipeRepeatMs;
+                if (phase < 4000) playSwipe(s, phase / 40);
+            }
         }
         uint8_t status = 0;
         uint32_t irq = 0;
