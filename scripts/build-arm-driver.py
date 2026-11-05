@@ -115,12 +115,20 @@ if component == 'NativeAdreno':
 result = subprocess.run(command, cwd=record['directory'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 (out / 'compile.log').write_text(result.stdout)
 if result.returncode:
-    # The tail is mostly warnings when a file has many of them, which hid the two errors that failed run 168.
-    # Print every diagnostic that says "error:" first, then the tail.
-    errors = [line for line in result.stdout.splitlines() if ': error:' in line or 'error:' in line[:12]]
-    if errors:
-        print('\n'.join(errors))
-    raise SystemExit(result.stdout[-3500:])
+    # unixnu only shows the last 30 lines of a log, and with a file that warns a lot those are all warnings:
+    # the errors that failed runs 168 and 169 were never printed. The summary goes last so it is the tail.
+    lines = result.stdout.splitlines()
+    errors = [line for line in lines if 'error:' in line]
+    detail = []
+    for index, line in enumerate(lines):
+        if 'error:' in line and 'fatal error' not in line:
+            detail.extend(lines[max(0, index - 2):index + 4])
+            break
+    summary = ['{} error line(s), {} warning line(s); compile.log has all of it'.format(len(errors), len(lines) - len(errors))]
+    summary += errors[:20]
+    if detail:
+        summary += ['--- context ---'] + detail
+    raise SystemExit('\n'.join(summary + ['--- tail ---'] + lines[-12:]))
 data = destination.read_bytes()
 magic, cpu, subtype, kind, count, size = struct.unpack_from('<6I', data)
 if (magic, cpu, subtype, kind) != (0xfeedfacf, 0x100000c, 0, 1):

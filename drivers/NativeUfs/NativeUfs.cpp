@@ -398,7 +398,8 @@ static void dpuEnable (uintptr_t smmu, uintptr_t cb, uint32_t bank, uint32_t old
   for (; us < 50000; us += 500) {
     fsr = read32 (cb, 0x58);
     if (fsr & kDpuFaults) break;
-    for (volatile uint32_t pause = 0; pause < 4000; ++pause) { }   // ~500 us of timebase spin; see dpuTlbFlush
+    // ~500 us of timebase spin; see dpuTlbFlush. Plain increment: clang 21 deprecates ++ on a volatile.
+    for (volatile uint32_t pause = 0; pause < 4000; pause = pause + 1) { }
   }
   c[3] = fsr; c[7] = us;
   if (fsr & kDpuFaults) {
