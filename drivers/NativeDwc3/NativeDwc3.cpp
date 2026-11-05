@@ -20,12 +20,16 @@
 #include <libkern/c++/OSSharedPtr.h>
 #include <pexpert/pexpert.h>
 #include <kern/debug.h>
+#include <kern/thread.h>
+#include <sys/kernel.h>
 #define NATIVE_DWC3_KERNEL 1
 #include "Dwc3Registers.h"
 #include "Dwc3Phy.h"
 // The lenient planner for this driver's own stream. It pulls in the ARM SMMUv2 definitions from
 // ../NativeUfs/SmmuTakeover.h, which has no include guard, so it must not be included directly.
 #include "Dwc3SmmuPlan.h"
+// Stage B (Dwc3Gadget.cpp): the device-mode bring-up and the endpoint-0 event loop.
+#include "Dwc3Gadget.h"
 
 extern "C" {
 // Counters the boot log reads (package/BootLog.c), all weak so a board without the
@@ -77,6 +81,8 @@ class NativeDwc3 : public IOService {
 public:
   IOService *probe(IOService *provider, SInt32 *score) override;
   bool start(IOService *provider) override;
+  // Stage B's poll loop: the event buffer is drained without an interrupt.
+  static void eventThread(void *self, wait_result_t);
 };
 
 OSDefineMetaClassAndStructors(NativeDwc3, IOService)
@@ -225,9 +231,49 @@ void NativeDwc3::inspect()
     native_dwc3_smmu_reuse = plan.reuse ? 1 : 0;
     native_dwc3_smmu_firmware = plan.firmware ? 1 : 0;
     native_dwc3_smmu_error = plan.error;
+
+    // Stage B: only when the plan is usable, and only at probe mode 3 or more. The
+    // probe has already established that the controller is in device mode with the
+    // PHY locked and the GDSC on, so there is nothing to bring up first.
+    if (gProbeMode >= 3 && !plan.error) {
+      native_dwc3_stage = 6;
+      unsigned physicalEps = dwc3HwParams3NumEps(snap.ghwparams3);
+      if (!physicalEps || physicalEps > 8) {
+        physicalEps = 4;   // SDM845's dwc3 reports 4; a sane default if the field reads oddly
+      }
+      if (!dwc3GadgetStart(core, smmu, plan, physicalEps, kDwc3Ep0MaxPacketHighSpeed)) {
+        // native_dwc3_gadget_error already names the stage that failed.
+        native_dwc3_stage = 7;
+        return;
+      }
+      // The event buffer fills without an interrupt (GEVNTSIZ.INTMASK stays set), so
+      // something has to poll it. Same pattern as NativeUfs's stats thread.
+      thread_t thread = nullptr;
+      if (kernel_thread_start(&NativeDwc3::eventThread, this, &thread) == KERN_SUCCESS) {
+        thread_deallocate(thread);
+      }
+    }
   }
 
   native_dwc3_stage = 5;
   native_dwc3_status = 0;
   native_dwc3_failure = nullptr;
+}
+
+// Stage B's poll loop. The controller's interrupt is deliberately left masked
+// (GEVNTSIZ.INTMASK), so the event buffer has to be drained by hand. IOSleep is not
+// usable here: on this platform it forwards to delay_for_interval, which spins the
+// CPU on the time base instead of yielding it (package/BootLog.c:905-913 records
+// the same lesson). assert_wait_timeout + thread_block really does block.
+static int gEventWaitEvent;
+
+void NativeDwc3::eventThread(void *self, wait_result_t)
+{
+  (void)self;
+  thread_set_thread_name(current_thread(), "dwc3_event");
+  for (;;) {
+    dwc3GadgetDrain();
+    assert_wait_timeout((event_t)&gEventWaitEvent, THREAD_UNINT, 2, NSEC_PER_MSEC);
+    thread_block(THREAD_CONTINUE_NULL);
+  }
 }

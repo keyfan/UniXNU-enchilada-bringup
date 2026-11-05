@@ -60,6 +60,20 @@ extern volatile int32_t native_dwc3_smmu_bank __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_smmu_firmware __attribute__((weak_import));
 extern const char *volatile native_dwc3_failure __attribute__((weak_import));
 extern const char *volatile native_dwc3_smmu_error __attribute__((weak_import));
+// Stage B (drivers/NativeDwc3/Dwc3Gadget.cpp): the device-mode gadget, all weak so a kernel built
+// without stage B still links and simply prints no `G` row.
+extern volatile uint32_t native_dwc3_gadget_stage __attribute__((weak_import));
+extern volatile int32_t native_dwc3_gadget_status __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_events __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_resets __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_cmds __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_cmd_fail __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_speed __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_address __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_dcfg __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_dctl __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_dsts __attribute__((weak_import));
+extern const char *volatile native_dwc3_gadget_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
 extern volatile int native_gpu_addon_written __attribute__((weak_import));
 extern volatile int native_gpu_addon_same __attribute__((weak_import));
@@ -485,6 +499,22 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     if (native_dwc3_smmu_error) {
       snprintf(row, sizeof row, "U smmu: %.100s", native_dwc3_smmu_error);
       at = put(out, at, cap, row, sizeof row);
+    }
+    // Stage B (Dwc3Gadget.cpp, native-dwc3-probe=3): the gadget's own stage (6 = running with endpoint 0
+    // configured), events drained, USB resets, endpoint commands issued and how many did not complete,
+    // the connected link speed, the device address the host set, and DCFG/DCTL/DSTS as they stand now.
+    if (&native_dwc3_gadget_stage && native_dwc3_gadget_stage) {
+      char row[224];
+      snprintf(row, sizeof row, "G st=%u rc=%d ev=%u rst=%u cmd=%u bad=%u spd=%u addr=%u dcfg=%08x dctl=%08x dsts=%08x",
+               native_dwc3_gadget_stage, native_dwc3_gadget_status, native_dwc3_gadget_events,
+               native_dwc3_gadget_resets, native_dwc3_gadget_cmds, native_dwc3_gadget_cmd_fail,
+               native_dwc3_gadget_speed, native_dwc3_gadget_address, native_dwc3_gadget_dcfg,
+               native_dwc3_gadget_dctl, native_dwc3_gadget_dsts);
+      at = put(out, at, cap, row, sizeof row);
+      if (native_dwc3_gadget_error) {
+        snprintf(row, sizeof row, "G fail: %.100s", native_dwc3_gadget_error);
+        at = put(out, at, cap, row, sizeof row);
+      }
     }
   }
   // The one-time copy of the OS volume's staged system apps into Data (kern_exec.c native_staged_apps_prepare): stage (2 copied, 3 copied

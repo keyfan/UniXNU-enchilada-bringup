@@ -155,4 +155,192 @@ static inline bool dwc3GccCoreReadable(const Dwc3Snapshot &s) {
   return powered && master && ahb2phy;
 }
 
+// ---- Device-mode programming (stage B) ---------------------------------------
+// Everything below is needed to bring the controller up as a USB device and run
+// endpoint 0. The numbers are the architectural DWC3 ones; Mu-Silicium's
+// Silicon/Samsung/SamsungPkg/Include/Device/Dwc3.h carries the same set, and that
+// firmware drives this exact controller for fastboot, so it is the cross-check.
+
+// GCTL.PrtCapDir: bits [13:12], 1 = host, 2 = device, 3 = OTG.
+enum : uint32_t { kDwc3GctlPrtCapMask = 3u << 12, kDwc3GctlPrtCapDevice = 2u << 12 };
+
+// DCFG device speed, bits [2:0]. The board is wired USB2 only (one HS PHY,
+// maximum-speed = "high-speed"), so high speed is the only setting that can
+// complete: asking for SuperSpeed on a USB2 link leaves the device unenumerated.
+enum : uint32_t { kDwc3DcfgSpeedMask = 7u, kDwc3DcfgHighSpeed = 0u, kDwc3DcfgFullSpeed = 1u };
+enum : uint32_t { kDwc3DcfgDevAddrMask = 0x7fu << 3 };
+static inline uint32_t dwc3DcfgDevAddrBits(unsigned address) { return (address & 0x7fu) << 3; }
+
+// DCTL.RunStop bit31 starts the device controller; CsfTReset bit30 resets it.
+enum : uint32_t { kDwc3DctlTstCtrlMask = 7u << 16 };
+
+// DEVTEN (device event enable, 0xc708): the bits we care about.
+enum : uint32_t {
+  kDwc3DevtenDisconEvtEn     = 1u << 0,
+  kDwc3DevtenUsbRstEn        = 1u << 1,
+  kDwc3DevtenConnectDoneEn   = 1u << 2,
+  kDwc3DevtenUlstCnGen       = 1u << 3,
+  kDwc3DevtenWkupEvtEn       = 1u << 4,
+  kDwc3DevtenErraticErrEn    = 1u << 9,
+  kDwc3DevtenCmdCmplEn       = 1u << 10,
+  kDwc3DevtenOverflowEn      = 1u << 11,
+};
+
+// GUSB2PHYCFG(0): PHY soft reset (bit31), suspend PHY (bit6), UTMI width (bits
+// [3:2]) and turnaround time (bits [10:7]).
+enum : uint32_t {
+  kDwc3Gusb2PhyCfgPhySoftRst   = 1u << 31,
+  kDwc3Gusb2PhyCfgSusPhy       = 1u << 6,
+  kDwc3Gusb2PhyCfgPhyIfMask    = 3u << 2,
+  kDwc3Gusb2PhyCfgUsbTrdTimMask = 0xfu << 7,
+  kDwc3Gusb2PhyCfgUlpiUtmi     = 1u << 4,
+};
+static inline uint32_t dwc3Gusb2PhyCfgPhyIf(unsigned width) { return (width & 3u) << 2; }
+static inline uint32_t dwc3Gusb2PhyCfgUsbTrdTim(unsigned t) { return (t & 0xfu) << 7; }
+
+// GEVNTSIZ(0): size in bytes [15:0]; bit31 masks the event interrupt. We run the
+// event loop from a kernel thread and never enable the DWC3 interrupt, so the
+// mask stays set and the thread drains GEVNTCOUNT itself.
+enum : uint32_t { kDwc3EvntSizIntMask = 1u << 31 };
+static inline uint32_t dwc3EvntSizSize(unsigned bytes) { return bytes & 0xffffu; }
+
+// DALEPENA: one bit per physical endpoint.
+static inline uint32_t dwc3DalepEna(unsigned ep) { return 1u << ep; }
+
+// ---- Endpoint commands --------------------------------------------------------
+// DEPCMD register, low 4 bits are the command, bit10 is CMDACT (still running),
+// bits [15:12] the completion status, bits [22:16] the resource index on
+// STARTTRANSFER.
+enum : uint32_t {
+  kDwc3DepCmdSetEpConfig    = 0x01,
+  kDwc3DepCmdSetXferResource = 0x02,
+  kDwc3DepCmdGetEpState     = 0x03,
+  kDwc3DepCmdSetStall       = 0x04,
+  kDwc3DepCmdClearStall     = 0x05,
+  kDwc3DepCmdStartTransfer  = 0x06,
+  kDwc3DepCmdUpdateTransfer = 0x07,
+  kDwc3DepCmdEndTransfer    = 0x08,
+  kDwc3DepCmdStartConfig    = 0x09,
+};
+enum : uint32_t {
+  kDwc3DepCmdCmdAct       = 1u << 10,
+  kDwc3DepCmdHiPriForceRm = 1u << 11,
+  kDwc3DepCmdCmdIoc       = 1u << 8,
+};
+static inline uint32_t dwc3DepCmdStatus(uint32_t cmd) { return (cmd >> 12) & 0xfu; }
+static inline unsigned dwc3DepCmdResourceIndex(uint32_t cmd) { return (cmd >> 16) & 0x7fu; }
+
+// DEPCFG parameter 0: endpoint type, max packet size, FIFO number, action.
+static inline uint32_t dwc3DepCfgEpTypeBits(unsigned type) { return (type & 3u) << 1; }
+static inline uint32_t dwc3DepCfgMaxPacket(unsigned bytes) { return (bytes & 0x7ffu) << 3; }
+static inline uint32_t dwc3DepCfgFifoNumber(unsigned fifo) { return (fifo & 0x1fu) << 17; }
+static inline uint32_t dwc3DepCfgBurstSize(unsigned burst) { return (burst & 0xfu) << 22; }
+enum : uint32_t {
+  kDwc3DepCfgActionInit    = 0u << 30,
+  kDwc3DepCfgActionRestore = 1u << 30,
+  kDwc3DepCfgActionModify  = 2u << 30,
+};
+// Endpoint types as DEPCFG wants them.
+enum : unsigned { kDwc3EpTypeControl = 0, kDwc3EpTypeIsochronous = 1, kDwc3EpTypeBulk = 2, kDwc3EpTypeInterrupt = 3 };
+
+// DEPCFG parameter 1: interrupt number, the transfer-event enables, and the
+// physical endpoint number in bits [29:25].
+static inline uint32_t dwc3DepCfgEpNumber(unsigned ep) { return (ep & 0x1fu) << 25; }
+enum : uint32_t {
+  kDwc3DepCfgXferCompleteEn   = 1u << 8,
+  kDwc3DepCfgXferInProgressEn = 1u << 9,
+  kDwc3DepCfgXferNotReadyEn   = 1u << 10,
+  kDwc3DepCfgFifoErrorEn      = 1u << 11,
+  kDwc3DepCfgStreamEventEn    = 1u << 13,
+};
+
+// DEPXFERCFG parameter 0: the number of transfer resources to reserve.
+static inline uint32_t dwc3DepXferCfgNumXferRes(unsigned n) { return n & 0xffffu; }
+
+// ---- Transfer request blocks --------------------------------------------------
+// One 16-byte TRB: buffer pointer, size (bits [23:0], status in [31:28]) and a
+// control word. The controller owns a TRB while HWO is set and clears it when the
+// transfer is done, which is how the ring is tracked without an interrupt.
+struct Dwc3Trb {
+  uint32_t bufferLow;
+  uint32_t bufferHigh;
+  uint32_t size;
+  uint32_t control;
+};
+
+enum : uint32_t {
+  kDwc3TrbCtrlHwo    = 1u << 0,
+  kDwc3TrbCtrlLst    = 1u << 1,
+  kDwc3TrbCtrlChn    = 1u << 2,
+  kDwc3TrbCtrlCsp    = 1u << 3,
+  kDwc3TrbCtrlIspImi = 1u << 10,
+  kDwc3TrbCtrlIoc    = 1u << 11,
+};
+static inline uint32_t dwc3TrbCtrlType(unsigned type) { return (type & 0x3fu) << 4; }
+static inline uint32_t dwc3TrbSizeLength(unsigned bytes) { return bytes & 0x00ffffffu; }
+static inline unsigned dwc3TrbSizeStatus(uint32_t size) { return (size >> 28) & 0xfu; }
+enum : unsigned {
+  kDwc3TrbTypeNormal        = 1,
+  kDwc3TrbTypeControlSetup  = 2,
+  kDwc3TrbTypeControlStatus2 = 3,
+  kDwc3TrbTypeControlStatus3 = 4,
+  kDwc3TrbTypeControlData   = 5,
+  kDwc3TrbTypeLink          = 8,
+};
+
+// ---- Events -------------------------------------------------------------------
+// An event is 4 bytes. Bit0 selects the family: 0 = endpoint event, 1 = device
+// event. The endpoint event carries the physical endpoint in bits [5:1].
+static inline bool dwc3EventIsEndpoint(uint32_t e) { return (e & 1u) == 0; }
+static inline unsigned dwc3EpEventEpNumber(uint32_t e) { return (e >> 1) & 0x1fu; }
+static inline unsigned dwc3EpEventType(uint32_t e) { return (e >> 6) & 0xfu; }
+static inline unsigned dwc3EpEventStatus(uint32_t e) { return (e >> 12) & 0xfu; }
+enum : unsigned {
+  kDwc3EpEventXferComplete   = 0x01,
+  kDwc3EpEventXferInProgress = 0x02,
+  kDwc3EpEventXferNotReady   = 0x03,
+  kDwc3EpEventRxTxFifo       = 0x04,
+  kDwc3EpEventStream         = 0x06,
+  kDwc3EpEventCmdComplete    = 0x07,
+};
+// Endpoint-event status bits.
+enum : unsigned {
+  kDwc3EpEventStatusBusErr = 1u << 0,
+  kDwc3EpEventStatusShort  = 1u << 1,
+  kDwc3EpEventStatusIoc    = 1u << 2,
+  kDwc3EpEventStatusLst    = 1u << 3,
+};
+// Device event: category in bits [7:1], type in bits [11:8].
+static inline unsigned dwc3DevEventCategory(uint32_t e) { return (e >> 1) & 0x7fu; }
+static inline unsigned dwc3DevEventType(uint32_t e) { return (e >> 8) & 0xfu; }
+enum : unsigned {
+  kDwc3DevEventDisconnect    = 0,
+  kDwc3DevEventReset         = 1,
+  kDwc3DevEventConnectDone   = 2,
+  kDwc3DevEventLinkStatus    = 3,
+  kDwc3DevEventWakeup        = 4,
+  kDwc3DevEventHiberReq      = 5,
+  kDwc3DevEventEopf          = 6,
+  kDwc3DevEventSof           = 7,
+  kDwc3DevEventErraticError  = 9,
+  kDwc3DevEventCmdCmpl       = 10,
+  kDwc3DevEventOverflow      = 11,
+};
+static inline unsigned dwc3DevEventInfo(uint32_t e) { return (e >> 16) & 0x1ffu; }
+
+// ---- Endpoint 0 -----------------------------------------------------------------
+// The control endpoint is always physical endpoints 0 (OUT) and 1 (IN); its
+// packet size is 64 bytes on a high-speed link and 8 on a low-speed one.
+enum : unsigned {
+  kDwc3Ep0Out = 0,
+  kDwc3Ep0In  = 1,
+  kDwc3Ep0MaxPacketHighSpeed = 64,
+  kDwc3Ep0MaxPacketFullSpeed = 64,
+};
+// GHWPARAMS3 bits: [17:12] the number of physical endpoints, [23:18] how many of
+// them are IN endpoints.
+static inline unsigned dwc3HwParams3NumEps(uint32_t p) { return (p >> 12) & 0x3fu; }
+static inline unsigned dwc3HwParams3NumInEps(uint32_t p) { return (p >> 18) & 0x1fu; }
+static inline unsigned dwc3HwParams3HsPhyIfc(uint32_t p) { return (p >> 2) & 3u; }
+
 #endif
