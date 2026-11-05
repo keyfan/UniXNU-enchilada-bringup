@@ -342,6 +342,10 @@ static bool hostStoreOpen (uint64_t first, uint64_t blocks)
   return true;
 }
 
+// Upstream added a second panic entry point here (native_ufs_log_panic with a 200 ms hostLock that waits through IODelay).
+// Enchilada keeps hostEnter/hostLeave above instead: IODelay parks the calling CPU in WFE and the poll never came back from
+// it on this SoC, which is why every wait in this transport is a timebase spin. The panic path calls native_ufs_panic_mode.
+
 // WRITE(10) of `blocks` 4096-byte blocks from src to lba on LUN 0; the range must lie inside one open window.
 static IOReturn hostWrite4k (uint8_t lun, uint64_t lba, uint32_t blocks, const void *src, bool fua = false)
 {

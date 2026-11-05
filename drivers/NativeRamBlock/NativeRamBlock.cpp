@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-2-Clause-Patent
+﻿// SPDX-License-Identifier: BSD-2-Clause-Patent
 #include <IOKit/IOLib.h>
 #include <kern/clock.h>
 #include <kern/thread_call.h>
@@ -40,8 +40,9 @@ int native_ufs_store_read(uint64_t, uint32_t, void *) __attribute__((weak_import
 int native_ufs_store_write(uint64_t, uint32_t, const void *) __attribute__((weak_import));
 int native_ufs_store_sync(void) __attribute__((weak_import));
 unsigned native_ufs_store_gpt_check(void) __attribute__((weak_import));
-// Diagnostics. state: 0 off, 1 blank (read-only probe), 2 resumed, 3 fresh, 4 refused/failed, 5 degraded after an I/O error,
-// 6 resumed read-only (probe). header: persist::checkHeader result.
+// Diagnostics. state: 0 off, 1 blank (read-only probe), 2 resumed, 3 fresh (Install and boot), 4 refused/failed, 5 degraded after an I/O
+// error, 6 resumed read-only (probe), 7 kept: the store holds no Data of this seed and no reset was asked, so it is left untouched and
+// this boot's Data runs from the seed alone (header: why). header: persist::checkHeader result.
 volatile uint32_t native_data_persist_state = 0, native_data_persist_header = 9, native_data_persist_gpt = 0xff, native_data_persist_gpt_after = 0xff;
 volatile uint64_t native_data_persist_pages = 0, native_data_persist_loaded = 0, native_data_persist_writes = 0,
                   native_data_persist_syncs = 0, native_data_persist_errors = 0, native_data_persist_first_lba = 0,
@@ -79,7 +80,9 @@ public:
   // Called once, before the Data volume is mounted (native_ram_block_volume_seed): open the store window, put the pages that
   // earlier boots changed back into the sparse disk, and from then on write changed pages through. The seed identity
   // (seedHash) is not affected. Any refusal or error leaves the disk volatile, exactly as without persistence.
-  // sheng-data-reset=1 or 2 starts the overlay over (the old pages are dropped, not applied); 2 also asks for Setup (BootWatchdogPolicy.c).
+  // sheng-data-reset=1 or 2 (the boot menu's Install and boot) starts the overlay over (the old pages are dropped, not applied); 2 also
+  // asks for Setup (BootWatchdogPolicy.c). It is the only way the store is made anew: a store of another seed, a blank or a damaged one
+  // is kept as it is on any other boot.
   static bool discardRequested() { uint32_t v = 0; return PE_parse_boot_argn("sheng-data-reset", &v, sizeof v) && (v == 1 || v == 2); }
   void attachStore() {
     if (!gate) return;
@@ -110,6 +113,11 @@ public:
           overlay.active = false;
         } else if (result == persist::Open::Blank) {
           native_data_persist_state = 1;
+        } else if (result == persist::Open::Kept) {
+          native_data_persist_state = 7;
+          overlay.active = false;
+          IOLog("NativeRamBlock: the persistent store holds no Data of this seed (header %d); kept, Data runs from the seed: "
+                "use Install and boot to start it over\n", overlay.header);
         } else if (result == persist::Open::Fresh) {
           native_data_persist_state = 3;
           direct = mode == 2;

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-2-Clause-Patent
+﻿// SPDX-License-Identifier: BSD-2-Clause-Patent
 #pragma once
 // Persistent overlay over a seeded sparse disk. The seed (the packed RAM disk the loader provides) stays the immutable base; the
 // pages a running system changes are stored in a window of 4096-byte blocks on some other medium and put back on the next boot.
@@ -11,8 +11,9 @@
 // is written first and the bitmap blocks that gained a bit after it, both before the caller's write completes, so a bit never
 // promises a page that did not reach the medium, and a page the system was told is written is never lost to a crash. An
 // overwrite of a page whose bit is set changes only that page.
-// A header whose page count or seed digest differs from the current seed is stale and is replaced (the overlay starts empty): an
-// overlay is only ever applied on top of the exact seed it was made against.
+// An overlay is only ever applied on top of the exact seed it was made against. A window that holds no overlay of this seed (blank,
+// damaged, or made against another seed or size) is made anew only when the caller asks for it (`reset`: the boot menu's Install and
+// boot); otherwise it is left as it is (Kept) and the disk runs from the seed alone, so no boot replaces a user's Data by itself.
 //
 // Ops: bool read(uint64_t block, uint32_t count, void *dst); bool write(uint64_t block, uint32_t count, const void *src);
 //      bool sync();   (blocks are relative to the window; sync is only used while the header is made)
@@ -63,7 +64,9 @@ inline int checkHeader (const uint8_t block[kBlock], uint64_t pages, const uint8
   return 0;
 }
 
-enum class Open { Resumed, Fresh, Blank, Failed };
+// Resumed: this seed's overlay, applied. Fresh: made anew (reset asked). Blank: read only, nothing applied. Kept: no overlay of this
+// seed and no reset asked, the window untouched. Failed: an I/O or format error.
+enum class Open { Resumed, Fresh, Blank, Kept, Failed };
 
 struct Overlay {
   uint64_t pages = 0, generation = 0, present = 0;
@@ -78,16 +81,17 @@ struct Overlay {
 
   bool has (uint64_t i) const { return bitmap[i >> 3] >> (i & 7) & 1; }
 
-  // `readOnly`: never write; a stale or blank window is reported (Blank) and left alone. Otherwise it is initialised: bitmap
-  // first, header last, so a tear leaves no valid header.
-  template <class Ops> Open open (Ops &ops, uint64_t pageCount, const uint8_t seed[32], bool ro, uint8_t *bits, bool discard = false)
+  // `readOnly`: never write; a stale or blank window is reported (Blank) and left alone. Otherwise a window without this seed's
+  // overlay is initialised only with `reset` (bitmap first, header last, so a tear leaves no valid header), and kept as it is
+  // without (Kept). `reset` also drops this seed's own overlay.
+  template <class Ops> Open open (Ops &ops, uint64_t pageCount, const uint8_t seed[32], bool ro, uint8_t *bits, bool reset = false)
   {
     pages = pageCount; bitmap = bits; readOnly = ro; present = 0; active = false;
     uint64_t bb = bitmapBlocks (pages);
     uint8_t block[kBlock];
     if (!pages || !ops.read (0, 1, block)) return Open::Failed;
     header = checkHeader (block, pages, seed, &generation);
-    if (header == 0 && discard && !ro) header = 3;   // the caller asked to start over: handled like a stale overlay
+    if (header == 0 && reset && !ro) header = 3;   // the caller asked to start over: handled like a stale overlay
     if (header == 0) {
       for (uint64_t b = 0; b < bb; ++b) if (!ops.read (1 + b, 1, bitmap + b * kBlock)) return Open::Failed;
       // Bits past the last page must be clear, or the loader would read blocks outside the window.
@@ -98,6 +102,7 @@ struct Overlay {
     }
     memset (bitmap, 0, bb * kBlock);
     if (ro) return Open::Blank;
+    if (!reset) return Open::Kept;
     uint8_t zero[kBlock] = {};
     for (uint64_t b = 0; b < bb; ++b) if (!ops.write (1 + b, 1, zero)) return Open::Failed;
     if (!ops.sync ()) return Open::Failed;

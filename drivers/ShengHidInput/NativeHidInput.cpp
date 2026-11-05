@@ -1,18 +1,28 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// Explicit offline keyboard/consumer input source. Uses the unchanged original
-// HID parser and event dispatch; no user-client entitlement is substituted.
+// Keyboard/consumer/digitizer reports through the selected IOHIDDevice interface.
+// Source-interface compilation does not qualify a target family's binary ABI.
 //
 // PROVENANCE: ported from UniXNU-fajita (the OnePlus 6T, same SoC). The int-NNN issue numbers and
 // the multitouch/SpringBoard behaviour quoted in the comments below are the 6T's bring-up log, and
-// the HID report layout is the 6T panel's. Nothing in this file has run on an OnePlus 6: the touch
-// digitizer here is untested, and the edge-tip instrumentation exists because of what was observed
-// on the 6T, not on this board.
+// the HID report layout is the 6T panel's. On the OnePlus 6 the panel reports 1079x2279 at 3048x2032
+// units and the edge-tip instrumentation below has run there (installed=1, from_edge counted).
+#if defined(__arm64e__) && !(defined(NATIVE_HID_SOURCE_API) && NATIVE_HID_SOURCE_API)
+#error "The original HID ABI path is arm64 iOS 17 only; use the source API build for arm64e."
+#endif
+#if defined(NATIVE_HID_SOURCE_API) && NATIVE_HID_SOURCE_API
+#include <IOKit/hid/IOHIDDevice.h>
+#else
 #include "OriginalHidDeviceABI.h"
+#endif
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/IOTimerEventSource.h>
 #include <libkern/c++/OSString.h>
 #include <libkern/c++/OSIterator.h>
+#include <pexpert/pexpert.h>
+#if __has_feature(ptrauth_calls)
+#include <ptrauth.h>
+#endif
 extern "C" void native_hid_input_observed(unsigned,int);
 extern "C" void native_hid_live_checkpoint(IOService *);
 extern "C" bool native_hid_input_requested(void);
@@ -66,38 +76,66 @@ static const unsigned char touchDescriptor[]={
 // calls); _children at +24 (IOHIDEvent.h; appendChild stores into it and free releases it). _parent is never set (appendChild only
 // stores the child, int-163 skipped every finger by comparing it), so each child is an IOHIDEvent by its class instead.
 namespace edge {
+#if defined(NATIVE_HID_SOURCE_API) && NATIVE_HID_SOURCE_API && !__has_feature(ptrauth_calls)
+// Source-only bring-up without pointer authentication emits ordinary digitizer reports: a copied vtable of another family's ABI is never used.
+extern "C" {volatile uint32_t native_touch_hid_multi[3];}
+extern "C" {volatile uint32_t native_touch_edge_stats[4];} // installed stays zero
+static void install(IORegistryEntry *) {}
+#else
 enum {kSlots=256,kDispatch=198,kGetType=18,kGetInteger=23,kSetInteger=24,kGetFixed=25,kContacts=256};
 enum : uint32_t {kDigitizer=11,kX=0xB0000,kY=0xB0001,kIndex=0xB0005,kMask=0xB0007,kTouch=0xB0009,kMaskTouch=2,kFromEdgeTip=0x800};
 // 48 panel pixels of 3048 x 2032 (the sweet reference uses 48 px), in the driver's normalised IOFixed coordinates.
 static const int32_t kEdgeX=48*65536/3048,kEdgeY=48*65536/2032;
+#if __has_feature(ptrauth_calls)
+static void (*originalDispatch)(IOService *,OSObject *,IOOptionBits);
+#else
 static uintptr_t originalDispatch;
+#endif
 static bool fromEdge[kContacts];
 extern "C" {volatile uint32_t native_touch_edge_stats[4];}   // [0] installed, [1] contacts begun, [2] of them at an edge, [3] skipped events
 // [0] reports with two or more fingers down, [1] the most fingers down in one report, [2] tip-up entries sent for vanished fingers
 extern "C" {volatile uint32_t native_touch_hid_multi[3];}
-template <typename R,typename... A> static R call(void *object,unsigned slot,A... args) {
+#if __has_feature(ptrauth_calls)
+// arm64e (iPadOS 27): an object's vtable pointer is signed with the DA key (address of the object, discriminator 0xcda1 of OSMetaClassBase),
+// each slot with the IA key (address of the slot, the discriminator of the virtual function). IOHIDFamily-2238.120.5 keeps the slot numbers
+// above; the discriminators are those of 24A446's vtables.
+enum : uint16_t {kDivDispatch=0x1134,kDivGetType=0x8758,kDivGetInteger=0x02c5,kDivSetInteger=0x130e,kDivGetFixed=0xf637,kVptrDiscriminator=0xcda1};
+static void **vtableOf(void *object) {
+    return reinterpret_cast<void **>(ptrauth_auth_data(*reinterpret_cast<void **>(object),ptrauth_key_process_independent_data,
+        ptrauth_blend_discriminator(object,kVptrDiscriminator)));
+}
+template <typename R,typename... A> static R call(void *object,unsigned slot,uint16_t diversity,A... args) {
+    void **entry=vtableOf(object)+slot;
+    void *function=ptrauth_auth_and_resign(*entry,ptrauth_key_function_pointer,ptrauth_blend_discriminator(entry,diversity),
+        ptrauth_key_function_pointer,0);
+    return reinterpret_cast<R (*)(void *,A...)>(function)(object,args...);
+}
+#else
+template <typename R,typename... A> static R call(void *object,unsigned slot,uint16_t,A... args) {
     return reinterpret_cast<R (*)(void *,A...)>((*reinterpret_cast<uintptr_t **>(object))[slot])(object,args...);
 }
+enum : uint16_t {kDivDispatch=0,kDivGetType=0,kDivGetInteger=0,kDivSetInteger=0,kDivGetFixed=0};
+#endif
 // One finger event; true when it now carries the bit.
 static bool mark(void *child) {
-    if(call<uint32_t,IOOptionBits>(child,kGetType,0)!=kDigitizer)return false;   // the scan-time vendor child
-    const uint32_t index=(uint32_t)call<int32_t,uint32_t,IOOptionBits>(child,kGetInteger,kIndex,0);
+    if(call<uint32_t,IOOptionBits>(child,kGetType,kDivGetType,0)!=kDigitizer)return false;   // the scan-time vendor child
+    const uint32_t index=(uint32_t)call<int32_t,uint32_t,IOOptionBits>(child,kGetInteger,kDivGetInteger,kIndex,0);
     if(index>=kContacts) {native_touch_edge_stats[3]=native_touch_edge_stats[3]+1;return false;}
-    const uint32_t mask=(uint32_t)call<int32_t,uint32_t,IOOptionBits>(child,kGetInteger,kMask,0);
-    const bool touch=call<int32_t,uint32_t,IOOptionBits>(child,kGetInteger,kTouch,0)!=0;
+    const uint32_t mask=(uint32_t)call<int32_t,uint32_t,IOOptionBits>(child,kGetInteger,kDivGetInteger,kMask,0);
+    const bool touch=call<int32_t,uint32_t,IOOptionBits>(child,kGetInteger,kDivGetInteger,kTouch,0)!=0;
     if((mask&kMaskTouch) && touch) {   // the contact begins: its position now decides
-        const int32_t x=call<int32_t,uint32_t,IOOptionBits>(child,kGetFixed,kX,0),y=call<int32_t,uint32_t,IOOptionBits>(child,kGetFixed,kY,0);
+        const int32_t x=call<int32_t,uint32_t,IOOptionBits>(child,kGetFixed,kDivGetFixed,kX,0),y=call<int32_t,uint32_t,IOOptionBits>(child,kGetFixed,kDivGetFixed,kY,0);
         fromEdge[index]=x<kEdgeX || x>65536-kEdgeX || y<kEdgeY || y>65536-kEdgeY;
         native_touch_edge_stats[1]=native_touch_edge_stats[1]+1;
         if(fromEdge[index])native_touch_edge_stats[2]=native_touch_edge_stats[2]+1;
     }
     const bool edged=fromEdge[index];
-    if(edged)call<void,uint32_t,int32_t,IOOptionBits>(child,kSetInteger,kMask,(int32_t)(mask|kFromEdgeTip),0);
+    if(edged)call<void,uint32_t,int32_t,IOOptionBits>(child,kSetInteger,kDivSetInteger,kMask,(int32_t)(mask|kFromEdgeTip),0);
     if(!touch && (mask&kMaskTouch))fromEdge[index]=false;   // the lift keeps the bit; the next contact with this index starts fresh
     return edged;
 }
 static void dispatch(IOService *self,OSObject *event,IOOptionBits options) {
-    if(event && call<uint32_t,IOOptionBits>(event,kGetType,0)==kDigitizer) {
+    if(event && call<uint32_t,IOOptionBits>(event,kGetType,kDivGetType,0)==kDigitizer) {
         OSArray *children=*reinterpret_cast<OSArray **>(reinterpret_cast<uint8_t *>(event)+24);
         if(children && OSDynamicCast(OSArray,children) && children->getCount()) {
             // A collection (the driver's touch-screen dispatch): its mask is the union of its fingers', so it takes the bit as well.
@@ -108,14 +146,90 @@ static void dispatch(IOService *self,OSObject *event,IOOptionBits options) {
                 else native_touch_edge_stats[3]=native_touch_edge_stats[3]+1;
             }
             if(any) {
-                const uint32_t mask=(uint32_t)call<int32_t,uint32_t,IOOptionBits>(event,kGetInteger,kMask,0);
-                call<void,uint32_t,int32_t,IOOptionBits>(event,kSetInteger,kMask,(int32_t)(mask|kFromEdgeTip),0);
+                const uint32_t mask=(uint32_t)call<int32_t,uint32_t,IOOptionBits>(event,kGetInteger,kDivGetInteger,kMask,0);
+                call<void,uint32_t,int32_t,IOOptionBits>(event,kSetInteger,kDivSetInteger,kMask,(int32_t)(mask|kFromEdgeTip),0);
             }
         } else if(!children) mark(event);   // one transducer dispatched on its own
     }
+#if __has_feature(ptrauth_calls)
+    originalDispatch(self,event,options);
+#else
     reinterpret_cast<void (*)(IOService *,OSObject *,IOOptionBits)>(originalDispatch)(self,event,options);
+#endif
 }
 // This device's own event driver gets the wrapped copy; any other driver keeps the original table.
+#if __has_feature(ptrauth_calls)
+// The copy's slots are signed for their new addresses, each with its own discriminator. Those are Apple's: the diversity of each slot's
+// authenticated fixup in 24A446's kernelcache (IOHIDEventDriver's vtable, 220 slots, IOHIDFamily-2238.120.5; ipsw kernel cpp --methods).
+// They are not searched for: a kernel pointer's PAC has about 24 bits, so among 65536 discriminators a slot often has a second one whose
+// signature for the old address is the same, and the first match found was then wrong for the copy (slot 214, 0xcca1: a PAC failure in
+// IOHIDFamily and dead touch, untagged-31ec7a92ba). Every slot is checked against the original table before the copy is used; a table that
+// is not this one (another OS build) is left alone. [0] the outcome (1 another class, 2 a slot that did not check out, 3 installed), [1]
+// the number of slots copied (0 = not installed), [2] the first slot that did not check out (kSlots: none).
+extern "C" {volatile uint32_t native_touch_edge_install[3];}
+static const uint16_t kSlotDiversity[]={
+    0x3771,0x56b7,0xbaa2,0x3607,0x2e4a,0x3a87,0x89a9,0xfffc,0xfc74,0x5635,0xbe60,0x32e5,
+    0x9209,0x4a6a,0xedc5,0x5c68,0x6a10,0x7a2a,0xaf75,0x137e,0x0655,0x43aa,0x12e9,0x4578,
+    0x4275,0xff53,0x1814,0x122e,0x13f6,0x1d35,0xacb1,0x7eb0,0x1262,0x82eb,0x164e,0x37a5,
+    0xb659,0x6c51,0xa20f,0xb3b6,0x6bcb,0x5a20,0x5062,0x00d7,0x7c85,0x8a26,0x3539,0x688b,
+    0x1e60,0x1955,0x0689,0xc256,0xa383,0xf021,0x1f0a,0xb4bb,0x8ffc,0xb5b9,0x8764,0x5d96,
+    0x80d9,0x0c9c,0x5d0a,0xcbcc,0x617d,0x848a,0x2312,0x3540,0xc257,0x3025,0x9fc2,0x5038,
+    0xc666,0x6cc3,0x550c,0xa19a,0xa51b,0x4577,0x573c,0x1a4e,0x6c3d,0xb049,0xc4b2,0xc90d,
+    0x7d59,0x4897,0x3c68,0xb085,0x4529,0x639f,0xccfb,0x55eb,0xe933,0xaec3,0x5ec5,0x5219,
+    0xc6b2,0x8a43,0x4a20,0xd9f2,0x981a,0xa27f,0xc4f9,0x6b87,0x60a1,0x7e78,0x36aa,0x86ef,
+    0x9be9,0x7318,0x93b7,0x638e,0x61a6,0x9175,0x136b,0xdb58,0x4a31,0x0988,0x5393,0xabe0,
+    0x0ad9,0x6c99,0xd52d,0xe213,0x308f,0xd78d,0x3a1d,0xa390,0x240b,0x1b89,0x8d3c,0x2652,
+    0x7f14,0x0759,0x63c4,0x800f,0x9cc2,0x02ac,0x785f,0xcc6b,0x82cd,0x808e,0x37ce,0xa4c7,
+    0xe8de,0xa343,0x4bc0,0xf8a6,0xac7f,0x7974,0xea1b,0x4b35,0x9eb4,0x595a,0x5b2b,0x699e,
+    0x2b52,0xf40e,0x0ddb,0x0f88,0x8700,0x36c3,0x058e,0xf16e,0x3a71,0xda1e,0x10b6,0x8654,
+    0x96c3,0x4cb5,0x19b8,0x6518,0x5717,0xd2bf,0x09fa,0xad91,0xd335,0x4902,0xae57,0xaad9,
+    0x5299,0xe604,0x8660,0x0189,0xc3de,0x41f6,0x5c1e,0xb54e,0xef25,0x4bdd,0xefa8,0x9835,
+    0xae71,0x67cf,0xa85e,0x7b4f,0x4abb,0xc0d0,0x1134,0x7eca,0xf128,0xc748,0xa49a,0xde1d,
+    0x90ba,0xea29,0xce88,0xc62d,0x0078,0x0dce,0x454b,0xc58b,0xe23b,0x2684,0xcca1,0xfe11,
+    0x69fc,0xaaca,0x6518,0x7547,
+};
+static constexpr unsigned kDriverSlots=sizeof(kSlotDiversity)/sizeof(kSlotDiversity[0]);
+static_assert(kDriverSlots>kDispatch && kDriverSlots<=kSlots,"the dispatch slot lies in the table");
+static void install(IORegistryEntry *driver) {
+    if(originalDispatch || !driver)return;
+    if(kSlotDiversity[kDispatch]!=kDivDispatch)return;
+    // The table fits these classes only, each checked in 24A446's kernelcache to have exactly these 220 slots with these discriminators:
+    // IOHIDEventDriver, and AppleUserHIDEventService, its subclass that drives this device (the user-space HID driver's service). Any
+    // other subclass may have slots past the table, which a copy of this size would lose.
+    const OSMetaClass *meta=driver->getMetaClass();
+    const char *name=meta?meta->getClassName():nullptr;
+    if(!name || (strcmp(name,"IOHIDEventDriver") && strcmp(name,"AppleUserHIDEventService"))) {native_touch_edge_install[0]=1;return;}
+    void **table=vtableOf(driver);
+    void **copy=static_cast<void **>(IOMalloc(kDriverSlots*sizeof(void *)));
+    if(!copy)return;
+    unsigned copied=0;
+    native_touch_edge_install[2]=kSlots;
+    for(unsigned i=0;i<kDriverSlots;++i) {
+        void *entry=table[i];
+        void *function=entry?ptrauth_strip(entry,ptrauth_key_function_pointer):nullptr;
+        if(!entry || ptrauth_sign_unauthenticated(function,ptrauth_key_function_pointer,
+               ptrauth_blend_discriminator(&table[i],kSlotDiversity[i]))!=entry) {
+            native_touch_edge_install[2]=i;copied=0;break;
+        }
+        if(i==kDispatch) {
+            originalDispatch=reinterpret_cast<void (*)(IOService *,OSObject *,IOOptionBits)>(
+                ptrauth_sign_unauthenticated(function,ptrauth_key_function_pointer,0));
+            function=ptrauth_strip(reinterpret_cast<void *>(&dispatch),ptrauth_key_function_pointer);
+        }
+        copy[i]=ptrauth_sign_unauthenticated(function,ptrauth_key_function_pointer,ptrauth_blend_discriminator(&copy[i],kSlotDiversity[i]));
+        copied=i+1;
+    }
+    native_touch_edge_install[1]=copied;
+    if(copied!=kDriverSlots || !originalDispatch) {
+        native_touch_edge_install[0]=2;originalDispatch=nullptr;IOFree(copy,kDriverSlots*sizeof(void *));return;
+    }
+    native_touch_edge_install[0]=3;
+    __asm__ volatile("dmb ish":::"memory");
+    *reinterpret_cast<void **>(driver)=ptrauth_sign_unauthenticated(copy,ptrauth_key_process_independent_data,
+        ptrauth_blend_discriminator(driver,kVptrDiscriminator));
+    native_touch_edge_stats[0]=1;
+}
+#else
 static void install(IORegistryEntry *driver) {
     if(originalDispatch || !driver)return;
     uintptr_t *table=*reinterpret_cast<uintptr_t **>(driver);
@@ -127,6 +241,8 @@ static void install(IORegistryEntry *driver) {
     *reinterpret_cast<uintptr_t **>(driver)=copy;
     native_touch_edge_stats[0]=1;
 }
+#endif
+#endif
 }  // namespace edge
 class NativeHidInput : public IOHIDDevice {
     OSDeclareDefaultStructors(NativeHidInput)
@@ -139,6 +255,13 @@ class NativeHidInput : public IOHIDDevice {
     // (Digitizer/Touch Screen) and the Built-In flag, which a combined keyboard-first descriptor would not provide.
     bool touchOnly=false;
     bool eventDriverFound=false;
+    IOReturn submitReport(IOMemoryDescriptor *report) {
+#if defined(NATIVE_HID_SOURCE_API) && NATIVE_HID_SOURCE_API
+        return handleReport(report,kIOHIDReportTypeInput,0);
+#else
+        return handleReport(report,0,0);
+#endif
+    }
     uint32_t lastSeq=0;
     // Fingers sent as down in the previous report; a vanished identifier gets one explicit tip-up report.
     int prevIds[TOUCH_FINGERS]={-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
@@ -205,7 +328,7 @@ class NativeHidInput : public IOHIDDevice {
         if(!slot)return;
         report[1+TOUCH_FINGERS*6]=(unsigned char)slot;
         IOBufferMemoryDescriptor *buffer=IOBufferMemoryDescriptor::withBytes(report,sizeof(report),kIODirectionNone);
-        IOReturn result=buffer?self->handleReport(buffer,0,0):kIOReturnNoMemory;
+        IOReturn result=buffer?self->submitReport(buffer):kIOReturnNoMemory;
         OSSafeReleaseNULL(buffer);
         native_hid_input_observed(6,result);
         native_touch_hid_reports=native_touch_hid_reports+1;
@@ -221,7 +344,7 @@ class NativeHidInput : public IOHIDDevice {
         if(!self->hasEventDriverCached())return kIOReturnSuccess;
         unsigned char report[]={2,static_cast<unsigned char>((self->down?1:0)|self->buttons)};
         IOBufferMemoryDescriptor *buffer=IOBufferMemoryDescriptor::withBytes(report,sizeof(report),kIODirectionNone);
-        IOReturn result=buffer?self->handleReport(buffer,0,0):kIOReturnNoMemory;
+        IOReturn result=buffer?self->submitReport(buffer):kIOReturnNoMemory;
         OSSafeReleaseNULL(buffer);
         native_hid_input_observed(4,result);
         return kIOReturnSuccess;
@@ -261,7 +384,7 @@ class NativeHidInput : public IOHIDDevice {
         if(!self->down && !native_hid_input_requested()) {source->setTimeoutMS(1000);return;}
         unsigned char report[]={2,static_cast<unsigned char>((self->down?0:1)|self->buttons)};
         IOBufferMemoryDescriptor *buffer=IOBufferMemoryDescriptor::withBytes(report,sizeof(report),kIODirectionNone);
-        IOReturn result=buffer?self->handleReport(buffer,0,0):kIOReturnNoMemory;
+        IOReturn result=buffer?self->submitReport(buffer):kIOReturnNoMemory;
         OSSafeReleaseNULL(buffer);
         native_hid_input_observed(self->down?5:4,result);
         // Always attempt release, even if down returned an error: input must

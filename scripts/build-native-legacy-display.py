@@ -403,6 +403,7 @@ if progress.is_file():
 sources = [ROOT / 'drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp', ROOT / 'drivers/NativeMobileDisplay/NativeLegacyRequest.h',
            ROOT / 'drivers/NativeMobileDisplay/NativeLegacyScale.h', ROOT / 'drivers/NativeMobileDisplay/EnchiladaDisplayLogical.h',
            ROOT / 'drivers/NativeMobileDisplay/NativeGOPPresenter.cpp', ROOT / 'drivers/NativeMobileDisplay/NativeGOPWire.h',
+           ROOT / 'drivers/NativeMobileDisplay/NativeGpuTrace.h', ROOT / 'drivers/NativeMobileDisplay/NativeHalfCodes.h',
            *probes, *c_sources, KIT / 'BootUiTraceCore.h', KIT / 'BootUiTraceDetails.h',
            ROOT / 'drivers/ShengHidInput/NativeHidInput.cpp', ROOT / 'scripts/build-native-hid-input.py',
            ROOT / 'drivers/AppleKeyStoreState/NativeKeyStoreEvents.cpp', Path(__file__).resolve()]
