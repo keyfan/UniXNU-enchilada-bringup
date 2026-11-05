@@ -27,7 +27,8 @@
 enum : uint64_t {
   kDwc3CoreBase   = 0x0a600000ull,
   kDwc3CoreSize   = 0xcd00ull,
-  kDwc3QscratchBase = 0x0a6f8800ull,   // usb_1 wrapper (GGPIO/QSCRATCH); probe maps 0x1000
+  kDwc3QscratchBase = 0x0a6f8800ull,   // usb_1 wrapper (GGPIO/QSCRATCH), 0xf8800 into the wrapper
+  kDwc3QscratchSize = 0x400ull,        // SDM845_QSCRATCH_SIZE: every QSCRATCH register this driver uses is below it
   kQusb2PhyBase   = 0x088e2000ull,
   kQusb2PhySize   = 0x400ull,
   kGccBase        = 0x00100000ull,
@@ -35,6 +36,26 @@ enum : uint64_t {
   kAppsSmmuSize   = 0x80000ull,
 };
 enum : uint16_t { kDwc3SmmuStream = 0x740, kDwc3SmmuMask = 0x0 };
+
+// ---- QSCRATCH: the wrapper's VBUS/role override -------------------------------
+// The dwc3 core does not decide whether the phone is attached; the wrapper it sits
+// behind does, and on SDM845 that decision is a software override in QSCRATCH. The
+// firmware's fastboot session works because it asserts those bits (Mu-Silicium does
+// the same thing on its own Exynos USB registers, BoardInit.c:239-245); a gadget
+// that leaves them clear sits in device mode with RunStop set and the link stuck at
+// HS_DISCONNECTED, which is exactly what console186-console190 measured.
+//
+// Offsets and bit positions are from mainline drivers/usb/dwc3/dwc3-qcom.c
+// (QSCRATCH_HS_PHY_CTRL / UTMI_OTG_VBUS_VALID / SW_SESSVLD_SEL /
+// QSCRATCH_SS_PHY_CTRL / LANE0_PWR_PRESENT, GPL-2.0). Only the numbers are used.
+enum : uint32_t {
+  kDwc3QscratchGeneralCfg = 0x08,
+  kDwc3QscratchHsPhyCtrl  = 0x10,
+  kDwc3QscratchSsPhyCtrl  = 0x30,
+  kQscratchUtmiOtgVbusValid = 1u << 20,   // HS_PHY_CTRL: VBUS is valid as far as the UTMI side knows
+  kQscratchSwSessVldSel     = 1u << 28,   // HS_PHY_CTRL: take session-valid from software
+  kQscratchLane0PwrPresent  = 1u << 24,   // SS_PHY_CTRL: lane 0 has power
+};
 
 // ---- GCC branch/GDSC offsets for USB30_PRIM ----------------------------------
 // From the SDM845 GCC driver (drivers/clk/qcom/gcc-sdm845.c): halt_reg of each

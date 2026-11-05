@@ -13,7 +13,7 @@ endpoint 0)**. Default-off. Nothing is mapped or read unless the boot argument
 | (none) | the driver attaches to the root device and does nothing |
 | `native-dwc3-probe=1` | map GCC + the dwc3 core window UEFI left up, read a register snapshot (GSNPSID, GCTL, DCFG, DSTS, DALEPENA, event buffer) and the QUSB2 PHY PLL-ready bit. No MMIO is written. |
 | `native-dwc3-probe=2` | also compute the `apps_smmu` plan for the dwc3 stream `0x740` through `Dwc3SmmuPlan.h`. Still nothing is written. |
-| `native-dwc3-probe=3` | also bring the controller up as a USB device (`Dwc3Gadget.cpp`): install or adopt that SMMU entry, allocate the event buffer and one TRB ring per endpoint, program GCTL/GUSB2PHYCFG/DCFG/DEVTEN, run `DEPSTARTCFG` + `DEPXFERCFG` and `DEPCFG` on endpoint 0, then set `DCTL.RunStop` and start the event thread. |
+| `native-dwc3-probe=3` | also bring the controller up as a USB device (`Dwc3Gadget.cpp`): install or adopt that SMMU entry, allocate the event buffer and one TRB ring per endpoint, program GCTL/GUSB2PHYCFG/DCFG/DEVTEN, run `DEPSTARTCFG` + `DEPXFERCFG` and `DEPCFG` on endpoint 0, set the wrapper's VBUS/session override, then set `DCTL.RunStop` and start the event thread. |
 
 Everything the probe and the gadget see is published through `native_dwc3_*`
 counters that `package/BootLog.c` writes to the UFS diagnostic log (rows `U` and
@@ -63,6 +63,27 @@ stays set and the thread polls `GEVNTCOUNT`. It blocks with `assert_wait_timeout
 `thread_block` rather than `IOSleep`, because on this platform `IOSleep` forwards to
 `delay_for_interval`, which spins the CPU on the time base instead of yielding it
 (`package/BootLog.c:905-913` records the same lesson).
+
+## The link needs the wrapper's VBUS override
+
+The controller can be running, in device mode, with endpoint 0 programmed and
+`DCTL.RunStop` set, and still report `DSTS.USBLNKST = 4` (HS_DISCONNECTED) with not
+one event posted — console186 through console190 all measured exactly that
+(`G st=6 rc=0 ev=0`, `polls` climbing into the hundreds of thousands,
+`gevent=00000000`). Three explanations were tested and eliminated on hardware:
+the event thread never ran, `GUSB2PHYCFG.SUSPHY` was left set by UEFI, and the
+core soft reset was skipped. All three were false, and `G phy ... susp=0->0` plus
+`G st=6 ... rst=1` are the readings that said so.
+
+What was missing is outside the core. On SDM845 the dwc3 block sits behind a USB
+wrapper, and the "session valid" the UTMI side samples is a software override in
+QSCRATCH, not a pad: this board's device tree points `usb-phy` at `usb-nop-xceiv`,
+so nothing else will ever assert it. `Dwc3Gadget.cpp` now does what mainline's
+`dwc3_qcom_vbus_override_enable()` does — `SS_PHY_CTRL |= LANE0_PWR_PRESENT`, then
+`HS_PHY_CTRL |= UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL` — once before `RunStop` and
+once right after, mirroring mainline's `pre_run_stop` notifier, whose comment says
+the next UDC write needs VBUS_VALID set to generate a connect-done event. The `G qs`
+row records both registers before and after, with the individual bits broken out.
 
 ## Tests
 

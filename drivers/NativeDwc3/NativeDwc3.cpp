@@ -92,11 +92,12 @@ static int gEventWaitEvent;
 // the VA: the first hardware run with the SMMU diagnostics printed cb=6f6f6c6c, the ASCII text
 // "lloo", where the context bank should have been. Kept in file scope the way ArmCpu.cpp:159 and
 // NativeUfs.cpp:1089 keep theirs.
-static OSSharedPtr<IOMemoryMap> gGccMap, gCoreMap, gPhyMap, gSmmuMap;
+static OSSharedPtr<IOMemoryMap> gGccMap, gCoreMap, gPhyMap, gSmmuMap, gQscratchMap;
 
 // What the gadget thread needs from the probe, handed over before it starts.
 static uintptr_t gGadgetCore = 0;
 static uintptr_t gGadgetSmmu = 0;
+static uintptr_t gGadgetQscratch = 0;
 static unsigned gGadgetPhysicalEps = 0;
 static UfsSmmuPlan gGadgetPlan;
 
@@ -270,12 +271,19 @@ void NativeDwc3::inspect()
     // even when the bring-up never returns.
     if (gProbeMode >= 3 && !plan.error) {
       native_dwc3_stage = 6;
+      // The wrapper the core sits behind. This is where VBUS/session-valid comes from on
+      // SDM845 (dwc3-qcom.c), and the board has no VBUS pad of its own, so a gadget that
+      // does not assert the override never sees a connect-done. Mapped here and kept in
+      // gQscratchMap: the gadget thread uses it long after inspect() returns, the same
+      // lifetime mistake that produced the SMMU "lloo" reads in console183.
+      uintptr_t qscratch = dwc3MapPhys(kDwc3QscratchBase, kDwc3QscratchSize, gQscratchMap);
       gGadgetPhysicalEps = dwc3HwParams3NumEps(snap.ghwparams3);
       if (!gGadgetPhysicalEps || gGadgetPhysicalEps > 8) {
         gGadgetPhysicalEps = 4;   // SDM845's dwc3 reports 4; a sane default if the field reads oddly
       }
       gGadgetCore = core;
       gGadgetSmmu = smmu;
+      gGadgetQscratch = qscratch;
       gGadgetPlan = plan;
       thread_t thread = nullptr;
       if (kernel_thread_start(&NativeDwc3::gadgetThread, this, &thread) == KERN_SUCCESS) {
@@ -306,7 +314,8 @@ void NativeDwc3::gadgetThread(void *self, wait_result_t)
       thread_block(THREAD_CONTINUE_NULL);
     }
   }
-  if (!dwc3GadgetStart(gGadgetCore, gGadgetSmmu, gGadgetPlan, gGadgetPhysicalEps, kDwc3Ep0MaxPacketHighSpeed)) {
+  if (!dwc3GadgetStart(gGadgetCore, gGadgetSmmu, gGadgetQscratch, gGadgetPlan, gGadgetPhysicalEps,
+                       kDwc3Ep0MaxPacketHighSpeed)) {
     // native_dwc3_gadget_error already names the stage that failed.
     native_dwc3_stage = 7;
     return;

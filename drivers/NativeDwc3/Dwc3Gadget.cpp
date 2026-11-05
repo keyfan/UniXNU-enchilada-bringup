@@ -60,6 +60,11 @@ volatile uint32_t native_dwc3_gadget_gevent_raw = 0;
 // GUSB2PHYCFG(0) before and after the gadget rewrites it. If SUSPHY was set here and
 // cleared there, the PHY was parked when we took over -- that is the whole diagnosis.
 volatile uint32_t native_dwc3_gadget_phy_before = 0, native_dwc3_gadget_phy_after = 0;
+// QSCRATCH (the wrapper) as it was and as the gadget left it. HS is the VBUS/session
+// half, SS the lane-power half; hs_vbus/hs_sel keep the two HS bits individually so
+// the log says which one the write actually landed on.
+volatile uint32_t native_dwc3_gadget_qs_hs_before = 0, native_dwc3_gadget_qs_hs_after = 0;
+volatile uint32_t native_dwc3_gadget_qs_ss_before = 0, native_dwc3_gadget_qs_ss_after = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -84,6 +89,9 @@ enum Stage : unsigned {
   // Added after console187: the core soft reset runs after the SMMU plan and before GCTL, so
   // it needs its own number or a timeout there would be reported as a stage 2 failure.
   kStageSoftReset  = 7,
+  // Added after console190: the wrapper's VBUS override is the step between a controller
+  // that runs and a link the host can see.
+  kStageVbus       = 8,
 };
 
 // A DMA-visible region: one physically contiguous allocation, its bus address and
@@ -123,6 +131,7 @@ struct Gadget {
   DmaRegion rings[8];
   uintptr_t core = 0;
   uintptr_t smmu = 0;
+  uintptr_t qscratch = 0;     // wrapper window; 0 = no VBUS override
   unsigned physicalEps = 0;
   unsigned eventPos = 0;      // byte offset read so far in the event buffer
   uint32_t ep0State = 0;
@@ -163,6 +172,44 @@ void invalidateDma(const void *address, unsigned bytes) {
     asm volatile("dc ivac, %0" ::"r"(line) : "memory");
   }
   asm volatile("dsb sy" ::: "memory");
+}
+
+// ---- The wrapper's VBUS override ------------------------------------------------
+
+// Tell the wrapper the cable is present. On SDM845 the dwc3 core is one block of a
+// USB wrapper, and the "session valid" the UTMI side samples is a bit that software
+// sets: there is no VBUS pad on this board (the device tree points usb-phy at
+// usb-nop-xceiv), so nothing else will ever set it.
+//
+// Without this the controller runs, endpoint 0 is programmed, DCTL.RunStop is set,
+// and DSTS still reads HS_DISCONNECTED -- console186 through console190. Mu-Silicium
+// gets its fastboot link by forcing the equivalent bits on its own USB registers
+// (BoardInit.c:239-245), and mainline's dwc3-qcom.c calls
+// dwc3_qcom_vbus_override_enable() in peripheral mode and again from its
+// pre_run_stop notifier, with the comment that the next UDC write needs VBUS_VALID
+// set to generate a connect-done event. Both halves are done here: once before
+// RunStop, once immediately after, because the override has to be in place when the
+// controller samples the line, and the firmware's own notifier re-applies it.
+// `record` keeps the "before" words on the first call and leaves them alone on the
+// second, so the log shows UEFI's own value rather than the first write's result.
+void applyVbusOverride(uintptr_t qscratch, bool record) {
+  if (!qscratch) {
+    return;
+  }
+  // SS first, then HS: mainline's order in dwc3_qcom_vbus_override_enable().
+  uint32_t ss = read32(qscratch, kDwc3QscratchSsPhyCtrl);
+  if (record) {
+    native_dwc3_gadget_qs_ss_before = ss;
+  }
+  write32(qscratch, kDwc3QscratchSsPhyCtrl, ss | kQscratchLane0PwrPresent);
+  native_dwc3_gadget_qs_ss_after = read32(qscratch, kDwc3QscratchSsPhyCtrl);
+
+  uint32_t hs = read32(qscratch, kDwc3QscratchHsPhyCtrl);
+  if (record) {
+    native_dwc3_gadget_qs_hs_before = hs;
+  }
+  write32(qscratch, kDwc3QscratchHsPhyCtrl, hs | kQscratchUtmiOtgVbusValid | kQscratchSwSessVldSel);
+  native_dwc3_gadget_qs_hs_after = read32(qscratch, kDwc3QscratchHsPhyCtrl);
 }
 
 // ---- Endpoint commands ---------------------------------------------------------
@@ -287,10 +334,11 @@ __attribute__((unused)) bool startTransfer(unsigned ep, uint64_t bufferPhys, uns
 // Everything stage B does, in the firmware's order, with the SMMU planned first so
 // a refusal costs nothing. Returns true when the controller is running and
 // endpoint 0 is programmed.
-bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, const UfsSmmuPlan &plan, unsigned physicalEps,
-                     unsigned maxPacket) {
+bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, uintptr_t qscratch, const UfsSmmuPlan &plan,
+                     unsigned physicalEps, unsigned maxPacket) {
   gGadget.core = core;
   gGadget.smmu = smmu;
+  gGadget.qscratch = qscratch;
   gGadget.physicalEps = physicalEps;
 
   native_dwc3_gadget_stage = kStageStart;
@@ -472,11 +520,21 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, const UfsSmmuPlan &plan, un
     return false;
   }
 
+  // Tell the wrapper the cable is in, before the controller is told to run. See
+  // applyVbusOverride(): mainline calls this from probe in peripheral mode and again from
+  // pre_run_stop, so the override is in place on both sides of the RunStop write.
+  native_dwc3_gadget_stage = kStageVbus;
+  applyVbusOverride(qscratch, true);
+
   // DCTL.RunStop last, exactly as the firmware does it (Dwc3Core.c:191-201).
   native_dwc3_gadget_stage = kStageRun;
   uint32_t dctl = read32(core, kDwc3DCTL);
   dctl &= ~kDwc3DctlTstCtrlMask;
   write32(core, kDwc3DCTL, dctl | kDwc3DctlRunStop);
+
+  // ...and once more right after, because this is the write that makes the controller
+  // sample the session lines. The read-back in applyVbusOverride records both words.
+  applyVbusOverride(qscratch, false);
 
   gGadget.running = true;
   native_dwc3_gadget_dcfg = read32(core, kDwc3DCFG);

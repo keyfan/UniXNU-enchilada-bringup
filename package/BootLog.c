@@ -86,6 +86,10 @@ extern volatile uint32_t native_dwc3_gadget_last_event __attribute__((weak_impor
 extern volatile uint32_t native_dwc3_gadget_ep0_state __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_phy_before __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_phy_after __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_qs_hs_before __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_qs_hs_after __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_qs_ss_before __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_qs_ss_after __attribute__((weak_import));
 extern const char *volatile native_dwc3_gadget_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
 extern volatile int native_gpu_addon_written __attribute__((weak_import));
@@ -538,6 +542,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       snprintf(row, sizeof row, "G phy before=%08x after=%08x susp=%u->%u",
                native_dwc3_gadget_phy_before, native_dwc3_gadget_phy_after,
                (native_dwc3_gadget_phy_before >> 6) & 1u, (native_dwc3_gadget_phy_after >> 6) & 1u);
+      at = put(out, at, cap, row, sizeof row);
+      // The wrapper's VBUS/session override, before and after the gadget sets it. HS carries
+      // UTMI_OTG_VBUS_VALID (bit20) and SW_SESSVLD_SEL (bit28); SS carries LANE0_PWR_PRESENT
+      // (bit24). If these stay clear, the controller runs and no host ever sees it.
+      snprintf(row, sizeof row, "G qs hs=%08x->%08x vbus=%u->%u sel=%u->%u ss=%08x->%08x lane=%u->%u",
+               native_dwc3_gadget_qs_hs_before, native_dwc3_gadget_qs_hs_after,
+               (native_dwc3_gadget_qs_hs_before >> 20) & 1u, (native_dwc3_gadget_qs_hs_after >> 20) & 1u,
+               (native_dwc3_gadget_qs_hs_before >> 28) & 1u, (native_dwc3_gadget_qs_hs_after >> 28) & 1u,
+               native_dwc3_gadget_qs_ss_before, native_dwc3_gadget_qs_ss_after,
+               (native_dwc3_gadget_qs_ss_before >> 24) & 1u, (native_dwc3_gadget_qs_ss_after >> 24) & 1u);
       at = put(out, at, cap, row, sizeof row);
       if (native_dwc3_gadget_error) {
         snprintf(row, sizeof row, "G fail: %.100s", native_dwc3_gadget_error);

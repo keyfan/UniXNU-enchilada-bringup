@@ -13,9 +13,10 @@
 // Bring the controller up as a USB device and program endpoint 0. `plan` must be
 // the same plan the probe computed for stream 0x740: this function installs it (or,
 // for the firmware's own entry, only verifies it) before any DMA address is
-// written. Returns false and leaves native_dwc3_gadget_error set on failure.
-bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, const UfsSmmuPlan &plan, unsigned physicalEps,
-                     unsigned maxPacket);
+// written. `qscratch` is the wrapper window (kDwc3QscratchBase); pass 0 to skip the
+// VBUS override. Returns false and leaves native_dwc3_gadget_error set on failure.
+bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, uintptr_t qscratch, const UfsSmmuPlan &plan,
+                     unsigned physicalEps, unsigned maxPacket);
 
 // Drain the event buffer. Safe to call from any thread; does nothing until
 // dwc3GadgetStart succeeded.
