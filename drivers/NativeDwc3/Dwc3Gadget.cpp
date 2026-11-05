@@ -46,6 +46,12 @@ volatile uint32_t native_dwc3_gadget_last_event = 0; // last raw event word
 volatile uint32_t native_dwc3_gadget_dcfg = 0, native_dwc3_gadget_dctl = 0, native_dwc3_gadget_dsts = 0;
 volatile uint32_t native_dwc3_gadget_speed = 0;      // connected link speed from DSTS
 volatile uint32_t native_dwc3_gadget_address = 0;    // device address the host set
+// What the planner chose and what the SMMU actually holds for that slot, so a refusal can be
+// attributed to one comparison instead of the shared error string (SmmuTakeover.h, firmware branch).
+volatile uint32_t native_dwc3_gadget_smmu_slot = 0, native_dwc3_gadget_smmu_bank = 0;
+volatile uint32_t native_dwc3_gadget_smmu_smr = 0, native_dwc3_gadget_smmu_s2cr = 0;
+volatile uint32_t native_dwc3_gadget_smmu_smr_now = 0, native_dwc3_gadget_smmu_s2cr_now = 0;
+volatile uint32_t native_dwc3_gadget_smmu_cb_now = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -282,6 +288,18 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, const UfsSmmuPlan &plan, un
   // before the controller is told where they are. configureUfsSmmu writes nothing
   // for the firmware's own entry, which is what the probe found on this board.
   native_dwc3_gadget_stage = kStageSmmu;
+  // Record what the plan chose and what the SMMU holds right now, before configureUfsSmmu gets a
+  // say. The firmware branch compares three things and returns one string for all of them, so
+  // without these the boot log can only say "something changed".
+  native_dwc3_gadget_smmu_slot = plan.slot;
+  native_dwc3_gadget_smmu_bank = plan.bank;
+  native_dwc3_gadget_smmu_smr = plan.smr;
+  native_dwc3_gadget_smmu_s2cr = plan.s2cr;
+  if (plan.slot != 0xffffffffU) {
+    native_dwc3_gadget_smmu_smr_now = read32(smmu, 0x800 + 4 * plan.slot);
+    native_dwc3_gadget_smmu_s2cr_now = read32(smmu, 0xc00 + 4 * plan.slot);
+    native_dwc3_gadget_smmu_cb_now = read32(smmu, (plan.pages + plan.bank) * 4096);
+  }
   if (const char *error = configureUfsSmmu(plan, kDwc3SmmuStream, kDwc3SmmuMask,
                                           [smmu](unsigned off) { return read32(smmu, off); },
                                           [smmu](unsigned off, uint32_t value) { write32(smmu, off, value); })) {

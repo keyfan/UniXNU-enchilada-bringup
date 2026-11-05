@@ -73,6 +73,13 @@ extern volatile uint32_t native_dwc3_gadget_address __attribute__((weak_import))
 extern volatile uint32_t native_dwc3_gadget_dcfg __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_dctl __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_dsts __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_smmu_slot __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_smmu_bank __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_smmu_smr __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_smmu_s2cr __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_smmu_smr_now __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_smmu_s2cr_now __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_smmu_cb_now __attribute__((weak_import));
 extern const char *volatile native_dwc3_gadget_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
 extern volatile int native_gpu_addon_written __attribute__((weak_import));
@@ -515,6 +522,15 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
         snprintf(row, sizeof row, "G fail: %.100s", native_dwc3_gadget_error);
         at = put(out, at, cap, row, sizeof row);
       }
+      // The four values the firmware branch of configureUfsSmmu compares, side by side: the plan's
+      // slot/bank and the SMR/S2CR it read, then the same registers read again just before the
+      // check. They differ only if the SMMU changed underneath the planner.
+      snprintf(row, sizeof row, "G smmu slot=%u bank=%u plan=%08x/%08x now=%08x/%08x cb=%08x",
+               native_dwc3_gadget_smmu_slot, native_dwc3_gadget_smmu_bank,
+               native_dwc3_gadget_smmu_smr, native_dwc3_gadget_smmu_s2cr,
+               native_dwc3_gadget_smmu_smr_now, native_dwc3_gadget_smmu_s2cr_now,
+               native_dwc3_gadget_smmu_cb_now);
+      at = put(out, at, cap, row, sizeof row);
     }
   }
   // The one-time copy of the OS volume's staged system apps into Data (kern_exec.c native_staged_apps_prepare): stage (2 copied, 3 copied
