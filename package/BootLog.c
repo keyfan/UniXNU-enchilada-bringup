@@ -80,6 +80,10 @@ extern volatile uint32_t native_dwc3_gadget_smmu_s2cr __attribute__((weak_import
 extern volatile uint32_t native_dwc3_gadget_smmu_smr_now __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_smmu_s2cr_now __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_smmu_cb_now __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_polls __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_gevent_raw __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_last_event __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_ep0_state __attribute__((weak_import));
 extern const char *volatile native_dwc3_gadget_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
 extern volatile int native_gpu_addon_written __attribute__((weak_import));
@@ -517,6 +521,14 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
                native_dwc3_gadget_resets, native_dwc3_gadget_cmds, native_dwc3_gadget_cmd_fail,
                native_dwc3_gadget_speed, native_dwc3_gadget_address, native_dwc3_gadget_dcfg,
                native_dwc3_gadget_dctl, native_dwc3_gadget_dsts);
+      at = put(out, at, cap, row, sizeof row);
+      // Whether the event loop is alive at all, and what the controller thinks it has posted.
+      // polls climbing with ev stuck at 0 means the loop runs and the controller posts nothing;
+      // polls frozen means the thread never got scheduled, which is a different bug entirely.
+      // gevent is GEVNTCOUNT0 verbatim, bit31 = EHB (1 = the controller reports the buffer empty).
+      snprintf(row, sizeof row, "G ev loop polls=%u gevent=%08x last=%08x ep0=%08x",
+               native_dwc3_gadget_polls, native_dwc3_gadget_gevent_raw,
+               native_dwc3_gadget_last_event, native_dwc3_gadget_ep0_state);
       at = put(out, at, cap, row, sizeof row);
       if (native_dwc3_gadget_error) {
         snprintf(row, sizeof row, "G fail: %.100s", native_dwc3_gadget_error);

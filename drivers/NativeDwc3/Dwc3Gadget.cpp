@@ -52,6 +52,11 @@ volatile uint32_t native_dwc3_gadget_smmu_slot = 0, native_dwc3_gadget_smmu_bank
 volatile uint32_t native_dwc3_gadget_smmu_smr = 0, native_dwc3_gadget_smmu_s2cr = 0;
 volatile uint32_t native_dwc3_gadget_smmu_smr_now = 0, native_dwc3_gadget_smmu_s2cr_now = 0;
 volatile uint32_t native_dwc3_gadget_smmu_cb_now = 0;
+// Why ev can stay at 0: either the loop never ran, or it ran and the controller posted
+// nothing. polls counts invocations, gevent_raw keeps the last GEVNTCOUNT0 as read
+// (bit31 EHB included), so the two explanations can be told apart from the log alone.
+volatile uint32_t native_dwc3_gadget_polls = 0;
+volatile uint32_t native_dwc3_gadget_gevent_raw = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -337,7 +342,10 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, const UfsSmmuPlan &plan, un
   write32(core, kDwc3GEVNTADRLO0, uint32_t(gGadget.events.phys & 0xffffffffu));
   write32(core, kDwc3GEVNTADRHI0, uint32_t(gGadget.events.phys >> 32));
   write32(core, kDwc3GEVNTSIZ0, dwc3EvntSizSize(kEventBufferBytes) | kDwc3EvntSizIntMask);
-  write32(core, kDwc3GEVNTCOUNT0, 0);
+  // Clear the pending count but leave EHB (bit31) alone; the firmware does exactly
+  // this (Dwc3Core.c:171). Writing a flat 0 over a set EHB is the kind of thing that
+  // leaves the controller believing the buffer is still full.
+  write32(core, kDwc3GEVNTCOUNT0, read32(core, kDwc3GEVNTCOUNT0) & 0xfffcu);
 
   // DCFG: high speed (the board is USB2 only) and address 0. A stale address from
   // the firmware's own session would make every control transfer go unanswered.
@@ -394,7 +402,10 @@ void dwc3GadgetDrain() {
     return;
   }
   uintptr_t core = gGadget.core;
-  uint32_t pending = read32(core, kDwc3GEVNTCOUNT0) & 0xffffu;
+  native_dwc3_gadget_polls = native_dwc3_gadget_polls + 1;
+  uint32_t raw = read32(core, kDwc3GEVNTCOUNT0);
+  native_dwc3_gadget_gevent_raw = raw;
+  uint32_t pending = raw & 0xffffu;
   while (pending >= 4) {
     invalidateDma(gGadget.events.virt + gGadget.eventPos, 4);
     uint32_t event = 0;
@@ -402,7 +413,9 @@ void dwc3GadgetDrain() {
     gGadget.eventPos = (gGadget.eventPos + 4) % kEventBufferBytes;
     pending -= 4;
     // Handing the bytes back is what frees the slot; without it the buffer fills
-    // and the controller stops posting.
+    // and the controller stops posting. The low 16 bits are the count to give back;
+    // EHB (bit31) is the controller's own "empty" flag and must not be written as 0
+    // (Dwc3Core.c:171 masks it the same way).
     write32(core, kDwc3GEVNTCOUNT0, 4);
 
     native_dwc3_gadget_events = native_dwc3_gadget_events + 1;
