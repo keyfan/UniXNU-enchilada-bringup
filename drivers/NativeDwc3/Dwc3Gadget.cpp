@@ -81,6 +81,9 @@ enum Stage : unsigned {
   kStageRun        = 4,
   kStageEp0Config  = 5,
   kStageReady      = 6,
+  // Added after console187: the core soft reset runs after the SMMU plan and before GCTL, so
+  // it needs its own number or a timeout there would be reported as a stage 2 failure.
+  kStageSoftReset  = 7,
 };
 
 // A DMA-visible region: one physically contiguous allocation, its bus address and
@@ -331,18 +334,71 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, const UfsSmmuPlan &plan, un
     linkRing(ep);
   }
 
-  // Wake the UTMI PHY before anything else. The firmware parks it on the way out --
-  // Dwc3CoreExit (Dwc3Core.c:340-343) sets GUSB2PHYCFG(0).SUSPHY -- so a driver that
-  // adopts the controller without clearing it runs a device controller whose PHY is
-  // asleep: the host never sees a connect, USBLNKST stays "disconnected", and no reset,
-  // setup or completion event is ever posted. console186 measured exactly that -- the
-  // event loop polled 264038 times and GEVNTCOUNT0 read 0 every time.
+  // ---- Core soft reset, and why it has to come before the PHY is set up -------------
   //
-  // This is the one place stage B has to undo the firmware's teardown rather than
-  // continue from its state; the bring-up order otherwise stays faithful to
-  // Dwc3CoreInit. Rewriting the width and turnaround fields is not cosmetic: the
-  // firmware programs them for this board's PHY, and leaving whatever the last owner
-  // left in them is a different board's guess.
+  // Dwc3CoreInit (Dwc3Core.c:242-254) selects device mode, stalls 100 us, calls
+  // Dwc3SoftReset, and only *then* calls Dwc3PhyInterfaceSetup. That order is not
+  // cosmetic: DCTL.CsfTReset returns the block's registers to their reset values, so
+  // anything written to GUSB2PHYCFG before it is erased by it. The first cuts of this
+  // file instead adopted whatever UEFI left behind, and the controller sat in device
+  // mode with endpoint 0 programmed, RunStop set, and a link that never left
+  // "disconnected" -- console186 and console187 both measured exactly that.
+  //
+  // Dwc3SoftReset also pulses PHYSOFTRST on the UTMI PHY itself (Dwc3Core.c:70-84), which
+  // is a different thing from the register reset below: it drops the PHY's own state
+  // machine, which the core reset does not reach.
+  //
+  // Both waits are timebase spins. IODelay parks the calling CPU in WFE on this SoC and
+  // the poll never returns (RootCommands.h:22, NativeUfs.cpp:337).
+  native_dwc3_gadget_stage = kStageSoftReset;
+
+  // GCTL: device mode first, as the firmware does at :242-245.
+  uint32_t gctl_before_reset = read32(core, kDwc3GCTL);
+  gctl_before_reset &= ~kDwc3GctlPrtCapMask;
+  gctl_before_reset |= kDwc3GctlPrtCapDevice;
+  write32(core, kDwc3GCTL, gctl_before_reset);
+  for (unsigned spin = 0; spin < 100; ++spin) {
+    for (volatile unsigned pause = 0; pause < 50; pause = pause + 1) {
+    }
+  }
+
+  // PHYSOFTRST pulse: assert, ~100 us, release.
+  uint32_t phy_reset = read32(core, kDwc3GUSB2PHYCFG0);
+  write32(core, kDwc3GUSB2PHYCFG0, phy_reset | kDwc3Gusb2PhyCfgPhySoftRst);
+  for (unsigned spin = 0; spin < 100; ++spin) {
+    for (volatile unsigned pause = 0; pause < 50; pause = pause + 1) {
+    }
+  }
+  write32(core, kDwc3GUSB2PHYCFG0, read32(core, kDwc3GUSB2PHYCFG0) & ~kDwc3Gusb2PhyCfgPhySoftRst);
+  for (unsigned spin = 0; spin < 100; ++spin) {
+    for (volatile unsigned pause = 0; pause < 50; pause = pause + 1) {
+    }
+  }
+
+  // Core reset proper, then wait for the controller to drop CsfTReset on its own.
+  uint32_t dctl_reset = read32(core, kDwc3DCTL);
+  write32(core, kDwc3DCTL, dctl_reset | kDwc3DctlCoreSoftReset);
+  bool reset_done = false;
+  for (unsigned spin = 0; spin < 200000; ++spin) {
+    if (!(read32(core, kDwc3DCTL) & kDwc3DctlCoreSoftReset)) {
+      reset_done = true;
+      break;
+    }
+    for (volatile unsigned pause = 0; pause < 50; pause = pause + 1) {
+    }
+  }
+  native_dwc3_gadget_resets = native_dwc3_gadget_resets + 1;
+  if (!reset_done) {
+    native_dwc3_gadget_error = "core soft reset timed out";
+    native_dwc3_gadget_status = -int32_t(kStageSoftReset);
+    return false;
+  }
+
+  // ---- PHY interface, now that the reset has cleared the register --------------------
+  //
+  // Dwc3PhyInterfaceSetup (Dwc3Core.c:109-145): clear PHYIF/USBTRDTIM/ULPI_UTMI, program
+  // the width and turnaround this board's PHY wants, then clear SUSPHY and ENBLSLPM.
+  // Writing these before the reset would have thrown them away.
   uint32_t phy_before = read32(core, kDwc3GUSB2PHYCFG0);
   uint32_t phy = phy_before;
   phy &= ~(kDwc3Gusb2PhyCfgSusPhy | kDwc3Gusb2PhyCfgEnblSlpm);
@@ -373,6 +429,14 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, const UfsSmmuPlan &plan, un
   // leaves the controller believing the buffer is still full.
   write32(core, kDwc3GEVNTCOUNT0, read32(core, kDwc3GEVNTCOUNT0) & 0xfffcu);
 
+  // GCTL prtcap again, exactly as the firmware does after the event buffer
+  // (Dwc3Core.c:278-281): programming GEVNT* can drop the block back to its reset
+  // direction, and a controller that is not in device mode never asserts a pull-up.
+  uint32_t gctl_after_events = read32(core, kDwc3GCTL);
+  gctl_after_events &= ~kDwc3GctlPrtCapMask;
+  gctl_after_events |= kDwc3GctlPrtCapDevice;
+  write32(core, kDwc3GCTL, gctl_after_events);
+
   // DCFG: high speed (the board is USB2 only) and address 0. A stale address from
   // the firmware's own session would make every control transfer go unanswered.
   uint32_t dcfg = read32(core, kDwc3DCFG);
@@ -381,11 +445,16 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, const UfsSmmuPlan &plan, un
   dcfg &= ~kDwc3DcfgDevAddrMask;
   write32(core, kDwc3DCFG, dcfg);
 
-  // DEVTEN: the events this driver acts on. SOF is deliberately not enabled, so a
-  // running link does not fill the buffer with one event per frame.
+  // DEVTEN: the same five the firmware enables (Dwc3Core.c:305-310). SOF is deliberately
+  // left off so a running link does not fill the buffer one event per frame. The first cut
+  // added ErraticErr/CmdCmpl/Overflow and dropped Wakeup; the delta is small but there is no
+  // reading of this controller yet in which deviating from the known-good order has paid off.
   write32(core, kDwc3DEVTEN, kDwc3DevtenDisconEvtEn | kDwc3DevtenUsbRstEn | kDwc3DevtenConnectDoneEn |
-                                 kDwc3DevtenUlstCnGen | kDwc3DevtenErraticErrEn | kDwc3DevtenCmdCmplEn |
-                                 kDwc3DevtenOverflowEn);
+                                 kDwc3DevtenUlstCnGen | kDwc3DevtenWkupEvtEn);
+
+  // DALEPENA cleared before any endpoint is programmed (Dwc3Core.c:312): the two DEPCFGs
+  // below arm endpoints from scratch rather than adding to whatever UEFI left enabled.
+  write32(core, kDwc3DALEPENA, 0);
 
   // Endpoint 0 first: DEPSTARTCFG plus one transfer resource per endpoint, then the
   // two control endpoints. Only after that is the controller allowed to run, so it

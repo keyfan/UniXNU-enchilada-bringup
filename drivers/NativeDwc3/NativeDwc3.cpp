@@ -37,7 +37,7 @@ extern "C" {
 volatile uint32_t native_dwc3_probe_calls = 0;
 volatile uint32_t native_dwc3_matched = 0;
 volatile uint32_t native_dwc3_mode = 0;      // native-dwc3-probe value actually seen
-volatile uint32_t native_dwc3_stage = 0;     // 1 gcc, 2 core snapshot, 3 phy, 4 smmu plan, 5 done
+volatile uint32_t native_dwc3_stage = 0;     // 1 gcc, 2 core snapshot, 3 phy, 4 smmu plan, 6 gadget start, 5 done, 7 gadget failed
 volatile int32_t  native_dwc3_status = -1;    // 0 ok; negative = stage that soft-failed
 // Snapshot, for the log.
 volatile uint32_t native_dwc3_gsnpsid = 0, native_dwc3_gctl = 0, native_dwc3_gsts = 0;
