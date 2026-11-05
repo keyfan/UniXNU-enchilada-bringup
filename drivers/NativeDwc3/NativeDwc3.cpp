@@ -54,6 +54,10 @@ volatile uint32_t native_dwc3_smmu_reuse = 0;
 volatile uint32_t native_dwc3_smmu_firmware = 0;   // 1 = UEFI's own entry for the stream, adopted as it stands
 const char *volatile native_dwc3_smmu_error = nullptr;
 const char *volatile native_dwc3_failure = nullptr;
+
+// The boot log's round counter (package/BootLog.c:235), weak so a board without the log
+// still links. Stage B waits for it to leave zero before touching the controller.
+extern volatile uint32_t boot_log_rounds __attribute__((weak_import));
 }
 
 static bool gProbeEnabled = false;
@@ -276,8 +280,19 @@ void NativeDwc3::gadgetThread(void *self, wait_result_t)
 {
   (void)self;
   thread_set_thread_name(current_thread(), "dwc3_gadget");
-  // The probe's U row is already written by now, so a hang in here is visible: the G row
-  // keeps whatever stage this reached, and the log keeps being written by the log thread.
+  // Wait for the boot log's writer to have completed a round before touching the
+  // controller. The probe runs before that writer starts, so a stage-B hang inline in the
+  // probe costs the whole boot its log: console175 and console177 both came back after 70 s
+  // with the *previous* boot's window still on disk and not one new byte in it, which says
+  // nothing about where the bring-up stopped. Waiting costs at most a few hundred ms and
+  // makes every later failure readable: the U row is on disk, and the G row keeps the last
+  // stage this thread reached.
+  if (&boot_log_rounds) {
+    for (unsigned spin = 0; spin < 2000 && !boot_log_rounds; ++spin) {
+      assert_wait_timeout((event_t)&gEventWaitEvent, THREAD_UNINT, 10, NSEC_PER_MSEC);
+      thread_block(THREAD_CONTINUE_NULL);
+    }
+  }
   if (!dwc3GadgetStart(gGadgetCore, gGadgetSmmu, gGadgetPlan, gGadgetPhysicalEps, kDwc3Ep0MaxPacketHighSpeed)) {
     // native_dwc3_gadget_error already names the stage that failed.
     native_dwc3_stage = 7;
