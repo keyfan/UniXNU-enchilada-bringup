@@ -81,6 +81,15 @@ static uintptr_t dwc3MapPhys(uint64_t phys, uint64_t length, OSSharedPtr<IOMemor
 
 static int gEventWaitEvent;
 
+// The MMIO maps have to outlive inspect(). The gadget thread runs after it returns -- the boot
+// log shows the U row (this function) at line 86 and the S row at 89, well after the UFS driver
+// finished at 61 -- and it reads the SMMU and controller through these addresses. As locals they
+// were released on the way out of inspect(), and the gadget thread then read whatever had taken
+// the VA: the first hardware run with the SMMU diagnostics printed cb=6f6f6c6c, the ASCII text
+// "lloo", where the context bank should have been. Kept in file scope the way ArmCpu.cpp:159 and
+// NativeUfs.cpp:1089 keep theirs.
+static OSSharedPtr<IOMemoryMap> gGccMap, gCoreMap, gPhyMap, gSmmuMap;
+
 // What the gadget thread needs from the probe, handed over before it starts.
 static uintptr_t gGadgetCore = 0;
 static uintptr_t gGadgetSmmu = 0;
@@ -138,12 +147,11 @@ bool NativeDwc3::start(IOService *provider)
 // so a fault leaves the last safe stage recorded in the log. Nothing is written.
 void NativeDwc3::inspect()
 {
-  OSSharedPtr<IOMemoryMap> gccMap, coreMap, phyMap, smmuMap;
   Dwc3Snapshot snap;
   bzero(&snap, sizeof(snap));
 
   native_dwc3_stage = 1;
-  uintptr_t gcc = dwc3MapPhys(kGccBase, 0x100000, gccMap);
+  uintptr_t gcc = dwc3MapPhys(kGccBase, 0x100000, gGccMap);
   if (!gcc) {
     native_dwc3_failure = "gcc map";
     native_dwc3_status = -1;
@@ -171,7 +179,7 @@ void NativeDwc3::inspect()
   }
 
   native_dwc3_stage = 2;
-  uintptr_t core = dwc3MapPhys(kDwc3CoreBase, kDwc3CoreSize, coreMap);
+  uintptr_t core = dwc3MapPhys(kDwc3CoreBase, kDwc3CoreSize, gCoreMap);
   if (!core) {
     native_dwc3_failure = "core map";
     native_dwc3_status = -2;
@@ -212,7 +220,7 @@ void NativeDwc3::inspect()
   }
 
   native_dwc3_stage = 3;
-  uintptr_t phy = dwc3MapPhys(kQusb2PhyBase, kQusb2PhySize, phyMap);
+  uintptr_t phy = dwc3MapPhys(kQusb2PhyBase, kQusb2PhySize, gPhyMap);
   if (phy) {
     snap.qusb2_pll_status = dwc3Read32(phy, kQusb2PllCommonStatusOne);
     native_dwc3_qusb2_status = snap.qusb2_pll_status;
@@ -230,7 +238,7 @@ void NativeDwc3::inspect()
     // Dwc3SmmuPlan.h. Nothing is configured either way; a representative 64 KiB DMA window at a
     // plausible address only exercises the address-width checks, and the real gadget would pass
     // its own event-buffer/TRB allocation here.
-    uintptr_t smmu = dwc3MapPhys(kAppsSmmuBase, kAppsSmmuSize, smmuMap);
+    uintptr_t smmu = dwc3MapPhys(kAppsSmmuBase, kAppsSmmuSize, gSmmuMap);
     if (!smmu) {
       native_dwc3_failure = "smmu map";
       native_dwc3_status = -4;
