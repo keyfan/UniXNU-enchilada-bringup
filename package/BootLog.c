@@ -57,6 +57,7 @@ extern volatile uint32_t native_dwc3_phy_ready __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gcc_gdscr __attribute__((weak_import));
 extern volatile int32_t native_dwc3_smmu_slot __attribute__((weak_import));
 extern volatile int32_t native_dwc3_smmu_bank __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_smmu_firmware __attribute__((weak_import));
 extern const char *volatile native_dwc3_failure __attribute__((weak_import));
 extern const char *volatile native_dwc3_smmu_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
@@ -468,13 +469,14 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   }
   // NativeDwc3 USB device-mode probe (drivers/NativeDwc3, native-dwc3-probe=1): stage (5 = done), status (0 ok), the probe
   // mode seen, GSNPSID, GCTL, DCFG, DSTS, DALEPENA, the GCTL current mode (2 = device), the QUSB2 PHY-ready bit, the GCC
-  // USB30 GDSCR, and the read-only apps_smmu plan for stream 0x740 (slot/bank, -1 = none).
+  // USB30 GDSCR, and the read-only apps_smmu plan for stream 0x740 (slot/bank, -1 = none, fw = 1 when the entry UEFI left
+  // behind is adopted as it stands rather than a fresh bank being planned).
   if (&native_dwc3_stage && native_dwc3_mode) {
-    char row[120];
-    snprintf(row, sizeof row, "U st=%u rc=%d mode=%u id=%08x gctl=%08x dcfg=%08x dsts=%08x alep=%x cap=%u phy=%u gdsc=%08x smmu=%d/%d",
+    char row[224];   // the widest realistic row is ~121 bytes; the buffer is sized for every field at its maximum
+    snprintf(row, sizeof row, "U st=%u rc=%d mode=%u id=%08x gctl=%08x dcfg=%08x dsts=%08x alep=%x cap=%u phy=%u gdsc=%08x smmu=%d/%d fw=%u",
              native_dwc3_stage, native_dwc3_status, native_dwc3_mode, native_dwc3_gsnpsid, native_dwc3_gctl, native_dwc3_dcfg,
              native_dwc3_dsts, native_dwc3_dalepena, native_dwc3_prtcap, native_dwc3_phy_ready, native_dwc3_gcc_gdscr,
-             native_dwc3_smmu_slot, native_dwc3_smmu_bank);
+             native_dwc3_smmu_slot, native_dwc3_smmu_bank, native_dwc3_smmu_firmware);
     at = put(out, at, cap, row, sizeof row);
     if (native_dwc3_failure) {
       snprintf(row, sizeof row, "U fail: %.100s", native_dwc3_failure);

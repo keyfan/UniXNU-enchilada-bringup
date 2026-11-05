@@ -23,7 +23,9 @@
 #define NATIVE_DWC3_KERNEL 1
 #include "Dwc3Registers.h"
 #include "Dwc3Phy.h"
-#include "../NativeUfs/SmmuTakeover.h"   // generic ARM SMMUv2 stream planner (read-only use here)
+// The lenient planner for this driver's own stream. It pulls in the ARM SMMUv2 definitions from
+// ../NativeUfs/SmmuTakeover.h, which has no include guard, so it must not be included directly.
+#include "Dwc3SmmuPlan.h"
 
 extern "C" {
 // Counters the boot log reads (package/BootLog.c), all weak so a board without the
@@ -45,6 +47,7 @@ volatile uint32_t native_dwc3_gcc_ahb2phy = 0, native_dwc3_gcc_noc_axi = 0, nati
 volatile uint32_t native_dwc3_prtcap = 0;    // GCTL current mode (2 = device)
 volatile int32_t  native_dwc3_smmu_slot = -1, native_dwc3_smmu_bank = -1;
 volatile uint32_t native_dwc3_smmu_reuse = 0;
+volatile uint32_t native_dwc3_smmu_firmware = 0;   // 1 = UEFI's own entry for the stream, adopted as it stands
 const char *volatile native_dwc3_smmu_error = nullptr;
 const char *volatile native_dwc3_failure = nullptr;
 }
@@ -202,10 +205,12 @@ void NativeDwc3::inspect()
 
   if (gProbeMode >= 2) {
     native_dwc3_stage = 4;
-    // Read-only SMMU plan for the dwc3 stream, exactly as NativeUfs plans the UFS
-    // stream, but nothing is configured. A representative 64 KiB DMA window at a
-    // plausible address only exercises the planner's address-width checks; the
-    // real gadget would pass its own event-buffer/TRB allocation here.
+    // Read-only SMMU plan for the dwc3 stream. The UFS planner cannot answer this question: it
+    // insists that a matching stream entry sits on the bank it picked itself, which is right for
+    // the UFS queue and wrong here, where the whole point is to inherit the entry UEFI left. See
+    // Dwc3SmmuPlan.h. Nothing is configured either way; a representative 64 KiB DMA window at a
+    // plausible address only exercises the address-width checks, and the real gadget would pass
+    // its own event-buffer/TRB allocation here.
     uintptr_t smmu = dwc3MapPhys(kAppsSmmuBase, kAppsSmmuSize, smmuMap);
     if (!smmu) {
       native_dwc3_failure = "smmu map";
@@ -213,11 +218,12 @@ void NativeDwc3::inspect()
       return;
     }
     const uint64_t probeDma = 0x80000000ull, probeBytes = 0x10000ull;
-    UfsSmmuPlan plan = planUfsSmmu(kDwc3SmmuStream, kDwc3SmmuMask, kAppsSmmuSize, probeDma, probeBytes,
-                                   [smmu](unsigned off) { return dwc3Read32(smmu, off); }, false);
+    UfsSmmuPlan plan = planDwc3Smmu(kDwc3SmmuStream, kDwc3SmmuMask, kAppsSmmuSize, probeDma, probeBytes,
+                                    [smmu](unsigned off) { return dwc3Read32(smmu, off); });
     native_dwc3_smmu_slot = plan.error ? -1 : int32_t(plan.slot);
     native_dwc3_smmu_bank = plan.error ? -1 : int32_t(plan.bank);
     native_dwc3_smmu_reuse = plan.reuse ? 1 : 0;
+    native_dwc3_smmu_firmware = plan.firmware ? 1 : 0;
     native_dwc3_smmu_error = plan.error;
   }
 

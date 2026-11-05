@@ -40,8 +40,29 @@ The CDC-ACM/-ECM gadget itself (event buffer, TRB rings, DEPCMDs, enumeration,
 `../NativeUfs/tests`:
 
 - `Dwc3Decode.cpp` — the register decode helpers.
-- `Dwc3Smmu.cpp` — the `apps_smmu` plan for the dwc3 stream `0x740`, reusing
-  `../NativeUfs/SmmuTakeover.h`.
+- `Dwc3Smmu.cpp` — the `apps_smmu` plan for the dwc3 stream `0x740`, through
+  `Dwc3SmmuPlan.h`.
+
+## The SMMU plan is lenient on purpose
+
+`../NativeUfs/SmmuTakeover.h` plans the *UFS* stream and refuses any matching
+stream-match entry that does not sit on the bank it picked itself
+(`"conflicting UFS stream mapping"`). For the UFS queue that is correct. For this
+driver it is not: UEFI brings the controller up in device mode for fastboot and
+leaves a bypass entry for stream `0x740` on a bank of its own, and inheriting that
+entry is the point. The first hardware run of `native-dwc3-probe=2` reported
+
+```
+U st=5 rc=0 mode=2 id=5533300a ... gdsc=f8222000 smmu=-1/-1
+U smmu: conflicting UFS stream mapping
+```
+
+— the strict rule rejecting the only correct answer. `Dwc3SmmuPlan.h` answers the
+question this driver actually has: adopt a unique existing bypass entry wherever it
+lives, and only plan a fresh bank when the stream is not mapped at all. It refuses
+an ambiguous table, a bank with translation on, and a 32-bit bypass bank that
+cannot carry the gadget's DMA range. The UFS planner is untouched, so NativeUfs
+keeps its strict rules.
 
 ## Build
 
