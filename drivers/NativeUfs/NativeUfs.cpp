@@ -422,10 +422,12 @@ static unsigned gExtraBank;
 // (arm_smmu_write_sme). ARM IHI 0062D.c table 3-1 additionally requires VA64=1
 // for inputs above 32 bits even with SCTLR.M=0. Storage DMA path only; this
 // is physical pass-through, not a page-table or Adreno 4 KiB qualification.
-static void smmuBypassStream (OSSharedPtr<IOMemoryMap> &keep, uint32_t *report, uint64_t dma, uint64_t bytes)
+// `stream` is 0 for the storage host (the stream ufsSmmuParams parsed from native-ufs-smmu-stream) and the endpoint's own
+// number for the WiFi pass-through below, which reuses this code instead of duplicating the register sequence.
+static void smmuBypassStream (OSSharedPtr<IOMemoryMap> &keep, uint32_t *report, uint64_t dma, uint64_t bytes, uint16_t wanted = 0)
 {
   ufsSmmuParams ();
-  const uint16_t stream = gSmmuStream, mask = gSmmuMask;
+  const uint16_t stream = wanted ? wanted : gSmmuStream, mask = wanted ? 0 : gSmmuMask;
   uintptr_t smmu = mapPhys (0x15000000ULL, gSmmuSize, keep);
   if (!smmu) {
     panic ("NATIVE_UFS smmu: map failed");
@@ -1085,7 +1087,7 @@ static bool hostBringUp (const char **why)
   if (PE_parse_boot_argn ("sheng-wifi", &wifi, sizeof (wifi)) && wifi >= 2) {
     static OSSharedPtr<IOMemoryMap> extraMap;   // kept: the fault registers are read from it later
     uint32_t extraReport[3] = { 0, 0, 0 };
-    smmuBypassStream (0x1401, extraMap, extraReport, 0x9c900000ULL, 8ULL << 20);
+    smmuBypassStream (extraMap, extraReport, 0x9c900000ULL, 8ULL << 20, 0x1401);
     // The endpoint only produces 32-bit addresses and the memory here is above 4 GiB: give its context bank a stage 1 table (4 KiB granule,
     // 32-bit input, L1 -> L2 with 2 MiB blocks) that maps kExtraIova upward onto one contiguous buffer. Own bank only: refused when it is the storage's.
     constexpr uint32_t kExtraIova = 0x10000000U, kExtraBlocks = 24, kBlock = 2U << 20;

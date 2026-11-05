@@ -723,8 +723,8 @@ public:
         }
         noteSurface(surface,memory);
         const bool half=nativeHalf(native_legacy_surface_format(surface),native_legacy_surface_planes(surface));
-        if(directOn && !half && !gpuBypass && latchRequest)stat(5);
-        if(directOn && !half && !gpuBypass && !latchRequest) {
+        if(directOn && !half && !gpuBypass && !logical && latchRequest)stat(5);
+        if(directOn && !half && !gpuBypass && !logical && !latchRequest) {
             if(!gpuWrote(request)) {transferred=true;return;}
             const int slot=directSlot(surface,memory);
             if(slot>=0) {
@@ -740,7 +740,8 @@ public:
         }
         directToBoot();
         stat(7);note(7,-1,request);
-        if(!gpuBypass && native_legacy_gpu_offer(this,memory,sourceStride,width,height,half?halfOfferFormat():NGP_BGRX8888)) {
+        // The presenter copies one to one, so a logical display must not take it: the CPU scales that one below.
+        if(!gpuBypass && !logical && native_legacy_gpu_offer(this,memory,sourceStride,width,height,half?halfOfferFormat():NGP_BGRX8888)) {
             // The GPU writes the scanout memory behind the CPU's back: the differential copy's picture of it is stale from now on.
             native_legacy_swap_stage(1);
             shadowValid=false;gpuRequest=request;gpuTraceRequest=traceId(request);gpuLength=length;transferred=true;
