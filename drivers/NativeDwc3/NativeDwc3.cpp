@@ -272,8 +272,6 @@ void NativeDwc3::inspect()
   native_dwc3_failure = nullptr;
 }
 
-static int gEventWaitEvent;
-
 void NativeDwc3::gadgetThread(void *self, wait_result_t)
 {
   (void)self;
