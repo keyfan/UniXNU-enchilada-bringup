@@ -164,6 +164,32 @@ static inline bool dwc3GccCoreReadable(const Dwc3Snapshot &s) {
 // GCTL.PrtCapDir: bits [13:12], 1 = host, 2 = device, 3 = OTG.
 enum : uint32_t { kDwc3GctlPrtCapMask = 3u << 12, kDwc3GctlPrtCapDevice = 2u << 12 };
 
+// The rest of GCTL that the firmware clears before running the core. Every position here is
+// Mu-Silicium's (Silicon/Samsung/SamsungPkg/Include/Device/Dwc3.h:78-90), which is the firmware
+// that drives this controller for fastboot on this board:
+//
+//   RAMCLKSEL    bits [7:6]   RAM clock divider select -- NOT a control bit to clear
+//   SCALEDOWN    bits [5:4]
+//   DISSCRAMBLE  bit 3
+//   U2EXIT_LFPS  bit 2
+//   GBLHIBERNATIONEN bit 1
+//   DSBLCLKGTNG  bit 0
+//
+// The first cut of Dwc3Gadget.cpp cleared bits 16, 6, 8 and 9 for these four, which both left
+// scrambling/hibernation/clock-gating on and wrote RAMCLKSEL (bit 6) to 0. The controller stopped
+// answering and the boot wrote no log at all.
+enum : uint32_t {
+  kDwc3GctlRamClkSelMask     = 3u << 6,
+  kDwc3GctlScaleDownMask     = 3u << 4,
+  kDwc3GctlDisScramble       = 1u << 3,
+  kDwc3GctlU2ExitLfps        = 1u << 2,
+  kDwc3GctlGlbHibernationEn  = 1u << 1,
+  kDwc3GctlDsblClkGtng       = 1u << 0,
+};
+// Everything Dwc3CoreInit clears (Dwc3Core.c:256-261). RAMCLKSEL is deliberately not in here.
+enum : uint32_t { kDwc3GctlRunClearMask = kDwc3GctlScaleDownMask | kDwc3GctlDisScramble |
+                                           kDwc3GctlGlbHibernationEn | kDwc3GctlDsblClkGtng };
+
 // DCFG device speed, bits [2:0]. The board is wired USB2 only (one HS PHY,
 // maximum-speed = "high-speed"), so high speed is the only setting that can
 // complete: asking for SuperSpeed on a USB2 link leaves the device unenumerated.

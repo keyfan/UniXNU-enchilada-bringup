@@ -75,14 +75,23 @@ static uintptr_t dwc3MapPhys(uint64_t phys, uint64_t length, OSSharedPtr<IOMemor
   return keep ? static_cast<uintptr_t>(keep->getVirtualAddress()) : 0;
 }
 
+static int gEventWaitEvent;
+
+// What the gadget thread needs from the probe, handed over before it starts.
+static uintptr_t gGadgetCore = 0;
+static uintptr_t gGadgetSmmu = 0;
+static unsigned gGadgetPhysicalEps = 0;
+static UfsSmmuPlan gGadgetPlan;
+
 class NativeDwc3 : public IOService {
   OSDeclareDefaultStructors(NativeDwc3)
   void inspect();
 public:
   IOService *probe(IOService *provider, SInt32 *score) override;
   bool start(IOService *provider) override;
-  // Stage B's poll loop: the event buffer is drained without an interrupt.
-  static void eventThread(void *self, wait_result_t);
+  // Stage B runs on its own thread: bring the controller up, then poll the event buffer
+  // (the controller's interrupt stays masked, so nothing else drains it).
+  static void gadgetThread(void *self, wait_result_t);
 };
 
 OSDefineMetaClassAndStructors(NativeDwc3, IOService)
@@ -235,21 +244,24 @@ void NativeDwc3::inspect()
     // Stage B: only when the plan is usable, and only at probe mode 3 or more. The
     // probe has already established that the controller is in device mode with the
     // PHY locked and the GDSC on, so there is nothing to bring up first.
+    //
+    // It runs on its own thread rather than inline here. The probe's attach happens before
+    // the log thread has written anything, so a stage-B hang inline cost the whole boot its
+    // log (the first console175 run came back after 70 s with the previous boot's window
+    // still in place, which said nothing about where it stopped). On a thread, the probe's
+    // U row is already on disk before the first MMIO write, and the G row names the stage
+    // even when the bring-up never returns.
     if (gProbeMode >= 3 && !plan.error) {
       native_dwc3_stage = 6;
-      unsigned physicalEps = dwc3HwParams3NumEps(snap.ghwparams3);
-      if (!physicalEps || physicalEps > 8) {
-        physicalEps = 4;   // SDM845's dwc3 reports 4; a sane default if the field reads oddly
+      gGadgetPhysicalEps = dwc3HwParams3NumEps(snap.ghwparams3);
+      if (!gGadgetPhysicalEps || gGadgetPhysicalEps > 8) {
+        gGadgetPhysicalEps = 4;   // SDM845's dwc3 reports 4; a sane default if the field reads oddly
       }
-      if (!dwc3GadgetStart(core, smmu, plan, physicalEps, kDwc3Ep0MaxPacketHighSpeed)) {
-        // native_dwc3_gadget_error already names the stage that failed.
-        native_dwc3_stage = 7;
-        return;
-      }
-      // The event buffer fills without an interrupt (GEVNTSIZ.INTMASK stays set), so
-      // something has to poll it. Same pattern as NativeUfs's stats thread.
+      gGadgetCore = core;
+      gGadgetSmmu = smmu;
+      gGadgetPlan = plan;
       thread_t thread = nullptr;
-      if (kernel_thread_start(&NativeDwc3::eventThread, this, &thread) == KERN_SUCCESS) {
+      if (kernel_thread_start(&NativeDwc3::gadgetThread, this, &thread) == KERN_SUCCESS) {
         thread_deallocate(thread);
       }
     }
@@ -260,17 +272,19 @@ void NativeDwc3::inspect()
   native_dwc3_failure = nullptr;
 }
 
-// Stage B's poll loop. The controller's interrupt is deliberately left masked
-// (GEVNTSIZ.INTMASK), so the event buffer has to be drained by hand. IOSleep is not
-// usable here: on this platform it forwards to delay_for_interval, which spins the
-// CPU on the time base instead of yielding it (package/BootLog.c:905-913 records
-// the same lesson). assert_wait_timeout + thread_block really does block.
 static int gEventWaitEvent;
 
-void NativeDwc3::eventThread(void *self, wait_result_t)
+void NativeDwc3::gadgetThread(void *self, wait_result_t)
 {
   (void)self;
-  thread_set_thread_name(current_thread(), "dwc3_event");
+  thread_set_thread_name(current_thread(), "dwc3_gadget");
+  // The probe's U row is already written by now, so a hang in here is visible: the G row
+  // keeps whatever stage this reached, and the log keeps being written by the log thread.
+  if (!dwc3GadgetStart(gGadgetCore, gGadgetSmmu, gGadgetPlan, gGadgetPhysicalEps, kDwc3Ep0MaxPacketHighSpeed)) {
+    // native_dwc3_gadget_error already names the stage that failed.
+    native_dwc3_stage = 7;
+    return;
+  }
   for (;;) {
     dwc3GadgetDrain();
     assert_wait_timeout((event_t)&gEventWaitEvent, THREAD_UNINT, 2, NSEC_PER_MSEC);

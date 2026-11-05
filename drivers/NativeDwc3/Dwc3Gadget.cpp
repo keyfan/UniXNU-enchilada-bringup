@@ -305,17 +305,13 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, const UfsSmmuPlan &plan, un
     linkRing(ep);
   }
 
-  // GCTL: device mode, and clear the scale-down, dis-scramble and hibernation bits
-  // the firmware clears (Dwc3CoreInit, Dwc3Core.c:242-261). Device mode is already
-  // what UEFI left (stage A reports cap=2) but writing it again is what makes this
-  // function correct on a board where the firmware left host mode.
+  // GCTL: device mode, and clear exactly what Dwc3CoreInit clears (Dwc3Core.c:256-261).
+  // RAMCLKSEL (bits 7:6) is not one of them -- writing it to 0 stops the controller's RAM
+  // clock, which is what the first cut of this function did by clearing bit 6.
   uint32_t gctl = read32(core, kDwc3GCTL);
   gctl &= ~kDwc3GctlPrtCapMask;
   gctl |= kDwc3GctlPrtCapDevice;
-  gctl &= ~(0x3u << 16);    // SCALEDOWN
-  gctl &= ~(1u << 6);       // DISSCRAMBLE
-  gctl &= ~(1u << 8);       // GBLHIBERNATIONEN
-  gctl &= ~(1u << 9);       // DSBLCLKGTNG
+  gctl &= ~kDwc3GctlRunClearMask;
   write32(core, kDwc3GCTL, gctl);
 
   // Event buffer address and size. INTMASK stays set: this driver polls, it does
