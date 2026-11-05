@@ -10,7 +10,10 @@ struct UfsSmmuPlan {
 // ARM IHI 0062D.c sections 1.6 and 3.7: VA64=0 still rejects inputs above
 // 32 bits with SCTLR.M=0. With VA64=1 the bypass range is bounded by all
 // three hardware widths, not TCR2.PASize (which only limits translation).
-static unsigned ufsSmmuAddressBits(unsigned code)
+// inline: a translation unit that reaches this header only through a template it never
+// instantiates (drivers/NativeDwc3/Dwc3Gadget.cpp) has no use for it, and a bare `static`
+// there is -Wunneeded-internal-declaration under -Werror.
+static inline unsigned ufsSmmuAddressBits(unsigned code)
 {
   switch (code) {
     case 0: return 32; case 1: return 36; case 2: return 40;
@@ -20,7 +23,7 @@ static unsigned ufsSmmuAddressBits(unsigned code)
 }
 // The stream-match register for the UFS stream: valid, the ID bits the SMMU ignores (mask) and the ID. A board
 // whose UFS host emits several IDs (SDM845: 0x100 with mask 0xf) needs the mask, or the other IDs stay unmatched.
-static uint32_t ufsSmmuSmr(uint16_t stream, uint16_t mask)
+static inline uint32_t ufsSmmuSmr(uint16_t stream, uint16_t mask)
 {
   return 0x80000000U | (uint32_t(mask & 0x7fff) << 16) | (stream & ~mask & 0xffff);
 }

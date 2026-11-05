@@ -240,7 +240,10 @@ void linkRing(unsigned ep) {
 
 // Hand one buffer to an endpoint. Returns false when the ring's first TRB is still
 // owned by the controller, i.e. the previous transfer has not finished.
-bool startTransfer(unsigned ep, uint64_t bufferPhys, unsigned length, unsigned trbType) {
+// Stage B programs endpoint 0 but does not transfer on it yet -- that is stage C, which
+// answers GET_DESCRIPTOR from a SETUP stage through this function. It is written and
+// reviewed here so stage C only adds the descriptor tables, but nothing calls it yet.
+__attribute__((unused)) bool startTransfer(unsigned ep, uint64_t bufferPhys, unsigned length, unsigned trbType) {
   Dwc3Trb *trb = ringFor(ep);
   if (trb->control & kDwc3TrbCtrlHwo) {
     return false;
