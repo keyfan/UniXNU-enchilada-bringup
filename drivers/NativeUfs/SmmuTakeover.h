@@ -137,8 +137,12 @@ static const char *configureUfsSmmu(const UfsSmmuPlan &p, uint16_t stream, uint1
   if (p.error) return p.error;
   unsigned cb = (p.pages + p.bank) * 4096;
   if (p.firmware) {
-    // Nothing is written: the firmware's entry and bank must still be what the plan saw.
-    if (read(0x800 + 4 * p.slot) != ufsSmmuSmr(stream, mask) || read(0xc00 + 4 * p.slot) != p.s2cr || (read(cb) & 1))
+    // Nothing is written: the firmware's entry and bank must still be what the plan saw. Compare
+    // against p.smr, the value the planner actually read, not a recomputed ufsSmmuSmr(stream, mask):
+    // this planner is only ever handed an entry whose SMR equals that exactly (line 75), but the
+    // DWC3 planner adopts UEFI's entry wherever it sits and with whatever mask bits it carries, and
+    // recomputing would report a change that never happened.
+    if (read(0x800 + 4 * p.slot) != p.smr || read(0xc00 + 4 * p.slot) != p.s2cr || (read(cb) & 1))
       return "firmware UFS stream mapping changed";
     return nullptr;
   }

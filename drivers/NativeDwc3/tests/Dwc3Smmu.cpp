@@ -85,6 +85,24 @@ int main()
     assert(big.error);
   }
 
+  // UEFI's entry carries mask bits beyond the ones we would write. Hardware 2026-11-05 (console178)
+  // hit exactly this: the plan adopted the entry, and configureUfsSmmu then refused it with
+  // "firmware UFS stream mapping changed" because it compared the register against a recomputed
+  // ufsSmmuSmr() instead of the value the planner had read. Adoption must survive that.
+  reset();
+  va64All();
+  r[(0x800 + 4 * 47) / 4] = 0x80000740u | (0x18u << 16);   // mask bits set that kDwc3SmmuMask (0) lacks
+  r[(0xc00 + 4 * 47) / 4] = 3;                             // bypass, bank 3
+  p = plan();
+  assert(!p.error && p.reuse && p.firmware && p.slot == 47 && p.bank == 3);
+  assert(p.smr == (0x80000740u | (0x18u << 16)));           // the observed value, not a recomputation
+  {
+    unsigned writes = 0;
+    auto wr = [&](unsigned at, uint32_t v) { ++writes; r.at(at / 4) = v; };
+    auto rd = [&](unsigned at) { return r.at(at / 4); };
+    assert(!configureUfsSmmu(p, kDwc3SmmuStream, kDwc3SmmuMask, rd, wr) && writes == 0);
+  }
+
   // Another stream squatting on the top bank: a fresh plan falls to the next bank down.
   reset();
   va64All();
