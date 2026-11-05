@@ -114,6 +114,12 @@ header = '''// SPDX-License-Identifier: BSD-2-Clause-Patent
 #include <IOKit/IOService.h>
 #include <libkern/libkern.h>
 struct OriginalLegacySwapRequest;
+// Original state request (skip/requested and skip/powered word pairs, then the changed flag) taken by the state setter.
+struct OriginalLegacyStateRequest {uint32_t skipRequested,requested,skipPowered,powered;uint8_t changed;uint8_t pad[11];};
+// Original field offsets: vsync client queue in the display; rectangles, layer masks (updated, disabled, background),
+// options, dimensions and surfaces in a swap request.
+static constexpr unsigned kLegacyVsyncClients=5592;
+static constexpr unsigned kRequestRect0=17,kRequestRect1=81,kRequestMasks=792,kRequestOptions=804,kRequestDims=816,kRequestSurfaces=2624;
 class IOMobileFramebufferLegacy : public IOService {
  OSDeclareAbstractStructors(IOMobileFramebufferLegacy)
  unsigned char originalPrivate[0x18a0-sizeof(IOService)];
@@ -183,6 +189,8 @@ for i in range(168, 358):
         header += ' virtual bool startHardware();\n'
     elif i == 301:
         header += ' virtual bool getRefreshAttributes(uint64_t *,bool);\n'
+    elif i == 354:
+        header += ' virtual int applyStateRequest(OriginalLegacyStateRequest *,bool);\n'
     elif i in pure:
         header += f' virtual __attribute__((noreturn)) void opaque{i}()=0;\n'
     else:
