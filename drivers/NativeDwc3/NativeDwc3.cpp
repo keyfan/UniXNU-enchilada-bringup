@@ -45,6 +45,10 @@ volatile uint32_t native_dwc3_dcfg = 0, native_dwc3_dctl = 0, native_dwc3_dsts =
 volatile uint32_t native_dwc3_dalepena = 0, native_dwc3_devten = 0;
 volatile uint32_t native_dwc3_ghwparams0 = 0, native_dwc3_ghwparams1 = 0, native_dwc3_ghwparams3 = 0;
 volatile uint32_t native_dwc3_gevntsiz0 = 0, native_dwc3_gevntcount0 = 0;
+// GUSB2PHYCFG(0) as UEFI left it and as the gadget rewrote it. SUSPHY (bit6) is the field
+// that matters: Dwc3CoreExit parks the PHY with it, and a driver that does not clear it
+// gets a controller that is running but that no host can see.
+volatile uint32_t native_dwc3_gusb2phycfg0 = 0, native_dwc3_gusb2phycfg_before = 0;
 volatile uint32_t native_dwc3_qusb2_status = 0, native_dwc3_phy_ready = 0;
 volatile uint32_t native_dwc3_gcc_gdscr = 0, native_dwc3_gcc_master = 0, native_dwc3_gcc_mock = 0;
 volatile uint32_t native_dwc3_gcc_ahb2phy = 0, native_dwc3_gcc_noc_axi = 0, native_dwc3_gcc_aggre_axi = 0;
@@ -212,6 +216,7 @@ void NativeDwc3::inspect()
   native_dwc3_devten = snap.devten;
   native_dwc3_gevntsiz0 = snap.gevntsiz0;
   native_dwc3_gevntcount0 = snap.gevntcount0;
+  native_dwc3_gusb2phycfg_before = snap.gusb2phycfg0;
   native_dwc3_prtcap = dwc3GctlPrtCap(snap.gctl);
   if (!dwc3SnpsIsUsb3(snap.gsnpsid)) {
     native_dwc3_failure = "unexpected GSNPSID (not a DWC3 core)";

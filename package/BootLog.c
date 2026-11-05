@@ -84,6 +84,8 @@ extern volatile uint32_t native_dwc3_gadget_polls __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_gevent_raw __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_last_event __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_ep0_state __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_phy_before __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_phy_after __attribute__((weak_import));
 extern const char *volatile native_dwc3_gadget_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
 extern volatile int native_gpu_addon_written __attribute__((weak_import));
@@ -529,6 +531,13 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       snprintf(row, sizeof row, "G ev loop polls=%u gevent=%08x last=%08x ep0=%08x",
                native_dwc3_gadget_polls, native_dwc3_gadget_gevent_raw,
                native_dwc3_gadget_last_event, native_dwc3_gadget_ep0_state);
+      at = put(out, at, cap, row, sizeof row);
+      // GUSB2PHYCFG(0) as UEFI left it and as the gadget wrote it. Bit6 is SUSPHY, which
+      // Dwc3CoreExit sets to park the UTMI PHY on the way out; a gadget that leaves it set
+      // runs a controller no host can see. These two words say whether that happened.
+      snprintf(row, sizeof row, "G phy before=%08x after=%08x susp=%u->%u",
+               native_dwc3_gadget_phy_before, native_dwc3_gadget_phy_after,
+               (native_dwc3_gadget_phy_before >> 6) & 1u, (native_dwc3_gadget_phy_after >> 6) & 1u);
       at = put(out, at, cap, row, sizeof row);
       if (native_dwc3_gadget_error) {
         snprintf(row, sizeof row, "G fail: %.100s", native_dwc3_gadget_error);

@@ -57,6 +57,9 @@ volatile uint32_t native_dwc3_gadget_smmu_cb_now = 0;
 // (bit31 EHB included), so the two explanations can be told apart from the log alone.
 volatile uint32_t native_dwc3_gadget_polls = 0;
 volatile uint32_t native_dwc3_gadget_gevent_raw = 0;
+// GUSB2PHYCFG(0) before and after the gadget rewrites it. If SUSPHY was set here and
+// cleared there, the PHY was parked when we took over -- that is the whole diagnosis.
+volatile uint32_t native_dwc3_gadget_phy_before = 0, native_dwc3_gadget_phy_after = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -327,6 +330,29 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, const UfsSmmuPlan &plan, un
     }
     linkRing(ep);
   }
+
+  // Wake the UTMI PHY before anything else. The firmware parks it on the way out --
+  // Dwc3CoreExit (Dwc3Core.c:340-343) sets GUSB2PHYCFG(0).SUSPHY -- so a driver that
+  // adopts the controller without clearing it runs a device controller whose PHY is
+  // asleep: the host never sees a connect, USBLNKST stays "disconnected", and no reset,
+  // setup or completion event is ever posted. console186 measured exactly that -- the
+  // event loop polled 264038 times and GEVNTCOUNT0 read 0 every time.
+  //
+  // This is the one place stage B has to undo the firmware's teardown rather than
+  // continue from its state; the bring-up order otherwise stays faithful to
+  // Dwc3CoreInit. Rewriting the width and turnaround fields is not cosmetic: the
+  // firmware programs them for this board's PHY, and leaving whatever the last owner
+  // left in them is a different board's guess.
+  uint32_t phy_before = read32(core, kDwc3GUSB2PHYCFG0);
+  uint32_t phy = phy_before;
+  phy &= ~(kDwc3Gusb2PhyCfgSusPhy | kDwc3Gusb2PhyCfgEnblSlpm);
+  phy &= ~(kDwc3Gusb2PhyCfgPhyIfMask | kDwc3Gusb2PhyCfgUsbTrdTimMask);
+  phy &= ~kDwc3Gusb2PhyCfgUlpiUtmi;
+  phy |= dwc3Gusb2PhyCfgPhyIf(kDwc3UtmiPhyIf8Bit);
+  phy |= dwc3Gusb2PhyCfgUsbTrdTim(kDwc3UsbTrdTimUtmi8Bit);
+  write32(core, kDwc3GUSB2PHYCFG0, phy);
+  native_dwc3_gadget_phy_before = phy_before;
+  native_dwc3_gadget_phy_after = read32(core, kDwc3GUSB2PHYCFG0);
 
   // GCTL: device mode, and clear exactly what Dwc3CoreInit clears (Dwc3Core.c:256-261).
   // RAMCLKSEL (bits 7:6) is not one of them -- writing it to 0 stops the controller's RAM

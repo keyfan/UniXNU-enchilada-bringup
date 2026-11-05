@@ -212,17 +212,32 @@ enum : uint32_t {
   kDwc3DevtenOverflowEn      = 1u << 11,
 };
 
-// GUSB2PHYCFG(0): PHY soft reset (bit31), suspend PHY (bit6), UTMI width (bits
-// [3:2]) and turnaround time (bits [10:7]).
+// GUSB2PHYCFG(0), against Mu-Silicium Include/Device/Dwc3.h:96-111:
+//   PHYSOFTRST   BIT31   soft-reset the UTMI PHY
+//   U2_FREECLK   BIT30   the PHY supplies a free-running clock
+//   ENBLSLPM     BIT8    enable LPM
+//   SUSPHY       BIT6    suspend the PHY (the firmware sets this in Dwc3CoreExit)
+//   ULPI_UTMI    BIT4    select the serial PHY (0 = UTMI here)
+//   PHYIF        bits[3] UTMI data width: 0 = 8 bit, 1 = 16 bit
+//   USBTRDTIM    bits[13:10] turnaround: 9 for 8-bit UTMI, 5 for 16-bit
+// The first cut of this table was off by two bits throughout (PHYIF at [2], USBTRDTIM
+// at [9:7], ENBLSLPM at 7); nothing had written them yet, which is why it never showed
+// up as a wrong value in a log -- it would have shown up as a PHY that ignores its
+// width and turnaround settings.
 enum : uint32_t {
-  kDwc3Gusb2PhyCfgPhySoftRst   = 1u << 31,
-  kDwc3Gusb2PhyCfgSusPhy       = 1u << 6,
-  kDwc3Gusb2PhyCfgPhyIfMask    = 3u << 2,
-  kDwc3Gusb2PhyCfgUsbTrdTimMask = 0xfu << 7,
-  kDwc3Gusb2PhyCfgUlpiUtmi     = 1u << 4,
+  kDwc3Gusb2PhyCfgPhySoftRst    = 1u << 31,
+  kDwc3Gusb2PhyCfgU2FreeClkExists = 1u << 30,
+  kDwc3Gusb2PhyCfgEnblSlpm      = 1u << 8,
+  kDwc3Gusb2PhyCfgSusPhy        = 1u << 6,
+  kDwc3Gusb2PhyCfgUlpiUtmi      = 1u << 4,
+  kDwc3Gusb2PhyCfgPhyIfMask     = 1u << 3,
+  kDwc3Gusb2PhyCfgUsbTrdTimMask = 0xfu << 10,
 };
-static inline uint32_t dwc3Gusb2PhyCfgPhyIf(unsigned width) { return (width & 3u) << 2; }
-static inline uint32_t dwc3Gusb2PhyCfgUsbTrdTim(unsigned t) { return (t & 0xfu) << 7; }
+static inline uint32_t dwc3Gusb2PhyCfgPhyIf(unsigned width) { return (width & 1u) << 3; }
+static inline uint32_t dwc3Gusb2PhyCfgUsbTrdTim(unsigned t) { return (t & 0xfu) << 10; }
+// The two settings the firmware picks between (Dwc3Core.c:130-136).
+enum : unsigned { kDwc3UtmiPhyIf8Bit = 0, kDwc3UtmiPhyIf16Bit = 1 };
+enum : unsigned { kDwc3UsbTrdTimUtmi8Bit = 9, kDwc3UsbTrdTimUtmi16Bit = 5 };
 
 // GEVNTSIZ(0): size in bytes [15:0]; bit31 masks the event interrupt. We run the
 // event loop from a kernel thread and never enable the DWC3 interrupt, so the
