@@ -65,6 +65,14 @@ volatile uint32_t native_dwc3_gadget_phy_before = 0, native_dwc3_gadget_phy_afte
 // the log says which one the write actually landed on.
 volatile uint32_t native_dwc3_gadget_qs_hs_before = 0, native_dwc3_gadget_qs_hs_after = 0;
 volatile uint32_t native_dwc3_gadget_qs_ss_before = 0, native_dwc3_gadget_qs_ss_after = 0;
+// Stage C: what endpoint 0 was asked and what it answered. last_setup packs the eight
+// SETUP bytes as bRequestType<<24 | bRequest<<16 | wValue, so one word says which
+// request the host got through with. ep0_events counts endpoint events seen (the
+// drain loop only recorded them before), configured flips on SET_CONFIG.
+volatile uint32_t native_dwc3_gadget_ep0_events = 0;
+volatile uint32_t native_dwc3_gadget_last_setup = 0;
+volatile uint32_t native_dwc3_gadget_answered = 0;
+volatile uint32_t native_dwc3_gadget_configured = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -129,12 +137,22 @@ struct DmaRegion {
 struct Gadget {
   DmaRegion events;
   DmaRegion rings[8];
+  // Endpoint 0's own DMA page: the eight SETUP bytes at 0 and the IN payload at 64. One
+  // allocation keeps every buffer the controller sees inside a single physically
+  // contiguous region, and keeps the SETUP packet out of the TRB ring.
+  DmaRegion control;
   uintptr_t core = 0;
   uintptr_t smmu = 0;
   uintptr_t qscratch = 0;     // wrapper window; 0 = no VBUS override
   unsigned physicalEps = 0;
   unsigned eventPos = 0;      // byte offset read so far in the event buffer
+  // Resource index handed back by STARTTRANSFER, per endpoint. ENDTRANSFER needs it as
+  // its parameter, and 0 means "no transfer outstanding" (Dwc3Endpoint.c:348).
+  uint32_t resourceIndex[8] = {};
   uint32_t ep0State = 0;
+  bool ep0Armed = false;      // a CONTROL_SETUP TRB is waiting on EP0-OUT
+  bool threeStage = false;    // the request being answered has a data stage
+  bool dataIn = false;        // ...and it moves device -> host
   bool running = false;
 };
 
@@ -304,11 +322,17 @@ void linkRing(unsigned ep) {
 
 // Hand one buffer to an endpoint. Returns false when the ring's first TRB is still
 // owned by the controller, i.e. the previous transfer has not finished.
-// Stage B programs endpoint 0 but does not transfer on it yet -- that is stage C, which
-// answers GET_DESCRIPTOR from a SETUP stage through this function. It is written and
-// reviewed here so stage C only adds the descriptor tables, but nothing calls it yet.
-__attribute__((unused)) bool startTransfer(unsigned ep, uint64_t bufferPhys, unsigned length, unsigned trbType) {
+//
+// The two address halves go in as PAR0 = high, PAR1 = low. That is easy to get
+// backwards because every other command here takes the low word first: the firmware
+// passes (TrbPoolPhys >> 32) as Param0 and the low half as Param1
+// (Dwc3Endpoint.c:318-323), and mainline's dwc3_gadget_start_transfer writes
+// DWC3_DEPCMDPAR0 = upper_32_bits(trb_dma), PAR1 = lower_32_bits(trb_dma).
+bool startTransfer(unsigned ep, uint64_t bufferPhys, unsigned length, unsigned trbType) {
   Dwc3Trb *trb = ringFor(ep);
+  // HWO is cleared by the controller when it finishes with the TRB, so the copy in the
+  // cache is stale by definition here; read the one in memory.
+  invalidateDma(trb, kTrbBytes);
   if (trb->control & kDwc3TrbCtrlHwo) {
     return false;
   }
@@ -319,12 +343,344 @@ __attribute__((unused)) bool startTransfer(unsigned ep, uint64_t bufferPhys, uns
   cleanDma(trb, kTrbBytes);
 
   uint32_t result = 0;
-  if (!endpointCommand(gGadget.core, ep, kDwc3DepCmdStartTransfer, uint32_t(bufferPhys & 0xffffffffu),
-                       uint32_t(bufferPhys >> 32), length, &result)) {
+  // PAR2 stays zero: STARTTRANSFER reads the buffer and length out of the TRB, and the
+  // firmware passes 0 here too (Dwc3Endpoint.c:318-323).
+  if (!endpointCommand(gGadget.core, ep, kDwc3DepCmdStartTransfer, uint32_t(bufferPhys >> 32),
+                       uint32_t(bufferPhys & 0xffffffffu), 0, &result)) {
+    gGadget.resourceIndex[ep] = 0;
     return false;
   }
-  (void)result;
+  gGadget.resourceIndex[ep] = dwc3DepCmdResourceIndex(result);
   return true;
+}
+
+// Stop whatever transfer the endpoint has outstanding. ENDTRANSFER takes the resource
+// index from the STARTTRANSFER that is being cancelled, and a zero index means there is
+// nothing to stop (Dwc3Endpoint.c:348-351) -- so this is safe to call unconditionally.
+void endTransfer(unsigned ep) {
+  uint32_t index = gGadget.resourceIndex[ep];
+  if (index == 0) {
+    return;
+  }
+  // ENDTRANSFER carries the resource index inside the command word itself, bits 22:16
+  // (Dwc3Endpoint.c:353-356 with DWC3_DEPCMD_PARAM), not in a parameter register.
+  const uint32_t command = kDwc3DepCmdEndTransfer | kDwc3DepCmdHiPriForceRm | kDwc3DepCmdCmdIoc |
+                           ((index & 0x7fu) << 16);
+  endpointCommand(gGadget.core, ep, command, 0, 0, 0);
+  gGadget.resourceIndex[ep] = 0;
+  Dwc3Trb *trb = ringFor(ep);
+  trb[0].control = 0;
+  trb[1].control = 0;
+}
+
+}  // namespace
+
+// ---- Stage C: endpoint 0 ---------------------------------------------------------
+//
+// Everything above brings the controller up and lets the host see a link. It does not
+// answer: console191 measured twenty device events, five resets, DSTS reporting
+// HS_SUSPEND, and not one SETUP. A host that resets a device and gets no descriptor
+// back resets it again -- which is exactly the five resets in that log.
+//
+// The state machine below is the firmware's (UsbfnDwc3Dxe/Dwc3Endpoint.c:388-612),
+// reduced to what a device that only has to enumerate needs:
+//
+//   arm a CONTROL_SETUP TRB on EP0-OUT   (Dwc3Ep0OutStart, :388)
+//   XferNotReady / Complete on EP0-OUT   -> the eight SETUP bytes are in the buffer
+//   answer in one of three shapes:
+//     no data stage      -> zero-length IN  on EP0-IN   (CONTROL_STATUS2)
+//     data stage, IN     -> payload on EP0-IN           (CONTROL_DATA)
+//                           then zero-length OUT on EP0-OUT (CONTROL_STATUS3)
+//     data stage, OUT    -> zero-length OUT on EP0-OUT  (CONTROL_STATUS3)
+//   and re-arm.
+//
+// Two things here were easy to get wrong and are worth the words:
+//  * ENDTRANSFER carries its resource index in the command word (bits 22:16), not in a
+//    parameter register, and index 0 means "nothing outstanding" (Dwc3Endpoint.c:348).
+//  * STARTTRANSFER takes PAR0 = high half of the TRB address, PAR1 = low half -- the
+//    opposite of every other command's parameter order.
+
+namespace {
+
+enum : unsigned {
+  kControlPageBytes = 4096,
+  kSetupOffset      = 0,      // eight SETUP bytes land here
+  kDataOffset       = 64,     // the IN payload is staged here
+  // Two of the descriptor tables in the kernel image are 18 bytes and the strings are
+  // shorter still; 256 bytes leaves room for the CDC-ACM configuration stage D adds
+  // without touching this page.
+  kDataBytes        = 256,
+};
+
+enum Ep0State : unsigned {
+  kEp0Idle    = 0,
+  kEp0Setup   = 1,   // a CONTROL_SETUP TRB is armed
+  kEp0Data    = 2,   // the data stage is being moved
+  kEp0Status  = 3,   // the status stage is being moved
+};
+
+// vid/pid from pid.codes (0x1209 is the open-source test VID), so nothing here can be
+// mistaken for a real product. bDeviceClass 0 with a vendor-specific interface: the
+// host enumerates it, and stage D replaces the interface with CDC-ACM's two.
+const uint8_t kDeviceDescriptor[18] = {
+    18, 0x01,             // bLength, DEVICE
+    0x00, 0x02,           // bcdUSB 2.00
+    0x00, 0x00, 0x00,     // class / subclass / protocol: per interface
+    64,                   // bMaxPacketSize0
+    0x09, 0x12,           // idVendor  0x1209
+    0x01, 0x00,           // idProduct 0x0001
+    0x00, 0x01,           // bcdDevice 1.00
+    1, 2, 3,              // iManufacturer / iProduct / iSerialNumber
+    1,                    // bNumConfigurations
+};
+
+const uint8_t kConfigDescriptor[18] = {
+    9, 0x02,              // bLength, CONFIGURATION
+    18, 0x00,             // wTotalLength
+    1,                    // bNumInterfaces
+    1,                    // bConfigurationValue
+    0,                    // iConfiguration
+    0x80,                 // bmAttributes: bus powered, no remote wakeup
+    50,                   // bMaxPower: 100 mA
+    9, 0x04,              // bLength, INTERFACE
+    0, 0,                 // bInterfaceNumber, bAlternateSetting
+    0,                    // bNumEndpoints
+    0xff, 0x00, 0x00,     // vendor specific
+    0,                    // iInterface
+};
+
+const uint8_t kStringLangId[4] = {4, 0x03, 0x09, 0x04};   // en-US
+
+// USB strings are UTF-16LE. These are ASCII, so the high byte is always zero. The first
+// header byte is the whole descriptor's length: two bytes of header plus two per
+// character, so it has to be written out per string rather than computed.
+struct Utf16String {
+  uint8_t header[2];
+  char text[16];
+};
+
+const Utf16String kStrings[] = {
+    {{2 + 2 * 6, 0x03}, "UniXNU"},           // iManufacturer = 1, six characters
+    {{2 + 2 * 14, 0x03}, "Enchilada DWC3"},  // iProduct = 2, fourteen
+    {{2 + 2 * 4, 0x03}, "0001"},             // iSerialNumber = 3, four
+};
+
+// Build one of the three strings above into wire format at `out`, never more than
+// `limit` bytes. Returns the length written.
+unsigned buildString(unsigned index, uint8_t *out, unsigned limit) {
+  if (index == 0) {
+    const unsigned n = limit < sizeof kStringLangId ? limit : unsigned(sizeof kStringLangId);
+    __builtin_memcpy(out, kStringLangId, n);
+    return n;
+  }
+  if (index > (sizeof kStrings / sizeof kStrings[0])) {
+    return 0;
+  }
+  const Utf16String &source = kStrings[index - 1];
+  const unsigned length = source.header[0];
+  const unsigned n = length < limit ? length : limit;
+  out[0] = uint8_t(length);
+  out[1] = 0x03;
+  unsigned i = 2;
+  while (i + 1 < n) {
+    out[i] = uint8_t(source.text[(i - 2) / 2]);
+    out[i + 1] = 0;
+    i += 2;
+  }
+  if (i < n) {
+    out[i] = 0;
+    ++i;
+  }
+  return n;
+}
+
+uintptr_t controlPhys(unsigned offset) {
+  return gGadget.control.phys + offset;
+}
+
+// Every state change goes through here so the log's ep0 field always names the state
+// the machine is actually in, not the last event word that happened to arrive.
+void setEp0State(unsigned state) {
+  gGadget.ep0State = state;
+  native_dwc3_gadget_ep0_state = state;
+}
+
+// Re-arm: stop whatever endpoint 0 has outstanding and hand EP0-OUT an empty
+// eight-byte buffer for the next SETUP. Dwc3Ep0OutStart (:388) does the same, and it
+// is the only state in which the controller accepts a new setup packet.
+void armSetup() {
+  endTransfer(kDwc3Ep0In);
+  endTransfer(kDwc3Ep0Out);
+  gGadget.threeStage = false;
+  gGadget.dataIn = false;
+  if (startTransfer(kDwc3Ep0Out, controlPhys(kSetupOffset), 8, kDwc3TrbTypeControlSetup)) {
+    gGadget.ep0Armed = true;
+    setEp0State(kEp0Setup);
+  } else {
+    gGadget.ep0Armed = false;
+  }
+}
+
+// Answer one standard request. Returns the number of bytes staged for a data stage, or
+// 0 when the request has no data stage (the status stage follows immediately).
+unsigned handleSetup(const uint8_t *setup, bool *supported) {
+  const uint8_t requestType = setup[0];
+  const uint8_t request = setup[1];
+  const unsigned value = unsigned(setup[2]) | (unsigned(setup[3]) << 8);
+  const unsigned length = unsigned(setup[6]) | (unsigned(setup[7]) << 8);
+  uint8_t *data = gGadget.control.virt + kDataOffset;
+
+  *supported = true;
+  native_dwc3_gadget_last_setup = (uint32_t(requestType) << 24) | (uint32_t(request) << 16) | (value & 0xffffu);
+
+  // Standard, device-to-host requests are 0x80 / 0x8x.
+  if (requestType == 0x80 && request == 0x06) {   // GET_DESCRIPTOR
+    const unsigned type = (value >> 8) & 0xffu;
+    const unsigned index = value & 0xffu;
+    unsigned available = 0;
+    if (type == 0x01) {                            // DEVICE
+      available = sizeof kDeviceDescriptor;
+      __builtin_memcpy(data, kDeviceDescriptor, available);
+    } else if (type == 0x02) {                     // CONFIGURATION
+      available = sizeof kConfigDescriptor;
+      __builtin_memcpy(data, kConfigDescriptor, available);
+    } else if (type == 0x03) {                     // STRING
+      available = buildString(index, data, kDataBytes);
+      if (available == 0) {
+        *supported = false;
+        return 0;
+      }
+    } else {
+      *supported = false;
+      return 0;
+    }
+    // The controller reads the payload out of DMA, so whatever was just written has to
+    // reach memory before the TRB is handed over. startTransfer() cleans the TRB only.
+    if (available) {
+      cleanDma(data, available);
+    }
+    return available < length ? available : length;
+  }
+
+  if (requestType == 0x00 && request == 0x05) {    // SET_ADDRESS: no data stage
+    uint32_t dcfg = read32(gGadget.core, kDwc3DCFG);
+    dcfg &= ~kDwc3DcfgDevAddrMask;
+    dcfg |= dwc3DcfgDevAddrBits(value & 0x7fu);
+    write32(gGadget.core, kDwc3DCFG, dcfg);
+    native_dwc3_gadget_address = value & 0x7fu;
+    return 0;
+  }
+
+  if (requestType == 0x00 && request == 0x09) {    // SET_CONFIG
+    native_dwc3_gadget_configured = value & 0xffu;
+    return 0;
+  }
+
+  // Anything else -- including GET_STATUS, GET_CONFIGURATION and the class requests a
+  // driver would send after SET_CONFIG -- is refused, which tells the host plainly
+  // that this device is not ready for it yet.
+  *supported = false;
+  return 0;
+}
+
+// The data stage has been decided; hand it to the endpoint the host will use.
+void startDataStage(unsigned length) {
+  if (length == 0) {
+    setEp0State(kEp0Status);
+    return;
+  }
+  if (!startTransfer(kDwc3Ep0In, controlPhys(kDataOffset), length, kDwc3TrbTypeControlData)) {
+    setEp0State(kEp0Status);
+    return;
+  }
+  setEp0State(kEp0Data);
+}
+
+// Zero-length status stage. STATUS3 when there was a data stage, STATUS2 when the
+// request was control-only (Dwc3Ep0StartStatus, :503).
+//
+// The controller posts XFERNOTREADY for the status phase and keeps posting it until a
+// TRB is there, so this has to be idempotent: if a transfer is already outstanding on
+// this endpoint the phase is being served and restarting it would cancel a status the
+// host is waiting for.
+bool startStatusStage(unsigned ep) {
+  if (gGadget.resourceIndex[ep] != 0) {
+    return true;
+  }
+  const unsigned type = gGadget.threeStage ? kDwc3TrbTypeControlStatus3 : kDwc3TrbTypeControlStatus2;
+  endTransfer(ep);
+  if (!startTransfer(ep, controlPhys(kDataOffset), 0, type)) {
+    return false;
+  }
+  setEp0State(kEp0Status);
+  return true;
+}
+
+// One endpoint event from the drain loop. Event/status are the decoded fields; the
+// endpoint number is physical, so EP0-OUT is 0 and EP0-IN is 1.
+void handleEp0Event(unsigned ep, unsigned type, unsigned status) {
+  native_dwc3_gadget_ep0_events = native_dwc3_gadget_ep0_events + 1;
+
+  if (type == kDwc3EpEventXferComplete) {
+    if (gGadget.ep0State == kEp0Setup) {
+      // The eight SETUP bytes were written by the controller, not the CPU, so the cache
+      // lines covering them have to be dropped before they are read.
+      invalidateDma(gGadget.control.virt + kSetupOffset, 64);
+      const uint8_t *setup = gGadget.control.virt + kSetupOffset;
+      native_dwc3_gadget_setups = native_dwc3_gadget_setups + 1;
+      gGadget.ep0Armed = false;
+
+      const bool threeStage = (setup[6] | setup[7]) != 0;
+      const bool dataIn = (setup[0] & 0x80u) != 0;
+      // Only an IN data stage is answered here; an OUT data stage would need a receive
+      // buffer this device has no request for yet. handleSetup() decides by returning 0.
+      bool supported = false;
+      const unsigned length = handleSetup(setup, &supported);
+      if (!supported) {
+        // Refuse it: a stall is what makes the host move on instead of retrying.
+        endpointCommand(gGadget.core, ep, kDwc3DepCmdSetStall, 0, 0, 0);
+        armSetup();
+        return;
+      }
+      gGadget.threeStage = threeStage;
+      gGadget.dataIn = dataIn;
+      native_dwc3_gadget_answered = native_dwc3_gadget_answered + 1;
+      startDataStage(length);
+      return;
+    }
+
+    if (gGadget.ep0State == kEp0Data) {
+      setEp0State(kEp0Status);
+      return;
+    }
+
+    if (gGadget.ep0State == kEp0Status) {
+      armSetup();
+      return;
+    }
+    return;
+  }
+
+  if (type == kDwc3EpEventXferNotReady) {
+    // The host started a stage endpoint 0 has no TRB for. That is the controller's way
+    // of saying "your turn" for both the data and the status stage.
+    const unsigned phase = status & 0x3u;
+    if (phase == 1) {                       // CONTROL_DATA
+      if (gGadget.ep0State == kEp0Setup) {
+        // Nothing parsed yet: let the setup TRB complete first.
+        return;
+      }
+      return;
+    }
+    if (phase == 2) {                       // CONTROL_STATUS
+      if (gGadget.ep0State == kEp0Setup) {
+        return;
+      }
+      startStatusStage(ep);
+      return;
+    }
+    return;
+  }
 }
 
 }  // namespace
@@ -380,6 +736,15 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, uintptr_t qscratch, const U
       return false;
     }
     linkRing(ep);
+  }
+
+  // Endpoint 0's buffer page: the eight SETUP bytes at 0 and the IN payload at 64. The
+  // descriptors themselves stay in the kernel image and are copied into this page per
+  // request, so there is exactly one copy of each table to keep correct.
+  if (!gGadget.control.allocate(kControlPageBytes)) {
+    native_dwc3_gadget_error = "control page";
+    native_dwc3_gadget_status = -int32_t(kStageEventBuf);
+    return false;
   }
 
   // ---- Core soft reset, and why it has to come before the PHY is set up -------------
@@ -537,6 +902,15 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, uintptr_t qscratch, const U
   applyVbusOverride(qscratch, false);
 
   gGadget.running = true;
+
+  // Endpoint 0 waits for the host's first SETUP, which means an empty eight-byte
+  // CONTROL_SETUP TRB has to be outstanding before the host resets the device. The
+  // firmware arms it from the connect-done event (Dwc3Endpoint.c:766); arming it here
+  // as well costs one command and covers the case where the link came up before the
+  // event thread started.
+  native_dwc3_gadget_stage = kStageEp0Config;
+  armSetup();
+
   native_dwc3_gadget_dcfg = read32(core, kDwc3DCFG);
   native_dwc3_gadget_dctl = read32(core, kDwc3DCTL);
   native_dwc3_gadget_dsts = read32(core, kDwc3DSTS);
@@ -575,26 +949,40 @@ void dwc3GadgetDrain() {
     native_dwc3_gadget_last_event = event;
 
     if (dwc3EventIsEndpoint(event)) {
-      // Endpoint events are what stage C needs (transfer completion on the bulk
-      // endpoints). Stage B only records them.
-      if (dwc3EpEventType(event) == kDwc3EpEventCmdComplete) {
-        native_dwc3_gadget_ep0_state = event;
+      const unsigned ep = dwc3EpEventEpNumber(event);
+      const unsigned type = dwc3EpEventType(event);
+      if (type == kDwc3EpEventCmdComplete) {
+        // A command completion carries the command's resource index, not a state this
+        // side tracks; the C row wants our own state, so leave ep0_state alone here.
+        continue;
+      }
+      if (ep <= kDwc3Ep0In) {
+        handleEp0Event(ep, type, dwc3EpEventStatus(event));
       }
       continue;
     }
     switch (dwc3DevEventType(event)) {
       case kDwc3DevEventReset: {
-        // The host reset the link: address 0 again and endpoint 0 re-armed. The
-        // firmware does the same on every reset.
+        // The host reset the link: address 0 again and endpoint 0 back to waiting for a
+        // SETUP. The firmware does the same on every reset (Dwc3Endpoint.c:696-724 ends
+        // with Dwc3Ep0ResetState), and a device that does not re-arm after a reset is a
+        // device the host gives up on.
         native_dwc3_gadget_resets = native_dwc3_gadget_resets + 1;
         uint32_t dcfg = read32(core, kDwc3DCFG);
         dcfg &= ~kDwc3DcfgDevAddrMask;
         write32(core, kDwc3DCFG, dcfg);
         native_dwc3_gadget_address = 0;
+        armSetup();
         break;
       }
       case kDwc3DevEventConnectDone: {
+        // The link finished its handshake. Endpoint 0 stays as programmed: its packet
+        // size is 64 for both high and full speed, which are the only two this board can
+        // reach with a USB2-only PHY, so there is nothing the speed changes. The firmware
+        // reprograms here (Dwc3Endpoint.c:744-766) because it also serves SuperSpeed,
+        // where the size is 512.
         native_dwc3_gadget_speed = dwc3DstsConnectSpeed(read32(core, kDwc3DSTS));
+        armSetup();
         break;
       }
       case kDwc3DevEventLinkStatus: {

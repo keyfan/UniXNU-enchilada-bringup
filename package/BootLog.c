@@ -90,6 +90,14 @@ extern volatile uint32_t native_dwc3_gadget_qs_hs_before __attribute__((weak_imp
 extern volatile uint32_t native_dwc3_gadget_qs_hs_after __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_qs_ss_before __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_qs_ss_after __attribute__((weak_import));
+// Stage C: endpoint 0 answering the host. setups climbing with answered flat means the
+// controller delivered SETUP packets this side refused; configured non-zero means the
+// host got as far as SET_CONFIG, which is the first moment it considers the device real.
+extern volatile uint32_t native_dwc3_gadget_ep0_events __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_setups __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_answered __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_configured __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_last_setup __attribute__((weak_import));
 extern const char *volatile native_dwc3_gadget_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
 extern volatile int native_gpu_addon_written __attribute__((weak_import));
@@ -552,6 +560,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
                (native_dwc3_gadget_qs_hs_before >> 28) & 1u, (native_dwc3_gadget_qs_hs_after >> 28) & 1u,
                native_dwc3_gadget_qs_ss_before, native_dwc3_gadget_qs_ss_after,
                (native_dwc3_gadget_qs_ss_before >> 24) & 1u, (native_dwc3_gadget_qs_ss_after >> 24) & 1u);
+      at = put(out, at, cap, row, sizeof row);
+      // Endpoint 0 as a host sees it. ev counts endpoint events (stage B had none), setups
+      // counts the eight-byte packets that landed, answered counts the ones this side
+      // formed a reply for, and cfg is the last SET_CONFIG value. last is the most recent
+      // setup packed as requestType<<24 | request<<16 | wValue.
+      snprintf(row, sizeof row, "C ev=%u setups=%u ans=%u cfg=%u last=%08x addr=%u spd=%u",
+               native_dwc3_gadget_ep0_events, native_dwc3_gadget_setups,
+               native_dwc3_gadget_answered, native_dwc3_gadget_configured,
+               native_dwc3_gadget_last_setup, native_dwc3_gadget_address,
+               native_dwc3_gadget_speed);
       at = put(out, at, cap, row, sizeof row);
       if (native_dwc3_gadget_error) {
         snprintf(row, sizeof row, "G fail: %.100s", native_dwc3_gadget_error);
