@@ -136,6 +136,8 @@ extern volatile uint32_t native_dwc3_gadget_rx_bytes __attribute__((weak_import)
 extern volatile uint32_t native_dwc3_gadget_tx_queued __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_tx_dropped __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_rx_events __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_bulk_in_armed __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_tx_aborted __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_rx_last __attribute__((weak_import));
 extern const char *volatile native_dwc3_gadget_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
@@ -635,10 +637,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       // tail of the most recent burst -- typing "abc" on the other end should show as
       // 0x00636261 here, which is how a human can tell the pipe is bidirectional without
       // a serial program on the phone side.
-      snprintf(row, sizeof row, "C io tx=%u rx=%u ev=%u q=%u drop=%u last=%08x",
+      // arm is how often a bulk IN transfer was actually handed to the controller and
+      // abort how often a bus reset threw an in-flight one away. console199 read tx=0 with
+      // q=8447 and could not say why: tx=0 with arm=1 and abort=0 means the single transfer
+      // was never completed and never cancelled, which is exactly the stall it turned out
+      // to be.
+      snprintf(row, sizeof row, "C io tx=%u rx=%u ev=%u q=%u drop=%u arm=%u abort=%u last=%08x",
                native_dwc3_gadget_tx_bytes, native_dwc3_gadget_rx_bytes,
                native_dwc3_gadget_rx_events, native_dwc3_gadget_tx_queued,
-               native_dwc3_gadget_tx_dropped, native_dwc3_gadget_rx_last);
+               native_dwc3_gadget_tx_dropped, native_dwc3_gadget_bulk_in_armed,
+               native_dwc3_gadget_tx_aborted, native_dwc3_gadget_rx_last);
       at = put(out, at, cap, row, sizeof row);
       // The endpoint 0 post-mortem. fail names the last refused command, armf counts the
       // STARTTRANSFERs that never made it, nr is how often the controller asked for a TRB

@@ -106,6 +106,12 @@ volatile uint32_t native_dwc3_gadget_tx_queued = 0;
 // back is indistinguishable from one that received nothing, and this row settles which.
 volatile uint32_t native_dwc3_gadget_rx_last = 0;
 volatile uint32_t native_dwc3_gadget_rx_events = 0;
+// console199 queued 8447 bytes and the host took none: bulk IN was armed exactly once and
+// never completed, so txInflight stayed non-zero and armBulkIn() returned early forever.
+// These two say which half of that happened -- how often a bulk IN transfer was handed to
+// the controller, and how often a bus reset threw an in-flight one away.
+volatile uint32_t native_dwc3_gadget_bulk_in_armed = 0;
+volatile uint32_t native_dwc3_gadget_tx_aborted = 0;
 // console196 answered two SETUPs and then went deaf: the host stopped talking after
 // SET_ADDRESS and just reset in a loop. Two explanations fit that shape and the counts so
 // far cannot tell them apart -- either a stage never got a TRB armed, or the endpoint
@@ -517,6 +523,8 @@ enum : unsigned {
   // One 256-byte receive buffer is enough for a console: a host that writes more than
   // that between two polls gets NAKs, not corruption.
   kEpBufferBytes    = 256,
+  // Not an endpoint address: "every endpoint this device owns", for the reset path.
+  kAllEndpoints     = 0xff,
 };
 
 // Re-arm the bulk OUT endpoint with an empty buffer. The host writes whenever it likes
@@ -571,6 +579,7 @@ void armBulkIn() {
     return;
   }
   gGadget.txInflight = run;
+  native_dwc3_gadget_bulk_in_armed = native_dwc3_gadget_bulk_in_armed + 1;
   tail = (tail + run) % kTxQueueBytes;
   gGadget.txTail = tail;
 }
@@ -718,6 +727,64 @@ void handleDataEvent(unsigned ep, unsigned type) {
     gGadget.txInflight = 0;
     armBulkIn();   // there may be another run queued already
   }
+}
+
+// A bus reset throws away every transfer the controller had in flight, for the data
+// endpoints as much as for endpoint 0. The firmware walks them all on
+// DWC3_DEVICE_EVENT_RESET (Dwc3Endpoint.c:721-727: Dwc3EndTransfer plus
+// TransferBuffer = NULL for every enabled endpoint above EP0_IN) and so must this driver.
+// console199 is what happens otherwise: 8447 bytes queued, bulk IN armed exactly once,
+// then eleven resets -- and because txInflight never went back to zero, armBulkIn()
+// returned early on every one of its 264786 passes and not a byte left the device. The
+// queue kept growing while the row that should have shown the problem (tx) stayed at 0.
+//
+// The endpoints stay programmed, which is what the firmware does too: the host
+// re-enumerates over them rather than sending a new SET_CONFIG, so unprogramming here
+// would only race the enumeration.
+// A stalled endpoint stays stalled until something asks for it to stop stalling. This
+// driver stalls endpoint 0 whenever a SETUP asks for something it does not implement, which
+// is what the USB spec wants -- but the reset path has to take it back, because the firmware
+// does exactly that (Dwc3Endpoint.c:700-703: Dwc3SetHalt(FALSE) for every enabled stalled
+// endpoint) and because a host that meets a stall, issues CLEAR_FEATURE, and meets the same
+// stall again concludes the device is broken and resets it. That is a plausible reading of
+// console199's eleven resets.
+//
+// `target` is the endpoint address from a CLEAR_FEATURE (0x81, 0x02, ...), or kAllEndpoints
+// when the whole device is being re-armed after a bus reset.
+void clearStalls(unsigned target) {
+  if (target == kAllEndpoints) {
+    endpointCommand(gGadget.core, kDwc3Ep0Out, kDwc3DepCmdClearStall, 0, 0, 0);
+    endpointCommand(gGadget.core, kDwc3Ep0In, kDwc3DepCmdClearStall, 0, 0, 0);
+    if (gGadget.dataEndpoints) {
+      endpointCommand(gGadget.core, kEpBulkOut, kDwc3DepCmdClearStall, 0, 0, 0);
+      endpointCommand(gGadget.core, kEpBulkIn, kDwc3DepCmdClearStall, 0, 0, 0);
+      endpointCommand(gGadget.core, kEpNotify, kDwc3DepCmdClearStall, 0, 0, 0);
+    }
+    return;
+  }
+  // Endpoint address to physical endpoint: number * 2 + direction, with IN as the odd number.
+  const unsigned number = target & 0x0fu;
+  const unsigned ep = number * 2u + ((target & 0x80u) ? 1u : 0u);
+  if (ep > kEpBulkIn || (!gGadget.dataEndpoints && ep > kDwc3Ep0In)) {
+    return;
+  }
+  endpointCommand(gGadget.core, ep, kDwc3DepCmdClearStall, 0, 0, 0);
+}
+
+void restartDataEndpoints() {
+  if (!gGadget.dataEndpoints) {
+    return;
+  }
+  if (gGadget.txInflight) {
+    native_dwc3_gadget_tx_aborted = native_dwc3_gadget_tx_aborted + 1;
+  }
+  endTransfer(kEpBulkIn);
+  endTransfer(kEpBulkOut);
+  endTransfer(kEpNotify);
+  // The bytes never crossed, so the run that was in flight is still at the queue tail and
+  // the next armBulkIn() hands the same bytes over again.
+  gGadget.txInflight = 0;
+  armBulkOut();
 }
 
 }  // namespace
@@ -957,6 +1024,50 @@ unsigned handleSetup(const uint8_t *setup, bool *supported) {
       cleanDma(data, available);
     }
     return available < length ? available : length;
+  }
+
+  // GET_STATUS: device (0x80), interface (0x81) and endpoint (0x82) all answer two bytes.
+  // Windows asks this as soon as it binds a driver, and a stall here costs it a whole
+  // enumeration retry: console199 collected eleven of those. Nothing in this device is
+  // self-powered, asks for remote wakeup or stays halted after the reset path clears it,
+  // so the honest answer is zero -- but it has to be an answer.
+  if ((requestType == 0x80 || requestType == 0x81 || requestType == 0x82) && request == 0x00) {
+    data[0] = 0;
+    data[1] = 0;
+    cleanDma(data, 2);
+    return length < 2 ? length : 2;
+  }
+
+  if (requestType == 0x80 && request == 0x08) {    // GET_CONFIGURATION: one byte
+    data[0] = uint8_t(native_dwc3_gadget_configured);
+    cleanDma(data, 1);
+    return length < 1 ? length : 1;
+  }
+
+  // The CDC data interface has no alternate settings, so its only answer is zero.
+  if (requestType == 0x81 && request == 0x0a) {    // GET_INTERFACE: one byte
+    data[0] = 0;
+    cleanDma(data, 1);
+    return length < 1 ? length : 1;
+  }
+
+  if (requestType == 0x01 && request == 0x0b) {    // SET_INTERFACE: no data stage
+    return 0;
+  }
+
+  // SET_FEATURE / CLEAR_FEATURE. For an endpoint, wValue selects the feature (0 =
+  // ENDPOINT_HALT) and wIndex carries the endpoint address, so the clear has to look there.
+  // A stall that is never lifted is exactly what makes a host give up on a device, so both
+  // requests are answered and the clear actually clears. An interface has no halt of its
+  // own here, so the request is acknowledged and nothing else.
+  if ((requestType == 0x01 || requestType == 0x02) && (request == 0x03 || request == 0x01)) {
+    if (request == 0x01 && (value & 0xffffu) == 0) {
+      const unsigned index = unsigned(setup[4]) | (unsigned(setup[5]) << 8);
+      if (requestType == 0x02) {
+        clearStalls(index & 0xffu);
+      }
+    }
+    return 0;
   }
 
   if (requestType == 0x00 && request == 0x05) {    // SET_ADDRESS: no data stage
@@ -1450,6 +1561,10 @@ void dwc3GadgetDrain() {
         dcfg &= ~kDwc3DcfgDevAddrMask;
         write32(core, kDwc3DCFG, dcfg);
         native_dwc3_gadget_address = 0;
+        // The data endpoints lost their in-flight transfers with the reset; hand them back
+        // and lift any stall before endpoint 0 starts answering again.
+        clearStalls(kAllEndpoints);
+        restartDataEndpoints();
         armSetup();
         break;
       }
