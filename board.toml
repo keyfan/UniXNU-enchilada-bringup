@@ -223,6 +223,11 @@ title = "enchilada first boot: XNU to console"
 # --skip-setup edits a copy of the Data seed so the Hello pages are skipped. payload.py requires the tool to be
 # named here; it mounts the seed read-write with hdiutil, so it only runs on macOS (the CI runner is).
 skip_setup_tool = "scripts/seed-data-skip-setup.py"
+# --no-auto-dim also sets SBDisableAutoDim / SBDontDimOrLockOnAC / SBDisableIdleSleep.  This board
+# has no buttons and no working idle timer, so without it SpringBoard dims and the system sleeps
+# about thirty seconds after it starts (docs/guide/skip-setup.md).  The arguments are part of the
+# edited seed's cache key, so changing them rebuilds it instead of reusing a stale one.
+skip_setup_args = ["--no-auto-dim"]
 # MEASURED ON THIS PHONE (2026-10-27): MemTotal 5767708 kB, ro.boot.msz = 6, ro.boot.stg = 64
 # -> this is the 6 GiB / 64 GB SKU, so the DDR size is 0x180000000, not the 8 GiB value that was
 # inherited from the 6T. The DDR size goes into the Apple device tree, and a wrong value makes XNU
