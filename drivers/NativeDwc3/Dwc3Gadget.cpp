@@ -144,6 +144,14 @@ volatile uint32_t native_dwc3_gadget_setup_log_next = 0;
 volatile uint32_t native_dwc3_gadget_status_nr_in = 0;
 volatile uint32_t native_dwc3_gadget_status_nr_out = 0;
 volatile uint32_t native_dwc3_gadget_status_nr_skipped = 0;
+// The CDC-ACM SERIAL_STATE carrier notification. Linux's f_acm.c asserts DSR|DCD on
+// the interrupt IN endpoint as soon as the tty opens (acm_connect), and usbser.sys waits
+// for that carrier while opening the port -- without it CreateFile reports "The semaphore
+// timeout period has expired." console204 enumerated, answered all 146 SETUPs and moved
+// 290816 bytes, yet never armed one TRB on the notify endpoint. armed counts the ten-byte
+// reports handed to the controller, done the ones the host actually polled.
+volatile uint32_t native_dwc3_gadget_notify_armed = 0;
+volatile uint32_t native_dwc3_gadget_notify_done = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -234,12 +242,21 @@ struct Gadget {
   bool ep0Armed = false;      // a CONTROL_SETUP TRB is waiting on EP0-OUT
   bool threeStage = false;    // the request being answered has a data stage
   bool dataIn = false;        // ...and it moves device -> host
+  // Bytes the outstanding data-stage transfer was armed with. bytesTransferred() needs it
+  // to turn the TRB's "remaining" count back into a byte count on completion.
+  unsigned dataArmed = 0;
   bool running = false;
   // CDC-ACM state. The line coding the host sets is accepted and forgotten: there is no
   // separate UART behind this port to configure. dtr is recorded because a serial client
   // toggles it on open and close, and it makes a useful "a human plugged in" marker.
   bool lineCoding = false;
   bool dtr = false;
+  // The seven bytes SET_LINE_CODING brought, handed back verbatim by GET_LINE_CODING. The
+  // host sets a rate and then reads it back to confirm the device took it; answering with a
+  // constant made every read-back disagree with what was just written, and usbser.sys
+  // retried forever -- console204's ring shows the pair repeating (21200007 a1210007 ...)
+  // with every stage completing, which is a rejected value, not a stuck endpoint.
+  uint8_t lineCodingBytes[7] = {0x80, 0x25, 0x00, 0x00, 0x00, 0x00, 0x08};   // 9600 8N1 until told otherwise
   // The bulk OUT buffer the controller writes into. It lives in its own DMA region so a
   // host that writes before anything reads does not scribble over the control page.
   DmaRegion bulkOut;
@@ -557,6 +574,29 @@ void armBulkOut() {
   }
 }
 
+// CDC-ACM SERIAL_STATE: the ten-byte interrupt-IN report a serial class driver waits
+// for while opening the port. Linux f_acm.c asserts DSR|DCD in acm_connect() and sends
+// this on the notify endpoint (struct usb_cdc_notification + LE serial_state); without
+// a TRB there the host polls forever and CreateFile fails with "The semaphore timeout
+// period has expired." console204 answered all 146 SETUPs, completed every status stage
+// and moved 290816 bytes, yet never armed this endpoint once -- so the control path was
+// healthy and the only thing missing was the carrier. Layout (uapi/linux/usb/cdc.h):
+//   A1 = IN|CLASS|INTERFACE, 20 = NOTIFY_SERIAL_STATE, wValue 0, wIndex 0 (ctrl_id),
+//   wLength 2, then serial_state 0x0003 = DCD|DSR.
+void armSerialState() {
+  if (!gGadget.notify.virt) {
+    return;
+  }
+  static const uint8_t carrier[10] = {
+      0xa1, 0x20, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x03, 0x00};
+  __builtin_memcpy(gGadget.notify.virt, carrier, sizeof carrier);
+  cleanDma(gGadget.notify.virt, sizeof carrier);
+  clearTrb(kEpNotify);
+  if (startTransfer(kEpNotify, gGadget.notify.phys, sizeof carrier, kDwc3TrbTypeNormal)) {
+    native_dwc3_gadget_notify_armed = native_dwc3_gadget_notify_armed + 1;
+  }
+}
+
 // How many of the bytes a transfer was armed with actually crossed. The controller writes
 // the count it did *not* use back into the TRB's size field, so the answer is the
 // difference -- the same arithmetic the firmware does in Dwc3TrbBytesTransferred
@@ -692,6 +732,10 @@ bool programDataEndpoints() {
   gGadget.dataEndpoints = true;
   native_dwc3_gadget_data_eps = 1;
   armBulkOut();
+  // As soon as the config is live, present the carrier. A serial host opens the port
+  // by waiting for DCD/DSR on the interrupt endpoint, so it must be armed before the
+  // first IN token arrives -- not after some later event that may never come.
+  armSerialState();
   return true;
 }
 
@@ -748,6 +792,11 @@ void handleDataEvent(unsigned ep, unsigned type) {
     native_dwc3_gadget_tx_bytes = native_dwc3_gadget_tx_bytes + bytesTransferred(ep, sent);
     gGadget.txInflight = 0;
     armBulkIn();   // there may be another run queued already
+  } else if (ep == kEpNotify) {
+    // The host took the SERIAL_STATE report. Keep one armed: the class driver may poll
+    // again, and a NAK on the interrupt endpoint is indistinguishable from no carrier.
+    native_dwc3_gadget_notify_done = native_dwc3_gadget_notify_done + 1;
+    armSerialState();
   }
 }
 
@@ -807,6 +856,9 @@ void restartDataEndpoints() {
   // the next armBulkIn() hands the same bytes over again.
   gGadget.txInflight = 0;
   armBulkOut();
+  // A reset discarded the notification too; the host re-opens the port and waits for
+  // carrier again, so it has to be presented once more.
+  armSerialState();
 }
 
 }  // namespace
@@ -840,8 +892,11 @@ namespace {
 
 enum : unsigned {
   kControlPageBytes = 4096,
-  kSetupOffset      = 0,      // eight SETUP bytes land here
+  kSetupOffset      = 0,      // eight SETUP bytes land here, and an OUT payload follows
   kDataOffset       = 64,     // the IN payload is staged here
+  // SET_LINE_CODING is a seven byte host-to-device stage; the host expects those same
+  // seven bytes back from GET_LINE_CODING.
+  kEpLineCodingBytes = 7,
   // Two of the descriptor tables in the kernel image are 18 bytes and the strings are
   // shorter still; 256 bytes leaves room for the CDC-ACM configuration stage D adds
   // without touching this page.
@@ -1119,17 +1174,18 @@ unsigned handleSetup(const uint8_t *setup, bool *supported) {
   if (requestType == 0x21 && request == 0x20) {    // SET_LINE_CODING: 7 bytes OUT
     // A serial driver sends this before it opens the port. This is an OUT data stage, so
     // the receive TRB has to be handed over before the host starts sending -- the caller
-    // stages it through startDataStage() by leaving the length non-zero.
-    gGadget.lineCoding = true;
-    native_dwc3_gadget_line_coding = 1;
+    // stages it through startDataStage() by leaving the length non-zero. The seven bytes
+    // are only readable once that stage completes, so they are captured in the completion
+    // path in handleEp0Event() rather than here.
     return length;
   }
 
   if (requestType == 0xa1 && request == 0x21) {    // GET_LINE_CODING: 7 bytes IN
-    const uint8_t coding[7] = {0x80, 0x25, 0x00, 0x00, 0x00, 0x00, 0x08};   // 9600 8N1
-    __builtin_memcpy(data, coding, sizeof coding);
-    cleanDma(data, sizeof coding);
-    return length < sizeof coding ? length : unsigned(sizeof coding);
+    // Hand back exactly what the host last set. A constant here is what kept usbser.sys
+    // retrying: it writes a rate, reads it back, and treats a mismatch as a refusal.
+    __builtin_memcpy(data, gGadget.lineCodingBytes, kEpLineCodingBytes);
+    cleanDma(data, kEpLineCodingBytes);
+    return length < kEpLineCodingBytes ? length : unsigned(kEpLineCodingBytes);
   }
 
   // SET_CONTROL_LINE_STATE: Class, interface recipient, host to device -- 0x21, not 0xa1.
@@ -1178,6 +1234,7 @@ unsigned handleSetup(const uint8_t *setup, bool *supported) {
 
 // The data stage has been decided; hand it to the endpoint the host will use.
 void startDataStage(unsigned length) {
+  gGadget.dataArmed = length;
   if (length == 0) {
     // A control-only request (wLength 0) still owes the host a status stage, but the
     // controller is the one that opens it: it posts XFERNOTREADY(CONTROL_STATUS) and
@@ -1281,8 +1338,20 @@ void handleEp0Event(unsigned ep, unsigned type, unsigned status) {
       // the host is about to use, so it gets to say when (Dwc3HandleEp0Event,
       // Dwc3Endpoint.c:550-610).
       if (!gGadget.dataIn) {
-        gGadget.outBytes = gGadget.outBytes + 1;
-        native_dwc3_gadget_ep0_out_bytes = native_dwc3_gadget_ep0_out_bytes + 1;
+        const unsigned got = bytesTransferred(ep, gGadget.dataArmed);
+        gGadget.outBytes = gGadget.outBytes + got;
+        native_dwc3_gadget_ep0_out_bytes = native_dwc3_gadget_ep0_out_bytes + got;
+        // SET_LINE_CODING is the only control request on this device with a host-to-device
+        // data stage, and the controller wrote those bytes straight into DMA. Keep them so
+        // GET_LINE_CODING can hand the same seven bytes back: console204 repeated the
+        // SET/GET pair forty times because the answer was a constant 9600, which read as
+        // "the device refused the rate" and kept usbser.sys in its open loop.
+        if (got >= kEpLineCodingBytes) {
+          invalidateDma(gGadget.control.virt + kSetupOffset, kEpLineCodingBytes);
+          __builtin_memcpy(gGadget.lineCodingBytes, gGadget.control.virt + kSetupOffset, kEpLineCodingBytes);
+          gGadget.lineCoding = true;
+          native_dwc3_gadget_line_coding = 1;
+        }
       }
       setEp0State(kEp0Status);
       return;

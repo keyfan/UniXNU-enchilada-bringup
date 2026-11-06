@@ -124,6 +124,12 @@ extern volatile uint32_t native_dwc3_gadget_setup_log_next __attribute__((weak_i
 extern volatile uint32_t native_dwc3_gadget_status_nr_in __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_status_nr_out __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_status_nr_skipped __attribute__((weak_import));
+// CDC-ACM SERIAL_STATE carrier on the interrupt IN endpoint: armed counts the ten-byte
+// reports handed to the controller, done the ones the host polled. A port that opens
+// without a carrier is the difference between this being non-zero and CreateFile
+// reporting "The semaphore timeout period has expired."
+extern volatile uint32_t native_dwc3_gadget_notify_armed __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_notify_done __attribute__((weak_import));
 // The CDC-ACM endpoints stage D adds. data_eps flips on SET_CONFIG(1), armed counts the
 // receive TRBs handed to bulk OUT, and in/out count completed transfers each way.
 extern volatile uint32_t native_dwc3_gadget_data_eps __attribute__((weak_import));
@@ -690,6 +696,9 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
         snprintf(row, sizeof row, "C st nr in=%u out=%u skip=%u",
                  native_dwc3_gadget_status_nr_in, native_dwc3_gadget_status_nr_out,
                  native_dwc3_gadget_status_nr_skipped);
+        at = put(out, at, cap, row, sizeof row);
+        snprintf(row, sizeof row, "C notify armed=%u done=%u",
+                 native_dwc3_gadget_notify_armed, native_dwc3_gadget_notify_done);
         at = put(out, at, cap, row, sizeof row);
       }
       if (native_dwc3_gadget_error) {
