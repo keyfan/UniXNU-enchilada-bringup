@@ -130,6 +130,20 @@ volatile uint32_t native_dwc3_gadget_stuck_setups = 0;
 // Windows and then timed out on Open(), and SET_LINE_CODING -- a seven byte OUT stage --
 // was the last request in the log; this counter is what makes that stage visible.
 volatile uint32_t native_dwc3_gadget_ep0_out_bytes = 0;
+// The last eight requests, packed requestType<<24 | request<<16 | wValueLow:0 for a
+// command-only write, and the same for the ones a status stage actually followed. Three
+// runs have now ended on a class request and the log could only name the very last one, so
+// which request went unanswered -- and whether it was answered here or by the controller
+// opening the phase -- was a guess. A ring makes it a reading.
+enum : unsigned { kSetupLogEntries = 8 };
+volatile uint32_t native_dwc3_gadget_setup_log[kSetupLogEntries] = {};
+volatile uint32_t native_dwc3_gadget_setup_log_next = 0;
+// Status phases the controller announced on EP0-IN and on EP0-OUT separately. A STATUS2
+// request (no data stage) and a STATUS3 one (after a data stage) differ only in which
+// endpoint the host drives, so counting them together hid which of the two was stuck.
+volatile uint32_t native_dwc3_gadget_status_nr_in = 0;
+volatile uint32_t native_dwc3_gadget_status_nr_out = 0;
+volatile uint32_t native_dwc3_gadget_status_nr_skipped = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -1227,6 +1241,15 @@ void handleEp0Event(unsigned ep, unsigned type, unsigned status) {
       invalidateDma(gGadget.control.virt + kSetupOffset, 64);
       const uint8_t *setup = gGadget.control.virt + kSetupOffset;
       native_dwc3_gadget_setups = native_dwc3_gadget_setups + 1;
+      {
+        // requestType<<24 | request<<16 | wLength, not wValue: the requests that have hung
+        // this device are class requests whose wLength is what decides whether a data stage
+        // follows, and that is the field the log needs to show.
+        const unsigned slot = native_dwc3_gadget_setup_log_next % kSetupLogEntries;
+        native_dwc3_gadget_setup_log[slot] = (uint32_t(setup[0]) << 24) | (uint32_t(setup[1]) << 16) |
+                                             uint32_t(setup[6] | (setup[7] << 8));
+        native_dwc3_gadget_setup_log_next = native_dwc3_gadget_setup_log_next + 1;
+      }
       gGadget.ep0Armed = false;
 
       const bool threeStage = (setup[6] | setup[7]) != 0;
@@ -1290,7 +1313,16 @@ void handleEp0Event(unsigned ep, unsigned type, unsigned status) {
       return;
     }
     if (phase == 2) {                       // CONTROL_STATUS
+      if (ep == kDwc3Ep0In) {
+        native_dwc3_gadget_status_nr_in = native_dwc3_gadget_status_nr_in + 1;
+      } else {
+        native_dwc3_gadget_status_nr_out = native_dwc3_gadget_status_nr_out + 1;
+      }
       if (gGadget.ep0State == kEp0Setup) {
+        // A status phase announced while the state machine still believes it is collecting
+        // a SETUP means the data stage's completion was never seen, or was seen after this.
+        // Counting it rather than silently dropping it is what tells the two apart.
+        native_dwc3_gadget_status_nr_skipped = native_dwc3_gadget_status_nr_skipped + 1;
         return;
       }
       startStatusStage(ep);

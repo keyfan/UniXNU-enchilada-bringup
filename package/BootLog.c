@@ -119,6 +119,11 @@ extern volatile uint32_t native_dwc3_gadget_status_armed __attribute__((weak_imp
 extern volatile uint32_t native_dwc3_gadget_status_done __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_stuck_setups __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_ep0_out_bytes __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_setup_log[8] __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_setup_log_next __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_status_nr_in __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_status_nr_out __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_status_nr_skipped __attribute__((weak_import));
 // The CDC-ACM endpoints stage D adds. data_eps flips on SET_CONFIG(1), armed counts the
 // receive TRBs handed to bulk OUT, and in/out count completed transfers each way.
 extern volatile uint32_t native_dwc3_gadget_data_eps __attribute__((weak_import));
@@ -659,6 +664,34 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
                native_dwc3_gadget_status_armed, native_dwc3_gadget_status_done,
                native_dwc3_gadget_stuck_setups, native_dwc3_gadget_ep0_out_bytes);
       at = put(out, at, cap, row, sizeof row);
+      // The last eight requests the host made, newest last, and how the status phases
+      // arrived. Three runs in a row ended on a class request and the single `last` field
+      // could only name it; the ring shows the order, which is what distinguishes "the host
+      // gave up after this one" from "this one was followed by something that never landed".
+      // nr in/out split the status phases by the endpoint the host drove, and skip counts
+      // the ones the state machine refused because it still thought a SETUP was pending.
+      {
+        const unsigned count = native_dwc3_gadget_setup_log_next < 8 ? native_dwc3_gadget_setup_log_next : 8;
+        const unsigned first = native_dwc3_gadget_setup_log_next > 8 ? native_dwc3_gadget_setup_log_next % 8 : 0;
+        char ring[200];
+        unsigned used = 0;
+        for (unsigned i = 0; i < count && used + 10 < sizeof ring; ++i) {
+          const unsigned slot = (first + i) % 8;
+          const int wrote = snprintf(ring + used, sizeof ring - used, " %08x",
+                                     native_dwc3_gadget_setup_log[slot]);
+          if (wrote <= 0) {
+            break;
+          }
+          used += (unsigned)wrote;
+        }
+        ring[used] = 0;
+        snprintf(row, sizeof row, "C setup n=%u%s", native_dwc3_gadget_setup_log_next, ring);
+        at = put(out, at, cap, row, sizeof row);
+        snprintf(row, sizeof row, "C st nr in=%u out=%u skip=%u",
+                 native_dwc3_gadget_status_nr_in, native_dwc3_gadget_status_nr_out,
+                 native_dwc3_gadget_status_nr_skipped);
+        at = put(out, at, cap, row, sizeof row);
+      }
       if (native_dwc3_gadget_error) {
         snprintf(row, sizeof row, "G fail: %.100s", native_dwc3_gadget_error);
         at = put(out, at, cap, row, sizeof row);
