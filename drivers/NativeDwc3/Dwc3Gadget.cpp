@@ -152,6 +152,10 @@ volatile uint32_t native_dwc3_gadget_status_nr_skipped = 0;
 // reports handed to the controller, done the ones the host actually polled.
 volatile uint32_t native_dwc3_gadget_notify_armed = 0;
 volatile uint32_t native_dwc3_gadget_notify_done = 0;
+// The dwDTERate the host last wrote with SET_LINE_CODING, read back from the captured
+// seven bytes. hostwatch opens COM5 at 115200 (0x0001c200); the previous constant answer
+// was 9600 (0x00002580). Printing the value proves whether GET_LINE_CODING now echoes it.
+volatile uint32_t native_dwc3_gadget_line_baud = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -257,6 +261,10 @@ struct Gadget {
   // retried forever -- console204's ring shows the pair repeating (21200007 a1210007 ...)
   // with every stage completing, which is a rejected value, not a stuck endpoint.
   uint8_t lineCodingBytes[7] = {0x80, 0x25, 0x00, 0x00, 0x00, 0x00, 0x08};   // 9600 8N1 until told otherwise
+  // Set when a SET_LINE_CODING is being answered, so only that one OUT data stage is
+  // copied into lineCodingBytes. A stale flag would let an unrelated OUT payload overwrite
+  // the line coding; armSetup() clears it before every new SETUP.
+  bool expectLineCoding = false;
   // The bulk OUT buffer the controller writes into. It lives in its own DMA region so a
   // host that writes before anything reads does not scribble over the control page.
   DmaRegion bulkOut;
@@ -1054,6 +1062,9 @@ void armSetup() {
   clearTrb(kDwc3Ep0Out);
   gGadget.threeStage = false;
   gGadget.dataIn = false;
+  // Every new SETUP starts clean: only a SET_LINE_CODING answered in this transfer may
+  // write its OUT payload into lineCodingBytes.
+  gGadget.expectLineCoding = false;
   if (startTransfer(kDwc3Ep0Out, controlPhys(kSetupOffset), 8, kDwc3TrbTypeControlSetup)) {
     gGadget.ep0Armed = true;
     setEp0State(kEp0Setup);
@@ -1176,7 +1187,11 @@ unsigned handleSetup(const uint8_t *setup, bool *supported) {
     // the receive TRB has to be handed over before the host starts sending -- the caller
     // stages it through startDataStage() by leaving the length non-zero. The seven bytes
     // are only readable once that stage completes, so they are captured in the completion
-    // path in handleEp0Event() rather than here.
+    // path in handleEp0Event() rather than here. Mark the transfer so only these bytes
+    // are copied: the single non-maxpacket-aligned OUT TRB (see startDataStage) makes the
+    // controller's trb->size write-back unreliable, so bytesTransferred() can report 0 and
+    // the completion path reads the DMA buffer directly instead of trusting it.
+    gGadget.expectLineCoding = true;
     return length;
   }
 
@@ -1232,6 +1247,29 @@ unsigned handleSetup(const uint8_t *setup, bool *supported) {
   return 0;
 }
 
+// Copy the seven SET_LINE_CODING bytes straight out of the control page's DMA buffer.
+// DWC3 does not reliably write trb->size back for a non-maxpacket-aligned OUT transfer
+// (Linux dwc3/ep0.c __dwc3_ep0_do_control_data and Mu-Silicium UsbfnDwc3Dxe.c:540-607
+// both align the OUT TRB and read from a bounce buffer), so bytesTransferred() can
+// report 0 and gating the copy on a byte count loses the payload -- exactly console205's
+// out=0 / lc=0. Reading the DMA buffer directly is the trustworthy path. Idempotent:
+// the flag is cleared on the first capture, and armSetup() clears it before each SETUP,
+// so a defensive second call cannot overwrite a good value with a later stage's bytes.
+void captureLineCoding() {
+  if (!gGadget.expectLineCoding) {
+    return;
+  }
+  gGadget.expectLineCoding = false;
+  invalidateDma(gGadget.control.virt + kSetupOffset, kEpLineCodingBytes);
+  __builtin_memcpy(gGadget.lineCodingBytes, gGadget.control.virt + kSetupOffset, kEpLineCodingBytes);
+  gGadget.lineCoding = true;
+  native_dwc3_gadget_line_coding = 1;
+  native_dwc3_gadget_line_baud = uint32_t(gGadget.lineCodingBytes[0]) |
+                                 (uint32_t(gGadget.lineCodingBytes[1]) << 8) |
+                                 (uint32_t(gGadget.lineCodingBytes[2]) << 16) |
+                                 (uint32_t(gGadget.lineCodingBytes[3]) << 24);
+}
+
 // The data stage has been decided; hand it to the endpoint the host will use.
 void startDataStage(unsigned length) {
   gGadget.dataArmed = length;
@@ -1252,7 +1290,15 @@ void startDataStage(unsigned length) {
   } else {
     // Host-to-device data stage: the TRB has to be armed on EP0-OUT before the host
     // sends, and the same buffer the SETUP landed in is reused for the payload.
-    if (!startTransfer(kDwc3Ep0Out, controlPhys(kSetupOffset), length, kDwc3TrbTypeControlData)) {
+    // DWC3 cannot reliably complete a non-maxpacket-aligned OUT transfer: Linux
+    // dwc3/ep0.c __dwc3_ep0_do_control_data queues a whole maxpacket (plus a bounce
+    // TRB) and Mu-Silicium UsbfnDwc3Dxe.c:540-607 does ALIGN_VALUE(TrbLength,
+    // MaxPacketSize). Arm for a whole maxpacket so the controller completes the stage
+    // and writes trb->size back; the host still sends only `length` bytes as a short
+    // packet. The 4 KiB control page has ample room for the padded length.
+    const unsigned outArmed = (length + kDwc3Ep0MaxPacketHighSpeed - 1u) &
+                              ~(kDwc3Ep0MaxPacketHighSpeed - 1u);
+    if (!startTransfer(kDwc3Ep0Out, controlPhys(kSetupOffset), outArmed, kDwc3TrbTypeControlData)) {
       setEp0State(kEp0Status);
       return;
     }
@@ -1345,19 +1391,20 @@ void handleEp0Event(unsigned ep, unsigned type, unsigned status) {
         // data stage, and the controller wrote those bytes straight into DMA. Keep them so
         // GET_LINE_CODING can hand the same seven bytes back: console204 repeated the
         // SET/GET pair forty times because the answer was a constant 9600, which read as
-        // "the device refused the rate" and kept usbser.sys in its open loop.
-        if (got >= kEpLineCodingBytes) {
-          invalidateDma(gGadget.control.virt + kSetupOffset, kEpLineCodingBytes);
-          __builtin_memcpy(gGadget.lineCodingBytes, gGadget.control.virt + kSetupOffset, kEpLineCodingBytes);
-          gGadget.lineCoding = true;
-          native_dwc3_gadget_line_coding = 1;
-        }
+        // "the device refused the rate" and kept usbser.sys in its open loop. The capture
+        // deliberately does not depend on `got`: a short-packet OUT completion can leave
+        // trb->size unwritten, which was console205's out=0 / lc=0.
+        captureLineCoding();
       }
       setEp0State(kEp0Status);
       return;
     }
 
     if (gGadget.ep0State == kEp0Status) {
+      // Defensive: XFERNOTREADY(CONTROL_STATUS) can arrive before the data completion and
+      // move the state here first, so the OUT completion would land in this branch instead
+      // of kEp0Data. captureLineCoding() is idempotent, so a second call is a no-op.
+      captureLineCoding();
       native_dwc3_gadget_status_done = native_dwc3_gadget_status_done + 1;
       armSetup();
       return;

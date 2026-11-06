@@ -130,6 +130,9 @@ extern volatile uint32_t native_dwc3_gadget_status_nr_skipped __attribute__((wea
 // reporting "The semaphore timeout period has expired."
 extern volatile uint32_t native_dwc3_gadget_notify_armed __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_notify_done __attribute__((weak_import));
+// dwDTERate captured from SET_LINE_CODING and echoed by GET_LINE_CODING. 0x0001c200 is the
+// 115200 hostwatch opens COM5 with; 0x00002580 would mean the constant 9600 answer is back.
+extern volatile uint32_t native_dwc3_gadget_line_baud __attribute__((weak_import));
 // The CDC-ACM endpoints stage D adds. data_eps flips on SET_CONFIG(1), armed counts the
 // receive TRBs handed to bulk OUT, and in/out count completed transfers each way.
 extern volatile uint32_t native_dwc3_gadget_data_eps __attribute__((weak_import));
@@ -699,6 +702,8 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
         at = put(out, at, cap, row, sizeof row);
         snprintf(row, sizeof row, "C notify armed=%u done=%u",
                  native_dwc3_gadget_notify_armed, native_dwc3_gadget_notify_done);
+        at = put(out, at, cap, row, sizeof row);
+        snprintf(row, sizeof row, "C lc baud=%08x", native_dwc3_gadget_line_baud);
         at = put(out, at, cap, row, sizeof row);
       }
       if (native_dwc3_gadget_error) {
