@@ -100,6 +100,18 @@ extern volatile uint32_t native_dwc3_gadget_configured __attribute__((weak_impor
 extern volatile uint32_t native_dwc3_gadget_arm_ok __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_arm_hwo __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_ep0_ctl __attribute__((weak_import));
+// Why endpoint 0 went deaf after SET_ADDRESS in console196. cmd_last_fail names the last
+// command the controller refused (ep<<24 | opcode<<8 | status, status 0xf = it never
+// cleared CMDACT at all), arm_fail counts STARTTRANSFERs that never reached the ring,
+// notready counts the controller asking for a TRB, and armed/done bracket the status
+// stage so a status the host never consumed is visible.
+extern volatile uint32_t native_dwc3_gadget_cmd_last_fail __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_arm_fail __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_notready __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_notready_last __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_status_armed __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_status_done __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_stuck_setups __attribute__((weak_import));
 // The CDC-ACM endpoints stage D adds. data_eps flips on SET_CONFIG(1), armed counts the
 // receive TRBs handed to bulk OUT, and in/out count completed transfers each way.
 extern volatile uint32_t native_dwc3_gadget_data_eps __attribute__((weak_import));
@@ -600,6 +612,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
                native_dwc3_gadget_bulk_stuck, native_dwc3_gadget_bulk_in,
                native_dwc3_gadget_bulk_out, native_dwc3_gadget_line_coding,
                native_dwc3_gadget_dtr);
+      at = put(out, at, cap, row, sizeof row);
+      // The endpoint 0 post-mortem. fail names the last refused command, armf counts the
+      // STARTTRANSFERs that never made it, nr is how often the controller asked for a TRB
+      // (last = ep<<8 | status), sa/sd bracket the status stage, and stuck counts a
+      // completion that arrived with no stage outstanding.
+      snprintf(row, sizeof row, "C dbg fail=%08x armf=%u nr=%u/%04x sa=%u sd=%u stuck=%u",
+               native_dwc3_gadget_cmd_last_fail, native_dwc3_gadget_arm_fail,
+               native_dwc3_gadget_notready, native_dwc3_gadget_notready_last,
+               native_dwc3_gadget_status_armed, native_dwc3_gadget_status_done,
+               native_dwc3_gadget_stuck_setups);
       at = put(out, at, cap, row, sizeof row);
       if (native_dwc3_gadget_error) {
         snprintf(row, sizeof row, "G fail: %.100s", native_dwc3_gadget_error);

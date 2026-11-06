@@ -91,6 +91,20 @@ volatile uint32_t native_dwc3_gadget_bulk_in = 0;
 volatile uint32_t native_dwc3_gadget_bulk_out = 0;
 volatile uint32_t native_dwc3_gadget_line_coding = 0;
 volatile uint32_t native_dwc3_gadget_dtr = 0;
+// console196 answered two SETUPs and then went deaf: the host stopped talking after
+// SET_ADDRESS and just reset in a loop. Two explanations fit that shape and the counts so
+// far cannot tell them apart -- either a stage never got a TRB armed, or the endpoint
+// command itself came back with a status. cmd_last_fail packs the last failing command as
+// ep<<24 | opcode<<8 | status, status_armed counts the zero-length status TRBs handed
+// over, status_done the ones the host consumed, and stuck_setups counts SETUP completions
+// that arrived while endpoint 0 was not in its setup state.
+volatile uint32_t native_dwc3_gadget_cmd_last_fail = 0;
+volatile uint32_t native_dwc3_gadget_arm_fail = 0;
+volatile uint32_t native_dwc3_gadget_notready = 0;
+volatile uint32_t native_dwc3_gadget_notready_last = 0;
+volatile uint32_t native_dwc3_gadget_status_armed = 0;
+volatile uint32_t native_dwc3_gadget_status_done = 0;
+volatile uint32_t native_dwc3_gadget_stuck_setups = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -285,6 +299,10 @@ bool endpointCommand(uintptr_t core, unsigned ep, uint32_t command, uint32_t par
       }
       if (dwc3DepCmdStatus(value) != 0) {
         native_dwc3_gadget_cmd_fail = native_dwc3_gadget_cmd_fail + 1;
+        // Which endpoint, which opcode, which status -- the three things needed to tell a
+        // bad SETEPCONFIG from a STARTTRANSFER that never took.
+        native_dwc3_gadget_cmd_last_fail =
+            (ep << 24) | ((command & 0xffu) << 8) | dwc3DepCmdStatus(value);
         return false;
       }
       return true;
@@ -293,6 +311,9 @@ bool endpointCommand(uintptr_t core, unsigned ep, uint32_t command, uint32_t par
     }
   }
   native_dwc3_gadget_cmd_fail = native_dwc3_gadget_cmd_fail + 1;
+  // 0xf in the status field is not a status the controller returns: it means CMDACT never
+  // cleared, so the command hung instead of being rejected.
+  native_dwc3_gadget_cmd_last_fail = (ep << 24) | ((command & 0xffu) << 8) | 0xfu;
   return false;
 }
 
@@ -397,6 +418,7 @@ bool startTransfer(unsigned ep, uint64_t bufferPhys, unsigned length, unsigned t
   if (!endpointCommand(gGadget.core, ep, kDwc3DepCmdStartTransfer, uint32_t(ringPhys >> 32),
                        uint32_t(ringPhys & 0xffffffffu), 0, &result)) {
     gGadget.resourceIndex[ep] = 0;
+    native_dwc3_gadget_arm_fail = native_dwc3_gadget_arm_fail + 1;
     return false;
   }
   gGadget.resourceIndex[ep] = dwc3DepCmdResourceIndex(result);
@@ -820,18 +842,28 @@ unsigned handleSetup(const uint8_t *setup, bool *supported) {
   }
 
   if (requestType == 0x82 && request == 0x06) {    // GET_DESCRIPTOR (to the interface)
-    // A CDC driver asks for the class-specific functional descriptors this way. They are
-    // already inside kConfigDescriptor, so answer with the slice the host points at. The
-    // pointer is a byte offset from the start of the configuration, which is how a host
-    // that walked the tables names the one descriptor it still wants.
+    // A CDC driver asks for the class-specific functional descriptors this way: wValue is
+    // the descriptor type in the high byte and its index in the low one. They are already
+    // inside kConfigDescriptor, so walk that table and hand back the nth one of that type.
     const unsigned type = (value >> 8) & 0xffu;
-    const unsigned offset = value & 0xffu;
-    const unsigned whole = sizeof kConfigDescriptor;
-    if ((type == 0x21 || type == 0x24) && offset < whole) {
-      const unsigned available = whole - offset;
-      __builtin_memcpy(data, kConfigDescriptor + offset, available);
-      cleanDma(data, available);
-      return available < length ? available : length;
+    const unsigned wanted = value & 0xffu;
+    if (type == 0x21 || type == 0x24) {
+      const unsigned whole = sizeof kConfigDescriptor;
+      unsigned offset = 0, seen = 0;
+      while (offset + 2 <= whole) {
+        const unsigned size = kConfigDescriptor[offset];
+        if (size < 2 || offset + size > whole) {
+          break;
+        }
+        if (kConfigDescriptor[offset + 1] == type && seen++ == wanted) {
+          __builtin_memcpy(data, kConfigDescriptor + offset, size);
+          cleanDma(data, size);
+          return size < length ? size : length;
+        }
+        offset += size;
+      }
+      *supported = false;
+      return 0;
     }
   }
 
@@ -880,6 +912,7 @@ bool startStatusStage(unsigned ep) {
   if (!startTransfer(ep, controlPhys(kDataOffset), 0, type)) {
     return false;
   }
+  native_dwc3_gadget_status_armed = native_dwc3_gadget_status_armed + 1;
   setEp0State(kEp0Status);
   return true;
 }
@@ -928,15 +961,22 @@ void handleEp0Event(unsigned ep, unsigned type, unsigned status) {
     }
 
     if (gGadget.ep0State == kEp0Status) {
+      native_dwc3_gadget_status_done = native_dwc3_gadget_status_done + 1;
       armSetup();
       return;
     }
+    // A completion with no stage outstanding means a transfer finished after the state
+    // machine had already moved on; counting it is how a re-armed SETUP that arrived too
+    // late shows up in the log.
+    native_dwc3_gadget_stuck_setups = native_dwc3_gadget_stuck_setups + 1;
     return;
   }
 
   if (type == kDwc3EpEventXferNotReady) {
     // The host started a stage endpoint 0 has no TRB for. That is the controller's way
     // of saying "your turn" for both the data and the status stage.
+    native_dwc3_gadget_notready = native_dwc3_gadget_notready + 1;
+    native_dwc3_gadget_notready_last = (ep << 8) | (status & 0xffu);
     const unsigned phase = status & 0x3u;
     // phase 1 is CONTROL_DATA. The data stage is driven by the SETUP handler deciding
     // how many bytes to move, so a not-ready there means the host is waiting on a TRB
