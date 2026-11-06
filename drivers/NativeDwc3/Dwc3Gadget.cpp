@@ -364,8 +364,11 @@ void endTransfer(unsigned ep) {
   }
   // ENDTRANSFER carries the resource index inside the command word itself, bits 22:16
   // (Dwc3Endpoint.c:353-356 with DWC3_DEPCMD_PARAM), not in a parameter register.
-  const uint32_t command = kDwc3DepCmdEndTransfer | kDwc3DepCmdHiPriForceRm | kDwc3DepCmdCmdIoc |
-                           ((index & 0x7fu) << 16);
+  // The opcode and the flags live in two different enumerations in Dwc3Registers.h, and
+  // clang refuses to combine values from two anonymous enums with -Werror
+  // (-Wdeprecated-anon-enum-enum-conversion), so the flags are widened here.
+  const uint32_t command = uint32_t(kDwc3DepCmdEndTransfer) | uint32_t(kDwc3DepCmdHiPriForceRm) |
+                           uint32_t(kDwc3DepCmdCmdIoc) | ((index & 0x7fu) << 16);
   endpointCommand(gGadget.core, ep, command, 0, 0, 0);
   gGadget.resourceIndex[ep] = 0;
   Dwc3Trb *trb = ringFor(ep);
