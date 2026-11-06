@@ -30,6 +30,10 @@
 #include <kern/thread.h>
 #include "Dwc3Registers.h"
 #include "Dwc3SmmuPlan.h"
+// Included so the compiler checks these definitions against the declarations the callers
+// see -- in particular that dwc3ConsoleWrite/dwc3ConsoleReady keep the exact signatures
+// package/BootLog.c declares, since that file is C and the two would not otherwise meet.
+#include "Dwc3Gadget.h"
 
 // Counters the boot log reads (package/BootLog.c), all weak so a board without the
 // log still links.
@@ -91,6 +95,17 @@ volatile uint32_t native_dwc3_gadget_bulk_in = 0;
 volatile uint32_t native_dwc3_gadget_bulk_out = 0;
 volatile uint32_t native_dwc3_gadget_line_coding = 0;
 volatile uint32_t native_dwc3_gadget_dtr = 0;
+// Stage E: the pipe itself. bulk_in/bulk_out above only counted transfers; these count the
+// bytes that actually crossed, and tx_dropped the ones a full queue refused. A port that
+// enumerates but moves no bytes and one that moves bytes look identical in every other row.
+volatile uint32_t native_dwc3_gadget_tx_bytes = 0;
+volatile uint32_t native_dwc3_gadget_rx_bytes = 0;
+volatile uint32_t native_dwc3_gadget_tx_dropped = 0;
+volatile uint32_t native_dwc3_gadget_tx_queued = 0;
+// The last few bytes the host sent, exactly as they arrived. A console that echoes nothing
+// back is indistinguishable from one that received nothing, and this row settles which.
+volatile uint32_t native_dwc3_gadget_rx_last = 0;
+volatile uint32_t native_dwc3_gadget_rx_events = 0;
 // console196 answered two SETUPs and then went deaf: the host stopped talking after
 // SET_ADDRESS and just reset in a loop. Two explanations fit that shape and the counts so
 // far cannot tell them apart -- either a stage never got a TRB armed, or the endpoint
@@ -118,6 +133,10 @@ enum : unsigned {
   kTrbBytes         = 16,
   kTrbsPerRing      = kEventBufferBytes / kTrbBytes,   // 256
   kMaxRings         = 16,                              // DWC3_MAX_PHYSICAL_EP
+  // Stage E's transmit queue, in bytes. It is deliberately small: the boot log produces
+  // one 4 KiB slot every half second, so eight kilobytes is several rounds of slack, and
+  // a queue that fills means the host is not reading rather than that we are behind.
+  kTxQueueBytes     = 8192,
 };
 
 enum Stage : unsigned {
@@ -202,6 +221,15 @@ struct Gadget {
   DmaRegion bulkOut;
   DmaRegion notify;
   bool dataEndpoints = false;
+  // Stage E. The transmit queue is written by whoever has bytes to send (today the boot
+  // log's writer thread) and drained by the gadget thread when bulk IN completes. One
+  // producer and one consumer, so the ring needs no lock: only the producer moves txHead,
+  // only the consumer moves txTail, and both are volatile with a barrier on hand-off.
+  DmaRegion bulkIn;
+  unsigned char txQueue[kTxQueueBytes];
+  volatile unsigned txHead = 0;
+  volatile unsigned txTail = 0;
+  unsigned txInflight = 0;     // bytes handed to the controller and not yet completed
   // Bytes the current control transfer receives from the host. Only SET_LINE_CODING uses
   // this direction so far; an OUT data stage needs a receive TRB before the host sends,
   // which is why it cannot be answered like the IN ones.
@@ -503,6 +531,113 @@ void armBulkOut() {
   }
 }
 
+// How many of the bytes a transfer was armed with actually crossed. The controller writes
+// the count it did *not* use back into the TRB's size field, so the answer is the
+// difference -- the same arithmetic the firmware does in Dwc3TrbBytesTransferred
+// (Dwc3Endpoint.c:528-534). The cache copy is stale: the controller wrote that field.
+unsigned bytesTransferred(unsigned ep, unsigned armed) {
+  Dwc3Trb *trb = ringFor(ep);
+  invalidateDma(trb, kTrbBytes);
+  const unsigned remaining = dwc3TrbSizeLength(trb->size);
+  return remaining > armed ? armed : armed - remaining;
+}
+
+// Hand the host whatever is queued. Only one bulk IN transfer may be in flight at a time:
+// the TRB ring has a single usable entry for this direction (the memory the controller
+// reads lives in the TRB itself), so arming a second before the first completes would
+// overwrite the queue head the controller is still walking.
+void armBulkIn() {
+  if (!gGadget.dataEndpoints || gGadget.txInflight) {
+    return;
+  }
+  const unsigned head = gGadget.txHead;
+  unsigned tail = gGadget.txTail;
+  if (tail == head) {
+    return;
+  }
+  // One contiguous run, up to the end of the queue: the buffer has to be linear.
+  unsigned run = head > tail ? head - tail : kTxQueueBytes - tail;
+  if (run > gGadget.bulkIn.bytes) {
+    run = gGadget.bulkIn.bytes;
+  }
+  __builtin_memcpy(gGadget.bulkIn.virt, gGadget.txQueue + tail, run);
+  cleanDma(gGadget.bulkIn.virt, run);
+  clearTrb(kEpBulkIn);
+  if (!startTransfer(kEpBulkIn, gGadget.bulkIn.phys, run, kDwc3TrbTypeNormal)) {
+    // Not counted as dropped: the queue head has not moved, so the next pass tries the
+    // same bytes again. startTransfer has already counted the refused command in arm_fail,
+    // which is the honest place for it -- a persistent failure shows up there once per
+    // pass rather than as fake byte loss here.
+    return;
+  }
+  gGadget.txInflight = run;
+  tail = (tail + run) % kTxQueueBytes;
+  gGadget.txTail = tail;
+}
+
+}  // namespace
+
+// The two entry points the boot log calls. They live outside the anonymous namespace so
+// the linker can see them (Dwc3Gadget.h declares them); everything they touch -- gGadget,
+// the queue arithmetic, armBulkIn -- is internal to this file and still reachable.
+//
+// extern "C" because the caller is C (package/BootLog.c); without it these would be
+// mangled and the weak check in the log would quietly find nothing.
+
+// Append bytes for the host. Called from the boot log's writer thread, which is the only
+// producer; the gadget thread is the only consumer. Returns how many bytes were taken --
+// a short count means the host is not reading and the caller may drop the rest.
+extern "C" unsigned dwc3ConsoleWrite(const void *bytes, unsigned length) {
+  if (!gGadget.dataEndpoints) {
+    return 0;
+  }
+  const unsigned char *source = static_cast<const unsigned char *>(bytes);
+  unsigned room = 0;
+  {
+    const unsigned head = gGadget.txHead;
+    const unsigned tail = gGadget.txTail;
+    // One byte is always left free so head == tail keeps meaning "empty".
+    room = head >= tail ? kTxQueueBytes - 1 - (head - tail) : tail - head - 1;
+  }
+  if (length > room) {
+    length = room;
+  }
+  if (!length) {
+    native_dwc3_gadget_tx_dropped = native_dwc3_gadget_tx_dropped + 1;
+    return 0;
+  }
+  unsigned head = gGadget.txHead;
+  unsigned first = kTxQueueBytes - head;
+  if (first > length) {
+    first = length;
+  }
+  __builtin_memcpy(gGadget.txQueue + head, source, first);
+  if (length > first) {
+    __builtin_memcpy(gGadget.txQueue, source + first, length - first);
+  }
+  asm volatile("dmb oshst" ::: "memory");
+  gGadget.txHead = (head + length) % kTxQueueBytes;
+  native_dwc3_gadget_tx_queued = native_dwc3_gadget_tx_queued + length;
+  // Deliberately not arming here: startTransfer touches the TRB ring and the endpoint
+  // command registers, and both are the gadget thread's. Queuing is a plain memory write,
+  // which is all this thread may do. The drain loop hands the run over on its next pass,
+  // two milliseconds later at worst.
+  return length;
+}
+
+// Whether a host has configured us and there is somewhere to put bytes. Deliberately not
+// gated on DTR: the endpoint being programmed is the only thing that has to be true, and
+// requiring DTR would mean a host that opens the port without raising it (or a plain
+// sniffer) sees a silent line. When nothing is reading, the queue fills and the drop
+// counter says so, which is better evidence than an empty log.
+// Returns int, not bool, because the declaration the C caller sees (package/BootLog.c)
+// says int: the two translation units have to agree, and C has no bool without <stdbool.h>.
+extern "C" int dwc3ConsoleReady(void) {
+  return gGadget.dataEndpoints ? 1 : 0;
+}
+
+namespace {
+
 bool programDataEndpoints() {
   if (gGadget.dataEndpoints) {
     return true;
@@ -513,7 +648,8 @@ bool programDataEndpoints() {
     native_dwc3_gadget_error = "cdc needs six endpoints";
     return false;
   }
-  if (!gGadget.bulkOut.allocate(kEpBufferBytes) || !gGadget.notify.allocate(kEpBufferBytes)) {
+  if (!gGadget.bulkOut.allocate(kEpBufferBytes) || !gGadget.notify.allocate(kEpBufferBytes) ||
+      !gGadget.bulkIn.allocate(kEpBufferBytes)) {
     native_dwc3_gadget_error = "cdc buffers";
     return false;
   }
@@ -544,21 +680,43 @@ void unprogramDataEndpoints() {
   write32(gGadget.core, kDwc3DALEPENA, enable);
   gGadget.dataEndpoints = false;
   native_dwc3_gadget_data_eps = 0;
+  // Anything still queued belongs to a configuration the host has torn down; the buffer
+  // it would have gone out through is unprogrammed from here on.
+  gGadget.txHead = 0;
+  gGadget.txTail = 0;
+  gGadget.txInflight = 0;
 }
 
-// One event on a data endpoint. Completing a bulk OUT transfer means the host's bytes
-// are in bulkOut; they are counted and the buffer is handed back, which is all a console
-// needs from this direction until something reads them.
+// One event on a data endpoint. A completed bulk OUT transfer means the host's bytes are
+// sitting in bulkOut; they are recorded and the receive TRB is handed back. A completed
+// bulk IN transfer means the host took what was queued, so the next run goes out.
 void handleDataEvent(unsigned ep, unsigned type) {
   if (type != kDwc3EpEventXferComplete) {
     return;
   }
   if (ep == kEpBulkOut) {
     invalidateDma(gGadget.bulkOut.virt, gGadget.bulkOut.bytes);
+    const unsigned got = bytesTransferred(ep, gGadget.bulkOut.bytes);
     native_dwc3_gadget_bulk_in += 1;
+    if (got) {
+      native_dwc3_gadget_rx_events = native_dwc3_gadget_rx_events + 1;
+      native_dwc3_gadget_rx_bytes = native_dwc3_gadget_rx_bytes + got;
+      // The last four bytes of the most recent write, little-endian in one word, so the
+      // log can show that a human typed something without a driver in between.
+      uint32_t tail = 0;
+      const unsigned char *data = static_cast<const unsigned char *>(gGadget.bulkOut.virt);
+      for (unsigned i = got > 4 ? got - 4 : 0; i < got; ++i) {
+        tail = (tail >> 8) | (uint32_t(data[i]) << 24);
+      }
+      native_dwc3_gadget_rx_last = tail;
+    }
     armBulkOut();
   } else if (ep == kEpBulkIn) {
+    const unsigned sent = gGadget.txInflight;
     native_dwc3_gadget_bulk_out += 1;
+    native_dwc3_gadget_tx_bytes = native_dwc3_gadget_tx_bytes + bytesTransferred(ep, sent);
+    gGadget.txInflight = 0;
+    armBulkIn();   // there may be another run queued already
   }
 }
 
@@ -1316,4 +1474,8 @@ void dwc3GadgetDrain() {
   native_dwc3_gadget_dcfg = read32(core, kDwc3DCFG);
   native_dwc3_gadget_dctl = read32(core, kDwc3DCTL);
   native_dwc3_gadget_dsts = read32(core, kDwc3DSTS);
+  // Stage E: hand the host whatever the writer queued since the last pass. This is the
+  // only place a bulk IN transfer is armed from, which keeps every TRB write on this
+  // thread -- the writer in package/BootLog.c only ever touches the byte queue.
+  armBulkIn();
 }

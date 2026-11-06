@@ -22,4 +22,19 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, uintptr_t qscratch, const U
 // dwc3GadgetStart succeeded.
 void dwc3GadgetDrain();
 
+// ---- Stage E: the console pipe ---------------------------------------------------
+//
+// Everything above makes a host see a serial port. These two make it a pipe. The write
+// side is single-producer (the boot log's writer thread) and returns a short count when
+// the host is not keeping up -- callers may drop the remainder rather than block a
+// thread that the log depends on. Both are no-ops, returning 0/false, until the host has
+// issued SET_CONFIG and the data endpoints exist.
+//
+// C linkage: package/BootLog.c is C, and it calls these. Both return int rather than bool
+// so the C declaration in BootLog.c and this one describe the same function.
+extern "C" {
+unsigned dwc3ConsoleWrite(const void *bytes, unsigned length);
+int dwc3ConsoleReady(void);
+}
+
 #endif

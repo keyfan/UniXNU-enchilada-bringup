@@ -50,6 +50,10 @@ extern volatile uint32_t native_dwc3_mode __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gsnpsid __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_physical_eps __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_ghwparams3 __attribute__((weak_import));
+// Stage E: the USB console pipe (drivers/NativeDwc3/Dwc3Gadget.cpp). Weak so a kernel
+// built without the DWC3 driver still links; the writer checks the pointer first.
+extern unsigned dwc3ConsoleWrite(const void *bytes, unsigned length) __attribute__((weak_import));
+extern int dwc3ConsoleReady(void) __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gctl __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_dsts __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_dcfg __attribute__((weak_import));
@@ -124,6 +128,15 @@ extern volatile uint32_t native_dwc3_gadget_bulk_out __attribute__((weak_import)
 extern volatile uint32_t native_dwc3_gadget_line_coding __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_dtr __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_last_setup __attribute__((weak_import));
+// Stage E: the console pipe. tx_bytes/rx_bytes count what actually crossed the wire in
+// each direction, tx_queued is what the writer handed over, and tx_dropped is what the
+// host never took. When queued grows but tx_bytes does not, the host stopped reading.
+extern volatile uint32_t native_dwc3_gadget_tx_bytes __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_rx_bytes __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_tx_queued __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_tx_dropped __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_rx_events __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_rx_last __attribute__((weak_import));
 extern const char *volatile native_dwc3_gadget_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
 extern volatile int native_gpu_addon_written __attribute__((weak_import));
@@ -615,6 +628,17 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
                native_dwc3_gadget_bulk_stuck, native_dwc3_gadget_bulk_in,
                native_dwc3_gadget_bulk_out, native_dwc3_gadget_line_coding,
                native_dwc3_gadget_dtr);
+      at = put(out, at, cap, row, sizeof row);
+      // The pipe itself. q is what the writer handed over, tx what the host took, drop
+      // what it refused to take; a q that climbs while tx stays put means the host opened
+      // the port and stopped reading. rx is what arrived from the host, and last is the
+      // tail of the most recent burst -- typing "abc" on the other end should show as
+      // 0x00636261 here, which is how a human can tell the pipe is bidirectional without
+      // a serial program on the phone side.
+      snprintf(row, sizeof row, "C io tx=%u rx=%u ev=%u q=%u drop=%u last=%08x",
+               native_dwc3_gadget_tx_bytes, native_dwc3_gadget_rx_bytes,
+               native_dwc3_gadget_rx_events, native_dwc3_gadget_tx_queued,
+               native_dwc3_gadget_tx_dropped, native_dwc3_gadget_rx_last);
       at = put(out, at, cap, row, sizeof row);
       // The endpoint 0 post-mortem. fail names the last refused command, armf counts the
       // STARTTRANSFERs that never made it, nr is how often the controller asked for a TRB
@@ -1130,6 +1154,13 @@ static void writer(void *arg, wait_result_t result) {
     compose((char *)boot_log_buffer, LogSlotBlocks * LogBlock, h.slots_written, now);
     boot_log_step = 2;
     int slot_ok = native_ufs_log_write(LogSlotFirst + (uint64_t)(h.slots_written % slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
+    // The same round also goes out over the USB console when a host has opened it. This is
+    // best effort by design: the medium stays the record of truth, and dropping a serial
+    // copy because the host stopped reading must never cost a slot on disk.
+    if (&dwc3ConsoleWrite && dwc3ConsoleReady()) {
+      const unsigned console_bytes = (unsigned)strnlen((const char *)boot_log_buffer, LogSlotBlocks * LogBlock);
+      (void)dwc3ConsoleWrite(boot_log_buffer, console_bytes);
+    }
     boot_log_step = 3;
     h.msg_bytes = copy_msgbuf(boot_log_buffer);
     int msg_ok = native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
