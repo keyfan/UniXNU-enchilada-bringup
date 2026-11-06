@@ -48,6 +48,8 @@ extern volatile uint32_t native_dwc3_stage __attribute__((weak_import));
 extern volatile int32_t native_dwc3_status __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_mode __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gsnpsid __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_physical_eps __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_ghwparams3 __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gctl __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_dsts __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_dcfg __attribute__((weak_import));
@@ -535,11 +537,12 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // USB30 GDSCR, and the read-only apps_smmu plan for stream 0x740 (slot/bank, -1 = none, fw = 1 when the entry UEFI left
   // behind is adopted as it stands rather than a fresh bank being planned).
   if (&native_dwc3_stage && native_dwc3_mode) {
-    char row[224];   // the widest realistic row is ~121 bytes; the buffer is sized for every field at its maximum
-    snprintf(row, sizeof row, "U st=%u rc=%d mode=%u id=%08x gctl=%08x dcfg=%08x dsts=%08x alep=%x cap=%u phy=%u gdsc=%08x smmu=%d/%d fw=%u",
+    char row[256];   // the widest realistic row is ~141 bytes; the buffer is sized for every field at its maximum
+    snprintf(row, sizeof row, "U st=%u rc=%d mode=%u id=%08x gctl=%08x dcfg=%08x dsts=%08x alep=%x cap=%u phy=%u gdsc=%08x smmu=%d/%d fw=%u hp3=%08x eps=%u",
              native_dwc3_stage, native_dwc3_status, native_dwc3_mode, native_dwc3_gsnpsid, native_dwc3_gctl, native_dwc3_dcfg,
              native_dwc3_dsts, native_dwc3_dalepena, native_dwc3_prtcap, native_dwc3_phy_ready, native_dwc3_gcc_gdscr,
-             native_dwc3_smmu_slot, native_dwc3_smmu_bank, native_dwc3_smmu_firmware);
+             native_dwc3_smmu_slot, native_dwc3_smmu_bank, native_dwc3_smmu_firmware,
+             native_dwc3_ghwparams3, native_dwc3_physical_eps);
     at = put(out, at, cap, row, sizeof row);
     if (native_dwc3_failure) {
       snprintf(row, sizeof row, "U fail: %.100s", native_dwc3_failure);

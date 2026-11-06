@@ -117,6 +117,7 @@ enum : unsigned {
   kEventBufferBytes = 4096,
   kTrbBytes         = 16,
   kTrbsPerRing      = kEventBufferBytes / kTrbBytes,   // 256
+  kMaxRings         = 16,                              // DWC3_MAX_PHYSICAL_EP
 };
 
 enum Stage : unsigned {
@@ -166,9 +167,14 @@ struct DmaRegion {
 
 // The gadget's whole DMA surface. One event buffer, and one TRB ring per physical
 // endpoint (endpoint 0's two directions included).
+//
+// Both arrays are sized from the core's own ceiling rather than from what this board
+// happened to report: GHWPARAMS3 allows up to sixteen device endpoints, and the ring
+// setup loop runs over the count the probe read, so a smaller array would have been
+// overrun the moment that count stopped being clamped to four.
 struct Gadget {
   DmaRegion events;
-  DmaRegion rings[8];
+  DmaRegion rings[16];
   // Endpoint 0's own DMA page: the eight SETUP bytes at 0 and the IN payload at 64. One
   // allocation keeps every buffer the controller sees inside a single physically
   // contiguous region, and keeps the SETUP packet out of the TRB ring.
@@ -180,7 +186,7 @@ struct Gadget {
   unsigned eventPos = 0;      // byte offset read so far in the event buffer
   // Resource index handed back by STARTTRANSFER, per endpoint. ENDTRANSFER needs it as
   // its parameter, and 0 means "no transfer outstanding" (Dwc3Endpoint.c:348).
-  uint32_t resourceIndex[8] = {};
+  uint32_t resourceIndex[16] = {};
   uint32_t ep0State = 0;
   bool ep0Armed = false;      // a CONTROL_SETUP TRB is waiting on EP0-OUT
   bool threeStage = false;    // the request being answered has a data stage
@@ -1041,7 +1047,7 @@ bool dwc3GadgetStart(uintptr_t core, uintptr_t smmu, uintptr_t qscratch, const U
     native_dwc3_gadget_status = -int32_t(kStageEventBuf);
     return false;
   }
-  for (unsigned ep = 0; ep < physicalEps; ++ep) {
+  for (unsigned ep = 0; ep < physicalEps && ep < kMaxRings; ++ep) {
     if (!gGadget.rings[ep].allocate(kEventBufferBytes)) {
       native_dwc3_gadget_error = "trb ring";
       native_dwc3_gadget_status = -int32_t(kStageEventBuf);

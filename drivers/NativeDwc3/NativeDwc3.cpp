@@ -53,6 +53,11 @@ volatile uint32_t native_dwc3_qusb2_status = 0, native_dwc3_phy_ready = 0;
 volatile uint32_t native_dwc3_gcc_gdscr = 0, native_dwc3_gcc_master = 0, native_dwc3_gcc_mock = 0;
 volatile uint32_t native_dwc3_gcc_ahb2phy = 0, native_dwc3_gcc_noc_axi = 0, native_dwc3_gcc_aggre_axi = 0;
 volatile uint32_t native_dwc3_prtcap = 0;    // GCTL current mode (2 = device)
+// GHWPARAMS3.NUM_EPS (bits 17:12) and what the gadget was finally told. The two are logged
+// apart because the gadget's ring count and the CDC endpoint check both key off the second:
+// console197 refused SET_CONFIG with "cdc needs six endpoints" while the first was never
+// printed, so there was no way to tell a core that really has four from a clamp of ours.
+volatile uint32_t native_dwc3_physical_eps = 0;
 volatile int32_t  native_dwc3_smmu_slot = -1, native_dwc3_smmu_bank = -1;
 volatile uint32_t native_dwc3_smmu_reuse = 0;
 volatile uint32_t native_dwc3_smmu_firmware = 0;   // 1 = UEFI's own entry for the stream, adopted as it stands
@@ -277,10 +282,16 @@ void NativeDwc3::inspect()
       // gQscratchMap: the gadget thread uses it long after inspect() returns, the same
       // lifetime mistake that produced the SMMU "lloo" reads in console183.
       uintptr_t qscratch = dwc3MapPhys(kDwc3QscratchBase, kDwc3QscratchSize, gQscratchMap);
+      // GHWPARAMS3 counts device endpoints, endpoint 0's two directions included. The
+      // firmware allows the full range and only falls back when the field reads zero or
+      // beyond what the core can implement (DWC3_MAX_PHYSICAL_EP: Dwc3Endpoint.h). An
+      // earlier ceiling of 8 quietly turned anything larger into 4, which is the value
+      // that made "cdc needs six endpoints" unavoidable in console197.
       gGadgetPhysicalEps = dwc3HwParams3NumEps(snap.ghwparams3);
-      if (!gGadgetPhysicalEps || gGadgetPhysicalEps > 8) {
-        gGadgetPhysicalEps = 4;   // SDM845's dwc3 reports 4; a sane default if the field reads oddly
+      if (!gGadgetPhysicalEps || gGadgetPhysicalEps > 16) {
+        gGadgetPhysicalEps = 16;
       }
+      native_dwc3_physical_eps = gGadgetPhysicalEps;
       gGadgetCore = core;
       gGadgetSmmu = smmu;
       gGadgetQscratch = qscratch;
