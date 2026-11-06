@@ -100,6 +100,15 @@ extern volatile uint32_t native_dwc3_gadget_configured __attribute__((weak_impor
 extern volatile uint32_t native_dwc3_gadget_arm_ok __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_arm_hwo __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_ep0_ctl __attribute__((weak_import));
+// The CDC-ACM endpoints stage D adds. data_eps flips on SET_CONFIG(1), armed counts the
+// receive TRBs handed to bulk OUT, and in/out count completed transfers each way.
+extern volatile uint32_t native_dwc3_gadget_data_eps __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_bulk_armed __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_bulk_stuck __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_bulk_in __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_bulk_out __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_line_coding __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_dtr __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_last_setup __attribute__((weak_import));
 extern const char *volatile native_dwc3_gadget_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
@@ -581,6 +590,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       snprintf(row, sizeof row, "C arm=%u hwo=%u ctl=%08x",
                native_dwc3_gadget_arm_ok, native_dwc3_gadget_arm_hwo,
                native_dwc3_gadget_ep0_ctl);
+      at = put(out, at, cap, row, sizeof row);
+      // The CDC-ACM side. eps flips on SET_CONFIG(1); armed/stuck count the receive TRBs
+      // handed to the bulk OUT endpoint; in/out count completed transfers each way, so a
+      // port that opened and a host that is typing look different in the log. lc and dtr
+      // record the two class requests a serial driver sends when it opens the port.
+      snprintf(row, sizeof row, "C cdc eps=%u armed=%u stuck=%u in=%u out=%u lc=%u dtr=%u",
+               native_dwc3_gadget_data_eps, native_dwc3_gadget_bulk_armed,
+               native_dwc3_gadget_bulk_stuck, native_dwc3_gadget_bulk_in,
+               native_dwc3_gadget_bulk_out, native_dwc3_gadget_line_coding,
+               native_dwc3_gadget_dtr);
       at = put(out, at, cap, row, sizeof row);
       if (native_dwc3_gadget_error) {
         snprintf(row, sizeof row, "G fail: %.100s", native_dwc3_gadget_error);

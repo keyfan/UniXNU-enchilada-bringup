@@ -80,6 +80,17 @@ volatile uint32_t native_dwc3_gadget_configured = 0;
 volatile uint32_t native_dwc3_gadget_arm_ok = 0;
 volatile uint32_t native_dwc3_gadget_arm_hwo = 0;
 volatile uint32_t native_dwc3_gadget_ep0_ctl = 0;
+// The CDC data endpoints. data_eps flips on SET_CONFIG, bulk_armed counts the receive
+// TRBs handed to bulk OUT, bulk_stuck the ones that could not be, and bulk_in/bulk_out
+// count completed transfers in each direction -- the first sign that a host is actually
+// talking to the port rather than merely enumerating it.
+volatile uint32_t native_dwc3_gadget_data_eps = 0;
+volatile uint32_t native_dwc3_gadget_bulk_armed = 0;
+volatile uint32_t native_dwc3_gadget_bulk_stuck = 0;
+volatile uint32_t native_dwc3_gadget_bulk_in = 0;
+volatile uint32_t native_dwc3_gadget_bulk_out = 0;
+volatile uint32_t native_dwc3_gadget_line_coding = 0;
+volatile uint32_t native_dwc3_gadget_dtr = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -161,6 +172,20 @@ struct Gadget {
   bool threeStage = false;    // the request being answered has a data stage
   bool dataIn = false;        // ...and it moves device -> host
   bool running = false;
+  // CDC-ACM state. The line coding the host sets is accepted and forgotten: there is no
+  // separate UART behind this port to configure. dtr is recorded because a serial client
+  // toggles it on open and close, and it makes a useful "a human plugged in" marker.
+  bool lineCoding = false;
+  bool dtr = false;
+  // The bulk OUT buffer the controller writes into. It lives in its own DMA region so a
+  // host that writes before anything reads does not scribble over the control page.
+  DmaRegion bulkOut;
+  DmaRegion notify;
+  bool dataEndpoints = false;
+  // Bytes the current control transfer receives from the host. Only SET_LINE_CODING uses
+  // this direction so far; an OUT data stage needs a receive TRB before the host sends,
+  // which is why it cannot be answered like the IN ones.
+  unsigned outBytes = 0;
 };
 
 Gadget gGadget;
@@ -421,6 +446,94 @@ void clearTrb(unsigned ep) {
   gGadget.resourceIndex[ep] = 0;
 }
 
+// ---- The CDC data endpoints ------------------------------------------------------
+//
+// Until SET_CONFIG these three endpoints do not exist as far as the host is concerned,
+// so they are programmed on demand rather than with endpoint 0. The physical numbers
+// follow DWC3's rule (2 * USB endpoint number + direction, IN being 1) and have to
+// match the endpoint addresses in kConfigDescriptor: 0x81 -> 3, 0x82 -> 5, 0x02 -> 4.
+enum : unsigned {
+  kEpNotify         = 3,   // 0x81, interrupt IN: serial state notifications
+  kEpBulkOut        = 4,   // 0x02, bulk OUT: host -> device
+  kEpBulkIn         = 5,   // 0x82, bulk IN: device -> host
+  kEpMaxPacketBulk  = 64,
+  kEpMaxPacketNotify = 16,
+  // One 256-byte receive buffer is enough for a console: a host that writes more than
+  // that between two polls gets NAKs, not corruption.
+  kEpBufferBytes    = 256,
+};
+
+// Re-arm the bulk OUT endpoint with an empty buffer. The host writes whenever it likes
+// once the port is open, and a configured endpoint with no TRB is a NAK the driver has
+// to retry -- correct, but it also means bytes only move when something is listening.
+void armBulkOut() {
+  clearTrb(kEpBulkOut);
+  if (startTransfer(kEpBulkOut, gGadget.bulkOut.phys, gGadget.bulkOut.bytes, kDwc3TrbTypeNormal)) {
+    native_dwc3_gadget_bulk_armed = native_dwc3_gadget_bulk_armed + 1;
+  } else {
+    native_dwc3_gadget_bulk_stuck = native_dwc3_gadget_bulk_stuck + 1;
+  }
+}
+
+bool programDataEndpoints() {
+  if (gGadget.dataEndpoints) {
+    return true;
+  }
+  // GHWPARAMS3 says how many physical endpoints this core implements, and the rings were
+  // sized from it. A core that reports fewer than six has nowhere to put a CDC pair.
+  if (gGadget.physicalEps <= kEpBulkIn) {
+    native_dwc3_gadget_error = "cdc needs six endpoints";
+    return false;
+  }
+  if (!gGadget.bulkOut.allocate(kEpBufferBytes) || !gGadget.notify.allocate(kEpBufferBytes)) {
+    native_dwc3_gadget_error = "cdc buffers";
+    return false;
+  }
+  if (!configureEndpoint(gGadget.core, kEpBulkOut, kDwc3EpTypeBulk, kEpMaxPacketBulk) ||
+      !configureEndpoint(gGadget.core, kEpBulkIn, kDwc3EpTypeBulk, kEpMaxPacketBulk) ||
+      !configureEndpoint(gGadget.core, kEpNotify, kDwc3EpTypeInterrupt, kEpMaxPacketNotify)) {
+    native_dwc3_gadget_error = "cdc endpoint config";
+    return false;
+  }
+  linkRing(kEpNotify);
+  linkRing(kEpBulkIn);
+  linkRing(kEpBulkOut);
+  gGadget.dataEndpoints = true;
+  native_dwc3_gadget_data_eps = 1;
+  armBulkOut();
+  return true;
+}
+
+void unprogramDataEndpoints() {
+  if (!gGadget.dataEndpoints) {
+    return;
+  }
+  endTransfer(kEpNotify);
+  endTransfer(kEpBulkIn);
+  endTransfer(kEpBulkOut);
+  uint32_t enable = read32(gGadget.core, kDwc3DALEPENA);
+  enable &= ~(dwc3DalepEna(kEpNotify) | dwc3DalepEna(kEpBulkIn) | dwc3DalepEna(kEpBulkOut));
+  write32(gGadget.core, kDwc3DALEPENA, enable);
+  gGadget.dataEndpoints = false;
+  native_dwc3_gadget_data_eps = 0;
+}
+
+// One event on a data endpoint. Completing a bulk OUT transfer means the host's bytes
+// are in bulkOut; they are counted and the buffer is handed back, which is all a console
+// needs from this direction until something reads them.
+void handleDataEvent(unsigned ep, unsigned type) {
+  if (type != kDwc3EpEventXferComplete) {
+    return;
+  }
+  if (ep == kEpBulkOut) {
+    invalidateDma(gGadget.bulkOut.virt, gGadget.bulkOut.bytes);
+    native_dwc3_gadget_bulk_in += 1;
+    armBulkOut();
+  } else if (ep == kEpBulkIn) {
+    native_dwc3_gadget_bulk_out += 1;
+  }
+}
+
 }  // namespace
 
 // ---- Stage C: endpoint 0 ---------------------------------------------------------
@@ -468,12 +581,13 @@ enum Ep0State : unsigned {
 };
 
 // vid/pid from pid.codes (0x1209 is the open-source test VID), so nothing here can be
-// mistaken for a real product. bDeviceClass 0 with a vendor-specific interface: the
-// host enumerates it, and stage D replaces the interface with CDC-ACM's two.
+// mistaken for a real product. bDeviceClass 0x02 marks a single CDC function at device
+// level, which is what lets the host bind a serial driver from the device descriptor
+// alone; the interface descriptors repeat it for hosts that look there instead.
 const uint8_t kDeviceDescriptor[18] = {
     18, 0x01,             // bLength, DEVICE
     0x00, 0x02,           // bcdUSB 2.00
-    0x00, 0x00, 0x00,     // class / subclass / protocol: per interface
+    0x02, 0x00, 0x00,     // class: CDC, subclass / protocol per interface
     64,                   // bMaxPacketSize0
     0x09, 0x12,           // idVendor  0x1209
     0x01, 0x00,           // idProduct 0x0001
@@ -482,19 +596,60 @@ const uint8_t kDeviceDescriptor[18] = {
     1,                    // bNumConfigurations
 };
 
-const uint8_t kConfigDescriptor[18] = {
+// CDC-ACM, the shape Windows binds usbser.sys to, which is what turns this device into a
+// COM port instead of an entry under "other devices". Two interfaces: a communication
+// interface with one interrupt IN endpoint for notifications, and a data interface with a
+// bulk pair. The class-specific descriptors between them are mandatory -- a host rejects
+// a CDC interface whose functional descriptors are missing.
+//
+// The endpoints are notification 0x81 and bulk 0x82 / 0x02: USB endpoint 1 IN and USB
+// endpoint 2 in both directions. DWC3 numbers a physical endpoint as 2 * number +
+// direction with direction 1 being IN, so those are physical 3, 5 and 4.
+const uint8_t kConfigDescriptor[] = {
     9, 0x02,              // bLength, CONFIGURATION
-    18, 0x00,             // wTotalLength
-    1,                    // bNumInterfaces
+    67, 0x00,             // wTotalLength: 9 + 9 + 5 + 5 + 4 + 5 + 7 + 9 + 7 + 7
+    2,                    // bNumInterfaces
     1,                    // bConfigurationValue
     0,                    // iConfiguration
     0x80,                 // bmAttributes: bus powered, no remote wakeup
     50,                   // bMaxPower: 100 mA
-    9, 0x04,              // bLength, INTERFACE
+
+    9, 0x04,              // bLength, INTERFACE -- communication
     0, 0,                 // bInterfaceNumber, bAlternateSetting
-    0,                    // bNumEndpoints
-    0xff, 0x00, 0x00,     // vendor specific
+    1,                    // bNumEndpoints
+    0x02, 0x02, 0x01,     // CDC / ACM
     0,                    // iInterface
+
+    5, 0x24, 0x00,        // HEADER functional descriptor
+    0x10, 0x01,           // bcdCDC 1.10
+    5, 0x24, 0x01,        // CALL MANAGEMENT functional descriptor
+    0x00,                 // bmCapabilities: no call management
+    1,                    // bDataInterface
+    4, 0x24, 0x02,        // ACM functional descriptor
+    0x02,                 // bmCapabilities: line coding and serial state
+    5, 0x24, 0x06,        // UNION functional descriptor
+    0, 1,                 // control interface, subordinate data interface
+
+    7, 0x05, 0x81,        // bLength, ENDPOINT -- IN, interrupt
+    0x03,                 // bmAttributes: interrupt
+    16, 0x00,             // wMaxPacketSize 16
+    16,                   // bInterval: 16 frames
+
+    9, 0x04,              // bLength, INTERFACE -- data
+    1, 0,                 // bInterfaceNumber, bAlternateSetting
+    2,                    // bNumEndpoints
+    0x0a, 0x00, 0x00,     // CDC data
+    0,                    // iInterface
+
+    7, 0x05, 0x82,        // bLength, ENDPOINT -- IN, bulk
+    0x02,                 // bmAttributes: bulk
+    64, 0x00,             // wMaxPacketSize 64
+    0,                    // bInterval
+
+    7, 0x05, 0x02,        // bLength, ENDPOINT -- OUT, bulk
+    0x02,                 // bmAttributes: bulk
+    64, 0x00,             // wMaxPacketSize 64
+    0,                    // bInterval
 };
 
 const uint8_t kStringLangId[4] = {4, 0x03, 0x09, 0x04};   // en-US
@@ -629,7 +784,55 @@ unsigned handleSetup(const uint8_t *setup, bool *supported) {
 
   if (requestType == 0x00 && request == 0x09) {    // SET_CONFIG
     native_dwc3_gadget_configured = value & 0xffu;
+    if (value) {
+      // Nothing below endpoint 0 exists until this arrives. Programming the CDC
+      // endpoints here is what turns an enumerated device into a COM port.
+      if (!programDataEndpoints()) {
+        *supported = false;
+        return 0;
+      }
+    } else {
+      unprogramDataEndpoints();
+    }
     return 0;
+  }
+
+  if (requestType == 0x21 && request == 0x20) {    // SET_LINE_CODING: 7 bytes OUT
+    // A serial driver sends this before it opens the port. This is an OUT data stage, so
+    // the receive TRB has to be handed over before the host starts sending -- the caller
+    // stages it through startDataStage() by leaving the length non-zero.
+    gGadget.lineCoding = true;
+    native_dwc3_gadget_line_coding = 1;
+    return length;
+  }
+
+  if (requestType == 0xa1 && request == 0x21) {    // GET_LINE_CODING: 7 bytes IN
+    const uint8_t coding[7] = {0x80, 0x25, 0x00, 0x00, 0x00, 0x00, 0x08};   // 9600 8N1
+    __builtin_memcpy(data, coding, sizeof coding);
+    cleanDma(data, sizeof coding);
+    return length < sizeof coding ? length : unsigned(sizeof coding);
+  }
+
+  if (requestType == 0xa1 && request == 0x22) {    // SET_CONTROL_LINE_STATE
+    gGadget.dtr = (value & 0x1u) != 0;
+    native_dwc3_gadget_dtr = gGadget.dtr ? 1 : 0;
+    return 0;
+  }
+
+  if (requestType == 0x82 && request == 0x06) {    // GET_DESCRIPTOR (to the interface)
+    // A CDC driver asks for the class-specific functional descriptors this way. They are
+    // already inside kConfigDescriptor, so answer with the slice the host points at. The
+    // pointer is a byte offset from the start of the configuration, which is how a host
+    // that walked the tables names the one descriptor it still wants.
+    const unsigned type = (value >> 8) & 0xffu;
+    const unsigned offset = value & 0xffu;
+    const unsigned whole = sizeof kConfigDescriptor;
+    if ((type == 0x21 || type == 0x24) && offset < whole) {
+      const unsigned available = whole - offset;
+      __builtin_memcpy(data, kConfigDescriptor + offset, available);
+      cleanDma(data, available);
+      return available < length ? available : length;
+    }
   }
 
   // Anything else -- including GET_STATUS, GET_CONFIGURATION and the class requests a
@@ -645,9 +848,18 @@ void startDataStage(unsigned length) {
     setEp0State(kEp0Status);
     return;
   }
-  if (!startTransfer(kDwc3Ep0In, controlPhys(kDataOffset), length, kDwc3TrbTypeControlData)) {
-    setEp0State(kEp0Status);
-    return;
+  if (gGadget.dataIn) {
+    if (!startTransfer(kDwc3Ep0In, controlPhys(kDataOffset), length, kDwc3TrbTypeControlData)) {
+      setEp0State(kEp0Status);
+      return;
+    }
+  } else {
+    // Host-to-device data stage: the TRB has to be armed on EP0-OUT before the host
+    // sends, and the same buffer the SETUP landed in is reused for the payload.
+    if (!startTransfer(kDwc3Ep0Out, controlPhys(kSetupOffset), length, kDwc3TrbTypeControlData)) {
+      setEp0State(kEp0Status);
+      return;
+    }
   }
   setEp0State(kEp0Data);
 }
@@ -706,6 +918,11 @@ void handleEp0Event(unsigned ep, unsigned type, unsigned status) {
     }
 
     if (gGadget.ep0State == kEp0Data) {
+      // The host finished the data stage; a third stage follows unless this was a
+      // two-stage OUT transfer, which the not-ready path below starts on its own.
+      if (!gGadget.dataIn) {
+        gGadget.outBytes = gGadget.outBytes + 1;
+      }
       setEp0State(kEp0Status);
       return;
     }
@@ -1013,6 +1230,8 @@ void dwc3GadgetDrain() {
       }
       if (ep <= kDwc3Ep0In) {
         handleEp0Event(ep, type, dwc3EpEventStatus(event));
+      } else {
+        handleDataEvent(ep, type);
       }
       continue;
     }
