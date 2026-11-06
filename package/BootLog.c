@@ -97,6 +97,9 @@ extern volatile uint32_t native_dwc3_gadget_ep0_events __attribute__((weak_impor
 extern volatile uint32_t native_dwc3_gadget_setups __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_answered __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_configured __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_arm_ok __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_arm_hwo __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_ep0_ctl __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_last_setup __attribute__((weak_import));
 extern const char *volatile native_dwc3_gadget_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
@@ -570,6 +573,14 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
                native_dwc3_gadget_answered, native_dwc3_gadget_configured,
                native_dwc3_gadget_last_setup, native_dwc3_gadget_address,
                native_dwc3_gadget_speed);
+      at = put(out, at, cap, row, sizeof row);
+      // Whether endpoint 0 ever got its requests handed to the controller. arm counts the
+      // TRBs accepted, hwo the refusals, ctl keeps EP0-OUT's control word at the last
+      // refusal (bit 0 is HWO) -- console193 showed eleven resets with no command issued
+      // after the first arm, and this row says which half of that story was true.
+      snprintf(row, sizeof row, "C arm=%u hwo=%u ctl=%08x",
+               native_dwc3_gadget_arm_ok, native_dwc3_gadget_arm_hwo,
+               native_dwc3_gadget_ep0_ctl);
       at = put(out, at, cap, row, sizeof row);
       if (native_dwc3_gadget_error) {
         snprintf(row, sizeof row, "G fail: %.100s", native_dwc3_gadget_error);

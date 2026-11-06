@@ -73,6 +73,13 @@ volatile uint32_t native_dwc3_gadget_ep0_events = 0;
 volatile uint32_t native_dwc3_gadget_last_setup = 0;
 volatile uint32_t native_dwc3_gadget_answered = 0;
 volatile uint32_t native_dwc3_gadget_configured = 0;
+// Why an arm can stop before it issues anything. consoles 193 showed eleven resets with
+// cmd frozen at 8: every re-arm bailed out silently. arm_ok counts the TRBs actually
+// handed to the controller, arm_hwo the refusals, and ep0_ctl keeps what EP0-OUT's
+// control TRB held at the last refusal -- bit0 is HWO, so a stuck 1 explains it.
+volatile uint32_t native_dwc3_gadget_arm_ok = 0;
+volatile uint32_t native_dwc3_gadget_arm_hwo = 0;
+volatile uint32_t native_dwc3_gadget_ep0_ctl = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -328,12 +335,28 @@ void linkRing(unsigned ep) {
 // passes (TrbPoolPhys >> 32) as Param0 and the low half as Param1
 // (Dwc3Endpoint.c:318-323), and mainline's dwc3_gadget_start_transfer writes
 // DWC3_DEPCMDPAR0 = upper_32_bits(trb_dma), PAR1 = lower_32_bits(trb_dma).
+// STARTTRANSFER is handed the TRB ring's base address, not the buffer the TRB points
+// at: the controller reads the queue head out of PAR0/PAR1 and the buffer/length out of
+// the TRB itself. The firmware passes Endpoint->TrbPoolPhys
+// (Dwc3Endpoint.c:318-320), and mainline does the same with trb_dma. Passing the data
+// buffer instead -- which this driver did until console193 -- makes the controller walk
+// whatever bytes live there as if they were TRBs, so nothing ever completes, HWO never
+// clears, and endpoint 0 stops answering after its first arm. That is the "unrecognised
+// USB device" the host reports.
 bool startTransfer(unsigned ep, uint64_t bufferPhys, unsigned length, unsigned trbType) {
   Dwc3Trb *trb = ringFor(ep);
+  const uint64_t ringPhys = gGadget.rings[ep].phys;
   // HWO is cleared by the controller when it finishes with the TRB, so the copy in the
   // cache is stale by definition here; read the one in memory.
   invalidateDma(trb, kTrbBytes);
   if (trb->control & kDwc3TrbCtrlHwo) {
+    // Do not silently give up: on endpoint 0 a stuck HWO is the difference between a
+    // device the host can enumerate and one it calls "unrecognised", and the boot log
+    // has to say which happened.
+    native_dwc3_gadget_arm_hwo = native_dwc3_gadget_arm_hwo + 1;
+    if (ep == kDwc3Ep0Out) {
+      native_dwc3_gadget_ep0_ctl = trb->control;
+    }
     return false;
   }
   trb->bufferLow = uint32_t(bufferPhys & 0xffffffffu);
@@ -344,13 +367,15 @@ bool startTransfer(unsigned ep, uint64_t bufferPhys, unsigned length, unsigned t
 
   uint32_t result = 0;
   // PAR2 stays zero: STARTTRANSFER reads the buffer and length out of the TRB, and the
-  // firmware passes 0 here too (Dwc3Endpoint.c:318-323).
-  if (!endpointCommand(gGadget.core, ep, kDwc3DepCmdStartTransfer, uint32_t(bufferPhys >> 32),
-                       uint32_t(bufferPhys & 0xffffffffu), 0, &result)) {
+  // firmware passes 0 here too (Dwc3Endpoint.c:318-323). PAR0/PAR1 carry ringPhys -- the
+  // ring, not bufferPhys -- which is the whole point of the note above.
+  if (!endpointCommand(gGadget.core, ep, kDwc3DepCmdStartTransfer, uint32_t(ringPhys >> 32),
+                       uint32_t(ringPhys & 0xffffffffu), 0, &result)) {
     gGadget.resourceIndex[ep] = 0;
     return false;
   }
   gGadget.resourceIndex[ep] = dwc3DepCmdResourceIndex(result);
+  native_dwc3_gadget_arm_ok = native_dwc3_gadget_arm_ok + 1;
   return true;
 }
 
@@ -374,6 +399,26 @@ void endTransfer(unsigned ep) {
   Dwc3Trb *trb = ringFor(ep);
   trb[0].control = 0;
   trb[1].control = 0;
+  cleanDma(trb, 2 * kTrbBytes);
+}
+
+// Take the first two TRBs of an endpoint back unconditionally.
+//
+// Dwc3StartTransfer overwrites TrbPool[0] on every call and never inspects what was
+// there before (Dwc3Endpoint.c:276-290). This driver instead refuses to reuse a TRB
+// whose HWO is still set, which is the right instinct for an endpoint that is actively
+// moving data but a deadlock for endpoint 0 after a bus reset: the controller flushes
+// its transfer state, HWO stays set in memory, resourceIndex is already 0 so
+// endTransfer() returns early, and every later armSetup() bails at the HWO check
+// without issuing a command at all. console193 measured exactly that -- eleven resets
+// and cmd still at 8. A reset means the controller has thrown the transfer away, so
+// the TRB is ours to reclaim.
+void clearTrb(unsigned ep) {
+  Dwc3Trb *trb = ringFor(ep);
+  trb[0].control = 0;
+  trb[1].control = 0;
+  cleanDma(trb, 2 * kTrbBytes);
+  gGadget.resourceIndex[ep] = 0;
 }
 
 }  // namespace
@@ -511,9 +556,17 @@ void setEp0State(unsigned state) {
 // Re-arm: stop whatever endpoint 0 has outstanding and hand EP0-OUT an empty
 // eight-byte buffer for the next SETUP. Dwc3Ep0OutStart (:388) does the same, and it
 // is the only state in which the controller accepts a new setup packet.
+//
+// Both endpoints' TRBs are reclaimed rather than only ended: Dwc3Ep0OutStart calls
+// Dwc3EndTransfer on both, and Dwc3EndTransfer sends ENDTRANSFER when a resource index
+// is outstanding... but it also clears TrbPool[0] and TrbPool[1] on the way out
+// (:358-362), which is what makes the next STARTTRANSFER legal. Without that half, a
+// stale HWO with no resource index left to end is unrecoverable -- console193.
 void armSetup() {
   endTransfer(kDwc3Ep0In);
   endTransfer(kDwc3Ep0Out);
+  clearTrb(kDwc3Ep0In);
+  clearTrb(kDwc3Ep0Out);
   gGadget.threeStage = false;
   gGadget.dataIn = false;
   if (startTransfer(kDwc3Ep0Out, controlPhys(kSetupOffset), 8, kDwc3TrbTypeControlSetup)) {
@@ -668,11 +721,10 @@ void handleEp0Event(unsigned ep, unsigned type, unsigned status) {
     // The host started a stage endpoint 0 has no TRB for. That is the controller's way
     // of saying "your turn" for both the data and the status stage.
     const unsigned phase = status & 0x3u;
+    // phase 1 is CONTROL_DATA. The data stage is driven by the SETUP handler deciding
+    // how many bytes to move, so a not-ready there means the host is waiting on a TRB
+    // that startDataStage() has not handed over yet -- nothing to do from this side.
     if (phase == 1) {                       // CONTROL_DATA
-      if (gGadget.ep0State == kEp0Setup) {
-        // Nothing parsed yet: let the setup TRB complete first.
-        return;
-      }
       return;
     }
     if (phase == 2) {                       // CONTROL_STATUS
