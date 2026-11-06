@@ -126,6 +126,10 @@ volatile uint32_t native_dwc3_gadget_notready_last = 0;
 volatile uint32_t native_dwc3_gadget_status_armed = 0;
 volatile uint32_t native_dwc3_gadget_status_done = 0;
 volatile uint32_t native_dwc3_gadget_stuck_setups = 0;
+// Counts host-to-device data stages that completed. console201's COM5 could be seen by
+// Windows and then timed out on Open(), and SET_LINE_CODING -- a seven byte OUT stage --
+// was the last request in the log; this counter is what makes that stage visible.
+volatile uint32_t native_dwc3_gadget_ep0_out_bytes = 0;
 const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
@@ -703,6 +707,10 @@ void handleDataEvent(unsigned ep, unsigned type) {
   if (type != kDwc3EpEventXferComplete) {
     return;
   }
+  // A completion means the controller is done with that resource; keeping the index
+  // would make a later endTransfer() issue ENDTRANSFER for a transfer that no longer
+  // exists (the firmware guards this with TransferStarted, Dwc3Endpoint.c:341-352).
+  gGadget.resourceIndex[ep] = 0;
   if (ep == kEpBulkOut) {
     invalidateDma(gGadget.bulkOut.virt, gGadget.bulkOut.bytes);
     const unsigned got = bytesTransferred(ep, gGadget.bulkOut.bytes);
@@ -1198,6 +1206,11 @@ void handleEp0Event(unsigned ep, unsigned type, unsigned status) {
   native_dwc3_gadget_ep0_events = native_dwc3_gadget_ep0_events + 1;
 
   if (type == kDwc3EpEventXferComplete) {
+    // The transfer the controller just finished holds the endpoint's resource no longer.
+    // Leaving the index behind makes startStatusStage()'s idempotence check think a stage
+    // is still outstanding and skip arming the one the host is waiting for -- on an IN data
+    // stage the status stage goes out on EP0-OUT, whose index is the SETUP transfer's.
+    gGadget.resourceIndex[ep] = 0;
     if (gGadget.ep0State == kEp0Setup) {
       // The eight SETUP bytes were written by the controller, not the CPU, so the cache
       // lines covering them have to be dropped before they are read.
@@ -1226,12 +1239,20 @@ void handleEp0Event(unsigned ep, unsigned type, unsigned status) {
     }
 
     if (gGadget.ep0State == kEp0Data) {
-      // The host finished the data stage; a third stage follows unless this was a
-      // two-stage OUT transfer, which the not-ready path below starts on its own.
+      // The host finished the data stage. Arm the status stage right here instead of
+      // waiting for the controller's XFERNOTREADY: that not-ready can be posted while the
+      // state machine is still in kEp0Setup, and the handler drops it there, after which
+      // nothing arms the status stage and the host waits until it times out. That is what
+      // stalled SET_LINE_CODING -- it was the last SETUP in the log (0x21/0x20) and the
+      // host never asked for anything after it.
       if (!gGadget.dataIn) {
         gGadget.outBytes = gGadget.outBytes + 1;
+        native_dwc3_gadget_ep0_out_bytes = native_dwc3_gadget_ep0_out_bytes + 1;
       }
-      setEp0State(kEp0Status);
+      // The endpoint that owes the status stage is the opposite of the one that carried
+      // the data: an OUT data stage is closed by a zero-length IN, and vice versa.
+      const unsigned statusEp = gGadget.dataIn ? kDwc3Ep0Out : kDwc3Ep0In;
+      startStatusStage(statusEp);
       return;
     }
 
