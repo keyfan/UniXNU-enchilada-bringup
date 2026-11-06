@@ -1118,7 +1118,12 @@ unsigned handleSetup(const uint8_t *setup, bool *supported) {
     return length < sizeof coding ? length : unsigned(sizeof coding);
   }
 
-  if (requestType == 0xa1 && request == 0x22) {    // SET_CONTROL_LINE_STATE
+  // SET_CONTROL_LINE_STATE: Class, interface recipient, host to device -- 0x21, not 0xa1.
+  // console201 sent exactly this (last=21220000) and got a stall, because the direction bit
+  // made it look like a request the device does not implement. usbser.sys raises DTR here
+  // as part of Open(), so the stall is what Windows reported as "The semaphore timeout
+  // period has expired": the driver was waiting for an acknowledgement that never came.
+  if (requestType == 0x21 && request == 0x22) {    // SET_CONTROL_LINE_STATE: no data stage
     gGadget.dtr = (value & 0x1u) != 0;
     native_dwc3_gadget_dtr = gGadget.dtr ? 1 : 0;
     return 0;
@@ -1160,6 +1165,11 @@ unsigned handleSetup(const uint8_t *setup, bool *supported) {
 // The data stage has been decided; hand it to the endpoint the host will use.
 void startDataStage(unsigned length) {
   if (length == 0) {
+    // A control-only request (wLength 0) still owes the host a status stage, but the
+    // controller is the one that opens it: it posts XFERNOTREADY(CONTROL_STATUS) and
+    // Dwc3Ep0StartStatus answers that (Dwc3Endpoint.c:503-524, 550-610). Arming ahead of
+    // it -- which run 201 did, and then run 202 did again for the zero-length case --
+    // leaves a TRB whose HWO never clears and the next SETUP baulks at the HWO check.
     setEp0State(kEp0Status);
     return;
   }
@@ -1239,20 +1249,19 @@ void handleEp0Event(unsigned ep, unsigned type, unsigned status) {
     }
 
     if (gGadget.ep0State == kEp0Data) {
-      // The host finished the data stage. Arm the status stage right here instead of
-      // waiting for the controller's XFERNOTREADY: that not-ready can be posted while the
-      // state machine is still in kEp0Setup, and the handler drops it there, after which
-      // nothing arms the status stage and the host waits until it times out. That is what
-      // stalled SET_LINE_CODING -- it was the last SETUP in the log (0x21/0x20) and the
-      // host never asked for anything after it.
+      // The data stage is over; record it and wait for the controller to name the status
+      // stage. Arming it here was tried in run 201 and made things much worse: a STATUS3
+      // TRB handed to EP0-OUT ahead of the controller's own XFERNOTREADY(CONTROL_STATUS)
+      // kept its HWO set forever, and the next SETUP then baulked at the HWO check. That
+      // run reached 9 SETUPs where the previous one reached 151, and never got as far as
+      // SET_CONFIG. The controller is the one that knows which endpoint and which phase
+      // the host is about to use, so it gets to say when (Dwc3HandleEp0Event,
+      // Dwc3Endpoint.c:550-610).
       if (!gGadget.dataIn) {
         gGadget.outBytes = gGadget.outBytes + 1;
         native_dwc3_gadget_ep0_out_bytes = native_dwc3_gadget_ep0_out_bytes + 1;
       }
-      // The endpoint that owes the status stage is the opposite of the one that carried
-      // the data: an OUT data stage is closed by a zero-length IN, and vice versa.
-      const unsigned statusEp = gGadget.dataIn ? kDwc3Ep0Out : kDwc3Ep0In;
-      startStatusStage(statusEp);
+      setEp0State(kEp0Status);
       return;
     }
 
