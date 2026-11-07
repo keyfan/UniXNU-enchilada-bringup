@@ -2,12 +2,14 @@
 """Build libEnchiladaMsmDsi.a: the enchilada MDSS DSI0 command-channel transport
 (drivers/NativeMsmDsi/MsmDsiCmd.c), its DCS packet builder
 (drivers/NativeDsiBacklight/DsiDcs.c), the read-only runtime session core
-(drivers/NativeMsmDsi/MsmDsiSession.c), and the thin 1 Hz C++ probe shim
-(package/EnchiladaBacklightProbe.cpp == kits/enchilada/ in the build tree).
+(drivers/NativeMsmDsi/MsmDsiSession.c), the read-only SMMU survey
+(drivers/NativeMsmDsi/MsmDsiSmmu.c), the stage-3 layer-3a brightness-transmit
+orchestrator (drivers/NativeMsmDsi/MsmDsiBrightness.c), and the thin 1 Hz C++ probe
+shim (package/EnchiladaBacklightProbe.cpp == kits/enchilada/ in the build tree).
 
 Runs as a [kernel] archives builder, after the bootstrap pass left the compile records.
 Mixed C/C++ build, mirroring scripts/build-enchilada-touch.py: the C++ probe uses the
-flags of iokit/DEVELOPMENT/IOPlatformExpert.cpo.json (no -mgeneral-regs-only), the three
+flags of iokit/DEVELOPMENT/IOPlatformExpert.cpo.json (no -mgeneral-regs-only), the five
 pure-C units use those of osfmk/DEVELOPMENT/startup.o.json + -mgeneral-regs-only.
 
 Stage-3 layer 2.5 is deliberately READ-ONLY ("xian heyan zai shangji"): the probe maps
@@ -86,6 +88,7 @@ def main():
         (c_rec, MSM / 'MsmDsiSession.c', ['-mgeneral-regs-only']),
         (c_rec, MSM / 'MsmDsiSmmu.c', ['-mgeneral-regs-only']),
         (c_rec, MSM / 'MsmDsiCmd.c', ['-mgeneral-regs-only']),
+        (c_rec, MSM / 'MsmDsiBrightness.c', ['-mgeneral-regs-only']),
         (c_rec, DCS / 'DsiDcs.c', ['-mgeneral-regs-only']),
     ]
     objects, commands = [], {}
@@ -109,7 +112,9 @@ def main():
         (OBJ_ROOT / 'mach.development.bcm2837.unstripped.noctf').unlink(missing_ok=True)
     sources = [KIT / 'EnchiladaBacklightProbe.cpp', MSM / 'MsmDsiSession.c', MSM / 'MsmDsiSession.h',
                MSM / 'MsmDsiSmmu.c', MSM / 'MsmDsiSmmu.h',
-               MSM / 'MsmDsiCmd.c', MSM / 'MsmDsiCmd.h', DCS / 'DsiDcs.c', DCS / 'DsiDcs.h']
+               MSM / 'MsmDsiCmd.c', MSM / 'MsmDsiCmd.h',
+               MSM / 'MsmDsiBrightness.c', MSM / 'MsmDsiBrightness.h',
+               DCS / 'DsiDcs.c', DCS / 'DsiDcs.h']
     (OUT / 'build-report.json').write_text(json.dumps({
         'archive_sha256': digest,
         'source_sha256': {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},

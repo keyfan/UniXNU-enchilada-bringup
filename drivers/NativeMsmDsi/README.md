@@ -104,12 +104,12 @@ python scripts/check-enchilada-msm-dsi-host.py \
   new SMMU unit also `-std=c++20 -Wdeprecated-volatile` header syntax and an
   `-target arm64-apple-darwin -mgeneral-regs-only` object compile (exit 0).
 
-## CI / archive (stage-3 layers 2 + 2.5)
+## CI / archive (stage-3 layers 2 + 2.5 + 3a)
 
-`scripts/build-enchilada-msm-dsi.py` compiles five arm64 objects into
+`scripts/build-enchilada-msm-dsi.py` compiles six arm64 objects into
 `libEnchiladaMsmDsi.a` (mixed C/C++, mirroring `build-enchilada-touch.py`):
 `EnchiladaBacklightProbe.cpp` (`iokit/DEVELOPMENT/IOPlatformExpert.cpo.json` flags) and
-`MsmDsiSession.c` + `MsmDsiSmmu.c` + `MsmDsiCmd.c` + `DsiDcs.c`
+`MsmDsiSession.c` + `MsmDsiSmmu.c` + `MsmDsiCmd.c` + `MsmDsiBrightness.c` + `DsiDcs.c`
 (`osfmk/DEVELOPMENT/startup.o.json` flags + `-mgeneral-regs-only`).
 `board.toml [kernel] archives` only orders the build;
 the kernel actually links it through the
@@ -188,12 +188,49 @@ ReadOnly (`writes==0`, every read < window), null refusals, the 10-slot packing,
 the exact built-in stream list, and `msm_smmu_survey_publish()` writing a volatile
 `int32_t[10]` L-row (stage 4 + poll count); plus strict C11, C++20 `-Wdeprecated-volatile`, and
 `-target arm64-apple-darwin -mgeneral-regs-only` compiles. It is compiled into the
-same force-loaded `libEnchiladaMsmDsi.a` (5 objects now).
+same force-loaded `libEnchiladaMsmDsi.a` (now 6 objects with layer 3a).
 
-**No hardware claim for this survey yet**: it is code + host tests + a CI-compiled
-object only — NOT yet wired to a runtime mode, NOT flashed. The disciplined next step
-is a gated `enchilada-backlight=2` mode-2 probe that maps `apps_smmu 0x15000000`
-(read-only), runs `msm_smmu_survey_display()`, and publishes the verdict to a
-diagnostic row (stage code 4) — confirmed on device BEFORE `msm_dsi_cmd_send()` is
-ever called. Then `dc civac` + `dsb sy` cache maintenance (`Dwc3Gadget.cpp:306-313`)
-and finally the layer-3 `AppleARMBacklight` IOService.
+**DEVICE-VERIFIED (backlight209mode2, CI #209)**: the gated
+`enchilada-backlight=2` mode-2 probe mapped `apps_smmu 0x15000000` read-only, ran
+`msm_smmu_survey_display()`, and published stage-4 `L` rows — 510 rows, verdict
+`Bypass`, stream `0x880`, `S2CR.TYPE=0` / `SCTLR=0xe0` (M=0, translation OFF).
+Two independent verifiers (packed verdict + raw S2CR.TYPE/SCTLR.M re-derivation)
+confirm a **CPU physical address is safe for `REG_DSI_DMA_BASE`**. See
+`evidence/backlight209mode2.md`. This survey wrote nothing and triggered no DMA.
+
+Remaining work: layer 3a (below) is the host-verified transmit orchestrator; layer
+3b will allocate a 32-bit-addressable DMA buffer and issue `dc civac` + `dsb sy`
+cache maintenance (`Dwc3Gadget.cpp:306-313`) before calling it; layer 3d is the
+`AppleARMBacklight` IOService. None of those has been flashed yet.
+
+## Layer 3a: brightness-transmit orchestrator (HOST-VERIFIED, not flashed)
+
+`MsmDsiBrightness.c/.h` chains layer 1 (`dsi_dcs_set_brightness_large`) into layer 2
+(`msm_dsi_cmd_*`) for ONE DCS brightness packet, with two runtime preconditions:
+
+- **32-bit `REG_DSI_DMA_BASE` gate**: `dsi_host.c:2245` commits a `u32 dma_base` and
+  `dsi.xml` declares the register width 32. The display bank is in bypass
+  (device-confirmed above), so the value is a CPU PHYSICAL address. `NativeUfs.cpp:1197`
+  warns kernel allocations can sit above 4 GiB while `enchilada-facts/parsed.txt`
+  lists the SDM845 carveouts below 4 GiB — the two disagree, so the orchestrator takes
+  the full 64-bit physical address and **REFUSES before touching any register** when
+  `(phys >> 32) != 0` (先核验再上机). A truncated high address would make the
+  controller DMA the wrong bytes.
+- **Cache maintenance hook**: the CPU writes the DMA buffer through a cached mapping;
+  the controller reads it through the bypass SMMU. A `clean(va, len)` callback is
+  invoked BETWEEN the buffer fill and the trigger; the device runtime probe supplies
+  `dc civac` per 64-byte line + `dsb sy` (`Dwc3Gadget.cpp:306-313`,
+  `NativeUfs.cpp:1150-1155`). NULL clean is host-test only.
+
+It publishes `native_backlight_stats[10]` stage code 5 on a completed transmit
+(`st=5 req=<polls> lvl=<level> a=<dma_len> b=<dma_addr_lo> xerr=<rc> irq=<sent>
+ea=<addr_high> eb=<dma_err> err=0`) and negative stages on refusal/timeout. CTRL is
+always restored, including on timeout. `msm-dsi-brightness-test.cpp` (7 groups,
+fake-MMIO) asserts the gate refuses before ANY write or clean, the clean-before-trigger
+ordering, the exact `03 00 39 c0 51 03 ff ff` long-write DMA bytes, brightness
+clamping to 1..1023, timeout restore, and the L-row publish layout. It is the 6th
+object in `libEnchiladaMsmDsi.a`.
+
+**No hardware claim**: this is pure C + host tests + a CI-compiled object. Nothing
+is allocated, mapped, or triggered here — the risky IOBufferMemoryDescriptor
+allocation and the first real DCS transmit belong to layer 3b (not yet done).
