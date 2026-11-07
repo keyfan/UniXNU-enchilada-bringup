@@ -1,4 +1,4 @@
-# NativeMsmDsi — enchilada stage 3, layers 2 + 2.5 (MDSS DSI0 command channel)
+# NativeMsmDsi — enchilada stage 3, layers 2 + 2.5 + layer-3 prerequisite (MDSS DSI0 command channel)
 
 This is the register-level transmit path that turns a stage-3 layer-1 DCS packet
 (`drivers/NativeDsiBacklight/DsiDcs.h`) into the MSM-specific CMD DMA buffer and
@@ -95,19 +95,23 @@ python scripts/check-enchilada-msm-dsi-host.py \
 
 - verification 1: `PASS: enchilada MDSS DSI0 command-channel transport (7 test groups)`
   + `PASS: enchilada MDSS DSI0 read-only runtime session (3 test groups)`
-  + `PASS: enchilada MDSS DSI0 command-channel + read-only session host tests`
-  (fake-MMIO register model).
+  + `PASS: enchilada read-only SMMUv2 display-bank survey (10 test groups)`
+  + `PASS: enchilada MDSS DSI0 command-channel + session + SMMU survey host tests`
+  (fake-MMIO register models).
 - verification 2: strict `clang -std=c11 -Wall -Wextra -Werror -pedantic
   -Wconversion -Wsign-conversion -Wshadow` compile exit 0, plus an independent byte
-  dump program (`msm_dump.c`) printing the four buffers above byte-for-byte.
+  dump program (`msm_dump.c`) printing the four buffers above byte-for-byte; for the
+  new SMMU unit also `-std=c++20 -Wdeprecated-volatile` header syntax and an
+  `-target arm64-apple-darwin -mgeneral-regs-only` object compile (exit 0).
 
 ## CI / archive (stage-3 layers 2 + 2.5)
 
-`scripts/build-enchilada-msm-dsi.py` compiles four arm64 objects into
+`scripts/build-enchilada-msm-dsi.py` compiles five arm64 objects into
 `libEnchiladaMsmDsi.a` (mixed C/C++, mirroring `build-enchilada-touch.py`):
 `EnchiladaBacklightProbe.cpp` (`iokit/DEVELOPMENT/IOPlatformExpert.cpo.json` flags) and
-`MsmDsiSession.c` + `MsmDsiCmd.c` + `DsiDcs.c` (`osfmk/DEVELOPMENT/startup.o.json`
-flags + `-mgeneral-regs-only`). `board.toml [kernel] archives` only orders the build;
+`MsmDsiSession.c` + `MsmDsiSmmu.c` + `MsmDsiCmd.c` + `DsiDcs.c`
+(`osfmk/DEVELOPMENT/startup.o.json` flags + `-mgeneral-regs-only`).
+`board.toml [kernel] archives` only orders the build;
 the kernel actually links it through the
 `-Wl,-force_load,{tree}/build/enchilada-msm-dsi/libEnchiladaMsmDsi.a` entry in
 `configs/enchilada_defconfig` (`CONFIG_XNU_EXTRA_LD_ARCHIVES`), guarded by
@@ -145,9 +149,50 @@ check `clang++ -std=c++20 -target arm64-apple-darwin -fsyntax-only -Wall -Wextra
 `-Wdeprecated-volatile` rejects volatile-qualified array parameters and `++` on a
 volatile object; see porting.toml's run #207 note).
 
-**No hardware claim yet**: this layer is code + host tests + CI archive only. It has
-NOT been flashed; the `L st=3 ...` row and the live register values must be confirmed on
-the real device. Sending an actual brightness packet (stage 3 / `AppleARMBacklight`)
-still needs the CMD-DMA address settled — Linux 6G `dsi_tx_buf_alloc_6g()` uses an
-MDSS SMMU IOVA via `msm_gem_get_and_pin_iova`, not a plain physical address — plus
-`dc civac` + `dsb sy` cache maintenance (`Dwc3Gadget.cpp:306-313`).
+**Layer 2.5 hardware claim (backlight208, CI #208)**: flashed with
+`enchilada-backlight=1`, 510 `L` rows all `st=3` with coherent live DSI0 registers
+(CTRL=0x1f5, CMD_DMA_CTRL=0x14000000, TRIG_CTRL=0x4, CMD_CFG0=0x100008,
+CMD_CFG1=0x13c2c, CLK_CTRL=0x23f); the console206 control is all zeros. See
+`evidence/backlight208.md`. This stage writes nothing and triggers no DMA (`lvl=0`).
+
+## Layer-3 prerequisite: read-only SMMUv2 display-bank survey (HOST-VERIFIED, not flashed)
+
+`MsmDsiSmmu.c/.h` answers the one question blocking the first DCS brightness packet:
+**does the display's DMA use PHYSICAL addresses or an SMMU IOVA?**
+
+- Linux v6.12 `dsi_host.c` `dsi_tx_buf_alloc_6g()` / `dsi_dma_base_get_6g()` feed
+  `REG_DSI_DMA_BASE` a **display-SMMU IOVA** (`msm_gem_get_and_pin_iova`), while this
+  whole repo (`NativeUfs.cpp:949-954`, `Dwc3Gadget.cpp:196-221`) uses **physical**
+  addresses on the assumption the stream is in an apps_smmu bypass context bank. The
+  two agree only when `SCTLR.M == 0` (translation off) — sheng's display bank measured
+  `SCTLR 0xe0 = translation off` (`NativeUfs.cpp:1196`).
+- **The catch**: enchilada/SDM845 display stream IDs (vendor DTS `:853` `0x880/0x8`,
+  `0xc80/0x8`; `:995` `0x881/0x8`, `0xc81/0x8`; `:3393/:3399` `0x1090/0x0`,
+  `0x1091/0x0`) differ from sheng/SM8550's `0x1c00/0x1c02`, and the backlight208 /
+  console206 boot logs contain **no display-SMMU diagnostic row** (only XNU's own MMU
+  `TCR/TTBR/SCTLR=3454593d` and `[display state]`). So the bypass assumption is
+  UNCERTAIN on this board and must be confirmed with a real, read-only device survey
+  before any DMA trigger (先核验再上机).
+
+`MsmDsiSmmu.c` is a pure-C, **READ-ONLY** survey over an injected `struct msm_smmu_io`
+(a single `rd` callback — no write path). It decodes IDR0/IDR1/IDR2 geometry, scans
+SMR/S2CR for the six built-in enchilada display (id, mask) requests using the same
+match rule as `SmmuTakeover.h:68`, reads each matched bank's SCTLR/TTBR0/TCR/CBAR,
+and returns a verdict: `Bypass` (physical OK) / `Translate` (IOVA required) /
+`NotFound` / `Geometry`. Register offsets are taken verbatim from the two
+device-proven local sources `SmmuTakeover.h` and `NativeUfs.cpp:862-944`.
+
+Host verification (both independent): `msm-dsi-smmu-test.cpp` — 10 test groups —
+asserts geometry decoders, bypass/translate/S2CR-bypass verdicts, id+mask matching,
+ReadOnly (`writes==0`, every read < window), null refusals, the 10-slot packing and
+the exact built-in stream list; plus strict C11, C++20 `-Wdeprecated-volatile`, and
+`-target arm64-apple-darwin -mgeneral-regs-only` compiles. It is compiled into the
+same force-loaded `libEnchiladaMsmDsi.a` (5 objects now).
+
+**No hardware claim for this survey yet**: it is code + host tests + a CI-compiled
+object only — NOT yet wired to a runtime mode, NOT flashed. The disciplined next step
+is a gated `enchilada-backlight=2` mode-2 probe that maps `apps_smmu 0x15000000`
+(read-only), runs `msm_smmu_survey_display()`, and publishes the verdict to a
+diagnostic row (stage code 4) — confirmed on device BEFORE `msm_dsi_cmd_send()` is
+ever called. Then `dc civac` + `dsb sy` cache maintenance (`Dwc3Gadget.cpp:306-313`)
+and finally the layer-3 `AppleARMBacklight` IOService.

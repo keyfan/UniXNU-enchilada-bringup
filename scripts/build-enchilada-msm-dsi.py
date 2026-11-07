@@ -84,6 +84,7 @@ def main():
     units = [
         (cpp_rec, KIT / 'EnchiladaBacklightProbe.cpp', []),
         (c_rec, MSM / 'MsmDsiSession.c', ['-mgeneral-regs-only']),
+        (c_rec, MSM / 'MsmDsiSmmu.c', ['-mgeneral-regs-only']),
         (c_rec, MSM / 'MsmDsiCmd.c', ['-mgeneral-regs-only']),
         (c_rec, DCS / 'DsiDcs.c', ['-mgeneral-regs-only']),
     ]
@@ -107,6 +108,7 @@ def main():
     if digest != previous:
         (OBJ_ROOT / 'mach.development.bcm2837.unstripped.noctf').unlink(missing_ok=True)
     sources = [KIT / 'EnchiladaBacklightProbe.cpp', MSM / 'MsmDsiSession.c', MSM / 'MsmDsiSession.h',
+               MSM / 'MsmDsiSmmu.c', MSM / 'MsmDsiSmmu.h',
                MSM / 'MsmDsiCmd.c', MSM / 'MsmDsiCmd.h', DCS / 'DsiDcs.c', DCS / 'DsiDcs.h']
     (OUT / 'build-report.json').write_text(json.dumps({
         'archive_sha256': digest,
