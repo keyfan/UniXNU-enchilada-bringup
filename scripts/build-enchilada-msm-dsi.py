@@ -1,27 +1,33 @@
 #!/usr/bin/env python3
 """Build libEnchiladaMsmDsi.a: the enchilada MDSS DSI0 command-channel transport
-(drivers/NativeMsmDsi/MsmDsiCmd.c) together with the DCS packet builder it consumes
-(drivers/NativeDsiBacklight/DsiDcs.c), against the recorded XNU compile flags.
+(drivers/NativeMsmDsi/MsmDsiCmd.c), its DCS packet builder
+(drivers/NativeDsiBacklight/DsiDcs.c), the read-only runtime session core
+(drivers/NativeMsmDsi/MsmDsiSession.c), and the thin 1 Hz C++ probe shim
+(package/EnchiladaBacklightProbe.cpp == kits/enchilada/ in the build tree).
 
 Runs as a [kernel] archives builder, after the bootstrap pass left the compile records.
-Both units are pure C: MsmDsiCmd.c turns a layer-1 dsi_dcs_packet into the MSM-specific
-CMD DMA buffer and emits the software-trigger register sequence (Linux v6.12
-drivers/gpu/drm/msm/dsi/dsi_host.c dsi_cmd_dma_add / msm_dsi_host_cmd_xfer_commit),
-DsiDcs.c builds the DCS packets (stage-3 layer 1). They are compiled with the flags of
-osfmk/DEVELOPMENT/startup.o plus -mgeneral-regs-only (as sheng's GENI SPI and the
-touch archive's C objects). The archive is force-loaded into the kernel by the
+Mixed C/C++ build, mirroring scripts/build-enchilada-touch.py: the C++ probe uses the
+flags of iokit/DEVELOPMENT/IOPlatformExpert.cpo.json (no -mgeneral-regs-only), the three
+pure-C units use those of osfmk/DEVELOPMENT/startup.o.json + -mgeneral-regs-only.
+
+Stage-3 layer 2.5 is deliberately READ-ONLY ("xian heyan zai shangji"): the probe maps
+DSI0 at 0xae94004 via the device-proven armcpu_map_physical, reads seven live config
+registers, and publishes them into the strong native_backlight_stats[10] so the L st=
+row becomes non-zero on device -- WITHOUT writing to the controller or triggering DMA.
+It is gated by enchilada-backlight=1 (default off) and called 1 Hz from
+package/BootProgress.c monitor(). Sending a DCS packet (layer 3 / AppleARMBacklight)
+still needs the CMD-DMA address (physical vs MDSS SMMU IOVA) and dc civac cache
+maintenance settled; see drivers/NativeMsmDsi/README.md.
+
+The archive is force-loaded into the kernel by the
 -Wl,-force_load,{tree}/build/enchilada-msm-dsi/libEnchiladaMsmDsi.a entry in
 configs/enchilada_defconfig (CONFIG_XNU_EXTRA_LD_ARCHIVES), guarded by
 scripts/check-enchilada-archives-linked.py. board.toml [kernel] archives alone only
 orders the build; it does NOT force-load (see kernel.py archive_plan / build-xnu-4k-baseline.sh:755).
-
-There is deliberately no runtime probe in this archive yet: the panel is already lit by
-the UEFI GOP framebuffer, so a cold-boot full-controller reprogram would disturb the
-scanout. The objects here are the per-transfer send path that the layer-3
-AppleARMBacklight-facing IOService will call; until that probe exists the objects are
-compiled (CI evidence) but not invoked. The kernel build does not track this archive
-(the extra archives carry no make dependency), so a changed archive removes the linked
-kernel to make the next link use it.
+The strong native_backlight_stats[] and enchilada_backlight_poll() take precedence over
+the weak stand-ins of package/BootProgressStubs.c (libBootProgress.a). The kernel build
+does not track this archive (extra archives carry no make dependency), so a changed
+archive removes the linked kernel to make the next link use it.
 """
 import hashlib
 import json
@@ -73,8 +79,11 @@ def check_object(path):
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
+    cpp_rec = record('iokit/DEVELOPMENT/IOPlatformExpert.cpo.json')
     c_rec = record('osfmk/DEVELOPMENT/startup.o.json')
     units = [
+        (cpp_rec, KIT / 'EnchiladaBacklightProbe.cpp', []),
+        (c_rec, MSM / 'MsmDsiSession.c', ['-mgeneral-regs-only']),
         (c_rec, MSM / 'MsmDsiCmd.c', ['-mgeneral-regs-only']),
         (c_rec, DCS / 'DsiDcs.c', ['-mgeneral-regs-only']),
     ]
@@ -97,7 +106,8 @@ def main():
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     if digest != previous:
         (OBJ_ROOT / 'mach.development.bcm2837.unstripped.noctf').unlink(missing_ok=True)
-    sources = [MSM / 'MsmDsiCmd.c', MSM / 'MsmDsiCmd.h', DCS / 'DsiDcs.c', DCS / 'DsiDcs.h']
+    sources = [KIT / 'EnchiladaBacklightProbe.cpp', MSM / 'MsmDsiSession.c', MSM / 'MsmDsiSession.h',
+               MSM / 'MsmDsiCmd.c', MSM / 'MsmDsiCmd.h', DCS / 'DsiDcs.c', DCS / 'DsiDcs.h']
     (OUT / 'build-report.json').write_text(json.dumps({
         'archive_sha256': digest,
         'source_sha256': {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},

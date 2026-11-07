@@ -155,6 +155,10 @@ extern void sheng_cpufreq_poll(void) __attribute__((weak_import));
 // enchilada: the touch bring-up (EnchiladaTouchProbe.cpp, enchilada-touch=<stage>) starts itself from here once IOKit is up; the display
 // kit's late probe may call it first. It returns at once when the argument is absent or the thread already runs.
 extern void native_touch_probe(void) __attribute__((weak_import));
+// enchilada stage-3 layer 2.5: read-only DSI0 register probe (enchilada-backlight=1),
+// published into native_backlight_stats[10] by the L row. Default off; weak stand-in in
+// BootProgressStubs.c keeps the static link resolvable when the archive is absent.
+extern void enchilada_backlight_poll(void) __attribute__((weak_import));
 extern char boot_process_rows[10][120] __attribute__((weak_import));
 extern unsigned boot_ui_trace_role_rows(unsigned,char [][120],unsigned,unsigned) __attribute__((weak_import));
 extern char native_touch_rows[4][120] __attribute__((weak_import));
@@ -1265,6 +1269,7 @@ static void monitor(void *arg, wait_result_t result) {
     if(boot_log_tick)boot_log_tick(now);
     if(sheng_cpufreq_poll)sheng_cpufreq_poll();
     if(native_touch_probe)native_touch_probe();
+    if(enchilada_backlight_poll)enchilada_backlight_poll();
     if(boot_ui_trace_snapshot)boot_ui_trace_snapshot(now);
     if(&boot_process_attempts && &boot_process_busy) {
       unsigned attempt=__atomic_load_n(&boot_process_attempts,__ATOMIC_RELAXED);

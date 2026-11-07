@@ -20,9 +20,11 @@ DSI = ROOT / 'drivers/NativeMsmDsi'
 DCS = ROOT / 'drivers/NativeDsiBacklight'
 TESTS = [
     ('msm-dsi-cmd-test', [DSI / 'tests/msm-dsi-cmd-test.cpp'], ['MsmDsiCmd', 'DsiDcs']),
+    ('msm-dsi-session-test', [DSI / 'tests/msm-dsi-session-test.cpp'], ['MsmDsiSession', 'MsmDsiCmd', 'DsiDcs']),
 ]
 SOURCES = {
     'MsmDsiCmd': DSI / 'MsmDsiCmd.c',
+    'MsmDsiSession': DSI / 'MsmDsiSession.c',
     'DsiDcs': DCS / 'DsiDcs.c',
 }
 INCLUDES = ['-I', str(DSI), '-I', str(DCS)]
@@ -59,7 +61,7 @@ def main():
         if result.returncode:
             sys.stderr.write(result.stderr)
             raise SystemExit(f'FAIL: {name} ({result.returncode})')
-    print(f'PASS: enchilada MDSS DSI0 command-channel host tests ({"sanitized" if san else "without sanitizers"})')
+    print(f'PASS: enchilada MDSS DSI0 command-channel + read-only session host tests ({"sanitized" if san else "without sanitizers"})')
 
 
 if __name__ == '__main__':

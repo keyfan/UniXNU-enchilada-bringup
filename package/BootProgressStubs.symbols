@@ -14,6 +14,7 @@ boot_ui_trace_ready
 boot_ui_trace_role_rows
 boot_ui_trace_rows
 boot_ui_trace_snapshot
+enchilada_backlight_poll
 enchilada_cpufreq_rows
 enchilada_touch_rows
 native_adreno_audit_attr

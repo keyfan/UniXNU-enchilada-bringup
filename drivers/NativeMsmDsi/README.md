@@ -1,11 +1,20 @@
-# NativeMsmDsi — enchilada stage 3, layer 2 (MDSS DSI0 command channel)
+# NativeMsmDsi — enchilada stage 3, layers 2 + 2.5 (MDSS DSI0 command channel)
 
 This is the register-level transmit path that turns a stage-3 layer-1 DCS packet
 (`drivers/NativeDsiBacklight/DsiDcs.h`) into the MSM-specific CMD DMA buffer and
-pushes it out over `dsi_ctrl0` (`0xae94000`) on the OnePlus 6 (SDM845). It is pure C
-over an injected `struct msm_dsi_io` register bus (the `NativeGeniI2c` fake-MMIO
+pushes it out over `dsi_ctrl0` (`0xae94000`) on the OnePlus 6 (SDM845). The core is
+pure C over an injected `struct msm_dsi_io` register bus (the `NativeGeniI2c` fake-MMIO
 pattern), so it is host-testable locally before the ABI-sensitive layer 3
 `AppleARMBacklight` IOService exists.
+
+**Layer 2.5** adds a **READ-ONLY runtime probe** (`MsmDsiSession.c/.h` + the thin
+`package/EnchiladaBacklightProbe.cpp` shim). Gated by `enchilada-backlight=1` (default
+off) and driven 1 Hz from `package/BootProgress.c monitor()`, it maps `0xae94004` with
+the device-proven `armcpu_map_physical`, reads seven live config registers, and publishes
+them into a strong `native_backlight_stats[10]` so the boot-log `L st=` row becomes
+non-zero on the real device. It writes **nothing** to the controller and triggers **no**
+DMA — this is the "先核验再上机" step: prove XNU can map and read the firmware-owned
+controller before any packet is sent. See "Layer 2.5" below.
 
 ## Two independent verifications (all facts cross-checked before any code was written)
 
@@ -85,22 +94,57 @@ python scripts/check-enchilada-msm-dsi-host.py \
 ```
 
 - verification 1: `PASS: enchilada MDSS DSI0 command-channel transport (7 test groups)`
-  + `PASS: enchilada MDSS DSI0 command-channel host tests` (fake-MMIO register model).
+  + `PASS: enchilada MDSS DSI0 read-only runtime session (3 test groups)`
+  + `PASS: enchilada MDSS DSI0 command-channel + read-only session host tests`
+  (fake-MMIO register model).
 - verification 2: strict `clang -std=c11 -Wall -Wextra -Werror -pedantic
   -Wconversion -Wsign-conversion -Wshadow` compile exit 0, plus an independent byte
   dump program (`msm_dump.c`) printing the four buffers above byte-for-byte.
 
-## CI / archive (stage-3 layer 2)
+## CI / archive (stage-3 layers 2 + 2.5)
 
-`scripts/build-enchilada-msm-dsi.py` compiles `MsmDsiCmd.c` + `DsiDcs.c` as pure-C
-arm64 objects (the `osfmk/DEVELOPMENT/startup.o` flags + `-mgeneral-regs-only`) into
-`libEnchiladaMsmDsi.a`. `board.toml [kernel] archives` only orders the build; the
-kernel actually links it through the `-Wl,-force_load,{tree}/build/enchilada-msm-dsi/libEnchiladaMsmDsi.a`
-entry in `configs/enchilada_defconfig` (`CONFIG_XNU_EXTRA_LD_ARCHIVES`), guarded by
-`scripts/check-enchilada-archives-linked.py`. Without `-force_load` these pure-C objects
-have no strong external reference and the linker drops them.
-`py_compile` of the recipe passes and both C units compile clean as
-`arm64-apple-darwin` objects locally. **This archive is CI evidence only until
-layer 3 provides the runtime probe** that maps `0xae94004`, allocates the
-DMA-coherent buffer with `IOBufferMemoryDescriptor`, and calls `msm_dsi_cmd_send()`.
-No hardware claim is made for layer 2 (no flash, no `L` row verification yet).
+`scripts/build-enchilada-msm-dsi.py` compiles four arm64 objects into
+`libEnchiladaMsmDsi.a` (mixed C/C++, mirroring `build-enchilada-touch.py`):
+`EnchiladaBacklightProbe.cpp` (`iokit/DEVELOPMENT/IOPlatformExpert.cpo.json` flags) and
+`MsmDsiSession.c` + `MsmDsiCmd.c` + `DsiDcs.c` (`osfmk/DEVELOPMENT/startup.o.json`
+flags + `-mgeneral-regs-only`). `board.toml [kernel] archives` only orders the build;
+the kernel actually links it through the
+`-Wl,-force_load,{tree}/build/enchilada-msm-dsi/libEnchiladaMsmDsi.a` entry in
+`configs/enchilada_defconfig` (`CONFIG_XNU_EXTRA_LD_ARCHIVES`), guarded by
+`scripts/check-enchilada-archives-linked.py`. Without `-force_load` these objects
+have no strong external reference and the linker drops them (this exact bug — layer 2
+CI-compiled but not linked — was found and fixed with the guard; see porting.toml).
+
+The strong `native_backlight_stats[10]` and `enchilada_backlight_poll()` in this archive
+take precedence over the weak stand-ins of `package/BootProgressStubs.c`
+(`libBootProgress.a`); `armcpu_map_physical` is a strong `extern "C"` symbol in the
+force-loaded ArmCpu archive (`drivers/ArmCpu/ArmCpu.cpp:207`).
+
+## Layer 2.5: read-only runtime probe (default off)
+
+`enchilada-backlight=1` opts in. `enchilada_backlight_poll()` (weak_import declared in
+`BootProgress.c`, weak stub in `BootProgressStubs.c`, strong definition here) is called
+1 Hz; on the first poll it maps the 0x400-byte `dsi_ctrl` window at `0xae94000` and adds
+`MSM_DSI0_REG_SHIFT` (4) to reach `0xae94004`. `msm_dsi_session_snapshot()` then reads
+exactly these seven `dsi.xml` offsets through `io->rd` only — CTRL(0x000), STATUS0(0x004),
+CMD_DMA_CTRL(0x038), CMD_CFG0(0x03c), CMD_CFG1(0x040), TRIG_CTRL(0x080),
+CLK_CTRL(0x118) — and `msm_dsi_session_publish()` writes them into the
+`native_backlight_stats[10]` slots the BootLog.c `L st=...` row reads:
+
+```
+L st=3 req=<polls> lvl=0 a=<CTRL> b=<STATUS0> xerr=<CMD_DMA_CTRL> \
+  irq=<TRIG_CTRL hex> ea=<CMD_CFG0 hex> eb=<CMD_CFG1 hex> err=<CLK_CTRL>
+```
+
+Host verification: `check-enchilada-msm-dsi-host.py` runs both test binaries —
+`PASS: enchilada MDSS DSI0 command-channel transport (7 test groups)` (layer 2) and
+`PASS: enchilada MDSS DSI0 read-only runtime session (3 test groups)` (layer 2.5, whose
+FakeDsi asserts `writes == 0`). The C++ shim also passes
+`clang++ -std=c++17 -target arm64-apple-darwin -fsyntax-only -Wall -Wextra -Werror`.
+
+**No hardware claim yet**: this layer is code + host tests + CI archive only. It has
+NOT been flashed; the `L st=3 ...` row and the live register values must be confirmed on
+the real device. Sending an actual brightness packet (stage 3 / `AppleARMBacklight`)
+still needs the CMD-DMA address settled — Linux 6G `dsi_tx_buf_alloc_6g()` uses an
+MDSS SMMU IOVA via `msm_gem_get_and_pin_iova`, not a plain physical address — plus
+`dc civac` + `dsb sy` cache maintenance (`Dwc3Gadget.cpp:306-313`).
