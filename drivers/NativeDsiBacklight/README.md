@@ -24,7 +24,9 @@ exist:
 
 1. **layer 2**: an MDSS DSI0 command-channel driver for `dsi_ctrl0 @ 0xae94000`
    (no such host driver exists anywhere in the enchilada/fajita trees), plus a
-   `[kernel] archives` build recipe;
+   `[kernel] archives` build recipe — **now implemented** as
+   `drivers/NativeMsmDsi/` (`MsmDsiCmd.c` + `MsmDsiCmd.h` + host test) and
+   `scripts/build-enchilada-msm-dsi.py`; see `drivers/NativeMsmDsi/README.md`;
 2. **layer 3**: the `AppleARMBacklight`-facing IOService (sheng's
    `ShengBacklight : IOService` shape: `IODisplayParameters.brightness`,
    `backlight-control`, `NativeSandboxGrantProcess=backboardd`, a 16 ms fade work
