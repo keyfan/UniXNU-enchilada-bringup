@@ -154,7 +154,7 @@ int msm_smmu_verdict_is_bypass(const struct msm_smmu_survey *s) {
 
 int msm_smmu_survey_pack(const struct msm_smmu_survey *s, int32_t *out10) {
     if (!s || !out10) return -1;
-    out10[0] = 4;                                    /* stage = surveyed */
+    out10[0] = (int32_t)kMsmSmmuStageSurveyed;       /* stage = surveyed */
     out10[1] = (int32_t)s->matched;                  /* matched streams */
     out10[2] = (int32_t)s->verdict;                  /* +1 bypass / 0 translate / -1 / -2 */
     out10[3] = (int32_t)(s->num_cb | (s->global_pages << 16));
@@ -164,5 +164,17 @@ int msm_smmu_survey_pack(const struct msm_smmu_survey *s, int32_t *out10) {
     out10[7] = (int32_t)s->first_cbar;
     out10[8] = (int32_t)s->first_ttbr0_lo;
     out10[9] = (int32_t)s->first_stream;
+    return 0;
+}
+
+int msm_smmu_survey_publish(const struct msm_smmu_survey *s, uint32_t polls,
+                            volatile int32_t *stats) {
+    int32_t packed[10];
+    if (!s || !stats) return -1;
+    if (msm_smmu_survey_pack(s, packed) != 0) return -1;
+    /* Slot 1 is the 1 Hz poll count (mode 1 uses the same slot); the pack helper
+     * fills it with matched streams, so overwrite it here for the live row. */
+    for (unsigned i = 0; i < 10u; ++i) stats[i] = packed[i];
+    stats[1] = (int32_t)polls;
     return 0;
 }

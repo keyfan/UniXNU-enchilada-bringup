@@ -95,7 +95,7 @@ python scripts/check-enchilada-msm-dsi-host.py \
 
 - verification 1: `PASS: enchilada MDSS DSI0 command-channel transport (7 test groups)`
   + `PASS: enchilada MDSS DSI0 read-only runtime session (3 test groups)`
-  + `PASS: enchilada read-only SMMUv2 display-bank survey (10 test groups)`
+  + `PASS: enchilada read-only SMMUv2 display-bank survey (11 test groups)`
   + `PASS: enchilada MDSS DSI0 command-channel + session + SMMU survey host tests`
   (fake-MMIO register models).
 - verification 2: strict `clang -std=c11 -Wall -Wextra -Werror -pedantic
@@ -182,10 +182,11 @@ and returns a verdict: `Bypass` (physical OK) / `Translate` (IOVA required) /
 `NotFound` / `Geometry`. Register offsets are taken verbatim from the two
 device-proven local sources `SmmuTakeover.h` and `NativeUfs.cpp:862-944`.
 
-Host verification (both independent): `msm-dsi-smmu-test.cpp` — 10 test groups —
+Host verification (both independent): `msm-dsi-smmu-test.cpp` — 11 test groups —
 asserts geometry decoders, bypass/translate/S2CR-bypass verdicts, id+mask matching,
-ReadOnly (`writes==0`, every read < window), null refusals, the 10-slot packing and
-the exact built-in stream list; plus strict C11, C++20 `-Wdeprecated-volatile`, and
+ReadOnly (`writes==0`, every read < window), null refusals, the 10-slot packing,
+the exact built-in stream list, and `msm_smmu_survey_publish()` writing a volatile
+`int32_t[10]` L-row (stage 4 + poll count); plus strict C11, C++20 `-Wdeprecated-volatile`, and
 `-target arm64-apple-darwin -mgeneral-regs-only` compiles. It is compiled into the
 same force-loaded `libEnchiladaMsmDsi.a` (5 objects now).
 

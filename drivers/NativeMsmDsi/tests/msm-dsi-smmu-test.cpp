@@ -258,6 +258,29 @@ void testDisplayStreamList() {
     assert(s[5].id == 0x1091u && s[5].mask == 0x00u);
 }
 
+// 11: publish() writes the volatile L-row buffer (stage 4, polls in slot 1).
+// The signature is pointer-to-volatile on purpose (C++20 -Wdeprecated-volatile).
+void testPublish() {
+    FakeSmmu f;
+    f.defaultDisplay(0xe0u);
+    msm_smmu_io io = f.io();
+    struct msm_smmu_survey r = {};
+    assert(msm_smmu_survey_display(&io, f.window, &r) == 0);
+    volatile int32_t stats[10];
+    for (int i = 0; i < 10; ++i) stats[i] = -77;
+    assert(msm_smmu_survey_publish(&r, 0x1234u, stats) == 0);
+    assert(stats[0] == 4);                       // stage = surveyed
+    assert(stats[1] == 0x1234);                  // 1 Hz poll count
+    assert(stats[2] == kMsmSmmuVerdictBypass);   // verdict
+    assert(stats[6] == (int32_t)r.first_sctlr);
+    assert(stats[9] == (int32_t)r.first_stream);
+    // null refusals leave the row untouched
+    for (int i = 0; i < 10; ++i) stats[i] = -77;
+    assert(msm_smmu_survey_publish(nullptr, 1u, stats) == -1);
+    assert(msm_smmu_survey_publish(&r, 1u, nullptr) == -1);
+    for (int i = 0; i < 10; ++i) assert(stats[i] == -77);
+}
+
 }  // namespace
 
 int main() {
@@ -271,6 +294,7 @@ int main() {
     testRefusals();
     testPack();
     testDisplayStreamList();
-    std::printf("PASS: enchilada read-only SMMUv2 display-bank survey (10 test groups)\n");
+    testPublish();
+    std::printf("PASS: enchilada read-only SMMUv2 display-bank survey (11 test groups)\n");
     return 0;
 }

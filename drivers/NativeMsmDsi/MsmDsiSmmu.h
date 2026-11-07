@@ -127,6 +127,16 @@ enum {
     kMsmSmmuVerdictGeometry  = -2,
 };
 
+/* Stage code published to native_backlight_stats[0] by the mode-2 runtime probe.
+ * 4 = survey completed (the verdict itself is in slot 2). Lower / negative values
+ * are failure steps. Mode 1 keeps its own device-verified stage code 3. */
+enum {
+    kMsmSmmuStageAbsent       = 0,
+    kMsmSmmuStageWaitPlatform = 1,
+    kMsmSmmuStageMapFailed    = -1,
+    kMsmSmmuStageSurveyed     = 4,
+};
+
 unsigned msm_smmu_num_smr(uint32_t idr0);
 unsigned msm_smmu_num_cb(uint32_t idr1);
 unsigned msm_smmu_global_pages(uint32_t idr1);
@@ -160,6 +170,15 @@ int msm_smmu_verdict_is_bypass(const struct msm_smmu_survey *s);
  * [6]=first_sctlr [7]=first_cbar [8]=first_ttbr0_lo [9]=first_stream.
  * Returns 0, or -1 on a null pointer (out10 untouched). */
 int msm_smmu_survey_pack(const struct msm_smmu_survey *s, int32_t *out10);
+
+/* Publish a completed survey straight into the BootLog.c L row buffer
+ * (native_backlight_stats[10]) via msm_smmu_survey_pack(). The parameter is a
+ * POINTER to volatile, not a volatile-qualified array parameter: C++20 (P1152)
+ * deprecates the latter under the CI kernel's -Werror,-Wdeprecated-volatile (the
+ * same lesson as MsmDsiSession.h / CI #207). Returns 0, or -1 if s or stats is
+ * null; slot 1 carries the 1 Hz poll count for continuity with the mode-1 row. */
+int msm_smmu_survey_publish(const struct msm_smmu_survey *s, uint32_t polls,
+                            volatile int32_t *stats);
 
 #ifdef __cplusplus
 }
