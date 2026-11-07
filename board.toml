@@ -1,13 +1,15 @@
 # Board description of the OnePlus 6 (enchilada, SDM845), read by the unixnu build driver.
 #
-# Nothing in this file has been confirmed on this board yet: it was derived from UniXNU-fajita (the
-# OnePlus 6T, same SoC) and no image built from it has been booted. Values marked "measured" below
-# came from the 6T or from a sibling SDM845 port and must be re-read from this phone with
-# scripts/dump-device-facts.sh before they are trusted.
+# Derived from UniXNU-fajita (the OnePlus 6T, same SoC). Images built from this board.toml have
+# been booted on the phone: XNU reaches launchd/SpringBoard, the root volume mounts, and a
+# CDC-ACM USB serial console carries the boot diagnostics (console206, 2026-11-07). Values
+# marked "measured" below came from the 6T or a sibling SDM845 port; re-read them from this
+# phone with scripts/parse-device-dump.py before trusting them for a new hardware stage.
 
 [board]
 name = "enchilada"
 soc = "SDM845"
+os_profile = "ipados-17.7.11-21H461"  # record key for scripts/porting-record.py; schema-1 config.py never reads it
 description = "OnePlus 6"
 kit = "enchilada"                     # the package/ of this repository appears as kits/enchilada in the build tree
 
