@@ -58,9 +58,14 @@ int msm_dsi_session_snapshot(struct msm_dsi_io *io, struct msm_dsi_snapshot *out
  * slots to expose the live DSI0 register values so a device boot proves the MMIO path:
  *   [0]=stage(3) [1]=polls [2]=0 (no brightness sent) [3]=CTRL [4]=STATUS0
  *   [5]=CMD_DMA_CTRL [6]=TRIG_CTRL [7]=CMD_CFG0 [8]=CMD_CFG1 [9]=CLK_CTRL.
- * Returns 0, or -1 if snap or stats is null. */
+ * Returns 0, or -1 if snap or stats is null.
+ *
+ * The parameter is spelled as a POINTER to volatile, not a volatile-qualified array
+ * parameter: C++20 (P1152) deprecates volatile-qualified parameter types, and the CI
+ * kernel compiles this header from a .cpp with -Werror,-Wdeprecated-volatile. A pointer
+ * to volatile data keeps the concurrent read semantics for BootLog.c without tripping it. */
 int msm_dsi_session_publish(const struct msm_dsi_snapshot *snap, uint32_t polls,
-                            volatile int32_t stats[10]);
+                            volatile int32_t *stats);
 
 #ifdef __cplusplus
 }

@@ -139,8 +139,11 @@ L st=3 req=<polls> lvl=0 a=<CTRL> b=<STATUS0> xerr=<CMD_DMA_CTRL> \
 Host verification: `check-enchilada-msm-dsi-host.py` runs both test binaries —
 `PASS: enchilada MDSS DSI0 command-channel transport (7 test groups)` (layer 2) and
 `PASS: enchilada MDSS DSI0 read-only runtime session (3 test groups)` (layer 2.5, whose
-FakeDsi asserts `writes == 0`). The C++ shim also passes
-`clang++ -std=c++17 -target arm64-apple-darwin -fsyntax-only -Wall -Wextra -Werror`.
+FakeDsi asserts `writes == 0`). The C++ shim passes the CI-equivalent strict syntax
+check `clang++ -std=c++20 -target arm64-apple-darwin -fsyntax-only -Wall -Wextra
+-Werror -Wdeprecated-volatile` (the `-std=c++20` matters: the CI kernel build's
+`-Wdeprecated-volatile` rejects volatile-qualified array parameters and `++` on a
+volatile object; see porting.toml's run #207 note).
 
 **No hardware claim yet**: this layer is code + host tests + CI archive only. It has
 NOT been flashed; the `L st=3 ...` row and the live register values must be confirmed on

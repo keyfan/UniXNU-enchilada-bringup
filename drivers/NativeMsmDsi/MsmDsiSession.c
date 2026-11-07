@@ -16,7 +16,7 @@ int msm_dsi_session_snapshot(struct msm_dsi_io *io, struct msm_dsi_snapshot *out
 }
 
 int msm_dsi_session_publish(const struct msm_dsi_snapshot *snap, uint32_t polls,
-                            volatile int32_t stats[10]) {
+                            volatile int32_t *stats) {
     if (!snap || !stats) return -1;
     stats[0] = kMsmDsiSessionStageMapped;   /* st=3: mapped + snapshot published */
     stats[1] = (int32_t)polls;              /* req=: number of 1 Hz polls so far */

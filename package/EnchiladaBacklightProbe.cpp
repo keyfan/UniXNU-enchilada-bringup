@@ -96,7 +96,9 @@ extern "C" void enchilada_backlight_poll(void) {
 
     struct msm_dsi_snapshot snap = {};
     if (msm_dsi_session_snapshot(&io, &snap) == 0) {
-        ++gPolls;
+        // C++20 deprecates ++ on a volatile-qualified object (-Werror,-Wdeprecated-volatile
+        // in the CI kernel build); use an explicit read + assignment instead.
+        gPolls = gPolls + 1;
         msm_dsi_session_publish(&snap, gPolls, native_backlight_stats);
     }
 }
