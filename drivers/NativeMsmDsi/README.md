@@ -199,9 +199,11 @@ confirm a **CPU physical address is safe for `REG_DSI_DMA_BASE`**. See
 `evidence/backlight209mode2.md`. This survey wrote nothing and triggered no DMA.
 
 Remaining work: layer 3a (below) is the host-verified transmit orchestrator; layer
-3b will allocate a 32-bit-addressable DMA buffer and issue `dc civac` + `dsb sy`
+3b (below) allocates a 32-bit-addressable DMA buffer and issues `dc civac` + `dsb sy`
 cache maintenance (`Dwc3Gadget.cpp:306-313`) before calling it; layer 3d is the
-`AppleARMBacklight` IOService. None of those has been flashed yet.
+`AppleARMBacklight` IOService. **Only layers 1, 2, 2.5 (mode 1) and the mode-2
+survey are device-verified**; layer 3a/3b are HOST-VERIFIED and have NOT been
+CI-compiled under real XNU headers or flashed yet (先核验再上机).
 
 ## Layer 3a: brightness-transmit orchestrator (HOST-VERIFIED, not flashed)
 
@@ -233,4 +235,43 @@ object in `libEnchiladaMsmDsi.a`.
 
 **No hardware claim**: this is pure C + host tests + a CI-compiled object. Nothing
 is allocated, mapped, or triggered here — the risky IOBufferMemoryDescriptor
-allocation and the first real DCS transmit belong to layer 3b (not yet done).
+allocation and the first real DCS transmit belong to layer 3b.
+
+## Layer 3b: gated `enchilada-backlight=3` runtime probe (HOST-VERIFIED, not flashed)
+
+`package/EnchiladaBacklightProbe.cpp` now has a THIRD mode. Modes 1 (CI #208 /
+backlight208, `L st=3`) and 2 (CI #209 / backlight209mode2, `L st=4` Bypass) are
+**device-verified**; a static diff against the device-verified remote blob
+(`f566e737`) proves `ioRd/ioWr/ioWmb/ioDelayUs/pollMode1/pollMode2` and all shared
+state are byte-for-byte unchanged (`work/tmp/verify_layer3b_wiring.py`). Mode 3 is
+the FIRST WRITE and is gated by `enchilada-backlight=3` (default off, like 1/2).
+
+It uses the device-proven `IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+kIODirectionInOut | kIOMemoryPhysicallyContiguous | kIOMemoryMapperNone, 64, 4096)`
+allocation (`Dwc3Gadget.cpp:204-218`, the DWC3 USB console) + `getBytesNoCopy()` +
+`getPhysicalSegment(0,...,kIOMemoryMapperNone)`, maps DSI0 at `0xae94004` with
+`armcpu_map_physical`, and calls `msm_dsi_brightness_send()` ONCE. The `clean`
+callback is `dc civac` per 64-byte line + `dsb sy` (`Dwc3Gadget.cpp:306-313` /
+`NativeUfs.cpp:1150-1155`), and `io.delay_us` is a CPU spin (NOT WFE/IODelay —
+`RootCommands.h:22`). The orchestrator's 32-bit gate is the on-device check: a
+buffer above 4 GiB is REFUSED (`st=-2`, `addr_high` counter) before ANY register
+write, so a truncated address can never make the controller DMA the wrong bytes.
+Only ONE packet is sent (`kMode3Level=512`); later 1 Hz polls just republish the
+stored result so the `L st=5` row is stable. No IOService subclass, no OSMetaClass,
+no late-object objcopy is needed — the archive stays 6 objects, 4 force_load entries.
+
+Three independent verifications, all green: (1) `clang++ -std=c++20 -target
+arm64-apple-darwin -fsyntax-only -Wall -Wextra -Werror -Wdeprecated-volatile`
+with local IOKit stubs (caught and fixed one real `++` on a volatile counter — the
+CI #207 `-Wdeprecated-volatile` lesson); (2) the full host battery
+(`check-enchilada-msm-dsi-host.py`, 7+3+11+7 groups), `check-enchilada-archives-linked.py`
+and `porting-record.py check --device` (15 areas); (3) the static wiring diff above
+against the device-verified baseline + the `Dwc3Gadget.cpp` proven API tokens.
+
+**No hardware claim yet**: layer 3b is HOST-VERIFIED ONLY. It has NOT been
+CI-compiled under real macOS/Xcode XNU headers and NOT flashed. The next steps are
+dispatch CI to compile the 6-object archive + shim, then flash `enchilada-backlight=3`
+and read the `L st=5 / st=-2 / st=-4` row. If the device reports `st=-2`
+(AddrTooHigh), the kernel allocation really is above 4 GiB and layer 3d's stage-1
+SMMU IOVA fallback (`kExtraIova=0x10000000`, `NativeUfs.cpp:1092-1161`) is required
+before any brightness packet can be sent.

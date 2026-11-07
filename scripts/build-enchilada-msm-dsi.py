@@ -17,9 +17,12 @@ DSI0 at 0xae94004 via the device-proven armcpu_map_physical, reads seven live co
 registers, and publishes them into the strong native_backlight_stats[10] so the L st=
 row becomes non-zero on device -- WITHOUT writing to the controller or triggering DMA.
 It is gated by enchilada-backlight=1 (default off) and called 1 Hz from
-package/BootProgress.c monitor(). Sending a DCS packet (layer 3 / AppleARMBacklight)
-still needs the CMD-DMA address (physical vs MDSS SMMU IOVA) and dc civac cache
-maintenance settled; see drivers/NativeMsmDsi/README.md.
+package/BootProgress.c monitor(); enchilada-backlight=2 is the read-only SMMU survey
+(CI #209, DEVICE-VERIFIED Bypass). enchilada-backlight=3 (layer 3b) is the FIRST WRITE:
+it allocates a 32-bit-addressable IOBufferMemoryDescriptor DMA buffer and calls the
+host-verified MsmDsiBrightness.c orchestrator once, with dc civac + dsb sy clean.
+The shim now includes <IOKit/IOBufferMemoryDescriptor.h> but defines no IOService
+subclass, so no late-object objcopy is required. See drivers/NativeMsmDsi/README.md.
 
 The archive is force-loaded into the kernel by the
 -Wl,-force_load,{tree}/build/enchilada-msm-dsi/libEnchiladaMsmDsi.a entry in
