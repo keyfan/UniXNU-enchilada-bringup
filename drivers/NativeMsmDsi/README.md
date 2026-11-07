@@ -94,7 +94,11 @@ python scripts/check-enchilada-msm-dsi-host.py \
 
 `scripts/build-enchilada-msm-dsi.py` compiles `MsmDsiCmd.c` + `DsiDcs.c` as pure-C
 arm64 objects (the `osfmk/DEVELOPMENT/startup.o` flags + `-mgeneral-regs-only`) into
-`libEnchiladaMsmDsi.a`; `board.toml [kernel] archives` links it with `-force_load`.
+`libEnchiladaMsmDsi.a`. `board.toml [kernel] archives` only orders the build; the
+kernel actually links it through the `-Wl,-force_load,{tree}/build/enchilada-msm-dsi/libEnchiladaMsmDsi.a`
+entry in `configs/enchilada_defconfig` (`CONFIG_XNU_EXTRA_LD_ARCHIVES`), guarded by
+`scripts/check-enchilada-archives-linked.py`. Without `-force_load` these pure-C objects
+have no strong external reference and the linker drops them.
 `py_compile` of the recipe passes and both C units compile clean as
 `arm64-apple-darwin` objects locally. **This archive is CI evidence only until
 layer 3 provides the runtime probe** that maps `0xae94004`, allocates the

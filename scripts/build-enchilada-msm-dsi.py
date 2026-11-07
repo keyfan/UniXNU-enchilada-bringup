@@ -9,8 +9,11 @@ CMD DMA buffer and emits the software-trigger register sequence (Linux v6.12
 drivers/gpu/drm/msm/dsi/dsi_host.c dsi_cmd_dma_add / msm_dsi_host_cmd_xfer_commit),
 DsiDcs.c builds the DCS packets (stage-3 layer 1). They are compiled with the flags of
 osfmk/DEVELOPMENT/startup.o plus -mgeneral-regs-only (as sheng's GENI SPI and the
-touch archive's C objects). The archive is linked with -force_load through
-CONFIG_XNU_EXTRA_LD_ARCHIVES.
+touch archive's C objects). The archive is force-loaded into the kernel by the
+-Wl,-force_load,{tree}/build/enchilada-msm-dsi/libEnchiladaMsmDsi.a entry in
+configs/enchilada_defconfig (CONFIG_XNU_EXTRA_LD_ARCHIVES), guarded by
+scripts/check-enchilada-archives-linked.py. board.toml [kernel] archives alone only
+orders the build; it does NOT force-load (see kernel.py archive_plan / build-xnu-4k-baseline.sh:755).
 
 There is deliberately no runtime probe in this archive yet: the panel is already lit by
 the UEFI GOP framebuffer, so a cold-boot full-controller reprogram would disturb the
