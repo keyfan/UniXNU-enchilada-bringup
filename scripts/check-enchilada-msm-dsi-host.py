@@ -23,12 +23,14 @@ TESTS = [
     ('msm-dsi-session-test', [DSI / 'tests/msm-dsi-session-test.cpp'], ['MsmDsiSession', 'MsmDsiCmd', 'DsiDcs']),
     ('msm-dsi-smmu-test', [DSI / 'tests/msm-dsi-smmu-test.cpp'], ['MsmDsiSmmu']),
     ('msm-dsi-brightness-test', [DSI / 'tests/msm-dsi-brightness-test.cpp'], ['MsmDsiBrightness', 'MsmDsiCmd', 'DsiDcs']),
+    ('msm-dsi-control-test', [DSI / 'tests/msm-dsi-control-test.cpp'], ['MsmDsiControl', 'DsiDcs']),
 ]
 SOURCES = {
     'MsmDsiCmd': DSI / 'MsmDsiCmd.c',
     'MsmDsiSession': DSI / 'MsmDsiSession.c',
     'MsmDsiSmmu': DSI / 'MsmDsiSmmu.c',
     'MsmDsiBrightness': DSI / 'MsmDsiBrightness.c',
+    'MsmDsiControl': DSI / 'MsmDsiControl.c',
     'DsiDcs': DCS / 'DsiDcs.c',
 }
 INCLUDES = ['-I', str(DSI), '-I', str(DCS)]
@@ -65,7 +67,7 @@ def main():
         if result.returncode:
             sys.stderr.write(result.stderr)
             raise SystemExit(f'FAIL: {name} ({result.returncode})')
-    print(f'PASS: enchilada MDSS DSI0 command-channel + session + SMMU survey + brightness transmit host tests ({"sanitized" if san else "without sanitizers"})')
+    print(f'PASS: enchilada MDSS DSI0 command-channel + session + SMMU survey + brightness transmit + OS control host tests ({"sanitized" if san else "without sanitizers"})')
 
 
 if __name__ == '__main__':

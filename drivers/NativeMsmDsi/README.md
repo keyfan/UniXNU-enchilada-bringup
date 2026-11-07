@@ -188,7 +188,7 @@ ReadOnly (`writes==0`, every read < window), null refusals, the 10-slot packing,
 the exact built-in stream list, and `msm_smmu_survey_publish()` writing a volatile
 `int32_t[10]` L-row (stage 4 + poll count); plus strict C11, C++20 `-Wdeprecated-volatile`, and
 `-target arm64-apple-darwin -mgeneral-regs-only` compiles. It is compiled into the
-same force-loaded `libEnchiladaMsmDsi.a` (now 6 objects with layer 3a).
+same force-loaded `libEnchiladaMsmDsi.a` (7 objects as of layer 3d-α).
 
 **DEVICE-VERIFIED (backlight209mode2, CI #209)**: the gated
 `enchilada-backlight=2` mode-2 probe mapped `apps_smmu 0x15000000` read-only, ran
@@ -198,12 +198,12 @@ Two independent verifiers (packed verdict + raw S2CR.TYPE/SCTLR.M re-derivation)
 confirm a **CPU physical address is safe for `REG_DSI_DMA_BASE`**. See
 `evidence/backlight209mode2.md`. This survey wrote nothing and triggered no DMA.
 
-Remaining work: layer 3a (below) is the host-verified transmit orchestrator; layer
-3b (below) allocates a 32-bit-addressable DMA buffer and issues `dc civac` + `dsb sy`
-cache maintenance (`Dwc3Gadget.cpp:306-313`) before calling it; layer 3d is the
-`AppleARMBacklight` IOService. **Only layers 1, 2, 2.5 (mode 1) and the mode-2
-survey are device-verified**; layer 3a/3b are HOST-VERIFIED and have NOT been
-CI-compiled under real XNU headers or flashed yet (先核验再上机).
+DEVICE-VERIFIED status: layers 1, 2, 2.5 (mode 1, CI #208 / `L st=3`), the mode-2
+SMMU survey (CI #209 / `L st=4` Bypass) and layer 3b's first-write transmit
+(CI #210 / `L st=5`, ONE DCS brightness packet, `evidence/backlight210mode3.md`)
+are all device-verified. Layer 3d-α (below) is a HOST-VERIFIED pure-C OS-facing
+control plane; layer 3d-β (the `EnchiladaBacklight : IOService` class body + late
+object) is not written/flashed yet (先核验再上机).
 
 ## Layer 3a: brightness-transmit orchestrator (HOST-VERIFIED, not flashed)
 
@@ -268,10 +268,53 @@ CI #207 `-Wdeprecated-volatile` lesson); (2) the full host battery
 and `porting-record.py check --device` (15 areas); (3) the static wiring diff above
 against the device-verified baseline + the `Dwc3Gadget.cpp` proven API tokens.
 
-**No hardware claim yet**: layer 3b is HOST-VERIFIED ONLY. It has NOT been
-CI-compiled under real macOS/Xcode XNU headers and NOT flashed. The next steps are
-dispatch CI to compile the 6-object archive + shim, then flash `enchilada-backlight=3`
-and read the `L st=5 / st=-2 / st=-4` row. If the device reports `st=-2`
-(AddrTooHigh), the kernel allocation really is above 4 GiB and layer 3d's stage-1
-SMMU IOVA fallback (`kExtraIova=0x10000000`, `NativeUfs.cpp:1092-1161`) is required
-before any brightness packet can be sent.
+**DEVICE-VERIFIED (backlight210mode3, CI #210)**: layer 3b was CI-compiled under
+real macOS Xcode 26.6 headers (`PASS: libEnchiladaMsmDsi.a (6 objects, sha256
+88035f4e1eeb4bef)`) and flashed with `enchilada-backlight=3`. Two independent
+decoders over 510 `L` rows confirm the whole first-write path executed: `st=5`
+(Tx), `rc=0`, `sent=1` (one-shot), `dma_len=8`, and `dma_addr_lo` = `0xae01a000`
+(< 4 GiB), so the 32-bit `REG_DSI_DMA_BASE` gate PASSED on device and the
+`NativeUfs.cpp:1092-1161` `kExtraIova=0x10000000` stage-1 SMMU IOVA fallback is
+NOT needed. See `evidence/backlight210mode3.md`. This proves the transmit path,
+NOT a measured panel brightness change (no framebuffer/light-sensor readback) and
+NOT continuous brightness control (one fixed level 512).
+
+## Layer 3d-α: OS-facing brightness control plane (HOST-VERIFIED, not flashed)
+
+`MsmDsiControl.c/.h` is the pure-C, host-testable core of the layer-3d
+`EnchiladaBacklight : IOService`. It exists to settle the top open risk recorded
+in `evidence/applearmbacklight-metaclass.md`: sheng's `kMaxLevel=2047` (11-bit
+KTZ8866 I2C) vs enchilada's sofef00 DCS `bl-max=0x3ff` (1023). Porting sheng's
+class verbatim would publish `max=2047`, let CoreBrightness request up to 2047,
+and send out-of-range DCS packets. The core takes its single source of truth from
+`DsiDcs.h`'s `kEnchiladaBrightnessMax=1023`:
+
+- `msm_dsi_control_clamp(int32_t)` clamps ANY OS request to 0..1023 (negative→0,
+  2047→1023, `INT32_MAX`→1023). It is the ONLY place the OS-facing value is scaled.
+- `msm_dsi_control_fade_ms(uint32_t)` reproduces sheng `setProperties()`'s
+  `((FadePeriod_16.16 * 1000) >> 16)` with the 5000 ms cap, computing in 64-bit so
+  `0xffffffff` cannot 32-bit overflow.
+- `request()`/`step()` implement the 16 ms linear fade (`kMsmDsiControlStepMs=16`)
+  purely over injected `now_ms`; clock rollback is treated as elapsed=0 (never
+  "done"); `step()` returns 1 only when the level actually changes (one transmit per
+  step, no repeats).
+- `publish()` writes stage code 7 into `native_backlight_stats[10]` with the
+  published max at slot 7 — `stats[7]==1023`, NOT 2047 — so the L row itself is
+  self-checking on device. Pointer-to-volatile parameters avoid the C++20
+  `-Wdeprecated-volatile` trap (CI #207 lesson).
+
+`msm-dsi-control-test.cpp` (8 groups) asserts the scale mismatch, 16.16 fade math,
+linear up/down interpolation, clock rollback, instant zero-period, null refusals,
+and the exact 10-slot L-row publish layout. `check-enchilada-msm-dsi-host.py` now
+runs 7+3+11+7+8 groups; an independent strict `-Wconversion -Wsign-conversion
+-Wshadow -pedantic` C11 compile, a `-std=c++20 -Wdeprecated-volatile -Werror`
+header check, and an arm64 `-mgeneral-regs-only` object all pass (the strict
+compile caught one real sign-conversion at `stats[6]`, fixed). It is the 7th
+object in `libEnchiladaMsmDsi.a`.
+
+**No hardware claim**: layer 3d-α is pure C + host tests only — no IOKit class, no
+metaclass, no register access. The IOService class body that calls these functions
+and drives the 16 ms timer/work-loop (layer 3d-β) still needs the late-object
+objcopy (`--remove-section=__DATA,__mod_init_func
+--globalize-symbol=__GLOBAL__sub_I_EnchiladaBacklight.cpp`), CI compilation under
+real XNU headers, and an on-device CoreBrightness/metaclass-lookup check.
