@@ -184,19 +184,55 @@ evidence = [
 
 [[area]]
 id = "gpu"
-status = "planned"
+status = "host-verified"
 components = ["Adreno740", "AdrenoMetal", "AdrenoFirmware", "AdrenoPM4", "AirNir", "Sm8550Platform"]
-paths = ["package/Gpu*", "scripts/*gpu*", "configs/enchilada_defconfig", "board.toml"]
-inputs = ["Adreno A630 (not Adreno740): GPU zap-shader a630_zap.mbn, GMU enabled, [gpu] clients/bo pool/metal askers/clocks all empty in the boot log; sheng's Adreno740 path is SM8550-specific."]
-configuration = ["CONFIG_NATIVE_ADRENO=n; no [gpu] section in board.toml; sheng-gpu-addon=1 currently only carries a wallpaper PNG, not a GPU driver; --drop sheng-gpu-addon=1 is used to fit the 1000-byte kernel-arg budget."]
-procedure = ["Follow /zh/porting/gpu for the selected OS ABI; sheng's 6 archives (adreno740-kits, accelerator, gmu, gmu-votes, gpu-smmu, dts/inputs) are the upstream method reference."]
-findings = ["SpringBoard's only SIGSEGV crash (diag2-k158) is +[CUIShapeEffectStack sharedCIContext] -> CI::GLContext::GLContext with ktriageinfo 'VM - mach_vm_allocate_kernel failed within call to vm_map_enter' x4; no GPU/IOAccelerator/AGX driver exists, so CoreImage gets a nil GL context and jumps to 0.", "The A630 microcode, GMU and SMMU stream setup differ from SM8550; sheng's Adreno740 constants cannot be reused without a new firmware/register audit."]
-completion = ["GPU submissions complete, mapping/fence handling is correct, a known image renders, and the selected Metal client presents it."]
-limits = ["Entirely unimplemented: 0/6 GPU components, no BO pool, no Metal clients. This is the largest single gap in the 8-stage order."]
-next_action = ["Stage 5: inventory A630 vs Adreno740 register/firmware deltas from Linux msm-4.9 (a5xx_gmu, a6xx_gmu) and the vendor DTB; decide whether an A630 Metal path is feasible before copying any sheng archive."]
+paths = [
+  "drivers/NativeAdreno/**",
+  "scripts/check-enchilada-adreno-host.py",
+  "evidence/stage5-gpu-feasibility.md",
+  "package/Gpu*",
+  "scripts/*gpu*",
+  "configs/enchilada_defconfig",
+  "board.toml",
+]
+inputs = [
+  'Stage 5 (2026-11-08) HOST-VERIFIED audit: enchilada is Adreno A630 (6xx GEN1, legacy GMU HFI v1 / SPTPRAC), NOT sheng SM8550 A740 (7xx GEN2). Three independent research passes: Linux v6.12 drivers/gpu/drm/msm/adreno/a6xx_catalog.c + a6xx_gmu.c, the vendor DTB Mu-Silicium/Resources/DTBs/enchilada.dts, and https://unixnu.com/zh/porting/gpu section 1.',
+  'Vendor DTB :23632 qcom,kgsl-3d0@5000000 reg=<0x5000000 0x40000 0x5061000 0x800 0x509e000 0x1000>, qcom,chipid=<0x6030001>, 6 clocks incl gmu_clk, qcom,gmu present, IRQ 300; :23610 qcom,kgsl-hyp qcom,firmware-name="a630_zap".',
+  '[HISTORICAL, kept for traceability] Adreno A630 (not Adreno740): GPU zap-shader a630_zap.mbn, GMU enabled, [gpu] clients/bo pool/metal askers/clocks all empty in the boot log; sheng Adreno740 path is SM8550-specific.',
+]
+configuration = [
+  'Stage 5 HOST-VERIFIED module drivers/NativeAdreno (AdrenoCatalog.h/.c, tests/adreno-catalog-test.cpp, scripts/check-enchilada-adreno-host.py) encodes A630 vs A740 identity, the required A630 firmware set and an adreno_catalog_assess() gate. It is NOT linked into the kernel, maps no register, loads no firmware and submits no command.',
+  'CONFIG_XNU_EXTRA_LD_ARCHIVES has no GPU archive; CONFIG_XNU_NATIVE_ADRENO=n (configs/enchilada_defconfig:40), CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n, CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y. [HISTORICAL baseline] CONFIG_NATIVE_ADRENO=n; no [gpu] section in board.toml; sheng-gpu-addon=1 currently only carries a wallpaper PNG, not a GPU driver; --drop sheng-gpu-addon=1 is used to fit the 1000-byte kernel-arg budget.',
+]
+procedure = [
+  'Verification 1: python scripts/check-enchilada-adreno-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe --out work/tmp/adreno-host-out (10 test groups, sanitizers when available). Verification 2: strict clang -std=c11 -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow -O2 -c AdrenoCatalog.c + an independent adreno-dump byte/verdict dump.',
+  'Method: three independent research passes BEFORE any code (Linux v6.12 a6xx_catalog.c / a6xx_gmu.c, vendor DTB, official GPU guide + 246 decoded device logs), then a pure-C host module; no CI, no flash, no device verification.',
+  '[HISTORICAL, kept for traceability] Follow /zh/porting/gpu for the selected OS ABI; sheng 6 archives (adreno740-kits, accelerator, gmu, gmu-votes, gpu-smmu, dts/inputs) are the upstream method reference.',
+]
+findings = [
+  'STAGE 5 HOST-VERIFIED (2026-11-08): A630 and A740 are different generations. Linux v6.12 a6xx_catalog.c: A630 chipids 0x06030001/0x06030002, family ADRENO_6XX_GEN1, revn 630, gmem SZ_1M, fw a630_sqe.fw + a630_gmu.bin, zapfw a630_zap.mdt; A740 chipid 0x43050a01, family ADRENO_7XX_GEN2, gmem 3*SZ_1M, gmu_chipid 0x7020100, address_space_size SZ_16G, fw a740_sqe.fw + gmu_gen70200.bin. a6xx_gmu_init() marks A630 gmu->legacy = true (HFI v1, SPTPRAC). Firmware, GMU, protect table, GMEM and address space all differ => sheng 6 archives cannot be reused.',
+  'STAGE 5 DECISION (load-bearing): the full Metal path is BLOCKED on enchilada now. (a) three proprietary A630 blobs a630_zap.mbn / a630_gmu.bin / a630_sqe.fw (+ mdt/b00/b01) are absent from the workspace; (b) https://unixnu.com/zh/porting/gpu section 1 states other GPU generations need a matching-generation kernel backend + compiler BEFORE a frontend, and sheng is A740-only; (c) iOS Metal/IOGPU ABI is closed-source and this host has no macOS/Xcode (CI is the only ABI authority); (d) 246 decoded device logs have ZERO GPU-driver literals (IOGPU/IOAccelerator/AGX/Metal/[gpu]/CoreImage/mach_vm_allocate_kernel/Adreno/kgsl/GMU all 0). adreno_catalog_assess(A630, fw=0, backend=0) returns 0x06 (FIRMWARE|BACKEND); ADRENO_FEASIBLE only for a matching-gen backend + all firmware.',
+  'RETROSPECTIVE log analysis: the G st= rows are DWC3 USB-gadget state (dcfg/dctl/dsts), not GPU. a630/GPU hits are backtrace hex noise (1a630f174). Real CRASH rows are PerfPowerServices sig6 (SIGABRT). The exact chip-id REGISTER offset is deliberately NOT asserted: a6xx.xml has no CHIP_ID field, so qcom,chipid=<0x6030001> stays a DT property, not a proven register value.',
+  '[HISTORICAL, unverified external inference - NO literal evidence in 246 logs] SpringBoard SIGSEGV (diag2-k158) +[CUIShapeEffectStack sharedCIContext] -> CI::GLContext::GLContext with mach_vm_allocate_kernel / vm_map_enter; CoreImage/GLContext/mach_vm_allocate_kernel/vm_map_enter literal counts are all 0. Kept for traceability; NOT claimed reproduced or resolved.',
+  '[HISTORICAL, kept for traceability] The A630 microcode, GMU and SMMU stream setup differ from SM8550; sheng Adreno740 constants cannot be reused without a new firmware/register audit.',
+]
+completion = [
+  'Official completion criteria (NOT met, retained): GPU submissions complete, mapping/fence handling is correct, a known image renders, and the selected Metal client presents it.',
+  'Stage 5 HOST-VERIFIED scope actually completed: A630 identity + cross-generation gap + firmware/backend blockers encoded in tested pure C (10 host tests, strict compile), plus a durable evidence record. No device, CI or firmware claim.',
+]
+limits = [
+  'HOST-VERIFIED ONLY: no CI compile, no flash, no device verification, no register read, no firmware load, no GMU/HFI start, no command submission, no rendered image. Zero of the six sheng GPU components are implemented; 0/6 GPU components, no BO pool, no Metal clients remain true for the device.',
+  'BLOCKED on (a) three signed A630 firmware blobs, (b) a new A6XX_GEN1 kernel backend (legacy GMU HFI v1 + SPTPRAC + RPMh/PDC power + kgsl SMMU v2 context + CP/PM4), (c) a selected OS Metal/IOSurface ABI + Turnip/AirNir compiler support. Until those exist stage 5 cannot become device-verified.',
+]
+next_action = [
+  'Stage 5 DONE (HOST-VERIFIED, 2026-11-08): A630 identification + feasibility audit committed as a host-verified module with a host evidence entry; the full Metal path is honestly recorded as blocked on firmware + matching-generation backend + closed Metal ABI.',
+  'NEXT (only if unblocking stage 5): obtain the three signed A630 firmware blobs from a matching firmware set, build an A6XX_GEN1 kernel backend (NOT a port of sheng A740), source the exact chip-id register offset, then flash a read-only chipid probe, bring up GMU/HFI, and render a known image - each step with CI + two independent device verifications.',
+  'Strict 8-stage order then continues with the remaining areas: stage 6 network (Ath12kWifi/WifiProbe/WifiNet/MhiBoot on WCN3990 ath10k-class), memory (ArmSmmu4K), audio (AdspProbe/AudioProbe), cellular (QcomBaseband) and power (CpuFreqProbe/ShengPlatformPower/ShengBattery).',
+]
 evidence = [
-  { kind = "source", reference = "https://unixnu.com/zh/porting/gpu", result = "Official GPU stage: component order, ABI audit and completion criteria." },
-  { kind = "source", reference = "configs/enchilada_defconfig", result = "CONFIG_NATIVE_ADRENO=n documents the current absence." },
+  { kind = "host", reference = "evidence/stage5-gpu-feasibility.md", result = "HOST-VERIFIED A630 identification + feasibility audit (2026-11-08): three independent research passes (Linux v6.12 a6xx_catalog.c/a6xx_gmu.c, vendor DTB, official GPU guide + 246 decoded device logs). Pass 1 host runner: PASS 10 test groups + sanitizers-off PASS; Pass 2 strict C11 -Wconversion/-Wsign-conversion/-Wshadow/-pedantic compile exit 0 + independent adreno-dump (chip=06030001 gen=1 revn=630 gmem=00100000 legacy=1, assess(A630)=06 FIRMWARE|BACKEND, assess(A740+fw+backend)=00 FEASIBLE). Decision: full stage-5 Metal path BLOCKED (3 proprietary A630 firmware blobs absent, cross-generation backend required per guide section 1, closed Metal ABI, zero GPU-driver literals in 246 logs). Honest correction: CoreImage GLContext crash has no literal log evidence; real CRASH rows are PerfPowerServices sig6. No CI / no flash / no device verification.", command = "python scripts/check-enchilada-adreno-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe --out work/tmp/adreno-host-out", revision = "d83634af814ca3439d2512b8886801c57a2d3279" },
+  { kind = "source", reference = "https://unixnu.com/zh/porting/gpu", result = "Official GPU stage: component order, per-generation ABI audit, firmware set and completion criteria. Section 1 requires a matching-generation kernel backend + compiler before a Metal frontend." },
+  { kind = "source", reference = "configs/enchilada_defconfig", result = "CONFIG_XNU_NATIVE_ADRENO=n documents the current absence of a GPU backend." },
 ]
 
 [[area]]
