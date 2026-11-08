@@ -199,12 +199,13 @@ confirm a **CPU physical address is safe for `REG_DSI_DMA_BASE`**. See
 `evidence/backlight209mode2.md`. This survey wrote nothing and triggered no DMA.
 
 DEVICE-VERIFIED status: layers 1, 2, 2.5 (mode 1, CI #208 / `L st=3`), the mode-2
-SMMU survey (CI #209 / `L st=4` Bypass) and layer 3b's first-write transmit
+SMMU survey (CI #209 / `L st=4` Bypass), layer 3b first-write transmit
 (CI #210 / `L st=5`, ONE DCS brightness packet, `evidence/backlight210mode3.md`)
-are all device-verified. Layer 3d-α (below) is a HOST-VERIFIED pure-C OS-facing
-control plane; layer 3d-β (the `EnchiladaBacklight : IOService` class body + late
-object) is now HOST-VERIFIED locally (two independent verifications below) but is
-NOT yet CI-compiled or flashed (先核验再上机).
+and layer 3d-beta IOService (CI #211 / `L st=7`, `evidence/backlight211mode4.md`)
+are all device-verified. Layer 3d-alpha is the HOST-VERIFIED pure-C OS-facing
+control plane; layer 3d-beta is CI-compiled and LIVE on device (st=7 Published,
+impersonated=1, max=1023). CoreBrightness userspace acceptance is UNCONFIRMED
+(req=0) and no optical brightness readback exists — see the evidence document.
 
 ## Layer 3a: brightness-transmit orchestrator (HOST-VERIFIED, not flashed)
 
@@ -313,11 +314,12 @@ header check, and an arm64 `-mgeneral-regs-only` object all pass (the strict
 compile caught one real sign-conversion at `stats[6]`, fixed). It is the 7th
 object in `libEnchiladaMsmDsi.a`.
 
-**No hardware claim**: layer 3d-α is pure C + host tests only — no IOKit class, no
-metaclass, no register access. The IOService class body that calls these functions
-is layer 3d-β (below), now written and HOST-VERIFIED locally but NOT yet flashed.
+**No hardware claim (for 3d-α itself)**: layer 3d-α is pure C + host tests only —
+no IOKit class, no metaclass, no register access. The IOService class body that
+calls these functions is layer 3d-β (below), now CI #211-compiled and
+DEVICE-VERIFIED via backlight211mode4 (`L st=7`).
 
-## Layer 3d-β: `EnchiladaBacklight : IOService` (HOST-VERIFIED, not flashed)
+## Layer 3d-β: `EnchiladaBacklight : IOService` (CI #211 + DEVICE-VERIFIED)
 
 `package/EnchiladaBacklight.cpp` is the OS-facing service — deliberately THIN: the
 smallest possible IOKit ABI surface, delegating every brightness decision to the
@@ -377,7 +379,11 @@ remote baseline — the three mode bodies byte-identical, the 1/2/3/4 dispatcher
 1023 (not 2047) in code, non-blocking `setProperties`, and a unit test of the
 recipe's `text_bytes()` Mach-O `__TEXT,__text` parser on a synthetic object.
 
-**No hardware claim**: this is HOST-VERIFIED only. The real XNU ABI check requires
-a CI build (CI #207 lesson: local stubs are not equivalent), and on-device
-verification of metaclass lookup + CoreBrightness acceptance + real brightness
-change is the next objective. NOT flashed, NOT claimed device-verified.
+**DEVICE-VERIFIED (CI #211 + backlight211mode4)**: the real XNU ABI check passed
+(macOS 26 / Xcode 26.6, `PASS: libEnchiladaMsmDsi.a (8 objects, sha256
+f9da0b7cd36d30af)`, 0 errors across 20 archive logs), and the flashed kernel
+produced 510 `L st=7` rows with `impersonated=1` and `max=0x3ff` on a fresh boot
+(two independent device verifiers PASS). The service published
+`IODisplayParameters.brightness` and registered. NOT proven: a measured panel
+luminance change (no optical readback) and CoreBrightness userspace acceptance
+(`req=0`, no setProperties captured). Full detail: `evidence/backlight211mode4.md`.
