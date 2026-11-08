@@ -99,7 +99,7 @@ evidence = [
 
 [[area]]
 id = "display"
-status = "implemented"
+status = "device-verified"
 components = ["GopFramebuffer"]
 paths = ['package/EnchiladaBacklight.cpp', 'drivers/NativeMsmDsi/MsmDsiControl.c', 'drivers/NativeMsmDsi/MsmDsiControl.h', 'drivers/NativeMsmDsi/tests/msm-dsi-control-test.cpp', "scripts/check-enchilada-applearmbacklight-metaclass.py", "evidence/applearmbacklight-metaclass.md", "drivers/NativeMobileDisplay/**", "scripts/build-native-legacy-display.py", "package/BootLog.c", "enchilada-facts/parsed.txt", "drivers/NativeDsiBacklight/**", "scripts/check-enchilada-dsi-backlight-host.py", "drivers/NativeMsmDsi/**", "scripts/build-enchilada-msm-dsi.py", "scripts/check-enchilada-msm-dsi-host.py", "configs/enchilada_defconfig", "scripts/check-enchilada-archives-linked.py", "drivers/NativeMsmDsi/MsmDsiSession.c", "drivers/NativeMsmDsi/MsmDsiSession.h", "drivers/NativeMsmDsi/tests/msm-dsi-session-test.cpp", "package/EnchiladaBacklightProbe.cpp", "package/BootProgress.c", "package/BootProgressStubs.c", "package/BootProgressStubs.symbols", "drivers/NativeMsmDsi/MsmDsiSmmu.c", "drivers/NativeMsmDsi/MsmDsiSmmu.h", "drivers/NativeMsmDsi/tests/msm-dsi-smmu-test.cpp", "drivers/NativeMsmDsi/MsmDsiBrightness.c", "drivers/NativeMsmDsi/MsmDsiBrightness.h", "drivers/NativeMsmDsi/tests/msm-dsi-brightness-test.cpp"]
 inputs = ["Samsung sofef00 AMOLED DSI panel, 1080x2280 @ 60 Hz, 4 lanes RGB888; vendor DTS node qcom,mdss_dsi_samsung_sofef00_m_cmd declares qcom,mdss-dsi-bl-pmic-control-type = bl_ctrl_dcs, brightness 0..1023 (0x3ff); Linux v6.12 panel-samsung-sofef00.c uses mipi_dsi_dcs_set_display_brightness_large().", "Linux v6.12 drivers/gpu/drm/drm_mipi_dsi.c and include/video/mipi_display.h: DCS long write 0x39 with tx [0x51, b>>8, b&0xff]; WRITE_CONTROL_DISPLAY 0x53/0x20 and WRITE_POWER_SAVE 0x55/0x00 are 0x15 short writes.", "CMD-DMA address question (layer-3 blocker): Linux v6.12 dsi_host.c dsi_tx_buf_alloc_6g()/dsi_dma_base_get_6g() feed REG_DSI_DMA_BASE a display-SMMU IOVA via msm_gem_get_and_pin_iova, while the whole enchilada tree (NativeUfs.cpp:949-954, Dwc3Gadget.cpp:196-221) uses physical addresses assuming an apps_smmu bypass context bank; the two agree only when SCTLR.M==0 (translation off). Vendor DTS iommus display streams are 0x880/0x8 and 0xc80/0x8 (mdp :853), 0x881/0x8 and 0xc81/0x8 (sde_sec_cb :995), 0x1090/0x0 and 0x1091/0x0 (rot :3393/:3399); apps_smmu phandle 0x29 @ 0x15000000. These differ from sheng/SM8550's 0x1c00/0x1c02 and there was NO display-SMMU diagnostic row in the backlight208 / console206 boot logs, so bypass on this board was UNCONFIRMED until the mode-2 read-only survey (backlight209mode2, CI #209) DEVICE-CONFIRMED it: 510 L rows st=4, verdict=Bypass, stream 0x880, S2CR.TYPE=0 / SCTLR=0xe0 (M=0) => translation OFF, so a CPU physical address is safe for REG_DSI_DMA_BASE."]
@@ -237,19 +237,60 @@ evidence = [
 
 [[area]]
 id = "network"
-status = "planned"
+status = "host-verified"
 components = ["Ath12kWifi", "WifiProbe", "WifiNet", "MhiBoot"]
-paths = ["package/Wifi*", "package/MhiBoot*", "scripts/*wifi*", "scripts/*mhi*", "configs/enchilada_defconfig"]
-inputs = ["WCN3990 Wi-Fi (&wifi with vdd-0.8-cx-mx / 1.8-xo / 1.3-rfa / 3.3-ch0 / 3.3-ch1 regulators and qcom,snoc-host-cap-8bit-quirk); ath10k-class, not ath12k; MHI boot path."]
-configuration = ["No Wi-Fi CONFIG_*=y, no [network] section, no firmware files; /chosen boot args do not enable sheng-wifi."]
-procedure = ["Follow /zh/porting/network; sheng uses sheng-wifi=5 with Ath12kWifi/WifiProbe/WifiNet/MhiBoot and late-object linkage."]
-findings = ["sheng's Ath12kWifi is WCN785x / SM8550; enchilada's WCN3990 is a different generation. The 8-stage order places Wi-Fi after GPU, so this work is gated on stage 5 anyway."]
-completion = ["Scanning, association, address configuration and sustained receive/transmit traffic pass with the selected firmware."]
-limits = ["0/4 network components; no firmware; the BTAudioHALPlugin factory is NULLed by board.toml:400-402 text_fixups to keep Bluetooth from starting."]
-next_action = ["Stage 6: select the WCN3990 firmware set (board data + ath10k/WCN3990 MHI), then decide between a WifiNet-style shim and a native IO80211 family port."]
+paths = [
+  "drivers/NativeWcn/**",
+  "scripts/check-enchilada-wcn-host.py",
+  "evidence/stage6-network-feasibility.md",
+  "package/Wifi*",
+  "package/MhiBoot*",
+  "scripts/*wifi*",
+  "scripts/*mhi*",
+  "configs/enchilada_defconfig",
+]
+inputs = [
+  'Stage 6 (2026-11-08) HOST-VERIFIED audit: enchilada Wi-Fi is WCN3990 = ath10k ATH10K_BUS_SNOC (memory-mapped qcom,icnss membase 0x18800000, 12 Copy Engine IRQs, QMI/WLFW firmware + SCM/TrustZone MSA permissions), NOT sheng WCN7850 = ath12k PCIe0 endpoint 17cb:1107 + MHI BHI/BHIE. Four independent research passes: https://unixnu.com/zh/porting/network, vendor DTB Mu-Silicium/Resources/DTBs/enchilada.dts, Linux v6.12 ath10k/snoc.c + hw.h + qmi.c, sheng package/WifiPcieTables.h + MhiBoot.h + workspace/246-log inventory.',
+  'Vendor DTB :7908-7924 qcom,icnss@18800000: compatible=qcom,icnss, reg=<0x18800000 0x800000 0xa0000000 0x10000000 0xb0000000 0x10000>, reg-names membase/smmu_iova_base/smmu_iova_ipa, 12 CE interrupts SPI 414..425, qcom,wlan-msa-memory=<0x100000>, 5 vdd-* supplies, qcom,smmu-s1-bypass. NO PCIe endpoint and NO 17cb:1107. :6850 wcn3990 = qcom,btfmslim_slave and :25057 bt_wcn3990 = qca,wcn3990 are Bluetooth SLIMbus, not the Wi-Fi MAC.',
+  'CORRECTION (2026-11-08): the old inputs/next_action claim that WCN3990 uses an "MHI boot path" / "ath10k/WCN3990 MHI" was WRONG. MHI belongs only to sheng WCN7850 PCIe. WCN3990 SNOC boots via QRTR/WLFW QMI service lookup + qcom_scm_assign_mem SCM MSA permissions + an SDM845-specific msleep(20) XPU hack (Linux v6.12 qmi.c). Kept as [HISTORICAL, corrected] below for traceability.',
+  '[HISTORICAL, corrected 2026-11-08] WCN3990 Wi-Fi (&wifi with vdd-0.8-cx-mx / 1.8-xo / 1.3-rfa / 3.3-ch0 / 3.3-ch1 regulators and qcom,snoc-host-cap-8bit-quirk); ath10k-class, not ath12k; MHI boot path.',
+]
+configuration = [
+  'Stage 6 HOST-VERIFIED module drivers/NativeWcn (WcnChip.h/.c, tests/wcn-chip-test.cpp, scripts/check-enchilada-wcn-host.py) encodes WCN3990 SNOC vs WCN7850 PCIe identity, the 3 WCN3990 firmware roles and a wcn_chip_assess() gate. It is NOT linked into the kernel, maps no register, loads no firmware and joins no network.',
+  'No Wi-Fi CONFIG_*=y, no [network] section, no firmware files; /chosen boot args do not enable sheng-wifi. All 16 WCN3990 firmware/board/cal names (board.bin, board-2.bin, firmware-2..6.bin, wlanmdsp.mbn, mba.b00, Data.msc, wlfw, bdwlan.bin, otp.bin, utf.bin, qwlan30.bin, qwlan.bin) are absent from the workspace.',
+]
+procedure = [
+  'Verification 1: python scripts/check-enchilada-wcn-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe --out work/tmp/wcn-host-out (12 test groups, sanitizers when available). Verification 2: strict clang -std=c11 -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow -O2 -c WcnChip.c + an independent wcn-dump byte/verdict dump.',
+  'Method: four independent research passes BEFORE any code (official network guide, vendor DTB, Linux v6.12 ath10k snoc.c/hw.h/qmi.c, sheng WifiPcieTables.h/MhiBoot.h + 246 decoded device logs + workspace inventory), then a pure-C host module; no CI, no flash, no device verification.',
+  '[HISTORICAL, kept for traceability] Follow /zh/porting/network; sheng uses sheng-wifi=5 with Ath12kWifi/WifiProbe/WifiNet/MhiBoot and late-object linkage (PCIe/MHI, not reusable for SNOC).',
+]
+findings = [
+  'STAGE 6 HOST-VERIFIED (2026-11-08): WCN3990 and WCN7850 differ in BUS and GENERATION. Linux v6.12 ath10k/snoc.c: of_match "qcom,wcn3990-wifi", ATH10K_BUS_SNOC, DMA_BIT_MASK(35), msa_size 0x100000, 12 WLAN_CE, 5 regulators, WCN3990_HW_1_0_FW_DIR ath10k/WCN3990/hw1.0, board-2.bin + firmware-N.bin. qmi.c boot = QRTR/WLFW QMI (WLFW service lookup, ind_register, host_cap 8bit quirk, msa_info, SDM845 msleep(20) XPU hack, qcom_scm_assign_mem SCM MSA permissions, msa_ready, cap, BDF download, cal report, WLAN mode). Official guide + sheng WifiPcieTables.h/MhiBoot.h: WCN7850 = SM8550 PCIe0 endpoint 17cb:1107, QMP PHY 0x1c06000, MSI SPI 141, MHI BHI/BHIE boot, sheng-wifi=5. Firmware, boot chain, transport and endpoint all differ => sheng 4 components cannot be reused.',
+  'STAGE 6 DECISION (load-bearing): the full Wi-Fi path is BLOCKED on enchilada now. (a) WCN3990 firmware/board/cal blobs (board-2.bin, firmware-N.bin, qcom,xo-cal-data) are absent; (b) no ath10k SNOC backend exists and the official guide requires verifying the endpoint hardware version + firmware support before choosing definitions; (c) the QRTR/WLFW QMI + SCM/TrustZone MSA boot chain has no iOS equivalent; (d) iOS IO80211/Apple80211/Skywalk ABI is closed-source and this host has no macOS/Xcode (CI is the only ABI authority); (e) 246 decoded device logs have ZERO Wi-Fi-driver literals (IO80211/Apple80211/IO80211Controller/IOSkywalk/AirPort/ath10k/ath12k/WCN3990/WCN7850/17cb:1107/wlan/WLAN/MHI/QRTR/wlfw/QMI/nw_wifi/sheng-wifi/board.bin/BSS/SSID/association/IOEthernet/IONetworking all 0). wcn_chip_assess(WCN3990, fw=0, backend=0, boot=0, abi=0) returns 0x1e (FIRMWARE|BACKEND|FW_BOOT|OS_ABI) and stays 0x0c (BACKEND|FW_BOOT) even when all firmware and every boolean are forced to 1; WCN_FEASIBLE 0x00 only for the matching PCIe/MHI WCN7850 reference.',
+  'RETROSPECTIVE log analysis: WiFi/wifi hits are userspace daemons (wifid, WiFiCloudAssetsXPCService), scan hits are display [scanout prepare] not Wi-Fi BSS scan, en0 hits are touch HID hex noise. The earlier "MHI boot path" wording is corrected above.',
+  '[HISTORICAL, superseded 2026-11-08] sheng Ath12kWifi is WCN785x / SM8550; enchilada WCN3990 is a different generation. The 8-stage order places Wi-Fi after GPU, so this work is gated on stage 5 anyway. (Stage 5 is now a completed host-verified, blocked audit; the real blocker is the bus/generation/firmware/OS-ABI gap.)',
+]
+completion = [
+  'Official completion criteria (NOT met, retained): Scanning, association, address configuration and sustained receive/transmit traffic pass with the selected firmware.',
+  'Stage 6 HOST-VERIFIED scope actually completed: WCN3990 SNOC identity + cross-bus/generation gap + firmware/firmware-boot/backend/OS-ABI blockers encoded in tested pure C (12 host tests, strict compile), plus a durable evidence record. No device, CI or firmware claim.',
+]
+limits = [
+  'HOST-VERIFIED ONLY: no CI compile, no flash, no device verification, no SNOC register read, no firmware load, no QMI/WLFW service discovery, no SCM/TrustZone MSA assignment, no CE ring bring-up, no BSS scan, no association, no traffic. Zero of the four sheng network components are implemented for this device.',
+  'BLOCKED on (a) the WCN3990 firmware set (board-2.bin BDF, firmware-N.bin, qcom,xo-cal-data), (b) a new ath10k SNOC host backend (membase map + 12 Copy Engine rings + 5 regulators + MSA reserved memory), (c) an OS equivalent of the QRTR/WLFW QMI + SCM/TrustZone MSA-permission boot chain (incl. the SDM845 20 ms XPU delay), (d) a selected OS IO80211/Apple80211/Skywalk ABI. Until those exist stage 6 cannot become device-verified.',
+  '[HISTORICAL, retained] 0/4 network components; no firmware; the BTAudioHALPlugin factory is NULLed by board.toml:400-402 text_fixups to keep Bluetooth from starting.',
+]
+next_action = [
+  'Stage 6 DONE (HOST-VERIFIED, 2026-11-08): WCN3990 identification + feasibility audit committed as a host-verified module with a host evidence entry; the full Wi-Fi path is honestly recorded as blocked on firmware + SNOC backend + QMI/SCM boot chain + closed OS network ABI; the old "MHI boot path" error is corrected.',
+  'NEXT (only if unblocking stage 6): obtain the WCN3990 firmware set, build a new ath10k SNOC backend (NOT a port of sheng PCIe/MHI), provide an OS equivalent of the QRTR/WLFW QMI + SCM/TrustZone MSA boot chain, select the OS network ABI, then flash a read-only membase probe, bring up QMI firmware, scan, associate and sustain traffic - each step with CI + two independent device verifications.',
+  '[HISTORICAL, corrected 2026-11-08] Stage 6: select the WCN3990 firmware set (board data + ath10k/WCN3990 MHI), then decide between a WifiNet-style shim and a native IO80211 family port. (MHI is wrong for WCN3990; it is a QMI/WLFW SNOC device.)',
+  'Strict 8-stage order then continues with the remaining areas: audio (AdspProbe/AudioProbe, WCD9340/MAX98927), cellular (QcomBaseband), memory (ArmSmmu4K) and power (CpuFreqProbe/ShengPlatformPower/ShengBattery).',
+]
 evidence = [
-  { kind = "source", reference = "https://unixnu.com/zh/porting/network", result = "Official Wi-Fi stage and its four components." },
-  { kind = "source", reference = "configs/enchilada_defconfig", result = "No Wi-Fi options enabled." },
+  { kind = "host", reference = "evidence/stage6-network-feasibility.md", result = "HOST-VERIFIED WCN3990 identification + feasibility audit (2026-11-08): four independent research passes (official /zh/porting/network guide, vendor DTB qcom,icnss@18800000, Linux v6.12 ath10k/snoc.c + hw.h + qmi.c, sheng WifiPcieTables.h/MhiBoot.h + 246 decoded device logs + workspace inventory). Pass 1 host runner: PASS 12 test groups + sanitizers-off PASS (HOST_TEST_EXIT=0). Pass 2 strict C11 -Wconversion/-Wsign-conversion/-Wshadow/-pedantic compile exit 0 + independent wcn-dump (WCN3990 membase=18800000 msa=00100000 ce=12 regs=5 bus=1 boot=1; WCN7850 pci=17cb:1107 bus=2 boot=2; assess(WCN3990,fw=0)=1e, assess(WCN3990,fw=ALL,all=1)=0c, assess(WCN7850,fw=ALL,all=1)=00). Decision: full stage-6 Wi-Fi path BLOCKED (WCN3990 firmware/board/cal blobs absent, SNOC vs PCIe/MHI cross-generation gap, QMI/QRTR/SCM/TrustZone boot chain has no iOS equivalent, closed IO80211/Apple80211 ABI, zero Wi-Fi-driver literals in 246 logs). Honest correction: WCN3990 is SNOC + QMI/WLFW, NOT an MHI boot path; MHI is sheng WCN7850 PCIe only. No CI / no flash / no device verification.", command = "python scripts/check-enchilada-wcn-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe --out work/tmp/wcn-host-out", revision = "9c6904c1d3ad855c392780a6c933fa18ff079a6e" },
+  { kind = "source", reference = "https://unixnu.com/zh/porting/network", result = "Official Wi-Fi stage: four components Ath12kWifi/WifiProbe/WifiNet/MhiBoot target WCN7850 on SM8550 PCIe0 (17cb:1107, MHI BHI/BHIE, sheng-wifi=5); section 1 requires verifying the endpoint hardware version + firmware support before choosing definitions." },
+  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/net/wireless/ath/ath10k/snoc.c", result = "Linux v6.12 ath10k SNOC driver: WCN3990 = ATH10K_BUS_SNOC (qcom,wcn3990-wifi), 12 CE, 5 regulators, msa_size 0x100000, QMI/WLFW firmware boot. No PCIe/MHI." },
+  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/net/wireless/ath/ath10k/qmi.c", result = "Linux v6.12 ath10k QMI/WLFW boot chain: qcom_scm_assign_mem SCM MSA permissions (TrustZone), SDM845 msleep(20) XPU hack, BDF download, cap + cal report + WLAN mode." },
+  { kind = "source", reference = "configs/enchilada_defconfig", result = "No Wi-Fi options enabled; documents the current absence of a network backend." },
 ]
 
 [[area]]
