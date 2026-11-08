@@ -42,12 +42,21 @@
 // the Dwc3Gadget.cpp:306-313 cleanDma / NativeUfs.cpp:1150-1155 pattern. Only ONE packet
 // is sent; later 1 Hz polls just republish the stored result so the L row stays stable.
 //
-// This file is a THIN wiring shim. Modes 1/2 define NO IOKit C++ classes; mode 3 USES the
-// existing IOBufferMemoryDescriptor class but still defines no IOService subclass and no
-// OSMetaClass, so it needs NO late-object objcopy. All logic lives in the pure-C,
-// host-tested drivers/NativeMsmDsi/*.c, compiled into the same libEnchiladaMsmDsi.a
-// archive (already -force_load'ed by configs/enchilada_defconfig). The C++ ABI surface
-// stays limited to a plain function, like EnchiladaCpuFreq.cpp / EnchiladaTouchProbe.cpp.
+// `enchilada-backlight=4` is the OS-facing service (stage 3, layer 3d beta): the 1 Hz
+// poll drives package/EnchiladaBacklight.cpp's registered EnchiladaBacklight : IOService
+// (which impersonates the built-in AppleARMBacklight metaclass, publishes
+// IODisplayParameters.brightness {0..1023}, and accepts setProperties() from backboardd).
+// Its setProperties() only records a goal; the actual DCS transmit happens on this file's
+// 1 Hz tick via enchilada_backlight_transmit(), which reuses the mode-3 DEVICE-VERIFIED
+// low DMA buffer + clean + 32-bit gate. This closes the loop from an OS brightness request
+// to a real panel DCS packet. Modes 1/2/3 function bodies remain byte-for-byte unchanged.
+//
+// This file is a THIN wiring shim. Modes 1/2 define NO IOKit C++ classes; mode 3 uses the
+// existing IOBufferMemoryDescriptor class but defines no IOService subclass. Mode 4's
+// IOService subclass lives in a SEPARATE object (EnchiladaBacklight.cpp) whose C++ static
+// initializer is staged by the late-objcopy step in scripts/build-enchilada-msm-dsi.py.
+// All logic lives in the pure-C, host-tested drivers/NativeMsmDsi/*.c, compiled into the
+// same libEnchiladaMsmDsi.a archive (already -force_load'ed by configs/enchilada_defconfig).
 #include <pexpert/pexpert.h>
 #include <stdint.h>
 #include <kern/task.h>                       // kernel_task (Dwc3Gadget.cpp:205 allocation pattern)
@@ -72,6 +81,12 @@ uint64_t armcpu_map_physical(uint64_t physical, uint64_t length) __attribute__((
 // package/BootProgressStubs.c:65. The type matches package/BootLog.c:174 exactly
 // (C linkage does not type-check across TUs); the L row reads stats[0..9].
 volatile int32_t native_backlight_stats[10];
+
+// Mode 4 (layer 3d beta): these two live in package/EnchiladaBacklight.cpp (the C++
+// IOService object, same -force_load archive). weak_import so this shim still links if
+// that object is absent; the dispatcher guards every call with &function.
+void enchilada_backlight_service_probe(void) __attribute__((weak_import));
+void enchilada_backlight_service_tick(uint64_t now_ms) __attribute__((weak_import));
 }
 
 namespace {
@@ -242,7 +257,77 @@ void pollMode3(void) {
     }
     msm_dsi_brightness_publish(&gResult, &gCounters, native_backlight_stats);
 }
+
+// Mode 4 (layer 3d beta): lazy, one-time setup of the SAME low, physically-contiguous
+// DMA buffer + 6G-shifted DSI0 mapping that mode 3 uses. Kept in a SEPARATE function so
+// the device-verified pollMode3() body stays byte-for-byte unchanged. Modes 3 and 4 are
+// mutually exclusive per boot, so sharing these file-scope globals is safe. The 32-bit
+// REG_DSI_DMA_BASE gate lives inside msm_dsi_brightness_send() and is re-checked on
+// every transmit (先核验再上机), so a high allocation can never be written to the
+// controller. Returns true only when all three resources are ready.
+bool ensureTransmitResources(void) {
+    if (!gDsiVa) {
+        uint64_t base = armcpu_map_physical(MSM_DSI0_CTRL_PHYS, 0x400u);
+        if (base) gDsiVa = static_cast<uintptr_t>(base) + MSM_DSI0_REG_SHIFT;
+    }
+    if (gDsiVa && !gDmaVirt) {
+        if (!gDma) {
+            gDma = IOBufferMemoryDescriptor::inTaskWithOptions(
+                kernel_task,
+                static_cast<IOOptionBits>(kIODirectionInOut) |
+                    static_cast<IOOptionBits>(kIOMemoryPhysicallyContiguous) |
+                    static_cast<IOOptionBits>(kIOMemoryMapperNone),
+                kMode3DmaBytes, 4096);
+        }
+        if (gDma) {
+            uint8_t *v = static_cast<uint8_t *>(gDma->getBytesNoCopy());
+            IOByteCount contiguous = 0;
+            uint64_t p = gDma->getPhysicalSegment(0, &contiguous, kIOMemoryMapperNone);
+            if (v && p && !(p & 4095) && contiguous >= kMode3DmaBytes) {
+                gDmaVirt = v;
+                gDmaPhys = p;
+            }
+        }
+    }
+    return gDsiVa && gDmaVirt && gDmaPhys;
+}
+
+// Mode 4: drive the registered OS service. The 1 Hz clock (polls*1000 ms) is injected so
+// the pure-C control plane can advance its 16.16 fade; setProperties() from backboardd
+// only records a goal, and the actual DCS packet is emitted by the transmit hook on the
+// tick after a level change. probe()/tick() are weak_import (defined in the separate
+// EnchiladaBacklight.cpp object); the guards keep this shim linkable without that object.
+void pollMode4(void) {
+    gPolls = gPolls + 1;
+    if (&enchilada_backlight_service_probe) enchilada_backlight_service_probe();
+    if (&enchilada_backlight_service_tick)
+        enchilada_backlight_service_tick(static_cast<uint64_t>(gPolls) * 1000u);
+}
 }  // namespace
+
+// The DEVICE-VERIFIED transmit path, now callable from the OS-facing IOService object
+// (EnchiladaBacklight.cpp declares it weak_import). Reuses the mode-3 low DMA buffer,
+// clean and 32-bit gate. Returns the outcome stage (5 = Tx OK, -1/-2/-3/-4 = refused),
+// which EnchiladaBacklight.cpp stores in gControl.last_rc for the L row.
+extern "C" int enchilada_backlight_transmit(uint16_t level) {
+    if (!ensureTransmitResources()) return kMsmDsiBrightnessStageNoIo;
+    struct msm_dsi_io io = {};
+    io.ctx = reinterpret_cast<void *>(gDsiVa);
+    io.rd = ioRd;
+    io.wr = ioWr;
+    io.wmb = ioWmb;
+    io.delay_us = ioDelayUsSpin;   // CPU spin, NOT WFE (RootCommands.h:22)
+    struct msm_dsi_brightness_result r = {};
+    msm_dsi_brightness_send(&io, gDmaVirt, kMode3DmaBytes, gDmaPhys,
+                            cleanDma, nullptr, level, &r);
+    if (r.stage == kMsmDsiBrightnessStageTx)
+        gCounters.sent = gCounters.sent + 1;
+    else if (r.stage == kMsmDsiBrightnessStageAddrTooHigh)
+        gCounters.addr_high = gCounters.addr_high + 1;
+    else if (r.stage == kMsmDsiBrightnessStageDma)
+        gCounters.dma_err = gCounters.dma_err + 1;
+    return r.stage;
+}
 
 // Called once a second by package/BootProgress.c monitor(). Idempotent: after the first
 // successful map each mode only re-publishes, so a missing mapping stays at the weak
@@ -257,7 +342,7 @@ extern "C" void enchilada_backlight_poll(void) {
         absent = true;
         return;   // default off: leave native_backlight_stats at the weak zeros
     }
-    if (mode != 1 && mode != 2 && mode != 3) {
+    if (mode != 1 && mode != 2 && mode != 3 && mode != 4) {
         absent = true;
         return;   // any other value is "off" too
     }
@@ -267,5 +352,6 @@ extern "C" void enchilada_backlight_poll(void) {
 
     if (mode == 1) pollMode1();
     else if (mode == 2) pollMode2();
-    else pollMode3();
+    else if (mode == 3) pollMode3();
+    else pollMode4();   // layer 3d beta: registered OS-facing service (CI + device pending)
 }

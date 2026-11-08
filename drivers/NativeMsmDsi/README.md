@@ -188,7 +188,7 @@ ReadOnly (`writes==0`, every read < window), null refusals, the 10-slot packing,
 the exact built-in stream list, and `msm_smmu_survey_publish()` writing a volatile
 `int32_t[10]` L-row (stage 4 + poll count); plus strict C11, C++20 `-Wdeprecated-volatile`, and
 `-target arm64-apple-darwin -mgeneral-regs-only` compiles. It is compiled into the
-same force-loaded `libEnchiladaMsmDsi.a` (7 objects as of layer 3d-α).
+same force-loaded `libEnchiladaMsmDsi.a` (8 objects as of layer 3d-β).
 
 **DEVICE-VERIFIED (backlight209mode2, CI #209)**: the gated
 `enchilada-backlight=2` mode-2 probe mapped `apps_smmu 0x15000000` read-only, ran
@@ -203,7 +203,8 @@ SMMU survey (CI #209 / `L st=4` Bypass) and layer 3b's first-write transmit
 (CI #210 / `L st=5`, ONE DCS brightness packet, `evidence/backlight210mode3.md`)
 are all device-verified. Layer 3d-α (below) is a HOST-VERIFIED pure-C OS-facing
 control plane; layer 3d-β (the `EnchiladaBacklight : IOService` class body + late
-object) is not written/flashed yet (先核验再上机).
+object) is now HOST-VERIFIED locally (two independent verifications below) but is
+NOT yet CI-compiled or flashed (先核验再上机).
 
 ## Layer 3a: brightness-transmit orchestrator (HOST-VERIFIED, not flashed)
 
@@ -314,7 +315,69 @@ object in `libEnchiladaMsmDsi.a`.
 
 **No hardware claim**: layer 3d-α is pure C + host tests only — no IOKit class, no
 metaclass, no register access. The IOService class body that calls these functions
-and drives the 16 ms timer/work-loop (layer 3d-β) still needs the late-object
-objcopy (`--remove-section=__DATA,__mod_init_func
---globalize-symbol=__GLOBAL__sub_I_EnchiladaBacklight.cpp`), CI compilation under
-real XNU headers, and an on-device CoreBrightness/metaclass-lookup check.
+is layer 3d-β (below), now written and HOST-VERIFIED locally but NOT yet flashed.
+
+## Layer 3d-β: `EnchiladaBacklight : IOService` (HOST-VERIFIED, not flashed)
+
+`package/EnchiladaBacklight.cpp` is the OS-facing service — deliberately THIN: the
+smallest possible IOKit ABI surface, delegating every brightness decision to the
+layer-3d-α pure-C core and the layer-3b DEVICE-VERIFIED transmit path. It is the
+8th object in `libEnchiladaMsmDsi.a` and is staged through a late-object objcopy.
+
+Research (two independent passes, before any code): sheng's 384-line
+`AppleARMBacklight.cpp` + the upstream 406-line ptrauth variant define
+`ShengBacklight : IOService` and impersonate the built-in `AppleARMBacklight`
+metaclass (`IOObjectConformsTo(service,"AppleARMBacklight")` is what CoreBrightness
+needs to start libEDR). Two decisive host experiments proved the cached raw XNU
+source tree is NOT a compilable SDK (missing MIG-generated types, `#error
+processor not supported`), so local verification uses faithful ABI-SHAPE stubs
+(`work/tmp/backlight-stubs/_bl_all.h`) and CI (macOS 26.6 + Xcode 26.6 +
+iPhoneOS SDK) remains the ONLY ABI authority (CI #207 lesson). The enchilada
+incarnation differs from sheng in three load-bearing ways:
+
+- **Class name**: `EnchiladaBacklight`, NEVER `AppleARMBacklight` — `AppleARMPlatform`
+  already registers that metaclass; a duplicate name panics the kernel (int-229).
+- **Brightness range**: publishes `IODisplayParameters.brightness {min=0, max=1023,
+  value}` (the sofef00 DCS `bl-max=0x3ff`), NOT sheng's KTZ8866 2047.
+- **Transmit**: `setProperties()` is NON-BLOCKING (no runAction, no register write,
+  no DMA — sheng's explicit warning about blocking backboardd); the real DCS send
+  happens on the 1 Hz tick via `enchilada_backlight_transmit()` defined in
+  `EnchiladaBacklightProbe.cpp`, reusing mode-3's device-proven
+  `IOBufferMemoryDescriptor` + `dc civac`/`dsb sy` + 32-bit `REG_DSI_DMA_BASE` gate.
+
+It answers the sandbox-grant keys sheng uses (`backlight-control=true`,
+`NativeSandboxGrantProcess="backboardd"`), supports BOTH `#if
+__has_feature(ptrauth_calls)` (manual metaclass split: `getMetaClass()` returns the
+`AppleARMBacklight` OSMetaClass once impersonation is armed, no vtable copy — arm64e
+vtables are PAC-signed) and `#else` (`OSDefineMetaClassAndStructors` + vtable slot-7
+replacement), and brackets its C++ static initializer with
+`OSMetaClass::preModLoad`/`postModLoad` (4 enchilada precedents:
+KeyStoreProbe/HidInputProbe/LegacyDisplayProbe/ShengPlatformPower). The static
+initializer symbol `__GLOBAL__sub_I_EnchiladaBacklight.cpp` is removed from
+`__DATA,__mod_init_func` and globalized by `scripts/build-enchilada-msm-dsi.py`'s
+new `late_init()` step (mirror of `build-native-legacy-display.py:315-321`), which
+also asserts the owned `__TEXT,__text` instructions are unchanged by the staging.
+
+`EnchiladaBacklightProbe.cpp` gained mode 4 (`enchilada-backlight=4`): the 1 Hz
+`enchilada_backlight_poll()` calls `enchilada_backlight_service_probe()` once then
+`enchilada_backlight_service_tick(now_ms)`. **pollMode1/2/3 function bodies remain
+byte-for-byte identical to the DEVICE-VERIFIED remote blob** — an independent
+verifier compares each against commit `e200f1ab` (CI #210) via the GitHub contents
+API. `stats[1]` (setProperties request count) is the on-device CoreBrightness
+acceptance signal; stages 6 (init) / 7 (published) / -1 (no metaclass) go into
+`native_backlight_stats[10]`.
+
+Two independent local verifications, both GREEN (`work/tmp/verify_layer3d_beta.py`
+and `verify_layer3d_beta_independent.py`): (1) `clang++ -std=c++20 -target
+arm64-apple-darwin -fsyntax-only -Werror -Wdeprecated-volatile` on BOTH ptrauth
+branches (forced by textual `__has_feature` substitution) + the mode-4 probe shim
+against ABI-shape stubs, plus the full host battery, `porting-record.py check`,
+archive guard and `py_compile`; (2) semantic invariants vs the device-verified
+remote baseline — the three mode bodies byte-identical, the 1/2/3/4 dispatcher,
+1023 (not 2047) in code, non-blocking `setProperties`, and a unit test of the
+recipe's `text_bytes()` Mach-O `__TEXT,__text` parser on a synthetic object.
+
+**No hardware claim**: this is HOST-VERIFIED only. The real XNU ABI check requires
+a CI build (CI #207 lesson: local stubs are not equivalent), and on-device
+verification of metaclass lookup + CoreBrightness acceptance + real brightness
+change is the next objective. NOT flashed, NOT claimed device-verified.

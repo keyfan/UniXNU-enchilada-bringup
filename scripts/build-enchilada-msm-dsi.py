@@ -9,12 +9,20 @@ brightness CONTROL PLANE (drivers/NativeMsmDsi/MsmDsiControl.c), and the thin 1 
 probe shim (package/EnchiladaBacklightProbe.cpp == kits/enchilada/ in the build tree).
 
 Runs as a [kernel] archives builder, after the bootstrap pass left the compile records.
-Mixed C/C++ build, mirroring scripts/build-enchilada-touch.py: the C++ probe uses the
+Mixed C/C++ build, mirroring scripts/build-enchilada-touch.py: the C++ units use the
 flags of iokit/DEVELOPMENT/IOPlatformExpert.cpo.json (no -mgeneral-regs-only), the six
 pure-C units use those of osfmk/DEVELOPMENT/startup.o.json + -mgeneral-regs-only.
-MsmDsiControl.c is the layer-3d(alpha) host-verifiable core: the 0..1023 clamp (vs
-sheng 2047) and the 16.16 fade state machine. The layer-3d(beta) IOService class that
-calls it still needs a late-object objcopy step (build-native-legacy-display.py:315).
+
+Stage-3 layer 3d (beta) adds a SECOND C++ object, package/EnchiladaBacklight.cpp, which
+defines the OS-facing EnchiladaBacklight : IOService (metaclass impersonation,
+IODisplayParameters.brightness {0..1023}, setProperties() from backboardd). Because that
+object has a C++ static initializer (__GLOBAL__sub_I_EnchiladaBacklight.cpp) that must run
+at a CONTROLLED time (between preModLoad and postModLoad, driven by the 1 Hz mode-4 poll),
+it is staged by late_init(): llvm-objcopy --remove-section=__DATA,__mod_init_func
+--globalize-symbol=__GLOBAL__sub_I_EnchiladaBacklight.cpp, exactly like
+scripts/build-native-legacy-display.py:315-321. The __text section bytes are compared
+before/after to prove the staging changed no owned instructions. The .late.o replaces the
+plain .o as the archive member.
 
 Stage-3 layer 2.5 is deliberately READ-ONLY ("xian heyan zai shangji"): the probe maps
 DSI0 at 0xae94004 via the device-proven armcpu_map_physical, reads seven live config
@@ -25,8 +33,9 @@ package/BootProgress.c monitor(); enchilada-backlight=2 is the read-only SMMU su
 (CI #209, DEVICE-VERIFIED Bypass). enchilada-backlight=3 (layer 3b) is the FIRST WRITE:
 it allocates a 32-bit-addressable IOBufferMemoryDescriptor DMA buffer and calls the
 host-verified MsmDsiBrightness.c orchestrator once, with dc civac + dsb sy clean.
-The shim now includes <IOKit/IOBufferMemoryDescriptor.h> but defines no IOService
-subclass, so no late-object objcopy is required. See drivers/NativeMsmDsi/README.md.
+enchilada-backlight=4 (layer 3d beta) is the OS-facing service that closes the loop from
+an OS brightness setProperties() request to that same DEVICE-VERIFIED transmit path.
+Modes 1/2/3 bodies stay byte-for-byte unchanged (all device-verified).
 
 The archive is force-loaded into the kernel by the
 -Wl,-force_load,{tree}/build/enchilada-msm-dsi/libEnchiladaMsmDsi.a entry in
@@ -40,7 +49,9 @@ archive removes the linked kernel to make the next link use it.
 """
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 
@@ -86,12 +97,59 @@ def check_object(path):
         raise SystemExit(f'{path.name}: not an arm64 Mach-O object')
 
 
+def text_bytes(data):
+    """Return the __TEXT,__text section bytes of an arm64 Mach-O object (native_prelink.macho shape)."""
+    magic, cpu, subtype, kind, ncmds, sizeofcmds = struct.unpack_from('<6I', data, 0)
+    off = 32
+    for _ in range(ncmds):
+        cmd, cmdsize = struct.unpack_from('<II', data, off)
+        if cmd == 0x19:  # LC_SEGMENT_64
+            nsects = struct.unpack_from('<I', data, off + 64)[0]
+            sec = off + 72
+            for _s in range(nsects):
+                sectname = data[sec:sec + 16].rstrip(b'\0')
+                segname = data[sec + 16:sec + 32].rstrip(b'\0')
+                if segname == b'__TEXT' and sectname == b'__text':
+                    size, fileoff = struct.unpack_from('<Q', data, sec + 40)[0], struct.unpack_from('<I', data, sec + 48)[0]
+                    return data[fileoff:fileoff + size]
+                sec += 80
+        off += cmdsize
+    raise SystemExit('object has no __TEXT,__text section')
+
+
+def find_objcopy():
+    """Same lookup as build-native-legacy-display.py:70-82 (Homebrew llvm on macOS CI)."""
+    objcopy = shutil.which('llvm-objcopy')
+    if not objcopy and shutil.which('brew'):
+        prefix = subprocess.check_output(['brew', '--prefix', 'llvm'], text=True).strip()
+        objcopy = str(Path(prefix) / 'bin/llvm-objcopy')
+    if not objcopy or not Path(objcopy).is_file():
+        raise SystemExit('llvm-objcopy not found on PATH (or via brew --prefix llvm)')
+    return objcopy
+
+
+def late_init(name):
+    """Drop the object's static-initializer registration, globalize the init symbol, and
+    prove the owned __text instructions are unchanged. Mirror
+    scripts/build-native-legacy-display.py:315-321. Returns the staged .late.o path."""
+    source, late = OUT / f'{name}.o', OUT / f'{name}.late.o'
+    objcopy = find_objcopy()
+    subprocess.run([objcopy, '--remove-section=__DATA,__mod_init_func',
+                    f'--globalize-symbol=__GLOBAL__sub_I_{name}.cpp', str(source), str(late)],
+                   check=True, timeout=120)
+    check_object(late)
+    if text_bytes(source.read_bytes()) != text_bytes(late.read_bytes()):
+        raise SystemExit(f'{name}: __text changed by late-init staging')
+    return late
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     cpp_rec = record('iokit/DEVELOPMENT/IOPlatformExpert.cpo.json')
     c_rec = record('osfmk/DEVELOPMENT/startup.o.json')
     units = [
         (cpp_rec, KIT / 'EnchiladaBacklightProbe.cpp', []),
+        (cpp_rec, KIT / 'EnchiladaBacklight.cpp', []),          # layer 3d beta: the IOService object
         (c_rec, MSM / 'MsmDsiSession.c', ['-mgeneral-regs-only']),
         (c_rec, MSM / 'MsmDsiSmmu.c', ['-mgeneral-regs-only']),
         (c_rec, MSM / 'MsmDsiCmd.c', ['-mgeneral-regs-only']),
@@ -111,6 +169,13 @@ def main():
         check_object(obj)
         objects.append(obj)
     (OUT / 'compile-commands.json').write_text(json.dumps(commands, indent=2) + '\n')
+
+    # EnchiladaBacklight.cpp carries a C++ static initializer that the mode-4 poll runs
+    # between preModLoad/postModLoad. Stage it so it is NOT auto-run at load time, and
+    # swap the staged .late.o into the archive member list (build-native-legacy-display.py:389).
+    staged = late_init('EnchiladaBacklight')
+    objects = [staged if o.name == 'EnchiladaBacklight.o' else o for o in objects]
+
     archive = OUT / 'libEnchiladaMsmDsi.a'
     previous = hashlib.sha256(archive.read_bytes()).hexdigest() if archive.is_file() else None
     archive.unlink(missing_ok=True)
@@ -118,7 +183,8 @@ def main():
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     if digest != previous:
         (OBJ_ROOT / 'mach.development.bcm2837.unstripped.noctf').unlink(missing_ok=True)
-    sources = [KIT / 'EnchiladaBacklightProbe.cpp', MSM / 'MsmDsiSession.c', MSM / 'MsmDsiSession.h',
+    sources = [KIT / 'EnchiladaBacklightProbe.cpp', KIT / 'EnchiladaBacklight.cpp',
+               MSM / 'MsmDsiSession.c', MSM / 'MsmDsiSession.h',
                MSM / 'MsmDsiSmmu.c', MSM / 'MsmDsiSmmu.h',
                MSM / 'MsmDsiCmd.c', MSM / 'MsmDsiCmd.h',
                MSM / 'MsmDsiBrightness.c', MSM / 'MsmDsiBrightness.h',
