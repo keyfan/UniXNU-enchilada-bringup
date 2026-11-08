@@ -83,6 +83,7 @@ archives = [
   "build-enchilada-touch.py",           # libEnchiladaTouch.a: S3706B touch over GENI I2C (enchilada-touch=<stage>, default off), see NOTES-touch.md
   "build-enchilada-cpufreq.py",         # libEnchiladaCpuFreq.a: OSM CPU clocks and per-core MHz (enchilada-cpufreq=<n>, default off)
   "build-enchilada-msm-dsi.py",         # libEnchiladaMsmDsi.a: MDSS DSI0 CMD DMA transport + DCS packets (stage-3 layer 2; no runtime probe yet)
+  "build-enchilada-gauge.py",          # libEnchiladaGauge.a: READ-ONLY bq27xxx fuel-gauge probe (enchilada-gauge=1|2, default off), force-loaded
 ]
 
 # The pin and early initializer are the sheng values: the same 21H461 kernelcache. The roots are the sheng list,
