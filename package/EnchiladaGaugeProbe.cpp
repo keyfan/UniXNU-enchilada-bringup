@@ -13,6 +13,21 @@
 //   * IOLog("enchilada-gauge: ...") lands in msgbuf.txt (stage4welcome proved
 //     the identical "enchilada-touch: ..." channel).
 //
+// REPLAY (why this file re-emits instead of logging once): the kernel's msgbuf
+// is a 128 KB ring that keeps only the NEWEST bytes. Measured on device, three
+// single-variable boots (enchilada-deadline=900/240/60) first saturated it at
+// 101.2 s / 87.7 s / 58.8 s -- dominated by userland spew at 1500-3000 B/s --
+// so a verdict logged once at t<8 s is ALWAYS overwritten before the log is
+// collected, and the probe's output was structurally unobservable (three
+// INCONCLUSIVE runs, work/tmp/GAUGE-DIAGNOSIS-3.md). The touch driver survives
+// every boot precisely because it keeps WRITING. So this shim keeps the same
+// single bus transaction and the same single hardware measurement, caches the
+// resulting text, and re-emits that cached text once per second. The newest copy
+// is therefore always inside the ring. A replay is labelled `(replay t=<tick>)`
+// and never re-reads the gauge, so the READ-ONLY contract and the "one physical
+// measurement" property are both preserved -- the log distinguishes the original
+// attempt number from the re-emissions.
+//
 // READ-ONLY CONTRACT ("先核验再上机"): the ONLY bytes emitted to the fuel gauge
 // on the I2C bus are the register-address bytes of standard-command READS --
 // geni_i2c_write_read() sends [START][0x55+W][reg][Repeated START][0x55+R][2]
@@ -65,6 +80,24 @@ unsigned gAttempts = 0;
 bool gDone = false;
 bool gNotArmed = false;
 
+// Replay state: the cached result text plus the attempt that produced it. The
+// same text is re-emitted every 1 Hz tick so the ring always holds a recent copy
+// (see the REPLAY note above). Zero extra bus traffic: nothing here touches MMIO.
+char gReplay[200];
+bool gHaveReplay = false;
+unsigned gReplayAttempt = 0;
+unsigned gTick = 0;
+
+// Copies 'text' into the replay buffer (bounded, always NUL-terminated).
+void setReplay(const char *text) {
+    if (!text) return;
+    unsigned i = 0;
+    for (; text[i] && i + 1 < sizeof gReplay; ++i) gReplay[i] = text[i];
+    gReplay[i] = 0;
+    gHaveReplay = i != 0;
+    gReplayAttempt = gAttempts;
+}
+
 uint32_t rd32(uintptr_t va, uint32_t off) {return *reinterpret_cast<volatile uint32_t *>(va + off);}
 void wr32(uintptr_t va, uint32_t off, uint32_t v) {
     *reinterpret_cast<volatile uint32_t *>(va + off) = v;
@@ -100,13 +133,14 @@ int gaugeRead(void *ctx, uint8_t addr, uint8_t reg, uint8_t *out, size_t len) {
 }
 
 // Read-only survey: GCC vote/branch pages + TLMM pins are always-safe APB regs.
-// Returns the 19.2 MHz DFS level (or -1) in *xoLevel and logs GA1.
+// Returns the 19.2 MHz DFS level (or -1) in *xoLevel and publishes GA1.
 bool survey(int *xoLevel, uint32_t *vote) {
     if (!mapOnce(&gGccVoteVa, GB_GCC_BASE + 0x52000ULL, 0x1000ULL) ||
         !mapOnce(&gGccBranchVa, GB_GCC_BASE + 0x18000ULL, 0x1000ULL) ||
         !mapOnce(&gPinSdaVa, GB_TLMM_BASE + gb_pin_offset(GB_GPIO_SDA), 0x1000ULL) ||
         !mapOnce(&gPinSclVa, GB_TLMM_BASE + gb_pin_offset(GB_GPIO_SCL), 0x1000ULL)) {
         IOLog("enchilada-gauge: GA1 map-failed\n");
+        setReplay("GA1 map-failed");
         return false;
     }
     const uint32_t v = rd32(gGccVoteVa, GB_GCC_VOTE & 0xfffu);
@@ -125,8 +159,15 @@ bool survey(int *xoLevel, uint32_t *vote) {
     int xoL = gb_xo_level(dfsr, perfCfg, perfM, perfN, GB_DFS_LEVELS, cfgNow);
     if (xoLevel) *xoLevel = xoL;
     const uint32_t ctlSda = rd32(gPinSdaVa, 0), ctlScl = rd32(gPinSclVa, 0);
-    IOLog("enchilada-gauge: GA1 vote=%08x m=%08x s=%08x s2=%08x dfs=%08x cfg=%08x xoL=%d sda=%03x scl=%03x\n",
-          v, haltM, haltS, haltS2, dfsr, cfgNow, xoL, ctlSda & 0x3ffu, ctlScl & 0x3ffu);
+    // Formatted once into a buffer so the IOLog text and the 1 Hz replay are the
+    // SAME bytes (snprintf is already used by the device-verified
+    // package/EnchiladaCpuFreq.cpp with these exact headers).
+    char row[200];
+    snprintf(row, sizeof row,
+             "GA1 vote=%08x m=%08x s=%08x s2=%08x dfs=%08x cfg=%08x xoL=%d sda=%03x scl=%03x",
+             v, haltM, haltS, haltS2, dfsr, cfgNow, xoL, ctlSda & 0x3ffu, ctlScl & 0x3ffu);
+    IOLog("enchilada-gauge: %s\n", row);
+    setReplay(row);
     return true;
 }
 
@@ -143,7 +184,13 @@ bool enable(int xoLevel, uint32_t vote) {
              !(rd32(gGccBranchVa, GB_HALT_S2 & 0xfffu) & GB_CBCR_CLK_OFF);
         if (!on) spinUs(10);
     }
-    if (!on) {IOLog("enchilada-gauge: GA2 CLOCKS OFF vote=%08x %uus\n", vote, waitedUs); return false;}
+    if (!on) {
+        char row[120];
+        snprintf(row, sizeof row, "GA2 CLOCKS OFF vote=%08x %uus", vote, waitedUs);
+        IOLog("enchilada-gauge: %s\n", row);
+        setReplay(row);
+        return false;
+    }
     // GPIO55/56 -> qup10 function 1, 2 mA, no bias (qup_i2c10_default).
     const uint32_t cfg = gb_pin_cfg(GB_FUNC_QUP10, 2, GB_PULL_NONE, 0);
     wr32(gPinSdaVa, 0, cfg);
@@ -151,19 +198,35 @@ bool enable(int xoLevel, uint32_t vote) {
     if (!mapOnce(&gWrapperVa, GB_QUP_WRAPPER_BASE, 0x1000ULL) ||
         !mapOnce(&gSeVa, GB_SE_BASE, GB_SE_SIZE)) {
         IOLog("enchilada-gauge: GA2 se-map-failed\n");
+        setReplay("GA2 se-map-failed");
         return false;
     }
     gI2c.se = geni_i2c_io{reinterpret_cast<void *>(gSeVa), ioRd, ioWr, ioDelayUs};
     gI2c.wrapper = geni_i2c_io{reinterpret_cast<void *>(gWrapperVa), ioRd, ioWr, ioDelayUs};
     gI2c.poll_limit = 20000;
     int r = geni_i2c_init(&gI2c);                       // clears ready
-    if (r) {IOLog("enchilada-gauge: GA2 init=%d\n", r); return false;}
+    if (r) {
+        char row[96];
+        snprintf(row, sizeof row, "GA2 init=%d", r);
+        IOLog("enchilada-gauge: %s\n", row);
+        setReplay(row);
+        return false;
+    }
     // geni_i2c_init() sets ready=0; set_clock() must follow to set ready=1.
     const unsigned level = xoLevel >= 0 ? static_cast<unsigned>(xoLevel) : 0u;
     r = geni_i2c_set_clock(&gI2c, level, GB_TCXO_HZ, GB_I2C_HZ);
-    if (r) {IOLog("enchilada-gauge: GA2 clk=%d xoL=%d\n", r, xoLevel); return false;}
-    IOLog("enchilada-gauge: GA2 init=0 clk=0 xoL=%d fw=%04x hz=%u\n",
-          xoLevel, gI2c.info.fw_revision & 0xffffu, GB_I2C_HZ);
+    if (r) {
+        char row[96];
+        snprintf(row, sizeof row, "GA2 clk=%d xoL=%d", r, xoLevel);
+        IOLog("enchilada-gauge: %s\n", row);
+        setReplay(row);
+        return false;
+    }
+    char row[120];
+    snprintf(row, sizeof row, "GA2 init=0 clk=0 xoL=%d fw=%04x hz=%u",
+             xoLevel, gI2c.info.fw_revision & 0xffffu, GB_I2C_HZ);
+    IOLog("enchilada-gauge: %s\n", row);
+    setReplay(row);     // last good row: a later read failure still replays this
     return true;
 }
 }  // namespace
@@ -171,8 +234,20 @@ bool enable(int xoLevel, uint32_t vote) {
 // Called once a second by package/BootProgress.c monitor(). Idempotent and
 // bounded (<= 8 attempts): the first ticks may precede the ArmCpu mapping or
 // the IOKit platform. Default-off; enchilada-gauge=1 survey, =2 survey+read.
+//
+// After a result is latched (gDone) the cached text is RE-EMITTED each tick with
+// an explicit `(replay t=<tick>)` marker: the msgbuf ring is only 128 KB and
+// always wraps within ~60-100 s, so a single early line is unobservable. Replay
+// performs no hardware access -- the measurement happened exactly once.
 extern "C" void enchilada_gauge_poll(void) {
-    if (gDone || gNotArmed) return;
+    gTick++;
+    if (gNotArmed) return;
+    if (gDone) {
+        if (gHaveReplay)
+            IOLog("enchilada-gauge: %s (replay t=%u attempt=%u)\n",
+                  gReplay, gTick, gReplayAttempt);
+        return;             // finished: no further bus traffic, ever
+    }
     unsigned stage = 0;
     if (!PE_parse_boot_argn("enchilada-gauge", &stage, sizeof stage) || stage < 1u || stage > 2u) {
         gNotArmed = true;   // absent (or invalid) -> never run this boot
@@ -200,7 +275,13 @@ extern "C" void enchilada_gauge_poll(void) {
     const int rc = bq_probe_run(&io, &res);
     char line[200];
     (void)bq_probe_format(&res, line, sizeof line);
-    IOLog("enchilada-gauge: rc=%d %s\n", rc, line);
+    // One buffer holds the full verdict INCLUDING rc, so the IOLog and every
+    // replay carry the same machine-parsable `rc=...` prefix that
+    // work/tmp/analyze_gauge*_device_logs.py expects.
+    char row[240];
+    snprintf(row, sizeof row, "rc=%d %s", rc, line);
+    IOLog("enchilada-gauge: %s\n", row);
+    setReplay(row);
     // A clean read (any ACK) is a finished verification; a total no-ACK is
     // retried a few 1 Hz ticks in case the gauge was still starting.
     if (rc == 0 || gAttempts >= 8u) gDone = true;
