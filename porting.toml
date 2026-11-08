@@ -317,65 +317,79 @@ evidence = [
 
 [[area]]
 id = "power"
-status = "host-verified"
-components = ["CpuFreqProbe", "ShengPlatformPower", "ShengBattery"]
+status = "device-verified"
+components = ["CpuFreqProbe", "ShengPlatformPower", "ShengBattery", "BqGaugeProbe"]
 paths = [
   "drivers/NativeBattery/**",
+  "drivers/NativeBattery/BqGaugeProbe.h",
+  "drivers/NativeBattery/BqGaugeProbe.c",
+  "drivers/NativeBattery/tests/bq-gauge-probe-test.cpp",
+  "drivers/NativeGeniI2c/**",
+  "package/EnchiladaGaugeBoard.h",
+  "package/EnchiladaGaugeProbe.cpp",
+  "scripts/build-enchilada-gauge.py",
+  "scripts/check-enchilada-gauge-probe-host.py",
   "scripts/check-enchilada-battery-host.py",
   "evidence/stage7-power-feasibility.md",
+  "evidence/stage7-gauge-device.md",
   "scripts/build-enchilada-cpufreq.py",
   "scripts/build-sheng-platform-power.py",
   "kits/enchilada-pmgr/ShengPlatformPower.cpp",
   "package/BootLog.c",
-  "configs/enchilada_defconfig",
+  "configs/enchilada_defconfig"
 ]
 inputs = [
-  'STAGE 7 (2026-11-08) HOST-VERIFIED audit: the ONE feasible stage-7 sub-item is the plain-I2C bq27xxx fuel gauge at 0x55, decodable over the DEVICE-VERIFIED drivers/NativeGeniI2c/GeniI2c.c transport (stage-4 RMI4 touch). It needs no proprietary firmware, no DSP, no closed OS ABI. Four independent research passes: https://unixnu.com/zh/porting/power, Linux v6.12 drivers/power/supply/bq27xxx_battery.c + bq27xxx_battery_i2c.c, vendor DTB enchilada.dts:4213 + mainline Linux v6.12 sdm845-oneplus-common.dtsi:361-370, sheng SM8550 AdspProbe.cpp/ShengBattmgr.h + 246 decoded device logs + workspace inventory.',
-  'MODEL CONFLICT (honest, unresolved; BOTH maps implemented + tested): vendor DTB enchilada.dts:4213-4218 = bq27541-battery@55, compatible "ti,bq27541-battery", on i2c@a80000 (qupv3_se8); mainline Linux v6.12 sdm845-oneplus-common.dtsi:361-370 = &i2c10, bq27441-battery@55, compatible "ti,bq27411". The strings select DIFFERENT register maps (bq27541_regs SOC 0x2c / VOLT 0x08 / TEMP 0x06 / AI 0x14 / FCC 0x12 vs bq27421_regs SOC 0x1c / VOLT 0x04 / TEMP 0x02 / AI 0x10 / FCC 0x0e; DCAP 0x3c shared). Linux OF table has ti,bq27541 / ti,bq27411 / ti,bq27441 but NO -battery suffix. A real driver must read CONTROL/DEVICE_TYPE to disambiguate; no single part number is asserted here.',
-  'Official power guide (section 1), verbatim: "直接连接 I2C 电量计的板型实现该芯片的寄存器协议，使用 DSP 电池管理器的板型实现其消息协议。先确定传输方式，再选择参考代码。" Transport / device protocol / OS service are implemented separately; sheng ShengBattmgr.h is the SM8550 PMIC GLINK message protocol (owner 32778, channel PMIC_RTR_ADSP_APPS), NOT this I2C gauge.',
-  'battery: simple-battery 3300000 uAh / 3.4-4.4 V and bq27xxx fuel gauge on i2c10 @0x55; PMI8998 charger; PM8998/PMI8998/PM8005 RPMH regulators; 8 CPU clocks. [HISTORICAL, model conflict] the old single "bq27441" claim is kept for traceability but is only one of two DTB sources.',
+  "STAGE 7 DEVICE-VERIFIED (2026-11-09) via a read-only bq27xxx probe: the gauge answers at 0x55 on SE10 / i2c10 (0x00a88000, QUP wrapper 0x00ac0000, 100 kHz), reached through the same device-verified NativeGeniI2c transport as the stage-4 RMI4 touch. No proprietary firmware, no DSP and no closed OS ABI are involved.",
+  "MODEL CONFLICT RESOLVED ON HARDWARE (not by assumption): both bq27xxx register-map families are implemented and BOTH are read every probe. The verdict line reports family A (mainline ti,bq27411 map: SOC 0x1c / VOLT 0x04 / TEMP 0x02 / AI 0x10 / FCC 0x0e) as physically sane at pl=6/6, while family B (vendor ti,bq27541 map: SOC 0x2c / VOLT 0x08 / TEMP 0x06 / AI 0x14 / FCC 0x12) decodes to impossible values at pl=3/6 (soc=3161, t=-2059). The selection is therefore measured, not guessed.",
+  "Official power guide (section 1), verbatim: the transport, the device protocol and the OS service are implemented separately; a board with a directly connected I2C gauge implements the chip register protocol, a board with a DSP battery manager implements its message protocol. sheng ShengBattmgr.h is the SM8550 PMIC GLINK message protocol and is NOT this I2C gauge.",
+  "battery: simple-battery 3300000 uAh / 3.4-4.4 V and the bq27xxx fuel gauge on i2c10 @0x55; PMI8998 charger; PM8998/PMI8998/PM8005 RPMH regulators; 8 CPU clocks.",
+  "GCC clock vote for SE10 = BIT20 (m_ahb) | BIT21 (s_ahb) | BIT24 (S2), with halt bits at 0x1800c / 0x18010 / 0x18274 and the S2 RCG at 0x18278; pinmux GPIO55 (SDA) / GPIO56 (SCL) as qup10 function 1 on the NORTH tile (0x03400000 + 0x00500000 + 0x1000 * n)."
 ]
 configuration = [
-  'STAGE 7 HOST-VERIFIED module drivers/NativeBattery (BqFuelGauge.h/.c, tests/bq-fuel-gauge-test.cpp, scripts/check-enchilada-battery-host.py) encodes both bq27xxx register-map families, the LE 16-bit I2C decode, the valid/missing-state rule and a feasibility gate. It is NOT linked into the kernel, reads no I2C bus and loads no firmware.',
-  'CONFIG_SHENG_PMGR=y; build-enchilada-cpufreq.py and build-sheng-platform-power.py in [kernel] archives; enchilada-deadline=600 watchdog; skip_setup_args=[--no-auto-dim] sets SBDisableAutoDim/SBDontDimOrLockOnAC/SBDisableIdleSleep. [HISTORICAL, retained]',
+  "drivers/NativeBattery/BqGaugeProbe.h/.c: freestanding pure C read-only orchestrator (own integer formatting, no libc) that reads the 7 standard commands for BOTH register-map families and scores them for physical plausibility.",
+  "package/EnchiladaGaugeBoard.h + package/EnchiladaGaugeProbe.cpp: thin C++ shim that maps GCC / wrapper / SE / pins with armcpu_map_physical, votes the three clock bits, writes the two pin CTLs, initialises and clocks NativeGeniI2c, then calls the pure-C core. Gated by the boot arg enchilada-gauge=<stage> (1 = survey only, 2 = enable and probe); absent means the probe never runs.",
+  "scripts/build-enchilada-gauge.py builds libEnchiladaGauge.a and it is force-loaded from CONFIG_XNU_EXTRA_LD_ARCHIVES in configs/enchilada_defconfig, so the weak_import hook in package/BootProgress.c resolves to the strong definition.",
+  "The probe never writes CONTROL / CONFIG / unseal or data-flash: only the standard command register address byte plus a 2-byte little-endian read appear on the bus. Clock voting and pinmux writes are controller bring-up, exactly as the stage-4 touch driver does.",
+  "enchilada-gauge=2 in the payload boot args; the poll is 1 Hz from the existing package/BootProgress.c monitor thread; the verdict text is replayed every tick so it survives the 128 KiB msgbuf ring overwriting early boot output."
 ]
 procedure = [
-  'Verification 1: python scripts/check-enchilada-battery-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe --out work/tmp/battery-host-out (11 test groups, sanitizers when available). Verification 2: strict clang -std=c11 -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow -O2 -c BqFuelGauge.c + an independent bq-dump byte/verdict program.',
-  'Method: four independent research passes BEFORE any code (official power guide, Linux v6.12 bq27xxx_battery.c/_i2c.c, vendor DTB + mainline DTSI, sheng SM8550 method + 246 decoded logs + workspace inventory), then a pure-C host module; no CI, no flash, no device verification.',
-  'CI builds both archives; on device the [cpufreq now] and W/W0 rows report clock samples and the platform-power service. [HISTORICAL, retained]',
+  "Verification 1 (host): python scripts/check-enchilada-gauge-probe-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe (decoder 11 groups + read-only orchestrator 7 groups) and a CI-equivalent clang++ -std=c++20 -Wdeprecated-volatile -Werror -fsyntax-only of the shim.",
+  "Verification 2 (host, different method): strict clang -std=c11 -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow -O2 -ffreestanding on BqGaugeProbe.c plus an independent program that drives the core through a fake I2C file and re-derives the printed verdict.",
+  "Verification 3 (device): python -X utf8 scripts/test-cycle.py gaugereplay --wait-return 400 flashes the payload, waits for the deadline auto-return, then work/tmp/collect_gaugereplay.py pulls the 32 MiB window read-only and decodes it.",
+  "Two independent device analyses were then run over different data paths: analyze_gaugereplay_device_logs.py (decoded log files) and analyze_gaugereplay_serial.py (raw window bytes plus the host serial watcher log)."
 ]
 findings = [
-  'STAGE 7 HOST-VERIFIED (2026-11-08): bq_gauge_assess(chip, GENI_I2C+ACK transport) returns BQ_FEASIBLE_GAUGE (0x00) for EITHER known chip family; firmware/DSP/OS-ABI are deliberately NOT inputs because a plain-I2C gauge does not need them. bq_stage7_assess(..., fw=0, abi=0, dsp=0) returns 0x1c (FIRMWARE|OS_ABI|DSP_AUDIO) on this device today; the full reference stack returns 0x00. Decoder verified: le16(34,12)=1234, temp(2981 0.1K)=250 (0.1 degC), cur(-400)=-400mA, reg bq27411 SOC=1c VOLT=04 TEMP=02 FCC=0e DCAP=3c, reg bq27541 SOC=2c VOLT=08 TEMP=06 FCC=12 DCAP=3c, 11/11 host test groups PASS + strict C11 compile exit 0.',
-  'STAGE 7 DECISION (load-bearing): the full DSP/audio/GLINK-battery/RPMh-cpufreq path is BLOCKED. enchilada SDM845 = pil-tz-generic LPASS firmware "adsp" (enchilada.dts:6488), pil-q6v55-mss firmware "modem" (:6444), qcom,slim-ngd SLIMBUS (:6547), qcom,tavil-slim-pgd WCD9340 (:6570), WSA881x + maxim,max98927L (:3790), Q6AFE/ASM + GLINK/SMEM/SMP2P; sheng SM8550 = qcom,sm8550-adsp-pas + AudioReach/GPR + SoundWire WCD938x + PMIC GLINK battmgr + RPMh/EPSS. Different generation and bus, so the sheng sources cannot be reused. The ADSP/modem .mbn firmware blobs are absent from the workspace, the iOS CoreAudio/IOPMPowerSource ABI is closed-source and this host has no macOS/Xcode (CI is the only ABI authority), and 246 decoded device logs have ZERO audio/DSP/battery driver literals.',
-  'RETROSPECTIVE log analysis: the only nonzero audio-ish hits are userspace/container noise (AudioHAL in an FMDMagSafeSetupRemoteUI path, Headset in com.apple.DiagnosticExtensions.BluetoothHeadset, Mic in IntlPreferences localization), NOT drivers. The earlier "CoreImage GLContext crash" remains external diag2-k158 inference with zero literal evidence in 246 logs.',
-  'The no-auto-dim seed flag is required because this board has no buttons and no idle timer: without it SpringBoard dims and sleeps ~30 s after boot. [HISTORICAL, retained]',
-  'sheng ShengBattery.cpp reads SM8550 battmgr/PMIC GLINK; enchilada bq27xxx is a plain I2C fuel gauge, so the battery transport must be rewritten. [HISTORICAL, retained, now superseded by the stage-7 gauge decoder study]',
+  "STAGE 7 DEVICE-VERIFIED (2026-11-09, boot_id 553807564, uptime 899 s): the gauge probe ran read-only on hardware and returned rc=0 with a full 12/12 register read set. Verdict line, verbatim: enchilada-gauge: rc=0 BG sel=bq27411 / bq27441 (mainline ti,bq27411 @0x55) ok=12/12 a[soc=100 v=4326 i=0 t=145 f=3153 d=3240 pl=6/6] b[soc=3161 v=3191 i=-3402 t=-2059 f=0 d=3240 pl=3/6] (replay t=899 attempt=1)",
+  "Both independent analyses agree (read_only_probe_device_verified = true on each): family A decodes to SOC 100 pct / 4326 mV / 0 mA / 14.5 degC / 3153 mAh full / 3240 mAh design with 6/6 fields plausible, which is a sane charged battery; family B decodes to SOC 3161 pct and -205.9 degC, which is physically impossible. That contrast, not a datasheet guess, fixes the chip family.",
+  "Three earlier flashes were INCONCLUSIVE and are recorded as such rather than as failures: the 128 KiB msgbuf ring is overwritten from ~59 s onward at 1300-3000 B/s of early boot output, so the t<8 s probe lines were collected-but-discarded. Shortening the watchdog deadline from 900 to 240 to 60 s did not help, because the ring fill time is a property of total boot output, not of the deadline. The fix was to replay the verdict every 1 Hz so the newest copy always sits inside the ring; the ring then held 480 gauge lines across ticks 420-899.",
+  "STAGE 7 DECISION (retained): the full DSP / audio / GLINK-battery / RPMh-cpufreq path stays BLOCKED. enchilada SDM845 uses pil-tz-generic LPASS firmware and a SLIMBUS WCD9340 codec with Q6AFE, while sheng SM8550 uses AdspProbe AudioReach/GPR with SoundWire plus PMIC GLINK; the generations and buses differ, the .mbn firmware blobs are absent from the workspace, and the iOS CoreAudio / IOPMPowerSource ABI is closed-source with no macOS or Xcode on this host.",
+  "RETROSPECTIVE log analysis (retained): the only nonzero audio-ish hits in 246 decoded device logs are userspace or container noise, not drivers.",
+  "The no-auto-dim seed flag is required because this board has no buttons and no idle timer: without it SpringBoard dims and sleeps about 30 s after boot."
 ]
 completion = [
-  'Official completion criteria (NOT met, retained): Declared power controls and battery readings match observations; each claimed sleep/resume transition restores its dependent peripherals.',
-  'Stage 7 HOST-VERIFIED scope actually completed: byte-exact bq27xxx I2C decoder for BOTH register-map families + the feasible-gauge / blocked-DSP-audio verdict, in tested pure C11 with two independent host verifications, plus a durable evidence record. No device, CI or firmware claim.',
+  "Official completion criteria (PARTIALLY met): declared power controls and battery readings must match observations, and each claimed sleep/resume transition must restore its dependent peripherals. The battery reading criterion is now met on device: a stated chip family, seven standard-command readings in stated units, and a physically sane result.",
+  "Stage 7 scope actually completed: byte-exact bq27xxx decoding for both register-map families (host-verified twice), a read-only on-device probe with two independent device analyses (device-verified), and durable evidence records for both."
 ]
 limits = [
-  'HOST-VERIFIED ONLY: no CI compile, no flash, no device verification, no I2C read, no chip-id probe, no IOPMPowerSource publication, no charger state, no audio playback/capture, no DSP boot, no RPMh voting. The decoder is not linked into the kernel.',
-  'BLOCKED on (a) disambiguating the bq27xxx chip family with a real CONTROL/DEVICE_TYPE read at 0x55, (b) linking to NativeGeniI2c + an OS power-source service, (c) for full audio: the ADSP/modem .mbn firmware set, a new SLIMBUS WCD9340 + Q6AFE backend and a selected CoreAudio OS ABI, (d) for PMIC GLINK battery / RPMh cpufreq: an OS equivalent of the SM8550 GLINK/RPMh stack. Until those exist stage 7 cannot become device-verified.',
-  'CPU frequency and platform power are present; battery percentage, charger state and audio are absent. ShengBattery is listed as intended but not implemented. [HISTORICAL, retained]',
+  "The gauge is READ-ONLY. No CONTROL / CONFIG / unseal write, no charger state, no IOPMPowerSource publication and no OS power-source service exist yet, so nothing consumes the reading inside iOS.",
+  "Audio is entirely absent: no DSP boot, no SLIMBUS WCD9340 backend, no Q6AFE, no CoreAudio playback or capture and no RPMh voting. ShengBattery is listed as intended but not implemented.",
+  "The device evidence is a single boot (boot_id 553807564) on one unit at one charge level; it proves the register protocol and the transport, not long-term accuracy across charge cycles."
 ]
 next_action = [
-  'Stage 7 POWER DONE (HOST-VERIFIED, 2026-11-08): bq27xxx fuel-gauge feasibility + byte-exact decoder committed as a host-verified module with a host evidence entry; the full DSP/audio/GLINK/RPMh path is honestly recorded as blocked; the bq27441-vs-bq27541 model conflict is documented, not guessed.',
-  'NEXT (only if unblocking the gauge): link the decoder to the device-verified NativeGeniI2c transport, read CONTROL/DEVICE_TYPE at 0x55 to fix the chip family, poll the 7 standard commands, publish IOPMPowerSource-style properties with explicit units, then CI-compile and flash a read-only gauge probe with two independent device verifications.',
-  'NEXT (only if unblocking audio): obtain the ADSP/modem .mbn firmware set, build a new SLIMBUS WCD9340 + Q6AFE backend (NOT a port of sheng SM8550 AudioReach/GPR), select the CoreAudio OS ABI, then flash a tone over QUATERNARY_MI2S_RX (Linux v6.12 sdm845.c: 48 kHz / 2 ch / S16_LE, MI2S bit clock 1.536 MHz) with CI + two independent device verifications.',
-  'Strict 8-stage order then continues with the remaining areas: memory (ArmSmmu4K kit not linked), cellular (QcomBaseband, user decision on scope) and diagnostics.',
-  '[HISTORICAL, superseded 2026-11-08] Stage 7: implement an I2C bq27441 fuel-gauge reader (Standard Commands: StateOfCharge, Voltage, Temperature) and publish AppleSmartBattery-style properties; then add PMI8998 charger state.',
+  "Stage 7 battery follow-up: publish the decoded values as IOPMPowerSource-style properties with explicit units and a valid/missing state, then read the PMI8998 charger status so charge state is available alongside capacity.",
+  "Stage 7 audio remains blocked on the ADSP firmware set and a new SLIMBUS WCD9340 + Q6AFE backend (NOT a port of the sheng SM8550 AudioReach/GPR stack).",
+  "Strict 8-stage order then continues with the remaining areas: memory (ArmSmmu4K kit not linked) and diagnostics (ShengPreflight not linked)."
 ]
 evidence = [
-  { kind = "host", reference = "evidence/stage7-power-feasibility.md", result = "HOST-VERIFIED stage-7 bq27xxx fuel-gauge feasibility (2026-11-08): four independent research passes (official /zh/porting/power guide, Linux v6.12 bq27xxx_battery.c + _i2c.c, vendor DTB enchilada.dts:4213 + mainline sdm845-oneplus-common.dtsi:361-370, sheng SM8550 AdspProbe.cpp/ShengBattmgr.h + 246 decoded logs + workspace inventory). Pass 1 host runner: 11 test groups + sanitizers-off PASS (HOST_TEST_EXIT=0). Pass 2 strict C11 -Wconversion/-Wsign-conversion/-Wshadow/-pedantic compile exit 0 + independent bq-dump (le16(34,12)=1234; temp(2981)=250 0.1degC; cur(-400)=-400mA; bq27411 SOC=1c VOLT=04 TEMP=02 FCC=0e DCAP=3c; bq27541 SOC=2c VOLT=08 TEMP=06 FCC=12 DCAP=3c; assess gauge(bq27411,ok)=00, gauge(bq27541,ok)=00, gauge(unknown,ok)=01; stage7 today=1c full=00). Decision: the plain-I2C gauge decoder is FEASIBLE over device-verified NativeGeniI2c (no firmware/DSP/OS ABI); full ADSP/SLIMBUS/WCD9340/CoreAudio + PMIC GLINK + RPMh path BLOCKED (absent .mbn firmware, cross-generation sheng, closed OS ABI, zero driver literals in 246 logs). Honest correction: bq27441 (mainline i2c10) vs bq27541 (vendor i2c@a80000) model conflict - BOTH register maps implemented, no part number asserted. No CI / no flash / no device verification.", command = "python scripts/check-enchilada-battery-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe --out work/tmp/battery-host-out", revision = "d8e3e3c85516ec818c6e9ba05d12beeff5b7f5a5" },
-  { kind = "source", reference = "https://unixnu.com/zh/porting/power", result = "Official DSP/audio/battery stage: implement transport, device protocol and OS service separately; a directly-connected I2C gauge uses the chip register protocol, a DSP battery manager uses its message protocol; power-source fields + units + valid/missing state." },
-  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/power/supply/bq27xxx_battery.c", result = "Linux v6.12 bq27xxx two register-map families (bq27421_regs / bq27541_regs), 0.1 K temperature, signed mA current, mV voltage, 60 s poll." },
-  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/power/supply/bq27xxx_battery_i2c.c", result = "Linux v6.12 bq27xxx I2C read: write register byte, repeated START, read 2 bytes little-endian (get_unaligned_le16); OF compatibles ti,bq27411 / ti,bq27441 / ti,bq27541 with no -battery suffix." },
-  { kind = "source", reference = "scripts/build-enchilada-cpufreq.py", result = "CpuFreqProbe recipe." },
-  { kind = "source", reference = "kits/enchilada-pmgr/ShengPlatformPower.cpp", result = "Platform power service source." },
-  { kind = "source", reference = "configs/enchilada_defconfig", result = "No audio driver options enabled; CONFIG_XNU_SHENG_PMGR=y is the only power-related option." },
-  { kind = "device", reference = "evidence/console206.md", result = "W0/W1 rows and the 600 s deadline confirm the watchdog/power monitor ran for the whole boot.", command = "python scripts/test-cycle.py console206 --wait-return 900", revision = "7eeda1e01aa906ff3b2ac5fa58fdcfd244701c59" },
+  { kind = "device", reference = "evidence/stage7-gauge-device.md", result = "STAGE 7 DEVICE-VERIFIED (2026-11-09, boot_id 553807564, uptime 899 s): read-only bq27xxx probe returned rc=0 with 12/12 register reads across both register-map families; family A (mainline ti,bq27411) decoded to SOC 100 pct / 4326 mV / 0 mA / 14.5 degC / 3153 mAh full / 3240 mAh design at 6/6 plausible, family B (vendor ti,bq27541) to SOC 3161 pct / -205.9 degC at 3/6 plausible. 480 replayed verdict lines across ticks 420-899. Two independent device analyses (decoded log files; raw window bytes plus serial watcher) both report read_only_probe_device_verified = true.", command = "python -X utf8 oneplus6-ios/scripts/test-cycle.py gaugereplay --wait-return 400", revision = "8f4ca9bf2b386ab8414f7ca9de176d71b4f02ded" },
+  { kind = "host", reference = "evidence/stage7-gauge-device.md", result = "Host verifications before the flash: host runner 11 decoder groups + 7 read-only orchestrator groups PASS; CI-equivalent clang++ -std=c++20 -Wdeprecated-volatile -Werror -fsyntax-only of the shim PASS; strict C11 -Wconversion/-Wsign-conversion/-Wshadow/-pedantic compile of the core PASS with an independent fake-I2C verdict program agreeing. CI #213 then force-loaded libEnchiladaGauge.a (3 objects) and the delivered kernel contains the replay strings.", command = "python scripts/check-enchilada-gauge-probe-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe", revision = "8f4ca9bf2b386ab8414f7ca9de176d71b4f02ded" },
+  { kind = "host", reference = "evidence/stage7-power-feasibility.md", result = "HOST-VERIFIED stage-7 feasibility study that preceded the driver: four independent research passes, both bq27xxx register maps, the feasible-gauge versus blocked-DSP/audio verdict, and the honest model-conflict record. 11 host test groups plus strict C11 compile.", command = "python scripts/check-enchilada-battery-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe --out work/tmp/battery-host-out", revision = "d8e3e3c85516ec818c6e9ba05d12beeff5b7f5a5" },
+  { kind = "source", reference = "https://unixnu.com/zh/porting/power", result = "Official DSP/audio/battery stage: implement transport, device protocol and OS service separately; a directly-connected I2C gauge uses the chip register protocol; power-source fields need units and a valid/missing state." },
+  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/power/supply/bq27xxx_battery.c", result = "Linux v6.12 bq27xxx two register-map families (bq27421_regs / bq27541_regs), 0.1 K temperature, signed mA current, mV voltage." },
+  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/power/supply/bq27xxx_battery_i2c.c", result = "Linux v6.12 bq27xxx I2C read: write register byte, repeated START, read 2 bytes little-endian; OF compatibles ti,bq27411 / ti,bq27441 / ti,bq27541." },
+  { kind = "source", reference = "drivers/NativeBattery/BqGaugeProbe.c", result = "Read-only orchestrator: per-field register lookup, bounded plausibility scoring, verdict formatting for both families." },
+  { kind = "source", reference = "package/EnchiladaGaugeProbe.cpp", result = "Kernel shim: MMIO mapping, GCC clock vote, pinmux, GENI I2C bring-up, 1 Hz replay of the verdict." },
+  { kind = "source", reference = "configs/enchilada_defconfig", result = "CONFIG_XNU_EXTRA_LD_ARCHIVES force-loads libEnchiladaGauge.a alongside dwc3, touch, cpufreq and msm-dsi." }
 ]
 
 [[area]]
@@ -414,18 +428,50 @@ evidence = [
 
 [[area]]
 id = "cellular"
-status = "planned"
+status = "host-verified"
 components = ["QcomBaseband"]
-paths = ["configs/enchilada_defconfig", "board.toml"]
-inputs = ["SDM845 MSS PIL (mba.mbn + modem.mbn), IPA with qcom,gsid-loader=self (ipa_fws.mbn), QRTR/GLINK, WCN3990 is Wi-Fi/BT only; no eSIM on this board."]
-configuration = ["No baseband CONFIG_*=y, no modem firmware in the payload, no [cellular] section."]
-procedure = ["Follow /zh/porting/baseband if a modem path is desired; the official order marks this stage optional when no baseband is present."]
-findings = ["The 8-stage guide lists 6a baseband as a conditional stage; the porting-record checker requires only 13 areas, so cellular is recorded here as a custom area for completeness."]
-completion = ["Modem boots, QRTR services enumerate, and a data call can be established (or the area is marked not-applicable with a documented reason)."]
-limits = ["Entirely unimplemented; no cellular requirement has been stated for this port."]
-next_action = ["Decide with the user whether baseband is in scope; if not, mark not-applicable with an empty components list and a limits entry."]
+paths = [
+  "drivers/NativeModem/**",
+  "scripts/check-enchilada-modem-host.py",
+  "evidence/stage6a-baseband-feasibility.md",
+  "configs/enchilada_defconfig",
+  "board.toml",
+]
+inputs = [
+  'STAGE 6a (2026-11-09) HOST-VERIFIED scope + feasibility audit. enchilada is a PHONE with a real modem, so the official baseband page shortcut ("Wi-Fi-only tablets without a cellular modem can skip this page. Set the cellular area of porting.toml to not-applicable") does NOT apply: NOT-APPLICABLE WOULD BE A FALSE CLAIM. Five independent research passes: (1) https://unixnu.com/zh/porting/baseband, (2) vendor DTB Mu-Silicium/Resources/DTBs/enchilada.dts, (3) mainline Linux v6.12 sdm845-oneplus-common.dtsi, (4) Linux v6.12 drivers/remoteproc/q6v5_mss.c + drivers/net/ipa/ipa_main.c, (5) the sheng upstream inventory + three decoded device-log sweeps + a workspace firmware inventory.',
+  'Vendor DTB facts: :6444-6484 qcom,mss@4080000 compatible "qcom,pil-q6v55-mss", qcom,firmware-name="modem", qcom,pil-self-auth, qcom,qdsp6v65-1-0, qcom,mem-protect-id=<0x0f>, interrupts=<0x00 0x10a 0x01> (GIC SPI 266), mboxes=mss-pil. :7323 qcom,smem@86000000; :7381 glink-smem-native-xprt-modem (label "mpss"); :7504 ipc_router_modem_xprt "qcom,ipc_router_glink_xprt"; :14183 qcom,smp2p-modem@1799000c (remote-pid 1); :7793 qcom,ipa@01e00000 (qcom,ipa-hw-ver=<0x0d>, iommus <0x29 0x720>); :7852 qcom,ipa_fws (pas-id 0x0f, firmware-name "ipa_fws").',
+  'CROSS-GENERATION GAP (load-bearing, three references): SDM845 = q6v5_mss.c "qcom,pil-q6v55-mss", SELF-AUTH (MBA authenticated first, then the MPSS image), MPSS PAS id 5, IPA v3.5.1, GLINK/QRTR over SMEM. SM8550 = q6v5_pas.c "qcom,sm8550-mpss-pas", PAS auth_and_reset, pas_id 4 plus a separate dtb_pas_id 0x26 (modem_dtb.mdt), IPA v5.5. SC7180 (Coachz, the QcomBaseband target) = PAS + IPA v4.2. The official component cannot be reused unchanged.',
+  'CORRECTION (2026-11-09): this area previously claimed "IPA with qcom,gsid-loader=self". That property DOES NOT EXIST -- the real name is qcom,gsi-loader (Linux v6.12 ipa_main.c:735, qcom,ipa.yaml:135), NEITHER DTB sets it, and mainline sdm845.dtsi leaves &ipa status=disabled with no such property, so the loader is IPA_LOADER_SELF (legacy). Also corrected: the default descriptors are SPLIT images modem.mdt (q6v5_mss.c:2007 `qproc->hexagon_mdt_image = "modem.mdt";`) and ipa_fws.mdt (ipa_main.c:71 `IPA_FW_PATH_DEFAULT "ipa_fws.mdt"`), NOT single .mbn files; mainline sdm845-oneplus-common.dtsi:552-556/:604-610 name the vendor .mbn entry pieces qcom/sdm845/OnePlus/enchilada/{ipa_fws,mba,modem}.mbn. "No eSIM" was not verified (zero esim/eSIM hits in the vendor DTB) and is dropped. "QRTR" was loose: the DTB node is qcom,ipc_router_glink_xprt.',
+  'sheng has NO baseband driver at all: no QcomBaseband/IPA/CommCenter; the MHI code is WCN7850 Wi-Fi; the GLINK/QRTR/SMEM/SMP2P/MDT/SCM code is the ADSP audio helper; package/tests/modem_fw_host.c is only a host-side FAT/MDT firmware reader; make-sheng-adt.py:143 says "no SEP or baseband"; the sheng porting.toml has 13 areas and none is cellular. The official QcomBaseband component targets Coachz/SC7180 (IPA v4.2) and must be built with `build-qcom-baseband.py --coachz`.',
+]
+configuration = [
+  'Stage 6a HOST-VERIFIED module drivers/NativeModem (ModemPil.h/.c, tests/modem-pil-test.cpp, scripts/check-enchilada-modem-host.py) encodes the three reference generations as DATA (boot flow, IPA generation, MSS base, IRQ, PAS ids, mem-protect id, smp2p pid, firmware role names), the split-image vs single-file distinction, and a modem_pil_assess() blocker gate. It is NOT linked into the kernel, maps no register, authenticates no image, loads no firmware and performs no modem access.',
+  'No baseband CONFIG_*=y, no modem firmware in the payload, no [cellular] section. drivers/NativeModem is a decision record only and is deliberately absent from [kernel] archives and from CONFIG_XNU_EXTRA_LD_ARCHIVES.',
+]
+procedure = [
+  'Verification 1: python scripts/check-enchilada-modem-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe --out work/tmp/modem-host-out (8 test groups: generation gap, split-image names, firmware mask, the blocker set seen today, the generation gate under forced resources, and the not-applicable rebuttal). Verification 2 (different method): strict clang -std=c11 -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow -O2 -ffreestanding -c ModemPil.c AND an independent script that re-derives every constant from the vendor DTB / dtsi / q6v5_mss.c / ipa_main.c text rather than from the module own tables (work/tmp/verify_modem_record_2.py).',
+  'Method: five independent research passes BEFORE any code, then a pure-C host module; no CI, no flash, no device verification. The first milestone if baseband were ever put in scope is NOT a data call -- it is proving that a signed MBA can be authenticated at all.',
+]
+findings = [
+  'STAGE 6a HOST-VERIFIED (2026-11-09): the full baseband path is BLOCKED four ways, each independently sufficient. (a) FIRMWARE: zero modem images (*.mbn / *.mdt / *.bNN) anywhere in the workspace, and the entire modem image set requires Qualcomm signing. (b) BACKEND: no SDM845 MSS-PIL/IPA generation backend exists locally or upstream (the official one is SC7180 PAS). (c) OS_ABI: ABM / BBUpdater / CommCenter / AppleBaseband* are closed-source and this host has no macOS/Xcode, so CI is the only ABI authority. (d) GENERATION: the vendor DT self-auth flow and the SC7180/SM8550 PAS flow are not interchangeable. Independently, qcom,pil-self-auth plus qcom,mem-protect-id=0x0f require TrustZone/XPU memory assignment (qcom_scm_assign_mem, RMB auth 0x3/0x4) with no iOS equivalent here.',
+  'modem_pil_assess(kModemSocSdm845, fw=0, backend=0, abi=0, tz=0) = 0x3e (FIRMWARE|BACKEND|OS_ABI|GENERATION|TRUSTZONE). With a hypothetical matching backend and every resource forced available it would be 0x00, which is why the gate is written as data: it states exactly what would have to become TRUE, and the SDM845 target keeps its GENERATION blocker whenever no matching backend exists.',
+  'Status choice: host-verified, NOT not-applicable. The checker accepts not-applicable only with an EMPTY components list, which would erase the fact that this board has a modem; the official skip rule is explicitly scoped to Wi-Fi-only tablets without a cellular modem, so it does not describe enchilada.',
+]
+completion = [
+  'Modem firmware authenticates (MBA then MPSS via the SDM845 self-auth flow), QRTR services enumerate over GLINK/SMEM, and a data call can be established -- or scope is dropped with a documented reason. Neither is achieved here; this area is a feasibility and scope record only.',
+]
+limits = [
+  'NO device verification and NO CI build: drivers/NativeModem is host-only and not linked into any kernel. No modem firmware is present, no signed image was ever authenticated, no IPA/GLINK/QRTR/SMP2P register was touched, and no data call was attempted. The absolute blocker is Qualcomm signing plus the TrustZone/XPU memory-protect flow, neither of which is reproducible here.',
+  'The pass/fail facts come from source text and the vendor DTB; the one inferential step (that QcomBaseband targets SC7180) is stated as that component own build recipe (`--coachz`), not measured.',
+]
+next_action = [
+  'Keep as an honest host-verified scope record. If baseband is put in scope later, the first deliverable is a signed-image authentication experiment (MBA only), not a data call; do NOT mark not-applicable, which would be factually wrong for a board with qcom,mss@4080000.',
+]
 evidence = [
-  { kind = "source", reference = "https://unixnu.com/zh/porting/baseband", result = "Official conditional baseband stage." },
+  { kind = "host", reference = "evidence/stage6a-baseband-feasibility.md", result = "HOST-VERIFIED stage-6a baseband scope + feasibility audit (2026-11-09). Pass 1: 8 test groups PASS (generation gap, split-image names, firmware mask, the five blockers seen today, generation gate, not-applicable rebuttal, names). Pass 2 (different method): strict C11 -Wconversion/-Wsign-conversion/-Wshadow/-pedantic compile exit 0 AND every constant re-derived from the vendor DTB / dtsi / q6v5_mss.c / ipa_main.c text. Decision: full baseband path BLOCKED (FIRMWARE|BACKEND|OS_ABI|GENERATION|TRUSTZONE); remaining in scope as a record, NOT not-applicable. No CI / no flash / no device verification.", command = "python scripts/check-enchilada-modem-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe --out work/tmp/modem-host-out", revision = "8f4ca9bf2b386ab8414f7ca9de176d71b4f02ded" },
+  { kind = "source", reference = "https://unixnu.com/zh/porting/baseband", result = "Official conditional baseband stage: QcomBaseband by HoshinoYumeka on Coachz/SC7180, talking to iOS ABM/BBUpdater/CommCenter. Its skip rule is explicitly limited to Wi-Fi-only tablets WITHOUT a cellular modem." },
+  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/remoteproc/q6v5_mss.c", result = "SDM845 MSS-PIL reference (Linux v6.12): self-auth MBA-then-MPSS flow, and :2007 `qproc->hexagon_mdt_image = \"modem.mdt\";` -- the modem image is a SPLIT .mdt descriptor, not a single .mbn." },
+  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/net/ipa/ipa_main.c", result = "IPA reference (Linux v6.12): :71 `IPA_FW_PATH_DEFAULT \"ipa_fws.mdt\"`, and :735 the DT property is `qcom,gsi-loader` (never `qcom,gsid-loader`); absent in both DTBs means legacy IPA_LOADER_SELF." },
 ]
 
 [[area]]
