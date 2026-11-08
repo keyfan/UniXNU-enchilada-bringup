@@ -298,33 +298,83 @@ id = "audio"
 status = "planned"
 components = ["AdspProbe", "AudioProbe"]
 paths = ["package/*Adsp*", "package/*Audio*", "scripts/*adsp*", "scripts/*audio*", "configs/enchilada_defconfig"]
-inputs = ["WCD9340 codec (SLIMBUS, micbias 1.8/2.7/1.8/1.8 V, reset tlmm 64), MAX98927 speaker amp on i2c4 @0x3a with reset tlmm 69, q6afedai QUATERNARY_MI2S_RX/TX, ADSP/SLPI firmware oneplus6/*.mbn."]
+inputs = [
+  'STAGE 7 AUDIO RESEARCH (2026-11-08, HOST-VERIFIED RECORD ONLY, no module, no CI, no flash): vendor DTB enchilada.dts :3790 max98927@3a (maxim,max98927L), :6444 qcom,mss@4080000 (pil-q6v55-mss, firmware "modem"), :6488 qcom,lpass@17300000 (pil-tz-generic, pas-id 1, firmware "adsp"), :6547 slim@171c0000 (qcom,slim-ngd), :6570 tavil_codec (qcom,tavil-slim-pgd = WCD9340, micbias 1800/2700/1800/1800 mV, mclk 9.6 MHz), :6789 wsa881x, :7390 glink-smem-native-xprt-adsp label "lpass"; Linux v6.12 sound/soc/qcom/sdm845.c QUATERNARY_MI2S_RX 1.536 MHz bit clock, 48 kHz / 2 ch / S16_LE.',
+  '[HISTORICAL, unverified firmware names] the old "ADSP/SLPI firmware oneplus6/*.mbn" wording is kept below only for traceability: no such blobs exist in the workspace; the vendor DTB names "adsp" and "modem" via qcom,firmware-name.',"WCD9340 codec (SLIMBUS, micbias 1.8/2.7/1.8/1.8 V, reset tlmm 64), MAX98927 speaker amp on i2c4 @0x3a with reset tlmm 69, q6afedai QUATERNARY_MI2S_RX/TX, ADSP/SLPI firmware oneplus6/*.mbn."]
 configuration = ["No audio CONFIG_*=y; no ADSP/audio service archives; BTAudioHALPlugin disabled by text fixup."]
 procedure = ["Follow /zh/porting/power for the ADSP/audio route; sheng uses sheng-adsp=2 and sheng-audio=12 with AdspProbe/AudioProbe."]
-findings = ["sheng's audio is SM8550/Geni/GPR-specific; enchilada needs SDM845 SLIMBUS + WCD9340 + MI2S, a different transport stack."]
+findings = [
+  'STAGE 7 AUDIO VERDICT (2026-11-08, HOST-VERIFIED RESEARCH ONLY): enchilada SDM845 audio = ADSP PIL (.mbn firmware) + SLIMBUS WCD9340 (tavil) + WSA881x/MAX98927 + Q6AFE/ASM + GLINK/SMEM/SMP2P; sheng SM8550 = qcom,sm8550-adsp-pas + AudioReach/GPR + SoundWire WCD938x + CoreAudio HAL. Cross-generation, so the sheng AdspProbe/AudioProbe sources cannot be reused. The ADSP/modem firmware blobs are absent, iOS CoreAudio ABI is closed-source, this host has no macOS/Xcode (CI is the only ABI authority), and 246 decoded device logs have ZERO audio/DSP driver literals (IOAudio, CoreAudio, AudioReach, GPR, q6apm, GLINK, WCD9340, tavil, SLIMBUS, MAX98927, sheng-adsp/audio, [audio/[mic/[adsp all 0). Remains planned, NOT device-verified, NOT host-verified as a module.',"sheng's audio is SM8550/Geni/GPR-specific; enchilada needs SDM845 SLIMBUS + WCD9340 + MI2S, a different transport stack."]
 completion = ["Each declared route carries the selected audio format through playback or capture and handles start/stop correctly."]
 limits = ["0/2 audio components; no ADSP PIL, no GPR/GLINK, no codec driver."]
 next_action = ["Stage 7: after battery, inventory the SDM845 ADSP PIL and WCD9340 DAI routing; start with a tone over QUATERNARY_MI2S_RX."]
 evidence = [
+  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/sound/soc/qcom/sdm845.c", result = "Linux v6.12 SDM845 ASoC card: SLIMBUS WCD9340 rx_ch[13]={144..156}, tx_ch[16]={128..143}, WCD934X_DEFAULT_MCLK_RATE 9600000, MI2S_BCLK_RATE 1536000, 48 kHz / 2 ch / S16_LE." },
+  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/power/supply/qcom_battmgr.c", result = "Referenced by the official power guide for the SM8550 PMIC GLINK battery manager (NOT the enchilada I2C gauge)." },
   { kind = "source", reference = "https://unixnu.com/zh/porting/power", result = "Official DSP/audio/battery stage." },
   { kind = "source", reference = "configs/enchilada_defconfig", result = "No audio options enabled." },
 ]
 
 [[area]]
 id = "power"
-status = "implemented"
+status = "host-verified"
 components = ["CpuFreqProbe", "ShengPlatformPower", "ShengBattery"]
-paths = ["scripts/build-enchilada-cpufreq.py", "scripts/build-sheng-platform-power.py", "kits/enchilada-pmgr/ShengPlatformPower.cpp", "package/BootLog.c", "configs/enchilada_defconfig"]
-inputs = ["battery: simple-battery 3300000 uAh / 3.4-4.4 V and bq27441 fuel gauge on i2c10 @0x55; PMI8998 charger; PM8998/PMI8998/PM8005 RPMH regulators; 8 CPU clocks."]
-configuration = ["CONFIG_SHENG_PMGR=y; build-enchilada-cpufreq.py and build-sheng-platform-power.py in [kernel] archives; enchilada-deadline=600 watchdog; skip_setup_args=[--no-auto-dim] sets SBDisableAutoDim/SBDontDimOrLockOnAC/SBDisableIdleSleep."]
-procedure = ["CI builds both archives; on device the [cpufreq now] and W/W0 rows report clock samples and the platform-power service."]
-findings = ["The no-auto-dim seed flag is required because this board has no buttons and no idle timer: without it SpringBoard dims and sleeps ~30 s after boot.", "sheng's ShengBattery.cpp reads SM8550 battmgr/PMIC GLINK; enchilada's bq27441 is a plain I2C fuel gauge, so the battery transport must be rewritten."]
-completion = ["Declared power controls and battery readings match observations; each claimed sleep/resume transition restores its dependent peripherals."]
-limits = ["CPU frequency and platform power are present; battery percentage, charger state and audio are absent. ShengBattery is listed as intended but not implemented."]
-next_action = ["Stage 7: implement an I2C bq27441 fuel-gauge reader (Standard Commands: StateOfCharge, Voltage, Temperature) and publish AppleSmartBattery-style properties; then add PMI8998 charger state."]
+paths = [
+  "drivers/NativeBattery/**",
+  "scripts/check-enchilada-battery-host.py",
+  "evidence/stage7-power-feasibility.md",
+  "scripts/build-enchilada-cpufreq.py",
+  "scripts/build-sheng-platform-power.py",
+  "kits/enchilada-pmgr/ShengPlatformPower.cpp",
+  "package/BootLog.c",
+  "configs/enchilada_defconfig",
+]
+inputs = [
+  'STAGE 7 (2026-11-08) HOST-VERIFIED audit: the ONE feasible stage-7 sub-item is the plain-I2C bq27xxx fuel gauge at 0x55, decodable over the DEVICE-VERIFIED drivers/NativeGeniI2c/GeniI2c.c transport (stage-4 RMI4 touch). It needs no proprietary firmware, no DSP, no closed OS ABI. Four independent research passes: https://unixnu.com/zh/porting/power, Linux v6.12 drivers/power/supply/bq27xxx_battery.c + bq27xxx_battery_i2c.c, vendor DTB enchilada.dts:4213 + mainline Linux v6.12 sdm845-oneplus-common.dtsi:361-370, sheng SM8550 AdspProbe.cpp/ShengBattmgr.h + 246 decoded device logs + workspace inventory.',
+  'MODEL CONFLICT (honest, unresolved; BOTH maps implemented + tested): vendor DTB enchilada.dts:4213-4218 = bq27541-battery@55, compatible "ti,bq27541-battery", on i2c@a80000 (qupv3_se8); mainline Linux v6.12 sdm845-oneplus-common.dtsi:361-370 = &i2c10, bq27441-battery@55, compatible "ti,bq27411". The strings select DIFFERENT register maps (bq27541_regs SOC 0x2c / VOLT 0x08 / TEMP 0x06 / AI 0x14 / FCC 0x12 vs bq27421_regs SOC 0x1c / VOLT 0x04 / TEMP 0x02 / AI 0x10 / FCC 0x0e; DCAP 0x3c shared). Linux OF table has ti,bq27541 / ti,bq27411 / ti,bq27441 but NO -battery suffix. A real driver must read CONTROL/DEVICE_TYPE to disambiguate; no single part number is asserted here.',
+  'Official power guide (section 1), verbatim: "直接连接 I2C 电量计的板型实现该芯片的寄存器协议，使用 DSP 电池管理器的板型实现其消息协议。先确定传输方式，再选择参考代码。" Transport / device protocol / OS service are implemented separately; sheng ShengBattmgr.h is the SM8550 PMIC GLINK message protocol (owner 32778, channel PMIC_RTR_ADSP_APPS), NOT this I2C gauge.',
+  'battery: simple-battery 3300000 uAh / 3.4-4.4 V and bq27xxx fuel gauge on i2c10 @0x55; PMI8998 charger; PM8998/PMI8998/PM8005 RPMH regulators; 8 CPU clocks. [HISTORICAL, model conflict] the old single "bq27441" claim is kept for traceability but is only one of two DTB sources.',
+]
+configuration = [
+  'STAGE 7 HOST-VERIFIED module drivers/NativeBattery (BqFuelGauge.h/.c, tests/bq-fuel-gauge-test.cpp, scripts/check-enchilada-battery-host.py) encodes both bq27xxx register-map families, the LE 16-bit I2C decode, the valid/missing-state rule and a feasibility gate. It is NOT linked into the kernel, reads no I2C bus and loads no firmware.',
+  'CONFIG_SHENG_PMGR=y; build-enchilada-cpufreq.py and build-sheng-platform-power.py in [kernel] archives; enchilada-deadline=600 watchdog; skip_setup_args=[--no-auto-dim] sets SBDisableAutoDim/SBDontDimOrLockOnAC/SBDisableIdleSleep. [HISTORICAL, retained]',
+]
+procedure = [
+  'Verification 1: python scripts/check-enchilada-battery-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe --out work/tmp/battery-host-out (11 test groups, sanitizers when available). Verification 2: strict clang -std=c11 -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow -O2 -c BqFuelGauge.c + an independent bq-dump byte/verdict program.',
+  'Method: four independent research passes BEFORE any code (official power guide, Linux v6.12 bq27xxx_battery.c/_i2c.c, vendor DTB + mainline DTSI, sheng SM8550 method + 246 decoded logs + workspace inventory), then a pure-C host module; no CI, no flash, no device verification.',
+  'CI builds both archives; on device the [cpufreq now] and W/W0 rows report clock samples and the platform-power service. [HISTORICAL, retained]',
+]
+findings = [
+  'STAGE 7 HOST-VERIFIED (2026-11-08): bq_gauge_assess(chip, GENI_I2C+ACK transport) returns BQ_FEASIBLE_GAUGE (0x00) for EITHER known chip family; firmware/DSP/OS-ABI are deliberately NOT inputs because a plain-I2C gauge does not need them. bq_stage7_assess(..., fw=0, abi=0, dsp=0) returns 0x1c (FIRMWARE|OS_ABI|DSP_AUDIO) on this device today; the full reference stack returns 0x00. Decoder verified: le16(34,12)=1234, temp(2981 0.1K)=250 (0.1 degC), cur(-400)=-400mA, reg bq27411 SOC=1c VOLT=04 TEMP=02 FCC=0e DCAP=3c, reg bq27541 SOC=2c VOLT=08 TEMP=06 FCC=12 DCAP=3c, 11/11 host test groups PASS + strict C11 compile exit 0.',
+  'STAGE 7 DECISION (load-bearing): the full DSP/audio/GLINK-battery/RPMh-cpufreq path is BLOCKED. enchilada SDM845 = pil-tz-generic LPASS firmware "adsp" (enchilada.dts:6488), pil-q6v55-mss firmware "modem" (:6444), qcom,slim-ngd SLIMBUS (:6547), qcom,tavil-slim-pgd WCD9340 (:6570), WSA881x + maxim,max98927L (:3790), Q6AFE/ASM + GLINK/SMEM/SMP2P; sheng SM8550 = qcom,sm8550-adsp-pas + AudioReach/GPR + SoundWire WCD938x + PMIC GLINK battmgr + RPMh/EPSS. Different generation and bus, so the sheng sources cannot be reused. The ADSP/modem .mbn firmware blobs are absent from the workspace, the iOS CoreAudio/IOPMPowerSource ABI is closed-source and this host has no macOS/Xcode (CI is the only ABI authority), and 246 decoded device logs have ZERO audio/DSP/battery driver literals.',
+  'RETROSPECTIVE log analysis: the only nonzero audio-ish hits are userspace/container noise (AudioHAL in an FMDMagSafeSetupRemoteUI path, Headset in com.apple.DiagnosticExtensions.BluetoothHeadset, Mic in IntlPreferences localization), NOT drivers. The earlier "CoreImage GLContext crash" remains external diag2-k158 inference with zero literal evidence in 246 logs.',
+  'The no-auto-dim seed flag is required because this board has no buttons and no idle timer: without it SpringBoard dims and sleeps ~30 s after boot. [HISTORICAL, retained]',
+  'sheng ShengBattery.cpp reads SM8550 battmgr/PMIC GLINK; enchilada bq27xxx is a plain I2C fuel gauge, so the battery transport must be rewritten. [HISTORICAL, retained, now superseded by the stage-7 gauge decoder study]',
+]
+completion = [
+  'Official completion criteria (NOT met, retained): Declared power controls and battery readings match observations; each claimed sleep/resume transition restores its dependent peripherals.',
+  'Stage 7 HOST-VERIFIED scope actually completed: byte-exact bq27xxx I2C decoder for BOTH register-map families + the feasible-gauge / blocked-DSP-audio verdict, in tested pure C11 with two independent host verifications, plus a durable evidence record. No device, CI or firmware claim.',
+]
+limits = [
+  'HOST-VERIFIED ONLY: no CI compile, no flash, no device verification, no I2C read, no chip-id probe, no IOPMPowerSource publication, no charger state, no audio playback/capture, no DSP boot, no RPMh voting. The decoder is not linked into the kernel.',
+  'BLOCKED on (a) disambiguating the bq27xxx chip family with a real CONTROL/DEVICE_TYPE read at 0x55, (b) linking to NativeGeniI2c + an OS power-source service, (c) for full audio: the ADSP/modem .mbn firmware set, a new SLIMBUS WCD9340 + Q6AFE backend and a selected CoreAudio OS ABI, (d) for PMIC GLINK battery / RPMh cpufreq: an OS equivalent of the SM8550 GLINK/RPMh stack. Until those exist stage 7 cannot become device-verified.',
+  'CPU frequency and platform power are present; battery percentage, charger state and audio are absent. ShengBattery is listed as intended but not implemented. [HISTORICAL, retained]',
+]
+next_action = [
+  'Stage 7 POWER DONE (HOST-VERIFIED, 2026-11-08): bq27xxx fuel-gauge feasibility + byte-exact decoder committed as a host-verified module with a host evidence entry; the full DSP/audio/GLINK/RPMh path is honestly recorded as blocked; the bq27441-vs-bq27541 model conflict is documented, not guessed.',
+  'NEXT (only if unblocking the gauge): link the decoder to the device-verified NativeGeniI2c transport, read CONTROL/DEVICE_TYPE at 0x55 to fix the chip family, poll the 7 standard commands, publish IOPMPowerSource-style properties with explicit units, then CI-compile and flash a read-only gauge probe with two independent device verifications.',
+  'NEXT (only if unblocking audio): obtain the ADSP/modem .mbn firmware set, build a new SLIMBUS WCD9340 + Q6AFE backend (NOT a port of sheng SM8550 AudioReach/GPR), select the CoreAudio OS ABI, then flash a tone over QUATERNARY_MI2S_RX (Linux v6.12 sdm845.c: 48 kHz / 2 ch / S16_LE, MI2S bit clock 1.536 MHz) with CI + two independent device verifications.',
+  'Strict 8-stage order then continues with the remaining areas: memory (ArmSmmu4K kit not linked), cellular (QcomBaseband, user decision on scope) and diagnostics.',
+  '[HISTORICAL, superseded 2026-11-08] Stage 7: implement an I2C bq27441 fuel-gauge reader (Standard Commands: StateOfCharge, Voltage, Temperature) and publish AppleSmartBattery-style properties; then add PMI8998 charger state.',
+]
 evidence = [
+  { kind = "host", reference = "evidence/stage7-power-feasibility.md", result = "HOST-VERIFIED stage-7 bq27xxx fuel-gauge feasibility (2026-11-08): four independent research passes (official /zh/porting/power guide, Linux v6.12 bq27xxx_battery.c + _i2c.c, vendor DTB enchilada.dts:4213 + mainline sdm845-oneplus-common.dtsi:361-370, sheng SM8550 AdspProbe.cpp/ShengBattmgr.h + 246 decoded logs + workspace inventory). Pass 1 host runner: 11 test groups + sanitizers-off PASS (HOST_TEST_EXIT=0). Pass 2 strict C11 -Wconversion/-Wsign-conversion/-Wshadow/-pedantic compile exit 0 + independent bq-dump (le16(34,12)=1234; temp(2981)=250 0.1degC; cur(-400)=-400mA; bq27411 SOC=1c VOLT=04 TEMP=02 FCC=0e DCAP=3c; bq27541 SOC=2c VOLT=08 TEMP=06 FCC=12 DCAP=3c; assess gauge(bq27411,ok)=00, gauge(bq27541,ok)=00, gauge(unknown,ok)=01; stage7 today=1c full=00). Decision: the plain-I2C gauge decoder is FEASIBLE over device-verified NativeGeniI2c (no firmware/DSP/OS ABI); full ADSP/SLIMBUS/WCD9340/CoreAudio + PMIC GLINK + RPMh path BLOCKED (absent .mbn firmware, cross-generation sheng, closed OS ABI, zero driver literals in 246 logs). Honest correction: bq27441 (mainline i2c10) vs bq27541 (vendor i2c@a80000) model conflict - BOTH register maps implemented, no part number asserted. No CI / no flash / no device verification.", command = "python scripts/check-enchilada-battery-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe --out work/tmp/battery-host-out", revision = "d8e3e3c85516ec818c6e9ba05d12beeff5b7f5a5" },
+  { kind = "source", reference = "https://unixnu.com/zh/porting/power", result = "Official DSP/audio/battery stage: implement transport, device protocol and OS service separately; a directly-connected I2C gauge uses the chip register protocol, a DSP battery manager uses its message protocol; power-source fields + units + valid/missing state." },
+  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/power/supply/bq27xxx_battery.c", result = "Linux v6.12 bq27xxx two register-map families (bq27421_regs / bq27541_regs), 0.1 K temperature, signed mA current, mV voltage, 60 s poll." },
+  { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/power/supply/bq27xxx_battery_i2c.c", result = "Linux v6.12 bq27xxx I2C read: write register byte, repeated START, read 2 bytes little-endian (get_unaligned_le16); OF compatibles ti,bq27411 / ti,bq27441 / ti,bq27541 with no -battery suffix." },
   { kind = "source", reference = "scripts/build-enchilada-cpufreq.py", result = "CpuFreqProbe recipe." },
   { kind = "source", reference = "kits/enchilada-pmgr/ShengPlatformPower.cpp", result = "Platform power service source." },
+  { kind = "source", reference = "configs/enchilada_defconfig", result = "No audio driver options enabled; CONFIG_XNU_SHENG_PMGR=y is the only power-related option." },
   { kind = "device", reference = "evidence/console206.md", result = "W0/W1 rows and the 600 s deadline confirm the watchdog/power monitor ran for the whole boot.", command = "python scripts/test-cycle.py console206 --wait-return 900", revision = "7eeda1e01aa906ff3b2ac5fa58fdcfd244701c59" },
 ]
 
