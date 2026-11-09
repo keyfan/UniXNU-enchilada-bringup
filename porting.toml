@@ -49,17 +49,47 @@ evidence = [
 id = "cpu"
 status = "device-verified"
 components = ["ArmCpu", "ArmDTPlatform"]
-paths = ["drivers/ArmCpu/**", "scripts/build-arm-driver.py", "scripts/build-enchilada-cpufreq.py", "kits/enchilada-pmgr/**", "patches/xnu/native-smp-secondary.patch", "patches/xnu/architectural-timer-entry.patch"]
-inputs = ["8 MPIDR affinities 0x0..0x700, GICv3 0x17a00000+0x10000 / 0x17a60000+0x100000, architectural timer, PSCI, enchilada-deadline=600 s, sheng-cpufreq=4."]
-configuration = ["CONFIG_ARM_DT_PLATFORM=y, CONFIG_ARMCPU=y, CONFIG_NATIVE_ARCH_TIMER=y, CONFIG_NATIVE_PAN=y, CONFIG_BOOT_PROGRESS=y; ArmCpu plus ArmDTPlatform archives in [kernel] archives; native SMP secondary patch."]
-procedure = ["CI builds the ArmCpu/ArmDTPlatform archives with -Werror; test-cycle.py boots; the deadline fires at 600 s and PSCI SYSTEM_RESET returns the phone to recovery."]
-findings = ["IODelay is unusable on this platform (RootCommands.h:22: XNU's delay waits in WFE and the poll never came back); all waits use timebase spins.", "The 600 s deadline is a deliberate watchdog, not a hang; console201 at 1200 s was shortened after the user asked whether it was necessary."]
-completion = ["All enabled CPUs reach their entry checkpoint, timer/IPI handling works on each enabled CPU, and launchd reports a stable process count."]
-limits = ["No cluster-type (E/P) patch: enchilada uses a flat 8-core SDM845 topology, unlike sheng's SM8550 AMP split; no SMP stress test has been run."]
-next_action = ["Add an explicit per-CPU checkpoint counter to the boot log to turn 'procs=263' into per-core evidence."]
+paths = [
+  "drivers/ArmCpu/**",
+  "scripts/build-arm-driver.py",
+  "scripts/build-enchilada-cpufreq.py",
+  "kits/enchilada-pmgr/**",
+  "patches/xnu/native-smp-secondary.patch",
+  "patches/xnu/architectural-timer-entry.patch",
+  "patches/xnu-device/enchilada-pcpu.patch",
+  "evidence/stage1-percpu.md",
+]
+inputs = [
+  "8 MPIDR affinities 0x0..0x700, GICv3 0x17a00000+0x10000 / 0x17a60000+0x100000, architectural timer, PSCI, enchilada-deadline=600 s, sheng-cpufreq=4.",
+  "Preferred-CPU mask pcpu=0xf0 (CPUs 4-7, the four Kryo 385 Gold cores) and sheng-smp=1 are carried by every image this port ships; neither is a per-experiment variable.",
+]
+configuration = [
+  "CONFIG_ARM_DT_PLATFORM=y, CONFIG_ARMCPU=y, CONFIG_NATIVE_ARCH_TIMER=y, CONFIG_NATIVE_PAN=y, CONFIG_BOOT_PROGRESS=y; ArmCpu plus ArmDTPlatform archives in [kernel] archives; native SMP secondary patch; enchilada-pcpu.patch adds sched_pcpu_tick to the boot log.",
+]
+procedure = [
+  "CI builds the ArmCpu/ArmDTPlatform archives with -Werror; test-cycle.py boots; the deadline fires at 600 s and PSCI SYSTEM_RESET returns the phone to recovery.",
+  "Read the [sched] and [sched busy] rows out of slots.txt or latest.txt, which live in the per-boot region that survives the 128 KiB message-ring wrap; take per-CPU cumulative maximum over the boot rather than the final row.",
+]
+findings = [
+  "IODelay is unusable on this platform (RootCommands.h:22: XNU's delay waits in WFE and the poll never came back); all waits use timebase spins.",
+  "The 600 s deadline is a deliberate watchdog, not a hang; console201 at 1200 s was shortened after the user asked whether it was necessary.",
+  "Per-core execution is observable and observed: 64 of the 74 device boots in work/log/ log online=0xff with all eight CPUs described, eight distinct phys_id values 0x0..0x700, and non-zero cumulative user time on every core. On two cited boots the preferred cores (4-7) carry 2.06x and 1.95x the cumulative user time of cores 0-3 while the latter still accumulate 7.8-19.5 s, so preference is honoured without starving any core.",
+]
+completion = [
+  "All enabled CPUs reach their entry checkpoint, timer/IPI handling works on each enabled CPU, launchd reports a stable process count, and every one of the eight cores is shown to have executed user code on the device.",
+]
+limits = [
+  "No cluster-type (E/P) patch: enchilada uses a flat 8-core SDM845 topology, unlike sheng's SM8550 AMP split; XNU reports cluster type S for all eight cores and one processor set. No SMP stress test has been run, so nothing here exercises contention, IPI storms or CPU hotplug.",
+  "The per-window user/busy percentage columns read zero for almost every sample on these mostly-idle boots, so the per-core claim rests on cumulative counters and the online mask, never on a rate.",
+]
+next_action = [
+  "Stress the scheduler before claiming it is correct under load: a parallel memory and IPI load with per-CPU progress checkpoints, to turn eight-cores-ran into eight-cores-ran-concurrently-and-correctly. A second, smaller item is whether the flat topology should ever be given cluster types.",
+]
 evidence = [
   { kind = "source", reference = "scripts/build-enchilada-cpufreq.py", result = "CpuFreqProbe recipe producing the [cpufreq now] log line." },
+  { kind = "source", reference = "patches/xnu-device/enchilada-pcpu.patch", result = "Adds sched_pcpu_tick and the [sched] / [sched busy] rows: online mask, per-CPU phys_id/cluster, scheduler pick counters and cumulative user seconds." },
   { kind = "device", reference = "evidence/console206.md", result = "time=601s monitor=600 root=1 procs=263 IRQ=1118518: the timer interrupt and monitor ran for the full 600 s on a booted userland.", command = "python scripts/test-cycle.py console206 --wait-return 900", revision = "7eeda1e01aa906ff3b2ac5fa58fdcfd244701c59" },
+  { kind = "device", reference = "evidence/stage1-percpu.md", result = "online=0xff with eight distinct phys_id values and non-zero cumulative user time on all eight cores, on two boots; preferred/other ratio 2.06 and 1.95.", command = "python scripts/test-cycle.py persist --wait-return 1000", revision = "c276ed56b23798436b18ce7a334862a38b7e0298" },
 ]
 
 [[area]]
