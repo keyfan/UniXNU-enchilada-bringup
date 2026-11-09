@@ -165,6 +165,13 @@ extern void enchilada_backlight_poll(void) __attribute__((weak_import));
 // (BootProgress.c:141-142 boot_progress_exit_fault/reason, BootDiagExport.c:43 armcpu_map_physical),
 // so BootProgressStubs.c/.symbols stay byte-identical. Reads only standard-command registers.
 extern void enchilada_gauge_poll(void) __attribute__((weak_import));
+// enchilada stage-1: READ-ONLY appSMMU survey (EnchiladaSmmuProbe.cpp, enchilada-smmu=1,
+// default off). Its strong definition lives in the -force_load'ed libEnchiladaSmmu.a; a
+// weak_import with a strong definition needs NO stub (BootProgress.c:141-142
+// boot_progress_exit_fault/reason, BootDiagExport.c:43 armcpu_map_physical), so
+// BootProgressStubs.c/.symbols stay byte-identical. Reads identification + stream-match
+// registers only: no context program, no bank enable, no SMR/S2CR write.
+extern void enchilada_smmu_poll(void) __attribute__((weak_import));
 extern char boot_process_rows[10][120] __attribute__((weak_import));
 extern unsigned boot_ui_trace_role_rows(unsigned,char [][120],unsigned,unsigned) __attribute__((weak_import));
 extern char native_touch_rows[4][120] __attribute__((weak_import));
@@ -1277,6 +1284,7 @@ static void monitor(void *arg, wait_result_t result) {
     if(native_touch_probe)native_touch_probe();
     if(enchilada_backlight_poll)enchilada_backlight_poll();
     if(enchilada_gauge_poll)enchilada_gauge_poll();
+    if(enchilada_smmu_poll)enchilada_smmu_poll();
     if(boot_ui_trace_snapshot)boot_ui_trace_snapshot(now);
     if(&boot_process_attempts && &boot_process_busy) {
       unsigned attempt=__atomic_load_n(&boot_process_attempts,__ATOMIC_RELAXED);
