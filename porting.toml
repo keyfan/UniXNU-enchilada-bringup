@@ -397,6 +397,7 @@ paths = [
   "scripts/check-enchilada-battery-host.py",
   "evidence/stage7-power-feasibility.md",
   "evidence/stage7-gauge-device.md",
+  "evidence/stage7-gauge-multiboot.md",
   "scripts/build-enchilada-cpufreq.py",
   "scripts/build-sheng-platform-power.py",
   "kits/enchilada-pmgr/ShengPlatformPower.cpp",
@@ -421,7 +422,8 @@ procedure = [
   "Verification 1 (host): python scripts/check-enchilada-gauge-probe-host.py --cc oneplus6-ios/tools/llvm-mingw/bin/clang.exe --cxx oneplus6-ios/tools/llvm-mingw/bin/clang++.exe (decoder 11 groups + read-only orchestrator 7 groups) and a CI-equivalent clang++ -std=c++20 -Wdeprecated-volatile -Werror -fsyntax-only of the shim.",
   "Verification 2 (host, different method): strict clang -std=c11 -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow -O2 -ffreestanding on BqGaugeProbe.c plus an independent program that drives the core through a fake I2C file and re-derives the printed verdict.",
   "Verification 3 (device): python -X utf8 scripts/test-cycle.py gaugereplay --wait-return 400 flashes the payload, waits for the deadline auto-return, then work/tmp/collect_gaugereplay.py pulls the 32 MiB window read-only and decodes it.",
-  "Two independent device analyses were then run over different data paths: analyze_gaugereplay_device_logs.py (decoded log files) and analyze_gaugereplay_serial.py (raw window bytes plus the host serial watcher log)."
+  "Two independent device analyses were then run over different data paths: analyze_gaugereplay_device_logs.py (decoded log files) and analyze_gaugereplay_serial.py (raw window bytes plus the host serial watcher log).",
+  "Verification 4 (round 18, read-only re-analysis, no new flash): a full survey of all 133 archived boot dirs under work/log/ found six distinct boots carrying the gauge verdict. _gauge_multiboot_scan.py (regex over msgbuf.txt + latest.txt, family-A tuple de-duplication) and _gauge_multiboot_verify2.py (raw-byte scan of every file, whitespace split parser, header validation, cross-check) are two independent readers; both agree and GAUGE_MULTIBOOT_VERIFY2: PASS (12/12)."
 ]
 findings = [
   "STAGE 7 DEVICE-VERIFIED (2026-11-09, boot_id 553807564, uptime 899 s): the gauge probe ran read-only on hardware and returned rc=0 with a full 12/12 register read set. Verdict line, verbatim: enchilada-gauge: rc=0 BG sel=bq27411 / bq27441 (mainline ti,bq27411 @0x55) ok=12/12 a[soc=100 v=4326 i=0 t=145 f=3153 d=3240 pl=6/6] b[soc=3161 v=3191 i=-3402 t=-2059 f=0 d=3240 pl=3/6] (replay t=899 attempt=1)",
@@ -429,21 +431,22 @@ findings = [
   "Three earlier flashes were INCONCLUSIVE and are recorded as such rather than as failures: the 128 KiB msgbuf ring is overwritten from ~59 s onward at 1300-3000 B/s of early boot output, so the t<8 s probe lines were collected-but-discarded. Shortening the watchdog deadline from 900 to 240 to 60 s did not help, because the ring fill time is a property of total boot output, not of the deadline. The fix was to replay the verdict every 1 Hz so the newest copy always sits inside the ring; the ring then held 480 gauge lines across ticks 420-899.",
   "STAGE 7 DECISION (retained): the full DSP / audio / GLINK-battery / RPMh-cpufreq path stays BLOCKED. enchilada SDM845 uses pil-tz-generic LPASS firmware and a SLIMBUS WCD9340 codec with Q6AFE, while sheng SM8550 uses AdspProbe AudioReach/GPR with SoundWire plus PMIC GLINK; the generations and buses differ, the .mbn firmware blobs are absent from the workspace, and the iOS CoreAudio / IOPMPowerSource ABI is closed-source with no macOS or Xcode on this host.",
   "RETROSPECTIVE log analysis (retained): the only nonzero audio-ish hits in 246 decoded device logs are userspace or container noise, not drivers.",
-  "The no-auto-dim seed flag is required because this board has no buttons and no idle timer: without it SpringBoard dims and sleeps about 30 s after boot."
+  "The no-auto-dim seed flag is required because this board has no buttons and no idle timer: without it SpringBoard dims and sleeps about 30 s after boot.",
+  "ROUND 18 RETROSPECTIVE (read-only re-analysis, no new CI/flash): the power-area 'single boot' limit was a stale record. Six distinct boots (553807564, 552252012, 553634628, 549982314, 553412253, 551765171) across four payload variants (gaugereplay / persist x2 / smmu / smmu2 / smmu3) each carry a full 12/12 gauge verdict with family A plausible 6/6. Voltage 4325-4328 mV, current 0-29 mA, temperature 145-182 (0.1 K) and full capacity 3149-3153 mAh vary across boots, proving the probe re-reads live hardware on every boot rather than replaying a cached constant. All six headers are SHLOG001 / write_errors=0. GAUGE_MULTIBOOT_SCAN: 133 dirs / 6 verdict boots; GAUGE_MULTIBOOT_VERIFY2: PASS (12/12) with two independent readers. SOC=100 on all six, so this is still one charge level, not six."
 ]
 completion = [
   "Official completion criteria (PARTIALLY met): declared power controls and battery readings must match observations, and each claimed sleep/resume transition must restore its dependent peripherals. The battery reading criterion is now met on device: a stated chip family, seven standard-command readings in stated units, and a physically sane result.",
-  "Stage 7 scope actually completed: byte-exact bq27xxx decoding for both register-map families (host-verified twice), a read-only on-device probe with two independent device analyses (device-verified), and durable evidence records for both."
+  "Stage 7 scope actually completed: byte-exact bq27xxx decoding for both register-map families (host-verified twice), a read-only on-device probe with two independent device analyses (device-verified), durable evidence records for both, and a read-only six-boot reproduction survey confirming the probe re-reads hardware each boot."
 ]
 limits = [
   "The gauge is READ-ONLY. No CONTROL / CONFIG / unseal write, no charger state, no IOPMPowerSource publication and no OS power-source service exist yet, so nothing consumes the reading inside iOS.",
   "Audio is entirely absent: no DSP boot, no SLIMBUS WCD9340 backend, no Q6AFE, no CoreAudio playback or capture and no RPMh voting. ShengBattery is listed as intended but not implemented.",
-  "The device evidence is a single boot (boot_id 553807564) on one unit at one charge level; it proves the register protocol and the transport, not long-term accuracy across charge cycles."
+  "The device evidence now spans six distinct boots (boot_id 553807564, 552252012, 553634628, 549982314, 553412253, 551765171) across four payload variants, each with a full 12/12 read set and physically varying voltage/current/temperature/full-capacity, which confirms the probe re-reads live hardware on every boot. It is still one unit at one charge level (SOC=100 on all six), so it proves the register protocol and the transport, not long-term accuracy across charge cycles. The earlier 'single boot' limit was a stale record corrected by read-only log re-analysis (no new CI or flash)."
 ]
 next_action = [
-  "Stage 7 battery follow-up: publish the decoded values as IOPMPowerSource-style properties with explicit units and a valid/missing state, then read the PMI8998 charger status so charge state is available alongside capacity.",
+  "Stage 7 battery follow-up: publish the decoded values as IOPMPowerSource-style properties with explicit units and a valid/missing state, then read the PMI8998 charger status so charge state is available alongside capacity. A discharge/recharge cycle on device would be needed before any long-term accuracy claim.",
   "Stage 7 audio remains blocked on the ADSP firmware set and a new SLIMBUS WCD9340 + Q6AFE backend (NOT a port of the sheng SM8550 AudioReach/GPR stack).",
-  "Strict 8-stage order then continues with the remaining areas: memory (ArmSmmu4K kit not linked) and diagnostics (ShengPreflight not linked)."
+  "Strict 8-stage order then continues with the remaining areas: a real stage-1 SMMU context (the ArmSmmu4K kit is now LINKED and its read-only preflight is device-verified; the target streams must first be made to fault) and diagnostics (ShengPreflight not linked)."
 ]
 evidence = [
   { kind = "device", reference = "evidence/stage7-gauge-device.md", result = "STAGE 7 DEVICE-VERIFIED (2026-11-09, boot_id 553807564, uptime 899 s): read-only bq27xxx probe returned rc=0 with 12/12 register reads across both register-map families; family A (mainline ti,bq27411) decoded to SOC 100 pct / 4326 mV / 0 mA / 14.5 degC / 3153 mAh full / 3240 mAh design at 6/6 plausible, family B (vendor ti,bq27541) to SOC 3161 pct / -205.9 degC at 3/6 plausible. 480 replayed verdict lines across ticks 420-899. Two independent device analyses (decoded log files; raw window bytes plus serial watcher) both report read_only_probe_device_verified = true.", command = "python -X utf8 oneplus6-ios/scripts/test-cycle.py gaugereplay --wait-return 400", revision = "8f4ca9bf2b386ab8414f7ca9de176d71b4f02ded" },
@@ -454,7 +457,8 @@ evidence = [
   { kind = "source", reference = "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/drivers/power/supply/bq27xxx_battery_i2c.c", result = "Linux v6.12 bq27xxx I2C read: write register byte, repeated START, read 2 bytes little-endian; OF compatibles ti,bq27411 / ti,bq27441 / ti,bq27541." },
   { kind = "source", reference = "drivers/NativeBattery/BqGaugeProbe.c", result = "Read-only orchestrator: per-field register lookup, bounded plausibility scoring, verdict formatting for both families." },
   { kind = "source", reference = "package/EnchiladaGaugeProbe.cpp", result = "Kernel shim: MMIO mapping, GCC clock vote, pinmux, GENI I2C bring-up, 1 Hz replay of the verdict." },
-  { kind = "source", reference = "configs/enchilada_defconfig", result = "CONFIG_XNU_EXTRA_LD_ARCHIVES force-loads libEnchiladaGauge.a alongside dwc3, touch, cpufreq and msm-dsi." }
+  { kind = "source", reference = "configs/enchilada_defconfig", result = "CONFIG_XNU_EXTRA_LD_ARCHIVES force-loads libEnchiladaGauge.a alongside dwc3, touch, cpufreq and msm-dsi." },
+  { kind = "device", reference = "evidence/stage7-gauge-multiboot.md", result = "ROUND 18 DEVICE-VERIFIED (read-only re-analysis, no new flash): six distinct boots (553807564, 552252012, 553634628, 549982314, 553412253, 551765171) across four payload variants each carry a full 12/12 gauge verdict; family A is plausible 6/6 on every boot; voltage 4325-4328 mV, current 0-29 mA, temperature 145-182 (0.1 K), full capacity 3149-3153 mAh vary across boots, proving the probe re-reads live hardware each boot rather than replaying a cached string. All headers SHLOG001 / write_errors=0. GAUGE_MULTIBOOT_SCAN: 133 dirs / 6 verdict boots; GAUGE_MULTIBOOT_VERIFY2: PASS (12/12) with two independent readers. SOC=100 on all six = one charge level (honest boundary).", command = "python -X utf8 work/tmp/_gauge_multiboot_verify2.py", revision = "6c8f135c971107342f2a70e39a355750bb9447fd" }
 ]
 
 [[area]]
