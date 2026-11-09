@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GPU = ROOT / 'drivers/NativeAdreno'
 TESTS = [
     ('adreno-catalog-test', [GPU / 'tests/adreno-catalog-test.cpp'], ['AdrenoCatalog']),
+    ('adreno-a630-hwinit-test', [GPU / 'tests/adreno-a630-hwinit-test.cpp'], []),
 ]
 SOURCES = {'AdrenoCatalog': GPU / 'AdrenoCatalog.c'}
 

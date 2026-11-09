@@ -1,0 +1,44 @@
+{
+  "generation": "A6XX_GEN1",
+  "target": "A6XX",
+  "chip": "Adreno A630 (SDM845 / enchilada)",
+  "linux": {
+    "repository": "https://github.com/torvalds/linux",
+    "ref": "v6.12",
+    "mirror": "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/",
+    "files": {
+      "drivers/gpu/drm/msm/registers/adreno/a6xx.xml": {
+        "bytes": 307513,
+        "sha256": "7f432c5e189f14ce559e0e7722c077ac778cfb63d64b2043c35d09b379bcd602"
+      },
+      "drivers/gpu/drm/msm/registers/adreno/adreno_common.xml": {
+        "bytes": 15485,
+        "sha256": "c733db8294d0bedc6191044b7a6acfc81495ba1f294c3108746999c596cf5e58"
+      },
+      "drivers/gpu/drm/msm/registers/adreno/a6xx_gmu.xml": {
+        "bytes": 11830,
+        "sha256": "462b896035f35fd689c2d7b95c18d7c78b669fd21c7055e7c32cbd8cedc700c1"
+      },
+      "drivers/gpu/drm/msm/adreno/a6xx_catalog.c": {
+        "bytes": 51692,
+        "sha256": "6d9061ee08308126adc7b7250810b0223ee01c678e7afab6eb1738e53524c24c"
+      },
+      "drivers/gpu/drm/msm/adreno/a6xx_gpu.c": {
+        "bytes": 69087,
+        "sha256": "c33479377574ed193e82c272b3708e19a2b2153088f246e2639d8a43fef943a2"
+      },
+      "drivers/gpu/drm/msm/adreno/a6xx_gmu.c": {
+        "bytes": 48981,
+        "sha256": "c14fbb253e602bfd2585d757da871dde08ea63b811ff3c6808f657f4522f78d4"
+      },
+      "drivers/gpu/drm/msm/adreno/a6xx_hfi.c": {
+        "bytes": 22853,
+        "sha256": "f62c802d25475b86ac05cc58df012e088230ed64a0e9319456eb20ebb40c9faa"
+      },
+      "drivers/gpu/drm/msm/adreno/a6xx_gpu.h": {
+        "bytes": 3251,
+        "sha256": "8909f9d70b6122899c70ec01fb034a6244f652eef9a0451065d22e86b546033e"
+      }
+    }
+  }
+}
