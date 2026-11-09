@@ -62,7 +62,7 @@ the store is rebuilt.
 ## Two boots, same payload
 
 Both runs used `payload-persist.img`
-(sha256 `b037538b0c84ab0fc782829a38bdf0d458cfff31e044e2fcbd495538c93a1abb`),
+(sha256 `b037538b0c84ab0fc782829a38bfb0d458cfff31e044e2fcbd495538c93a1abb`),
 built by `_build_persist_payload.py` and gated by `preflash_check_persist.py`
 (25 checks) and `verify_persist_prebuild_2.py`.
 
