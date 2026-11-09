@@ -20,8 +20,12 @@ GPU = ROOT / 'drivers/NativeAdreno'
 TESTS = [
     ('adreno-catalog-test', [GPU / 'tests/adreno-catalog-test.cpp'], ['AdrenoCatalog']),
     ('adreno-a630-hwinit-test', [GPU / 'tests/adreno-a630-hwinit-test.cpp'], []),
+    ('adreno-board-inputs-test', [GPU / 'tests/adreno-board-inputs-test.cpp'], ['AdrenoBoardInputs']),
 ]
-SOURCES = {'AdrenoCatalog': GPU / 'AdrenoCatalog.c'}
+SOURCES = {
+    'AdrenoCatalog': GPU / 'AdrenoCatalog.c',
+    'AdrenoBoardInputs': GPU / 'AdrenoBoardInputs.c',
+}
 
 
 def sanitizers(cxx, out):
@@ -55,7 +59,7 @@ def main():
         if result.returncode:
             sys.stderr.write(result.stderr)
             raise SystemExit(f'FAIL: {name} ({result.returncode})')
-    print(f'PASS: enchilada A630 catalog host tests ({"sanitized" if san else "without sanitizers"})')
+    print(f'PASS: enchilada A630 catalog/hwinit/board-input host tests ({"sanitized" if san else "without sanitizers"})')
 
 
 if __name__ == '__main__':

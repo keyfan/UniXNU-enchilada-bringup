@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "board": "enchilada",
+  "soc": "SDM845",
+  "gpu": "Adreno A630 (6XX GEN1, legacy GMU HFI v1 / SPTPRAC)",
+  "round": 21,
+  "date": "2026-11-09",
+  "status": "HOST-VERIFIED (a DTB is a firmware description, NOT a device measurement; no CI, no flash, no register read)",
+  "dtb": {
+    "description": "vendored Mu-Silicium decompiled enchilada.dts (the SAME DTB behind device-verified stage-3 sofef00 bl_ctrl_dcs, stage-4 touch and stage-7 gauge facts)",
+    "sha256": "e590ee3273499ee4230760aea9195073c0c195242eee11c95570e174ec202275",
+    "bytes": 784857,
+    "copies_root": "oneplus6-ios (workspace root = scripts dir -> DEV -> work -> oneplus6-ios)",
+    "copies": [
+      "notes/mu-silicium/enchilada.dts",
+      "work/Mu-Silicium-full/Resources/DTBs/enchilada.dts",
+      "work/Mu-Silicium/Resources/DTBs/enchilada.dts",
+      "work/mock-mu-silicium/Resources/DTBs/enchilada.dts"
+    ],
+    "provenance_keyline": "qcom,mdss-dsi-bl-pmic-control-type = \"bl_ctrl_dcs\" at line 2661 (device-verified stage-3)"
+  },
+  "slices": {
+    "kgsl_smmu": [13957, 13973],
+    "apps_smmu": [13975, 13996],
+    "kgsl_hyp": [23610, 23616],
+    "gpu": [23632, 23671],
+    "kgsl_iommu": [23848, 23873],
+    "gmu": [23875, 23925],
+    "gfx3d_user": [23860, 23866],
+    "gfx3d_secure": [23868, 23872],
+    "gmu_user": [23914, 23918],
+    "gmu_kernel": [23920, 23924]
+  },
+  "nodes": {
+    "arm,smmu-kgsl@5040000": [13957, 25896],
+    "qcom,kgsl-hyp {": [23610],
+    "qcom,kgsl-3d0@5000000 {": [23632],
+    "qcom,kgsl-iommu {": [23848],
+    "gfx3d_user {": [23860],
+    "gfx3d_secure {": [23868],
+    "qcom,gmu {": [23875],
+    "gmu_user {": [23914],
+    "gmu_kernel {": [23920]
+  },
+  "keylines": {
+    "qcom,chipid = <0x6030001>": [23641],
+    "qcom,pas-id = <0x0d>": [23612],
+    "qcom,firmware-name = \"a630_zap\"": [23613],
+    "phandle = <0x1ac>": [13972],
+    "#iommu-cells = <0x01>": [13961],
+    "qcom,mdss-dsi-bl-pmic-control-type = \"bl_ctrl_dcs\"": [2224, 2543, 2661, 2782, 2864, 3001, 3195],
+    "qcom,mdss_dsi_samsung_sofef00_m_cmd {": [2613]
+  },
+  "facts": {
+    "kgsl_smmu": {"base": "0x05040000", "size": "0x00010000", "phandle": "0x1ac", "compatible": "qcom,smmu-v2", "iommu_cells": 1},
+    "apps_smmu": {"base": "0x15000000", "phandle": "0x29", "iommu_cells": 2},
+    "kgsl_iommu": {"reg": ["0x05040000", "0x00010000"], "protect": ["0x00040000", "0x0000c000"], "micro_mmu_control": "0x00006000", "secure_align_mask": "0x00000fff"},
+    "context_banks": {"gfx3d_user": ["0x00"], "gfx3d_secure": ["0x02", "0x01"], "gmu_user": ["0x04"], "gmu_kernel": ["0x05"]},
+    "gpu": {"reg_windows": [["0x05000000", "0x00040000"], ["0x05061000", "0x00000800"], ["0x0509e000", "0x00001000"]], "chipid": "0x06030001", "irq": 300, "highest_bank_bit": 15, "ubwc_mode": 2, "clocks": 6},
+    "gmu": {"reg_windows": [["0x0506a000", "0x00030000"], ["0x0b200000", "0x00300000"]], "irqs": [304, 305]},
+    "zap": {"pas_id": 13, "firmware": "a630_zap"}
+  },
+  "linux_catalog": {
+    "description": "sha256-pinned Linux v6.12 a6xx_catalog.c, fetched by scripts/fetch-adreno-a630-sources.py into the gitignored .cache (upstream pin-before-derive method)",
+    "pinned_by": "scripts/data/adreno-a630-inputs.json",
+    "rel_path": "drivers/gpu/drm/msm/adreno/a6xx_catalog.c",
+    "sha256": "6d9061ee08308126adc7b7250810b0223ee01c678e7afab6eb1738e53524c24c",
+    "cache": ".cache/adreno-a630-source/drivers/gpu/drm/msm/adreno/a6xx_catalog.c",
+    "required_markers": ["0x06030001", "0x06030002", "a630_gmu.bin", "a630_sqe.fw", "ADRENO_6XX_GEN1"]
+  },
+  "c_module": "drivers/NativeAdreno/AdrenoBoardInputs.h"
+}
