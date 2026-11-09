@@ -86,17 +86,50 @@ evidence = [
 id = "storage"
 status = "device-verified"
 components = ["ShengUfs", "RamBlock", "VirtioMmioBlock", "VerifiedRoot"]
-paths = ["drivers/NativeUfs/**", "drivers/NativeRamBlock/**", "scripts/build-arm-driver.py", "scripts/build-enchilada-storage.py", "scripts/build-enchilada-verified-root.py", "scripts/build-virtio-mmio-bindings.py", "configs/enchilada_defconfig"]
-inputs = ["UFS HC 0x1d84000+0x2500, PHY 0x1d87000+0xda8, stream 0x60, GCC 0x00100000, [userdata] first_lba=0x186f40 last_lba=0xe217fa lba_bytes=4096, Data seed UUID 18AB5557-DC2D-469B-8758-855E60F5B0DF."]
-configuration = ["CONFIG_NATIVE_UFS=y, CONFIG_NATIVE_VIRTIO_BLOCK=y, CONFIG_VERIFIED_ROOT_PROBE=y, CONFIG_OWNER_ROOT_AUDIT/TRUST=y, CONFIG_OWNER_DATA_MOUNT=y, CONFIG_NATIVE_RAM_BLOCK=y; data-seed run 41552968815 supplies the Data ramdisk; skip_setup=true writes SetupDone into the seed."]
-procedure = ["CI step 17/18 fetch and validate the Data seed (volume_uuid equality, empty role), step 19 builds the payload, step 20 injects DarwinBoot.efi; on device the UFS driver publishes userdata and the root volume is mounted."]
-findings = ["The 4K verification window (4933 MiB verified, UFS TIME verify=5513 ms read=45230 ms) confirmed the whole root image is readable before launchd starts.", "sheng-data-reset=1 discards overlay writes (NativeRamBlock.cpp:86 discardRequested), so every boot starts from the seeded Data; skip_setup in the seed keeps Setup skipped (BootWatchdogPolicy.c:78-79).", "The UFS stream constant from sheng (0x60) cannot be copied blindly: SDM845 uses 0x100; enchilada keeps its own measured value."]
-completion = ["Host: register/clock/link/SMMU facts match the board inventory; reads: capacity, GPT and known blocks are correct; root: the configured volume mounts and launchd starts; persistence: writes survive reboot within the allocated Data region."]
-limits = ["Persistent overlay writes are discarded on every boot by design (sheng-data-reset=1); the survival of user writes across an unmodified reboot has not been demonstrated in this configuration."]
-next_action = ["Run one boot with sheng-data-reset=0 and verify a written file survives a warm reboot, then record that as persistence evidence."]
+paths = [
+  "drivers/NativeUfs/**",
+  "drivers/NativeRamBlock/**",
+  "scripts/build-arm-driver.py",
+  "scripts/build-enchilada-storage.py",
+  "scripts/build-enchilada-verified-root.py",
+  "scripts/build-virtio-mmio-bindings.py",
+  "configs/enchilada_defconfig",
+  "evidence/stage2-persistence.md",
+]
+inputs = [
+  "UFS HC 0x1d84000+0x2500, PHY 0x1d87000+0xda8, stream 0x100 mask 0xf (DTB iommus), GCC 0x00100000, [userdata] first_lba=0x186f40 last_lba=0xe217fa lba_bytes=4096, Data seed UUID 18AB5557-DC2D-469B-8758-855E60F5B0DF.",
+  "The persistent overlay is a reserved window below the root image, found by NativeUfs native_ufs_store_open (uint64_t first = gStoreGeometry.last + 1 - reserve - blocks), with a 1024 MiB default reserve (sheng-log-reserve). Its identity is (page count, 32-byte seed), so PersistOverlay checkHeader only accepts a store written by this installation.",
+  "Store mode comes from sheng-data-persist: 1 opens the overlay read-only, 2 opens it read-write and serves the disk from it (NativeUfs.cpp:1309 storeMode, rejects values above 2). sheng-data-reset=1 or 2 forces the header stale so the store is rebuilt from the seed (NativeRamBlock.cpp:86 discardRequested).",
+]
+configuration = [
+  "CONFIG_NATIVE_UFS=y, CONFIG_NATIVE_VIRTIO_BLOCK=y, CONFIG_VERIFIED_ROOT_PROBE=y, CONFIG_OWNER_ROOT_AUDIT/TRUST=y, CONFIG_OWNER_DATA_MOUNT=y, CONFIG_NATIVE_RAM_BLOCK=y; data-seed run 41552968815 supplies the Data ramdisk; skip_setup=true writes SetupDone into the seed.",
+  "Persistence runs keep sheng-data-persist=2 and omit sheng-data-reset entirely; the kernel is CI run 215 plus the no-reset entry patch, unchanged from the appSMMU run, so the boot argument is the only variable.",
+]
+procedure = [
+  "CI step 17/18 fetch and validate the Data seed (volume_uuid equality, empty role), step 19 builds the payload, step 20 injects DarwinBoot.efi; on device the UFS driver publishes userdata and the root volume is mounted.",
+  "Persistence: build the payload with the reset flag removed, boot it twice with the same image, and read the D row (or data state=) from each boot. A resumed store prints st=2 with hdr=0 and present greater than zero; st=3 means the flag was still in effect, st=7 means the store held another seed, and st=5 means an I/O error degraded it.",
+]
+findings = [
+  "The 4K verification window (4933 MiB verified, UFS TIME verify=5513 ms read=45230 ms) confirmed the whole root image is readable before launchd starts.",
+  "sheng-data-reset=1 discards overlay writes (NativeRamBlock.cpp:86 discardRequested), so a boot with that flag always starts from the seeded Data; skip_setup in the seed keeps Setup skipped (BootWatchdogPolicy.c:78-79).",
+  "The UFS stream constant from sheng (0x60) cannot be copied blindly: SDM845 uses 0x100; enchilada keeps its own measured value.",
+  "Persistence is real in this configuration: two consecutive boots of the same payload both printed st=2 (resumed) with hdr=0, and the present page count went 319245 then 320399, so the second boot saw both the pages the earlier flash left behind and the pages the first boot dirtied. Zero write errors on both, and pages=4194304 on both, which is the observable half of the store identity.",
+  "The 128 KB message ring saturates within 58.8-101.2 s of boot, so msgbuf.txt no longer holds a shutdown-time D row at all; the per-second slot file still carries 509 copies over a 899 s run, so a persistence verdict must be read from slots.txt or the raw window, not from msgbuf.",
+]
+completion = [
+  "Host: register/clock/link/SMMU facts match the board inventory; reads: capacity, GPT and known blocks are correct; root: the configured volume mounts and launchd starts; persistence: writes survive reboot within the allocated Data region.",
+]
+limits = [
+  "The persistence result is about the overlay, not about the filesystem: page content authored in one boot is readable in the next, but no APFS-level file was written in one boot and read back in the other. A reflash rewrites system_b and is not covered.",
+  "The 32-byte seed half of the store identity is not readable from the boot log; only the page count could be compared across boots.",
+]
+next_action = [
+  "Write a file through the mounted Data volume in one boot and read it back in the next, which turns the overlay result into a filesystem-level claim.",
+]
 evidence = [
   { kind = "source", reference = "scripts/build-enchilada-storage.py", result = "UFS archive recipe with the SDM845 controller/PHY/stream constants." },
   { kind = "device", reference = "evidence/console206.md", result = "UFS requests=302995 verified4K=1186660 failures=0 published=2; S st=2 dirs=6574 files=4214 mib=445 fail=0; root=1.", command = "python scripts/test-cycle.py console206 --wait-return 900", revision = "7eeda1e01aa906ff3b2ac5fa58fdcfd244701c59" },
+  { kind = "device", reference = "evidence/stage2-persistence.md", result = "Two boots of payload-persist.img both printed D st=2 hdr=0 with present 319245 then 320399 and er=0, so the Data overlay resumed instead of being rebuilt.", command = "python scripts/test-cycle.py persist --wait-return 1000", revision = "8a27b27354dd7050afda090dece84480d98fdf24" },
 ]
 
 [[area]]
