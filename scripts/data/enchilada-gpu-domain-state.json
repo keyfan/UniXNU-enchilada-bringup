@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "board": "enchilada",
+  "soc": "SDM845",
+  "round": 28,
+  "topic": "GPU domain-state safe-read design (HOST-VERIFIED, no device read performed)",
+  "status": "host-verified",
+  "dtb": {
+    "path": "notes/mu-silicium/enchilada.dts",
+    "sha256": "e590ee3273499ee4230760aea9195073c0c195242eee11c95570e174ec202275",
+    "bytes": 784857,
+    "slice_gpucc": [6223, 6233],
+    "slice_gfxcc": [6235, 6244],
+    "slice_gdsc_cx": [593, 605],
+    "slice_gdsc_gx": [607, 621],
+    "slice_gpu": [23632, 23671],
+    "slice_kgsl_smmu": [13957, 13973],
+    "dtb_keys": {
+      "gpucc_reg": "0x5090000 0x9000",
+      "gpucc_vdd_cx": 6227,
+      "gpucc_vdd_mx": 6228,
+      "gfxcc_vdd_gfx": 6239,
+      "gdsc_cx_reg": 596,
+      "gdsc_cx_hw_ctrl_addr": 597,
+      "gdsc_gx_reg": 610,
+      "gdsc_gx_poll_cfg": 611,
+      "gdsc_gx_clamp_io": null
+    }
+  },
+  "phandles": {
+    "pm8998_s9_level": {
+      "phandle": "0x1b",
+      "line": 10864,
+      "role": "vdd_cx"
+    },
+    "pm8998_s6_level": {
+      "phandle": "0x8d",
+      "line": 10817,
+      "role": "vdd_mx"
+    },
+    "pm8005_s1_level": {
+      "phandle": "0x1d",
+      "line": 11505,
+      "role": "vdd_gfx"
+    }
+  },
+  "upstream": {
+    "pinned_by": "scripts/data/enchilada-gpu-domain-state.json",
+    "cache_dir": ".cache/adreno-a630-source",
+    "files": {
+      "drivers/clk/qcom/gpucc-sdm845.c": {
+        "bytes": 5176,
+        "sha256": "80c2fbef5c65df986f4c391bbeedbf53e8744e5dd326f0e05dc6b4021f542a54",
+        "required_markers": [
+          "static struct gdsc gpu_cx_gdsc",
+          ".gdscr = 0x106c",
+          ".gds_hw_ctrl = 0x1540",
+          "static struct gdsc gpu_gx_gdsc",
+          ".gdscr = 0x100c",
+          ".clamp_io_ctrl = 0x1508",
+          "gdsc_gx_do_nothing_enable",
+          "PWRSTS_OFF_ON",
+          "CLAMP_IO | AON_RESET | POLL_CFG_GDSCR",
+          ".flags = VOTABLE"
+        ]
+      },
+      "drivers/clk/qcom/gdsc.c": {
+        "bytes": 15019,
+        "sha256": "e1210770ad3e4406adaca4eb0d6d103823d73a65068cf1ff48183bb1a347d32d",
+        "required_markers": [
+          "#define PWR_ON_MASK\t\tBIT(31)",
+          "#define SW_COLLAPSE_MASK\tBIT(0)",
+          "#define GDSC_POWER_UP_COMPLETE\t\tBIT(16)",
+          "#define GDSC_POWER_DOWN_COMPLETE\tBIT(15)",
+          "#define CFG_GDSCR_OFFSET\t\t0x4",
+          "#define STATUS_POLL_TIMEOUT_US\t1500",
+          "if (sc->flags & POLL_CFG_GDSCR)",
+          "reg = sc->gdscr + CFG_GDSCR_OFFSET;",
+          "else if (sc->gds_hw_ctrl)",
+          "reg = sc->gds_hw_ctrl;",
+          "return !!(val & GDSC_POWER_UP_COMPLETE);",
+          "return !!(val & PWR_ON_MASK);",
+          "return !(val & PWR_ON_MASK);"
+        ]
+      },
+      "drivers/clk/qcom/gdsc.h": {
+        "bytes": 2863,
+        "sha256": "ba487640dc1a0acbecb3605417b2bd34418c6914d24c64a54a145565d1a15f86",
+        "required_markers": [
+          "#define PWRSTS_OFF\t\tBIT(0)",
+          "#define PWRSTS_ON\t\tBIT(2)",
+          "#define CLAMP_IO\tBIT(1)",
+          "#define AON_RESET\tBIT(4)",
+          "#define POLL_CFG_GDSCR\tBIT(5)",
+          "#define VOTABLE\t\tBIT(0)"
+        ]
+      }
+    }
+  },
+  "domain_state": {
+    "cx": {
+      "name": "gpu_cx_gdsc",
+      "gdscr": "0x0509106c",
+      "status_register": "0x05091540",
+      "status_register_source": "gdsc.c:68-69 gds_hw_ctrl (gpucc-sdm845.c:121 .gds_hw_ctrl = 0x1540)",
+      "on_bit": 31,
+      "off_bit": null,
+      "on_test": "val & BIT(31) != 0",
+      "flags": ["VOTABLE"],
+      "poll_cfg_gdscr": false,
+      "dtb_reg": "0x509106c",
+      "dtb_hw_ctrl_addr_is_vendor_index": true
+    },
+    "gx": {
+      "name": "gpu_gx_gdsc",
+      "gdscr": "0x0509100c",
+      "status_register": "0x05091010",
+      "status_register_source": "gdsc.c:66-67 POLL_CFG_GDSCR -> gdscr + CFG_GDSCR_OFFSET(0x4)",
+      "on_bit": 16,
+      "off_bit": 15,
+      "on_test": "val & BIT(16) != 0",
+      "off_test": "val & BIT(15) != 0",
+      "flags": ["CLAMP_IO", "AON_RESET", "POLL_CFG_GDSCR"],
+      "power_on": "gdsc_gx_do_nothing_enable",
+      "dtb_reg": "0x509100c",
+      "dtb_poll_cfg_property": "qcom,poll-cfg-gdscr"
+    }
+  },
+  "gpucc_window": {
+    "base": "0x05090000",
+    "size": "0x9000",
+    "end_exclusive": "0x05099000",
+    "status_registers_inside": true,
+    "max_register": "0x8008",
+    "reg_stride": 4
+  },
+  "forbidden_windows": [
+    { "name": "kgsl-3d0", "base": "0x05000000", "size": "0x40000", "reason": "inside gpu_cx/gpu_gx collapsible domain" },
+    { "name": "kgsl-3d0 cx dbgc", "base": "0x05061000", "size": "0x800", "reason": "inside gpu_cx collapsible domain" },
+    { "name": "kgsl-3d0 cx misc", "base": "0x0509e000", "size": "0x1000", "reason": "inside gpu_cx collapsible domain" },
+    { "name": "gmu", "base": "0x0506a000", "size": "0x30000", "reason": "inside gpu_cx collapsible domain; GMU not booted" },
+    { "name": "gmu vbif", "base": "0x0b200000", "size": "0x300000", "reason": "inside gpu_cx collapsible domain; GMU not booted" },
+    { "name": "kgsl smmu", "base": "0x05040000", "size": "0x10000", "reason": "vdd-supply = gpu_cx rail; clocks gated" }
+  ],
+  "why_safe": [
+    "gdsc.c:103-117 gdsc_poll_status() reads the status register WHILE the domain is transitioning, so the GDSC status register is readable with the domain collapsed.",
+    "A GDSC cannot house the registers that control its own power and clock gating; the GPUCC register file sits on always-on PMIC rails (vdd_cx pm8998_s9, vdd_mx pm8998_s6) not on the GDSC it controls.",
+    "gpucc-sdm845.c:153-159 regmap is 32-bit/stride-4/max 0x8008 fast_io; gpu_cc_sdm845_probe() takes no GCC clock handle, so GPUCC register access needs no gated clock in DT.",
+    "The three registers a read-only probe needs (CX status 0x05091540, GX status 0x05091010, CX control/gdscr 0x0509106c) all fall inside the GPUCC window 0x05090000+0x9000.",
+    "CX status is NOT at its dtb reg 0x0509106c: gpu_cx_gdsc sets .gds_hw_ctrl = 0x1540, and gdsc.c:68-69 prefers that over gdscr, so the readable status register is 0x05091540."
+  ],
+  "still_unsafe_without_device_evidence": [
+    "No device has read these registers yet; all values are derived from sha-pinned Linux v6.12 source plus the board DTB.",
+    "Whether XNU's early boot leaves the PMIC rails voted on for GPUCC is not established; a real read must be attempted only with an explicit boot-arg gate and a watchdog.",
+    "GX power-on is gdsc_gx_do_nothing_enable: writing SW_COLLAPSE cannot bring GX up, so a GX OFF result is expected even during normal runtime."
+  ]
+}
