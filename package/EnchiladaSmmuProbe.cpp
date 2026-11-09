@@ -45,6 +45,9 @@
 
 extern "C" {
 #include "SmmuSurvey.h"
+#include "ArmSmmu4K.h"
+#include "ArmSmmu4KProgram.h"
+#include "ArmSmmu4KStreams.h"
 
 // Device-proven cache-inhibited kernel mapping of a physical range
 // (drivers/ArmCpu/ArmCpu.cpp:207, used the same way by
@@ -90,6 +93,50 @@ int smmuRead32(void *ctx, uint32_t offset, uint32_t *out) {
     __asm__ volatile("dsb sy" ::: "memory");
     return 0;
 }
+
+// ---- ArmSmmu4K read-only bridge -------------------------------------------
+// The kit takes five callbacks and its prepare() only checks that each is
+// non-NULL; whether a given entry point uses one is up to that entry point.
+// ArmSmmu4KCheckFaultedStreams is documented read-only ("Read-only preflight of
+// global fault policy, target faulting slots and all conflicting live routes")
+// and the local replay recorded writes=0, so the three mutating callbacks below
+// exist only to satisfy the shape. If the kit ever did call one, it returns
+// failure WITHOUT touching MMIO -- the probe can be wrong, but it cannot write
+// to the SMMU. That is the "先核验再上机" contract in code, not in a comment.
+int kitRead32(void *cookie, size_t at, uint32_t *out) {
+    const uintptr_t base = reinterpret_cast<uintptr_t>(cookie);
+    if (!base || !out) return 1;
+    if (at + 4u > SMMU_SURVEY_SDM845_SIZE || (at & 3u)) return 1;
+    *out = rd32(base, static_cast<uint32_t>(at));
+    __asm__ volatile("dsb sy" ::: "memory");
+    return 0;
+}
+
+int kitRead64(void *cookie, size_t at, uint64_t *out) {
+    const uintptr_t base = reinterpret_cast<uintptr_t>(cookie);
+    if (!base || !out) return 1;
+    if (at + 8u > SMMU_SURVEY_SDM845_SIZE || (at & 7u)) return 1;
+    const uint32_t lo = rd32(base, static_cast<uint32_t>(at));
+    const uint32_t hi = rd32(base, static_cast<uint32_t>(at) + 4u);
+    *out = (static_cast<uint64_t>(hi) << 32) | lo;
+    __asm__ volatile("dsb sy" ::: "memory");
+    return 0;
+}
+
+// Counted by these two functions alone: any non-zero value published in the
+// verdict's w= field is the kit actually reaching for a store.
+unsigned gKitWriteCalls = 0;
+
+int kitWrite32(void *, size_t, uint32_t) {++gKitWriteCalls; return 1;}   // counts, never touches MMIO
+int kitWrite64(void *, size_t, uint64_t) {++gKitWriteCalls; return 1;}   // counts, never touches MMIO
+int kitBarrier(void *) {
+    __asm__ volatile("dsb sy" ::: "memory");
+    return 0;
+}
+
+ArmSmmu4KIo gKitIo = {nullptr, SMMU_SURVEY_SDM845_SIZE, kitRead32, kitRead64,
+                      kitWrite32, kitWrite64, kitBarrier};
+
 }  // namespace
 
 extern "C" void enchilada_smmu_poll(void) {
@@ -166,8 +213,60 @@ extern "C" void enchilada_smmu_poll(void) {
     // parses (`SS slots=...` prefix).
     char line[260];
     const size_t n = smmu_survey_format(&geometry, &result, line, sizeof line);
-    char row[300];
-    snprintf(row, sizeof row, "rc=0 %s", n ? line : "format-failed");
+
+    // ---- ArmSmmu4K preflight ------------------------------------------------
+    // Until this build the kit was never linked, so the port could only state
+    // hand-rolled facts. This asks the upstream translator the question the
+    // hand-rolled scan cannot answer: "are these streams in a state where a
+    // stage-1 context could legally be programmed at all?" Its documented
+    // precondition is that the target S2CRs already FAULT; a board running
+    // entirely on firmware bypass must answer ArmSmmu4KBusy, which is a real
+    // gate on the next step rather than a failure of this one.
+    //
+    // `w` counts the mutating callbacks the kit actually invoked. It must stay
+    // 0: that number, published on device, is the evidence for the READ-ONLY
+    // claim instead of the claim asserting itself.
+    unsigned kitWrites = 0;
+    struct kit_preflight {
+        int ufs, usb;
+        unsigned ufs_reads, usb_reads, ufs_verified, usb_verified;
+        unsigned ufs_faulted, usb_faulted;
+        uint32_t kit_id0;
+    } pre = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    if (gSmmuVa) {
+        gKitIo.cookie = reinterpret_cast<void *>(gSmmuVa);
+        if (result.ufs.found) {
+            ArmSmmu4KStream s = {result.ufs.slot, result.ufs.sid};
+            ArmSmmu4KStreamResult r = {};
+            pre.ufs = static_cast<int>(ArmSmmu4KCheckFaultedStreams(&gKitIo, &s, 1u, result.ufs.bank, &r));
+            pre.ufs_reads = r.reads;
+            pre.ufs_verified = r.streams_verified;
+            pre.ufs_faulted = r.streams_faulted;
+            pre.kit_id0 = r.id0;
+        }
+        if (result.usb.found) {
+            ArmSmmu4KStream s = {result.usb.slot, result.usb.sid};
+            ArmSmmu4KStreamResult r = {};
+            pre.usb = static_cast<int>(ArmSmmu4KCheckFaultedStreams(&gKitIo, &s, 1u, result.usb.bank, &r));
+            pre.usb_reads = r.reads;
+            pre.usb_verified = r.streams_verified;
+            pre.usb_faulted = r.streams_faulted;
+            if (!pre.kit_id0) pre.kit_id0 = r.id0;
+        }
+        // Counted by the bridge callbacks themselves (gKitWriteCalls), not
+        // asserted here: a non-zero w= in the verdict is a fact, not a claim.
+        kitWrites = gKitWriteCalls;
+    }
+
+    char row[420];
+    snprintf(row, sizeof row,
+             "rc=0 %s | K pre=%d/%d r=%u/%u w=%u v=%u/%u f=%u/%u id0=%08x",
+             n ? line : "format-failed",
+             pre.ufs, pre.usb,
+             pre.ufs_reads, pre.usb_reads, kitWrites,
+             pre.ufs_verified, pre.usb_verified,
+             pre.ufs_faulted, pre.usb_faulted,
+             pre.kit_id0);
     IOLog("enchilada-smmu: %s\n", row);
     setReplay(row);
     // A completed read is a finished observation: stop issuing requests.
