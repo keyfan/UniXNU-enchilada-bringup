@@ -41,10 +41,43 @@ extern "C" {
 #define SMMU_SURVEY_SDM845_SIZE 0x80000ull
 
 // Stream-match window the firmware already programmed, per the device-verified
-// console206 line "G smmu slot=6 bank=4 plan=80000740/00000004" (DWC3) and the
-// UFS default in NativeUfs.cpp:863 (stream 0x60).
-#define SMMU_SURVEY_UFS_STREAM 0x0060u
+// console206 line "G smmu slot=6 bank=4 plan=80000740/00000004" (DWC3).
 #define SMMU_SURVEY_USB_STREAM 0x0740u
+
+// The UFS stream is NOT a constant of the SoC family: NativeUfs.cpp:192 defaults
+// to sheng's DT value 0x60 with mask 0, while enchilada boots with
+// native-ufs-smmu-stream=0x100 native-ufs-smmu-mask=0xf (the DTB's
+// iommus = <&apps_smmu 0x100 0xf>). A survey that hardcoded 0x60 therefore
+// reported ufs=none on real hardware even though the mapping was present -- the
+// first device run of this file did exactly that. The caller passes the pair it
+// actually booted with, so the two drivers can never disagree.
+#define SMMU_SURVEY_DEFAULT_UFS_SID 0x0100u
+#define SMMU_SURVEY_DEFAULT_UFS_MASK 0x000fu
+
+// One stream the caller wants located. `mask` holds the SID bits the SMMU is
+// told to ignore, exactly like the `mask` of NativeUfs.cpp:191 /
+// SmmuTakeover.h:26; it is OR-ed with the mask the SMR itself carries.
+struct smmu_survey_target {
+    uint16_t sid;
+    uint16_t mask;
+};
+
+struct smmu_survey_targets {
+    struct smmu_survey_target ufs;
+    struct smmu_survey_target usb;
+};
+
+// The pair this board boots with; the kernel shim overrides it from the same
+// boot args NativeUfs.cpp:201-202 parses.
+static inline struct smmu_survey_targets smmu_survey_default_targets(void)
+{
+    struct smmu_survey_targets t;
+    t.ufs.sid = (uint16_t)SMMU_SURVEY_DEFAULT_UFS_SID;
+    t.ufs.mask = (uint16_t)SMMU_SURVEY_DEFAULT_UFS_MASK;
+    t.usb.sid = (uint16_t)SMMU_SURVEY_USB_STREAM;
+    t.usb.mask = 0;
+    return t;
+}
 
 #define SMMU_SURVEY_MAX_SLOTS 128u
 
@@ -97,8 +130,8 @@ struct smmu_survey_result {
     unsigned type_count[4];         // histogram over valid slots
     unsigned first_free;            // first SMR[31]==0 slot, or 0xffffu
     unsigned reads;                 // register reads performed
-    struct smmu_survey_stream ufs;  // SMMU_SURVEY_UFS_STREAM
-    struct smmu_survey_stream usb;  // SMMU_SURVEY_USB_STREAM
+    struct smmu_survey_stream ufs;  // targets.ufs
+    struct smmu_survey_stream usb;  // targets.usb
 };
 
 // Read IDR0/IDR1/IDR2/sCR0/sGFSR and derive the register geometry.
@@ -109,10 +142,12 @@ int smmu_survey_geometry_read(const struct smmu_survey_io *io,
                               struct smmu_survey_geometry *out);
 
 // Scan every stream-match register once, classify the valid ones, and locate the
-// UFS and USB streams. Strictly read-only. `out` is fully initialised on every
-// return, including refusals, so a caller may always format it.
+// two streams named by `targets` (pass NULL for smmu_survey_default_targets()).
+// Strictly read-only. `out` is fully initialised on every return, including
+// refusals, so a caller may always format it.
 int smmu_survey_scan(const struct smmu_survey_io *io,
                      const struct smmu_survey_geometry *geometry,
+                     const struct smmu_survey_targets *targets,
                      struct smmu_survey_result *out);
 
 // One machine-parsable line, NUL-terminated, never longer than cap-1.

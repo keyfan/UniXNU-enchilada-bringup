@@ -7,7 +7,11 @@
 //   * geometry 0x40000080 / 0x50000040 / 0x5111  (SmmuTakeover.cpp:93, the
 //     SDM845-shaped reset() used by the takeover tests: 128 slots, 64 banks,
 //     32 global pages)
-//   * slot 6 / bank 4 valid bypass for SID 0x60   (memory area inputs: UFS)
+//   * slot 6 / bank 4 valid bypass for SID 0x60   (sheng-style UFS pair)
+//   * the BOARD UFS pair is SID 0x100 with mask 0xf (DTB iommus = <&apps_smmu
+//     0x100 0xf>, flashed as native-ufs-smmu-stream=0x100 native-ufs-smmu-mask=0xf);
+//     the FIRST device run of this survey reported ufs=none only because the
+//     core had 0x60 hardcoded, so the pair is now a caller-supplied input.
 //   * SMR 0x80000740 for SID 0x740                (memory area inputs: DWC3)
 //   * IDR1[31] set => 64K geometry, which must be refused
 #include "SmmuSurvey.h"
@@ -53,6 +57,10 @@ struct Fake {
         at(0xc00 + 4 * slot) = (type << 16) | bank;
     }
 };
+
+// Every fixture below programs the sheng-style pair, so the scan is told that
+// pair explicitly instead of relying on the board default.
+const smmu_survey_targets kShengPair = {{0x0060u, 0x0000u}, {0x0740u, 0x0000u}};
 
 int read32(void *ctx, uint32_t offset, uint32_t *out) {
     auto *fake = static_cast<Fake *>(ctx);
@@ -134,7 +142,7 @@ void testNullAndIoErrors() {
     smmu_survey_io io{};
     CHECK(smmu_survey_geometry_read(&io, &geometry) == kSmmuSurveyNull);
     smmu_survey_result result{};
-    CHECK(smmu_survey_scan(nullptr, &geometry, &result) == kSmmuSurveyNull);
+    CHECK(smmu_survey_scan(nullptr, &geometry, &kShengPair, &result) == kSmmuSurveyNull);
 
     Fake fake;
     fake.reset();
@@ -156,7 +164,7 @@ void testFindsUfsAndUsbStreams() {
     smmu_survey_result result{};
     smmu_survey_io io = io_for(fake);
     CHECK(smmu_survey_geometry_read(&io, &geometry) == kSmmuSurveyOk);
-    CHECK(smmu_survey_scan(&io, &geometry, &result) == kSmmuSurveyOk);
+    CHECK(smmu_survey_scan(&io, &geometry, &kShengPair, &result) == kSmmuSurveyOk);
 
     CHECK(result.valid == 2u);
     CHECK(result.type_count[kSmmuSurveyBypass] == 2u);
@@ -188,7 +196,7 @@ void testAbsentStreamsAreReportedNotFound() {
     smmu_survey_result result{};
     smmu_survey_io io = io_for(fake);
     CHECK(smmu_survey_geometry_read(&io, &geometry) == kSmmuSurveyOk);
-    CHECK(smmu_survey_scan(&io, &geometry, &result) == kSmmuSurveyOk);
+    CHECK(smmu_survey_scan(&io, &geometry, &kShengPair, &result) == kSmmuSurveyOk);
     CHECK(result.valid == 0u);
     CHECK(result.first_free == 0u);
     CHECK(result.ufs.found == 0);
@@ -208,7 +216,7 @@ void testClassifiesTranslationAndFault() {
     smmu_survey_result result{};
     smmu_survey_io io = io_for(fake);
     CHECK(smmu_survey_geometry_read(&io, &geometry) == kSmmuSurveyOk);
-    CHECK(smmu_survey_scan(&io, &geometry, &result) == kSmmuSurveyOk);
+    CHECK(smmu_survey_scan(&io, &geometry, &kShengPair, &result) == kSmmuSurveyOk);
 
     CHECK(result.valid == 2u);
     CHECK(result.type_count[kSmmuSurveyTranslation] == 1u);
@@ -242,7 +250,7 @@ void testHonoursSmrMask() {
     smmu_survey_result result{};
     smmu_survey_io io = io_for(fake);
     CHECK(smmu_survey_geometry_read(&io, &geometry) == kSmmuSurveyOk);
-    CHECK(smmu_survey_scan(&io, &geometry, &result) == kSmmuSurveyOk);
+    CHECK(smmu_survey_scan(&io, &geometry, &kShengPair, &result) == kSmmuSurveyOk);
     CHECK(result.ufs.found == 1);
     CHECK(result.ufs.slot == 5u);
     CHECK(result.ufs.bank == 7u);
@@ -261,9 +269,9 @@ void testDeterministic() {
     smmu_survey_result r1{}, r2{};
     smmu_survey_io io = io_for(fake);
     CHECK(smmu_survey_geometry_read(&io, &g1) == kSmmuSurveyOk);
-    CHECK(smmu_survey_scan(&io, &g1, &r1) == kSmmuSurveyOk);
+    CHECK(smmu_survey_scan(&io, &g1, &kShengPair, &r1) == kSmmuSurveyOk);
     CHECK(smmu_survey_geometry_read(&io, &g2) == kSmmuSurveyOk);
-    CHECK(smmu_survey_scan(&io, &g2, &r2) == kSmmuSurveyOk);
+    CHECK(smmu_survey_scan(&io, &g2, &kShengPair, &r2) == kSmmuSurveyOk);
     CHECK(std::memcmp(&g1, &g2, sizeof g1) == 0);
     CHECK(std::memcmp(&r1, &r2, sizeof r1) == 0);
 }
@@ -279,7 +287,7 @@ void testFormatIsStableAndBounded() {
     smmu_survey_result result{};
     smmu_survey_io io = io_for(fake);
     CHECK(smmu_survey_geometry_read(&io, &geometry) == kSmmuSurveyOk);
-    CHECK(smmu_survey_scan(&io, &geometry, &result) == kSmmuSurveyOk);
+    CHECK(smmu_survey_scan(&io, &geometry, &kShengPair, &result) == kSmmuSurveyOk);
 
     char big[512];
     std::memset(big, 0x7f, sizeof big);
@@ -337,7 +345,7 @@ void testDoesNotReadS2crOfFreeSlots() {
     smmu_survey_result result{};
     smmu_survey_io io = io_for(fake);
     CHECK(smmu_survey_geometry_read(&io, &geometry) == kSmmuSurveyOk);
-    CHECK(smmu_survey_scan(&io, &geometry, &result) == kSmmuSurveyOk);
+    CHECK(smmu_survey_scan(&io, &geometry, &kShengPair, &result) == kSmmuSurveyOk);
     CHECK(result.valid == 1u);
     CHECK(result.first_free == 0u);
     CHECK(result.ufs.slot == 100u);
@@ -353,7 +361,53 @@ void testMidScanIoFailurePropagates() {
     smmu_survey_io io = io_for(fake);
     CHECK(smmu_survey_geometry_read(&io, &geometry) == kSmmuSurveyOk);
     fake.fail_at = static_cast<int>(fake.calls) + 7;
-    CHECK(smmu_survey_scan(&io, &geometry, &result) == kSmmuSurveyIo);
+    CHECK(smmu_survey_scan(&io, &geometry, &kShengPair, &result) == kSmmuSurveyIo);
+}
+
+// The board pair, and the negative control that pins the defect the first device
+// run exposed: under the DEFAULT targets (0x100 + mask 0xf) an entry whose SMR
+// carries 0x60 must NOT match. Had this test existed before the flash, the
+// `ufs=none` result would have been impossible to mistake for a hardware fact.
+void testDefaultTargetsAreTheBoardPair() {
+    const smmu_survey_targets d = smmu_survey_default_targets();
+    CHECK(d.ufs.sid == 0x0100u);
+    CHECK(d.ufs.mask == 0x000fu);
+    CHECK(d.usb.sid == 0x0740u);
+    CHECK(d.usb.mask == 0x0000u);
+
+    // The real SMR the firmware programs for the UFS controller on this board.
+    Fake fake;
+    fake.reset();
+    fake.at(0x800 + 4 * 12) = 0x80000000u | 0x0100u;
+    fake.at(0xc00 + 4 * 12) = 4u;                      // bypass, bank 4
+    smmu_survey_geometry geometry{};
+    smmu_survey_result result{};
+    smmu_survey_io io = io_for(fake);
+    CHECK(smmu_survey_geometry_read(&io, &geometry) == kSmmuSurveyOk);
+    CHECK(smmu_survey_scan(&io, &geometry, nullptr, &result) == kSmmuSurveyOk);
+    CHECK(result.ufs.found == 1);
+    CHECK(result.ufs.sid == 0x0100u);
+    CHECK(result.ufs.slot == 12u);
+    CHECK(result.ufs.type == kSmmuSurveyBypass);
+
+    // Negative control: the sheng pair must not match the board entry.
+    smmu_survey_result sheng{};
+    CHECK(smmu_survey_scan(&io, &geometry, &kShengPair, &sheng) == kSmmuSurveyOk);
+    CHECK(sheng.ufs.found == 0);
+
+    // And the mask is honoured: an SMR whose id differs only in the 4 masked
+    // bits still matches the board pair (the DTB says those bits may vary).
+    Fake masked;
+    masked.reset();
+    masked.at(0x800 + 4 * 20) = 0x80000000u | 0x0105u;   // 0x100 | (bits 0..3 vary)
+    masked.at(0xc00 + 4 * 20) = 0u;
+    smmu_survey_geometry g2{};
+    smmu_survey_result r2{};
+    smmu_survey_io io2 = io_for(masked);
+    CHECK(smmu_survey_geometry_read(&io2, &g2) == kSmmuSurveyOk);
+    CHECK(smmu_survey_scan(&io2, &g2, nullptr, &r2) == kSmmuSurveyOk);
+    CHECK(r2.ufs.found == 1);
+    CHECK(r2.ufs.slot == 20u);
 }
 
 }  // namespace
@@ -372,6 +426,7 @@ int main() {
     testTypeNames();
     testDoesNotReadS2crOfFreeSlots();
     testMidScanIoFailurePropagates();
-    std::puts("PASS: enchilada apps_smmu read-only survey (13 test groups)");
+    testDefaultTargetsAreTheBoardPair();
+    std::puts("PASS: enchilada apps_smmu read-only survey (14 test groups)");
     return 0;
 }

@@ -46,8 +46,20 @@ Window: `apps_smmu 0x15000000 size 0x80000`, stated twice in this tree —
 `drivers/NativeDwc3/Dwc3Registers.h:35-36` (`kAppsSmmuBase`/`kAppsSmmuSize`) and
 `drivers/NativeUfs/NativeUfs.cpp:432` (`mapPhys(0x15000000ULL, ...)`).
 
-Streams surveyed: UFS `0x60` (console206 reported it at slot 6 / bank 4) and
-DWC3 `0x740` (`<&apps_smmu 0x740 0>`, observed SMR `0x80000740`).
+Streams surveyed: UFS and DWC3 `0x740` (`<&apps_smmu 0x740 0>`, observed SMR
+`0x80000740`). The UFS **pair** is a board input, not a SoC constant — the DTB
+says `iommus = <&apps_smmu 0x100 0xf>` and the image boots with
+`native-ufs-smmu-stream=0x100 native-ufs-smmu-mask=0xf`, which
+`drivers/NativeUfs/NativeUfs.cpp:201-202` parses. The default pair here is
+`0x100 / 0xf`; the kernel shim additionally re-reads those same two boot args so
+the survey and the UFS driver cannot disagree.
+
+> **Correction from the first device run.** That run printed `ufs=none`. The
+> mapping was present — the core had sheng's default `0x60` hardcoded (from
+> `iommus = <&apps_smmu 0x60 0x0>`, `NativeUfs.cpp:192`), which is the wrong pair
+> for this board. The pair is now caller-supplied, and
+> `testDefaultTargetsAreTheBoardPair()` pins both the board pair and the negative
+> control that the old constant would have failed.
 
 ## What it refuses
 
@@ -85,7 +97,7 @@ python work/tmp/verify_smmu_survey_2.py
 ```
 
 * Method 1 — `scripts/check-enchilada-smmu-host.py`: compiles the C core as C11
-  and drives it from C++17 with a fake register file (13 test groups, sanitized
+  and drives it from C++17 with a fake register file (14 test groups, sanitized
   when the sanitizers are available).
 * Method 2 — `work/tmp/verify_smmu_survey_2.py`: re-derives every offset, window
   and stream id from *other* files in the tree instead of trusting the constants
@@ -96,7 +108,7 @@ python work/tmp/verify_smmu_survey_2.py
 Both expected output lines in this README are the ones the runs actually printed:
 
 ```
-PASS: enchilada apps_smmu read-only survey (13 test groups)
+PASS: enchilada apps_smmu read-only survey (14 test groups)
 SS slots=128 banks=64 pages=64 exids=0 valid=2 t0=0 t1=1 t2=1 scr0=00000406 gfsr=00000000 ufs=12/9/translation usb=40/11/fault
 ```
 
@@ -128,7 +140,19 @@ stream prints `none` rather than `0/0`.
 
 ## Status
 
-HOST-VERIFIED decision core + wiring. **Not device-verified**: no CI kernel has
-been built with this archive yet and no device boot has reported the `SS` line.
-The claims in `porting.toml` must not be promoted past `host-verified` until a
-device log shows that line.
+HOST-VERIFIED decision core + wiring, and a **device run has executed the
+survey** (CI #214 / payload `payload-smmu.img` / boot `0x20c8106a`, uptime 898 s):
+
+```
+enchilada-smmu: rc=0 SS slots=76 banks=45 pages=64 exids=0 valid=8 t0=8 t1=0 t2=0 scr0=002a0406 gfsr=00000000 ufs=none usb=6/4/bypass
+```
+
+The DWC3 half is **cross-validated**: `usb=6/4/bypass` matches
+`G smmu slot=6 bank=4 plan=80000740/00000004` from console206, produced by a
+completely independent code path (the DWC3 takeover planner). `valid=8`, `t0=8`
+and `scr0=002a0406` (all eight attached streams in bypass, none translating, no
+global fault) are consistent with a firmware-handoff SMMU.
+
+`ufs=none` in that same line was **this driver's defect, not a hardware fact** —
+the fixed SID described above. Not yet promoted in `porting.toml`: the corrected
+pair must be re-flashed and report `ufs=<slot>/<bank>/bypass` first.

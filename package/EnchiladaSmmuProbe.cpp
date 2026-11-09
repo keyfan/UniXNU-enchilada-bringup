@@ -128,6 +128,19 @@ extern "C" void enchilada_smmu_poll(void) {
     struct smmu_survey_io io = {reinterpret_cast<void *>(gSmmuVa), smmuRead32};
     struct smmu_survey_geometry geometry = {};
     struct smmu_survey_result result = {};
+    // The UFS stream is a BOARD property, not a SoC constant: NativeUfs.cpp:201-202
+    // parses exactly these two boot args, and a survey that assumes a different
+    // pair reports ufs=none on a board where the mapping is present (that is what
+    // the first device run of this file did with sheng's 0x60). Read the same args
+    // so the two drivers cannot disagree.
+    struct smmu_survey_targets targets = smmu_survey_default_targets();
+    {
+        uint32_t value = 0;
+        if (PE_parse_boot_argn("native-ufs-smmu-stream", &value, sizeof value))
+            targets.ufs.sid = static_cast<uint16_t>(value & 0x7fffu);
+        if (PE_parse_boot_argn("native-ufs-smmu-mask", &value, sizeof value))
+            targets.ufs.mask = static_cast<uint16_t>(value & 0x7fffu);
+    }
     const int geo = smmu_survey_geometry_read(&io, &geometry);
     if (geo != kSmmuSurveyOk) {
         char row[160];
@@ -138,7 +151,7 @@ extern "C" void enchilada_smmu_poll(void) {
         if (geo == kSmmuSurveyUnsupported || gAttempts >= 8u) gDone = true;
         return;
     }
-    const int scan = smmu_survey_scan(&io, &geometry, &result);
+    const int scan = smmu_survey_scan(&io, &geometry, &targets, &result);
     if (scan != kSmmuSurveyOk) {
         char row[160];
         snprintf(row, sizeof row, "SCAN rc=%d slots=%u valid=%u reads=%u",

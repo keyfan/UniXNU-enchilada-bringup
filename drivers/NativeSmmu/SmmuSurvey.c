@@ -114,11 +114,15 @@ int smmu_survey_geometry_read(const struct smmu_survey_io *io,
 
 // Standard stream-match comparison, the same shape as NativeUfs.cpp:887-888 and
 // Dwc3SmmuPlan.h:74-75: the SMR holds the SID in [15:0] and a mask in [30:16];
-// a stream matches when every bit outside the mask agrees.
-static int stream_matches(uint16_t sid, uint32_t smr, unsigned exids,
-                          uint32_t *matched_id, uint32_t *matched_mask)
+// a stream matches when every bit outside the mask agrees. The caller's own mask
+// is OR-ed in, because the DTB's `iommus = <&apps_smmu 0x100 0xf>` names bits
+// the firmware is allowed to vary and the hardware alone would not know that.
+static int stream_matches(uint16_t sid, uint16_t want_mask, uint32_t smr,
+                          unsigned exids, uint32_t *matched_id,
+                          uint32_t *matched_mask)
 {
-    const uint32_t mask = exids ? ((smr >> 16) & 0xffffu) : ((smr >> 16) & 0x7fffu);
+    uint32_t mask = exids ? ((smr >> 16) & 0xffffu) : ((smr >> 16) & 0x7fffu);
+    mask |= (uint32_t)(want_mask & 0x7fffu);
     const uint32_t id = smr & 0xffffu;
     if ((((uint32_t)sid ^ id) & ~mask) & 0xffffu) return 0;
     if (matched_id) *matched_id = id;
@@ -128,9 +132,12 @@ static int stream_matches(uint16_t sid, uint32_t smr, unsigned exids,
 
 int smmu_survey_scan(const struct smmu_survey_io *io,
                      const struct smmu_survey_geometry *geometry,
+                     const struct smmu_survey_targets *targets,
                      struct smmu_survey_result *out)
 {
     if (!io || !io->read32 || !geometry || !out) return kSmmuSurveyNull;
+    const struct smmu_survey_targets defaults = smmu_survey_default_targets();
+    const struct smmu_survey_targets t = targets ? *targets : defaults;
     *out = (struct smmu_survey_result){0};
     out->first_free = 0xffffu;
     unsigned reads = 0;
@@ -151,14 +158,16 @@ int smmu_survey_scan(const struct smmu_survey_io *io,
         if (type < 4u) ++out->type_count[type];
 
         struct smmu_survey_stream *target = NULL;
-        if (stream_matches(SMMU_SURVEY_UFS_STREAM, smr, geometry->exids, NULL, NULL)) {
+        uint16_t want = 0;
+        if (stream_matches(t.ufs.sid, t.ufs.mask, smr, geometry->exids, NULL, NULL)) {
             target = &out->ufs;
-        } else if (stream_matches(SMMU_SURVEY_USB_STREAM, smr, geometry->exids, NULL, NULL)) {
+            want = t.ufs.sid;
+        } else if (stream_matches(t.usb.sid, t.usb.mask, smr, geometry->exids, NULL, NULL)) {
             target = &out->usb;
+            want = t.usb.sid;
         }
         if (target && !target->found) {
-            target->sid = (uint16_t)(target == &out->ufs ? SMMU_SURVEY_UFS_STREAM
-                                                          : SMMU_SURVEY_USB_STREAM);
+            target->sid = want;
             target->found = 1;
             target->slot = slot;
             target->bank = s2cr & 0xffu;
