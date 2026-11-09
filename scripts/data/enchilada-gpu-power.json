@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "board": "enchilada",
+  "soc": "SDM845",
+  "round": 22,
+  "topic": "A630 GPU/GMU/kgsl-SMMU power-domain preconditions (HOST-VERIFIED)",
+  "dtb": {
+    "path": "notes/mu-silicium/enchilada.dts",
+    "sha256": "e590ee3273499ee4230760aea9195073c0c195242eee11c95570e174ec202275",
+    "bytes": 784857,
+    "copies": [
+      "notes/mu-silicium/enchilada.dts",
+      "work/Mu-Silicium-full/Resources/DTBs/enchilada.dts",
+      "work/Mu-Silicium/Resources/DTBs/enchilada.dts",
+      "work/mock-mu-silicium/Resources/DTBs/enchilada.dts"
+    ]
+  },
+  "slices": {
+    "gdsc_cx": [593, 605],
+    "gdsc_gx": [607, 621],
+    "kgsl_smmu": [13957, 13973],
+    "apps_smmu": [13975, 13996],
+    "gpu": [23632, 23671]
+  },
+  "keylines": {
+    "gpu_vddcx_supply": 23667,
+    "gpu_vdd_supply": 23668,
+    "gpu_clock_names": 23657,
+    "gpu_regulator_names": 23666,
+    "gpu_no_nap": 23646,
+    "kgsl_smmu_vdd_supply": 13967,
+    "kgsl_smmu_clock_names": 13969,
+    "apps_smmu_skip_init": 13980,
+    "gdsc_cx_phandle": 604,
+    "gdsc_gx_phandle": 620,
+    "bl_ctrl_dcs": 2661
+  },
+  "facts": {
+    "gpu_cx_gdsc_addr": "0x509106c",
+    "gpu_gx_gdsc_addr": "0x509100c",
+    "gpu_cx_gdsc_name": "gpu_cx_gdsc",
+    "gpu_gx_gdsc_name": "gpu_gx_gdsc",
+    "gpu_cx_phandle": "0x1a4",
+    "gpu_gx_phandle": "0x2a9",
+    "kgsl_smmu_regulator_phandle": "0x1a4",
+    "gpu_regulator_names": ["vddcx", "vdd"],
+    "gpu_clock_names": ["core_clk", "rbbmtimer_clk", "mem_clk", "mem_iface_clk", "gmu_clk", "l3_vote"],
+    "gpu_clock_count": 6,
+    "kgsl_smmu_clock_name": "gcc_gpu_memnoc_gfx_clk",
+    "kgsl_smmu_clock_count": 1,
+    "gpu_no_nap": true,
+    "apps_smmu_skip_init": true,
+    "apps_smmu_supply_count": 0,
+    "apps_smmu_clock_count": 0,
+    "a630_legacy_gmu": true,
+    "gmu_hfi_major": 1,
+    "sptprac_power_control_value": "0x778000"
+  },
+  "upstream": {
+    "pinned_by": "scripts/data/adreno-a630-inputs.json",
+    "cache_dir": ".cache/adreno-a630-source",
+    "files": {
+      "a6xx_gmu.c": {
+        "rel": "drivers/gpu/drm/msm/adreno/a6xx_gmu.c",
+        "sha256": "c14fbb253e602bfd2585d757da871dde08ea63b811ff3c6808f657f4522f78d4",
+        "required_markers": [
+          "adreno_is_a630_family(adreno_gpu)",
+          "/* HFI v1, has sptprac */",
+          "gmu->legacy = true",
+          "dev_pm_domain_attach_by_name(gmu->dev, \"cx\")",
+          "dev_pm_domain_attach_by_name(gmu->dev, \"gx\")",
+          "pm_runtime_get_sync(gmu->dev)",
+          "pm_runtime_get_sync(gmu->gxpd)",
+          "clk_bulk_prepare_enable(gmu->nr_clocks, gmu->clocks)",
+          "REG_A6XX_GMU_GX_SPTPRAC_POWER_CONTROL, 0x778000",
+          "a6xx_rpmh_start(gmu)",
+          "a6xx_gmu_fw_load(gmu)",
+          "a6xx_gmu_start(gmu)",
+          "a6xx_gmu_gfx_rail_on(gmu)",
+          "a6xx_sptprac_enable(gmu)",
+          "a6xx_gmu_hfi_start(gmu)"
+        ]
+      },
+      "a6xx_gpu.c": {
+        "rel": "drivers/gpu/drm/msm/adreno/a6xx_gpu.c",
+        "sha256": "c33479377574ed193e82c272b3708e19a2b2153088f246e2639d8a43fef943a2",
+        "required_markers": [
+          "pm_runtime_get_sync(&gpu->pdev->dev)",
+          "msm_gpu_hw_init(gpu)",
+          "static int a6xx_hw_init(struct msm_gpu *gpu)",
+          "gpu_read(gpu, REG_A6XX_RBBM_STATUS)"
+        ]
+      }
+    }
+  },
+  "power_steps": [
+    "cx_genpd_on: pm_runtime_get_sync(gmu->dev), gpu_cx_gdsc",
+    "gx_genpd_on: pm_runtime_get_sync(gmu->gxpd), gpu_gx_gdsc",
+    "clocks_enable: clk_bulk_prepare_enable(6 GPU clocks) + gcc_gpu_memnoc_gfx_clk",
+    "rpmh_start: a6xx_rpmh_start",
+    "gmu_fw_load: a6xx_gmu_fw_load (signed ZAP chain + GMU microcode)",
+    "gmu_start: a6xx_gmu_start + a6xx_gmu_gfx_rail_on (legacy only)",
+    "sptprac_enable: a6xx_sptprac_enable 0x778000",
+    "hfi_start: a6xx_gmu_hfi_start (HFI v1)",
+    "hw_init: msm_gpu_hw_init -> a6xx_hw_init -> hw_init (first RBBM writes)"
+  ]
+}

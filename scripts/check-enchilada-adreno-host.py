@@ -21,10 +21,12 @@ TESTS = [
     ('adreno-catalog-test', [GPU / 'tests/adreno-catalog-test.cpp'], ['AdrenoCatalog']),
     ('adreno-a630-hwinit-test', [GPU / 'tests/adreno-a630-hwinit-test.cpp'], []),
     ('adreno-board-inputs-test', [GPU / 'tests/adreno-board-inputs-test.cpp'], ['AdrenoBoardInputs']),
+    ('adreno-power-gate-test', [GPU / 'tests/adreno-power-gate-test.cpp'], ['AdrenoPowerGate']),
 ]
 SOURCES = {
     'AdrenoCatalog': GPU / 'AdrenoCatalog.c',
     'AdrenoBoardInputs': GPU / 'AdrenoBoardInputs.c',
+    'AdrenoPowerGate': GPU / 'AdrenoPowerGate.c',
 }
 
 
@@ -59,7 +61,7 @@ def main():
         if result.returncode:
             sys.stderr.write(result.stderr)
             raise SystemExit(f'FAIL: {name} ({result.returncode})')
-    print(f'PASS: enchilada A630 catalog/hwinit/board-input host tests ({"sanitized" if san else "without sanitizers"})')
+    print(f'PASS: enchilada A630 catalog/hwinit/board-input/power-gate host tests ({"sanitized" if san else "without sanitizers"})')
 
 
 if __name__ == '__main__':
