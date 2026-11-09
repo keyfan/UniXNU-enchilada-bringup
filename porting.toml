@@ -58,6 +58,7 @@ paths = [
   "patches/xnu/architectural-timer-entry.patch",
   "patches/xnu-device/enchilada-pcpu.patch",
   "evidence/stage1-percpu.md",
+  "evidence/stage1-percpu-load.md",
 ]
 inputs = [
   "8 MPIDR affinities 0x0..0x700, GICv3 0x17a00000+0x10000 / 0x17a60000+0x100000, architectural timer, PSCI, enchilada-deadline=600 s, sheng-cpufreq=4.",
@@ -69,27 +70,30 @@ configuration = [
 procedure = [
   "CI builds the ArmCpu/ArmDTPlatform archives with -Werror; test-cycle.py boots; the deadline fires at 600 s and PSCI SYSTEM_RESET returns the phone to recovery.",
   "Read the [sched] and [sched busy] rows out of slots.txt or latest.txt, which live in the per-boot region that survives the 128 KiB message-ring wrap; take per-CPU cumulative maximum over the boot rather than the final row.",
+  "For per-window rates, de-duplicate identical [sched busy] rows first (slots.txt re-dumps each 5-second window into ~10 consecutive one-second slots), then read c0..c7 user/busy% with two independent parsers and check the emitting patch and XNU recount source.",
 ]
 findings = [
   "IODelay is unusable on this platform (RootCommands.h:22: XNU's delay waits in WFE and the poll never came back); all waits use timebase spins.",
   "The 600 s deadline is a deliberate watchdog, not a hang; console201 at 1200 s was shortened after the user asked whether it was necessary.",
   "Per-core execution is observable and observed: 64 of the 74 device boots in work/log/ log online=0xff with all eight CPUs described, eight distinct phys_id values 0x0..0x700, and non-zero cumulative user time on every core. On two cited boots the preferred cores (4-7) carry 2.06x and 1.95x the cumulative user time of cores 0-3 while the latter still accumulate 7.8-19.5 s, so preference is honoured without starving any core.",
+  "Under real device load all eight cores run user code concurrently: across 118 archived boots, 46 contain a 5-second window with all eight cores at >=5% user and 31 a window with all eight at >=20%; the strongest window (console172 boot 549582961) has c0..c7 = 66/64/71/67/67/68/64/67% user at 99-100% non-idle, and cumulative user time grows on every core. The re-analysis had to de-duplicate ~10 repeated slot dumps per window; two independent parsers agree on all 118 boots and XNU recount source confirms busy% excludes idle.",
 ]
 completion = [
-  "All enabled CPUs reach their entry checkpoint, timer/IPI handling works on each enabled CPU, launchd reports a stable process count, and every one of the eight cores is shown to have executed user code on the device.",
+  "All enabled CPUs reach their entry checkpoint, timer/IPI handling works on each enabled CPU, launchd reports a stable process count, and every one of the eight cores is shown to have executed user code on the device, including concurrently under real UI/touch load.",
 ]
 limits = [
-  "No cluster-type (E/P) patch: enchilada uses a flat 8-core SDM845 topology, unlike sheng's SM8550 AMP split; XNU reports cluster type S for all eight cores and one processor set. No SMP stress test has been run, so nothing here exercises contention, IPI storms or CPU hotplug.",
-  "The per-window user/busy percentage columns read zero for almost every sample on these mostly-idle boots, so the per-core claim rests on cumulative counters and the online mask, never on a rate.",
+  "No cluster-type (E/P) patch: enchilada uses a flat 8-core SDM845 topology, unlike sheng's SM8550 AMP split; XNU reports cluster type S for all eight cores and one processor set. Real eight-core load is now observed on device (evidence/stage1-percpu-load.md), but no controlled adversarial stress test (parallel memory + IPI with per-CPU progress checkpoints), no IPI storm and no CPU hotplug has been run.",
+  "On the two mostly-idle boots cited in evidence/stage1-percpu.md the per-window user/busy% columns read zero for almost every sample, so that document's claim rests on cumulative counters and the online mask. This is not a corpus-wide property: across 118 boots many carry high per-window rates (up to 79% user / 100% non-idle) and the strongest window has all eight cores at 64-71% user, so concurrent execution also rests on a measured rate. Neither document claims correctness under saturation or hotplug.",
 ]
 next_action = [
-  "Stress the scheduler before claiming it is correct under load: a parallel memory and IPI load with per-CPU progress checkpoints, to turn eight-cores-ran into eight-cores-ran-concurrently-and-correctly. A second, smaller item is whether the flat topology should ever be given cluster types.",
+  "A controlled adversarial scheduler stress test (a parallel memory + IPI load with per-CPU progress checkpoints) and CPU hotplug remain open: the 118-boot corpus proves eight cores ran concurrently under real UI/touch load with correct cumulative accounting and the preferred-core bias intact, not that the scheduler is correct under saturation, IPI storms or CPU hotplug. A smaller remaining item is whether the flat topology should ever be given cluster types.",
 ]
 evidence = [
   { kind = "source", reference = "scripts/build-enchilada-cpufreq.py", result = "CpuFreqProbe recipe producing the [cpufreq now] log line." },
-  { kind = "source", reference = "patches/xnu-device/enchilada-pcpu.patch", result = "Adds sched_pcpu_tick and the [sched] / [sched busy] rows: online mask, per-CPU phys_id/cluster, scheduler pick counters and cumulative user seconds." },
+  { kind = "source", reference = "patches/xnu-device/enchilada-pcpu.patch", result = "Adds sched_pcpu_tick and the [sched] / [sched busy] rows: online mask, per-CPU phys_id/cluster, scheduler pick counters, per-window user/busy% and cumulative user seconds." },
   { kind = "device", reference = "evidence/console206.md", result = "time=601s monitor=600 root=1 procs=263 IRQ=1118518: the timer interrupt and monitor ran for the full 600 s on a booted userland.", command = "python scripts/test-cycle.py console206 --wait-return 900", revision = "7eeda1e01aa906ff3b2ac5fa58fdcfd244701c59" },
   { kind = "device", reference = "evidence/stage1-percpu.md", result = "online=0xff with eight distinct phys_id values and non-zero cumulative user time on all eight cores, on two boots; preferred/other ratio 2.06 and 1.95.", command = "python scripts/test-cycle.py persist --wait-return 1000", revision = "c276ed56b23798436b18ce7a334862a38b7e0298" },
+  { kind = "device", reference = "evidence/stage1-percpu-load.md", result = "Real eight-core concurrency under load: 46/118 boots have all eight cores >=5% user in one 5-second window (31 at >=20%); strongest window c0..c7 = 66/64/71/67/67/68/64/67% user at 99-100% non-idle, cumulative user time growing on all cores. Read-only re-analysis of archived logs, no new flash; de-duplicated windows, two independent parsers, XNU recount semantics checked.", command = "python -X utf8 work/tmp/_analyze_cpu_load_final.py", revision = "a0715d88b94512f366ba6cc6c508ccdccb685833" },
 ]
 
 [[area]]
