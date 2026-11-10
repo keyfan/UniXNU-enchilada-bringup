@@ -1,6 +1,6 @@
 # Round 46 — A6XX_GEN1 powered-GMU caller chain (`AdrenoGmuCallerV1`) — HOST-VERIFIED
 
-**Date:** 2026-11-10 · **Area:** gpu (stage 5) · **Status: HOST-VERIFIED.**
+**ROUND 46 · Date:** 2026-11-10 · **Area:** gpu (stage 5) · **Status: HOST-VERIFIED.**
 No device run, no MMIO mapping, no domain power-up, no firmware load: every
 value in this module is a *specification* transcribed from pinned sources and
 the round-35 device-verified GPUCC window; the module is compiled-not-executed
