@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "purpose": "A630 PDC register-offset pins for the legacy GMU cold-boot bring-up (AdrenoGmuBootV1). The Linux v6.12 checked-in register XMLs do NOT define REG_A6XX_PDC_GPU_* ; upstream resolves them from the generated a6xx_gmu.xml.h built from the full freedreno rnndb. Three independent mainline copies of that generated header are pinned here; the verifier requires all three to agree on every PDC/RSCC define the A630 cold-boot sequence writes.",
+  "generator": "freedreno envytools rules-ng-ng headergen (rnndb registers/adreno/a6xx_gmu.xml)",
+  "sources": {
+    "quard_star_611_a6xx": {
+      "repo": "QQxiaoming/quard_star_tutorial",
+      "commit": "ce1907c9d6aa215a5806ab894f69d4325ee783a4",
+      "commit_date": "2023-02-13T03:23:30Z",
+      "upstream": "https://raw.githubusercontent.com/QQxiaoming/quard_star_tutorial/ce1907c9d6aa215a5806ab894f69d4325ee783a4/linux-6.1.11/drivers/gpu/drm/msm/adreno/a6xx.xml.h",
+      "file": "a6xx_xml_quard_star_611.h",
+      "bytes": 315922,
+      "sha256": "c0dfc9baf74a7d398fa1fade2b09668830076ebb591592910cbf96ae7465e273",
+      "kernel": "linux-6.1.11 mainline a6xx.xml.h (carries the modern PDC_GPU block)"
+    },
+    "quard_star_611_gmu": {
+      "repo": "QQxiaoming/quard_star_tutorial",
+      "commit": "ce1907c9d6aa215a5806ab894f69d4325ee783a4",
+      "commit_date": "2023-02-13T03:23:30Z",
+      "upstream": "https://raw.githubusercontent.com/QQxiaoming/quard_star_tutorial/ce1907c9d6aa215a5806ab894f69d4325ee783a4/linux-6.1.11/drivers/gpu/drm/msm/adreno/a6xx_gmu.xml.h",
+      "file": "a6xx_gmu_quard_star_611.h",
+      "bytes": 19016,
+      "sha256": "7e4be7fb54d982a5f03a593a3aa59fcd41e76cfdd8b88d122e4827d3ace32e74",
+      "kernel": "linux-6.1.11 mainline a6xx_gmu.xml.h (carries the RSCC block)"
+    },
+    "acrn_a6xx": {
+      "repo": "projectacrn/acrn-kernel",
+      "commit": "72c893382f890a38204f92d88e7bf4cbfffa4cb7",
+      "commit_date": "2023-07-18T05:22:40Z",
+      "upstream": "https://raw.githubusercontent.com/projectacrn/acrn-kernel/72c893382f890a38204f92d88e7bf4cbfffa4cb7/drivers/gpu/drm/msm/adreno/a6xx.xml.h",
+      "file": "a6xx_xml_acrn_kernel.h",
+      "bytes": 336634,
+      "sha256": "7b10d3d7ecbd558ba839feb19e66fd10f915cb4d292f6cfe8e1d6d4835f3ebc3",
+      "kernel": "mainline-derived ACRN kernel tree a6xx.xml.h"
+    },
+    "acrn_gmu": {
+      "repo": "projectacrn/acrn-kernel",
+      "commit": "72c893382f890a38204f92d88e7bf4cbfffa4cb7",
+      "commit_date": "2023-07-18T05:22:40Z",
+      "upstream": "https://raw.githubusercontent.com/projectacrn/acrn-kernel/72c893382f890a38204f92d88e7bf4cbfffa4cb7/drivers/gpu/drm/msm/adreno/a6xx_gmu.xml.h",
+      "file": "a6xx_gmu_acrn_kernel.h",
+      "bytes": 19081,
+      "sha256": "805f237498fff5df4987b2f63fd92871c8315f6fdc61f296bc5554957e4c59c6",
+      "kernel": "mainline-derived ACRN kernel tree a6xx_gmu.xml.h"
+    },
+    "asuswrt_419_a6xx": {
+      "repo": "RMerl/asuswrt-merlin.ng",
+      "commit": "0283215add51b5e1a07fcf3ca7188bf79272cd0f",
+      "commit_date": "2022-04-06T05:11:37Z",
+      "upstream": "https://raw.githubusercontent.com/RMerl/asuswrt-merlin.ng/0283215add51b5e1a07fcf3ca7188bf79272cd0f/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/drivers/gpu/drm/msm/adreno/a6xx.xml.h",
+      "file": "a6xx_xml_asuswrt_419.h",
+      "bytes": 167771,
+      "sha256": "617fed9701c9d0dd5d0247376ccf471c951b9d47400df5bcd0bd387cfa81cb96",
+      "kernel": "linux-4.19 mainline a6xx.xml.h"
+    },
+    "asuswrt_419_gmu": {
+      "repo": "RMerl/asuswrt-merlin.ng",
+      "commit": "0283215add51b5e1a07fcf3ca7188bf79272cd0f",
+      "commit_date": "2022-04-06T05:11:37Z",
+      "upstream": "https://raw.githubusercontent.com/RMerl/asuswrt-merlin.ng/0283215add51b5e1a07fcf3ca7188bf79272cd0f/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/drivers/gpu/drm/msm/adreno/a6xx_gmu.xml.h",
+      "file": "a6xx_gmu_asuswrt_419.h",
+      "bytes": 14297,
+      "sha256": "14491b0ff78a9fef682577475cc9d07533e31461a34846d10ceba2ddc591e2cf",
+      "kernel": "linux-4.19 mainline a6xx_gmu.xml.h"
+    }
+  },
+  "note_asuswrt": "The linux-4.19 tree defines REG_A6XX_PDC_GPU_* with different absolute values (0x00021140 etc.) because its rnndb generation predates the PDC address rebase. Only the v6.1.11+ generation (quard_star_611, acrn) carries the modern 0x1140/0x1540 block; the verifier uses the quard_star table as the canonical base and compares PDC defines only among modern-generation sources. The RSCC block lives in the separate a6xx_gmu.xml.h in all three trees and all three agree. See verify-adreno-pdc-offsets.py.",
+  "usage_contract": {
+    "from": "linux v6.12 drivers/gpu/drm/msm/adreno/a6xx_gmu.c:601-643 (sha-pinned in scripts/data/adreno-a630-inputs.json)",
+    "a630_pdc_address_offset": "0x30080",
+    "tcs1": { "ENABLE_BANK": 7, "WAIT_FOR_CMPL_BANK": 0, "CONTROL": 0, "CMD0_MSGID": "0x10108", "CMD0_ADDR": "0x30010", "CMD0_DATA": 1, "CMD1_DATA_A630": "0x0", "CMD2_ADDR": "pdc_address_offset", "CMD2_DATA": "0x0" },
+    "tcs3": { "ENABLE_BANK": 7, "WAIT_FOR_CMPL_BANK": 0, "CONTROL": 0, "CMD0_MSGID": "0x10108", "CMD0_ADDR": "0x30010", "CMD0_DATA": 2, "CMD1_DATA_A630": "0x3", "CMD2_ADDR": "pdc_address_offset", "CMD2_DATA": "0x3" },
+    "seq_mem_pdc_ucode": ["0xfebea1e1", "0xa5a4a3a2", "0x8382a6e0", "0xbce3e284", "0x002081fc"],
+    "pdc_gpu_seq_start_addr": "0x0",
+    "pdc_gpu_enable_pdc": "0x80000001",
+    "access": "pdc_write(seqptr, REG, val) with seqptr = gmu_pdc_seq MMIO and dword<<2 addressing"
+  }
+}
