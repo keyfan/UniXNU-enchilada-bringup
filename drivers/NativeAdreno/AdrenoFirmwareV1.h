@@ -61,7 +61,7 @@
 extern "C" {
 #endif
 
-/* Legacy GMU load: a630_gmu.c:739-750 rejects an image bigger than the ITCM
+/* Legacy GMU load: a6xx_gmu.c:739-750 rejects an image bigger than the ITCM
  * region and writes the WHOLE image as ONE flat bulk write. 0x8000 == 32768,
  * which is exactly the observed a630_gmu.bin size. */
 #define ADRENO_FW_V1_GMU_MAX_BYTES        0x8000u
