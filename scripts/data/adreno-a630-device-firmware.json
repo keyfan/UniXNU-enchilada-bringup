@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "target": "enchilada A630 (SDM845, ADRENO_6XX_GEN1, legacy GMU) - DEVICE-SOURCED firmware inventory",
+  "note": "SIZES + HASHES + PIL STRUCTURE recorded from a strictly READ-ONLY, fully reversible inspection of the phone's OWN vendor_a partition. The proprietary blob BYTES are deliberately NOT committed to this repository (they live in gitignored work/tmp/a630-device-fw/); this text manifest + scripts/verify-enchilada-device-firmware.py are the durable record. HOST-VERIFIED record of a DEVICE-SOURCED read-only extraction - NOT a device-verified GPU driver result.",
+  "source": "device 27f4f45d (OnePlus6 enchilada), TWRP 3.4.0-3 recovery, uid=0(root), Linux 4.9.179-perf+",
+  "extraction": {
+    "method": "one reversible READ-ONLY mount: mount -t ext4 -o ro /dev/block/by-name/vendor_a /vendor; confirmed (ro,seclabel,relatime); adb pull; umount in finally; verified VENDOR_MOUNTED_BEFORE=False and STATE_RESTORED=True",
+    "partition": "vendor_a -> /dev/block/sde16 (ext4)",
+    "directory": "/vendor/firmware/ (NOT /vendor/firmware_mnt/image/, which is EMPTY in TWRP)",
+    "safety": "NO flash, NO reboot, NO dd of=, NO misc/BCB change, NO rw remount, NO file creation on device",
+    "timestamp_all_files": "2009-01-01 00:00",
+    "verification_1": "host-side sha256 of every pulled file; compared to adb pull sizes",
+    "verification_2": "fresh independent reversible read-only mount + ON-DEVICE md5sum of all 7 files -> equals host md5 of pulled bytes; ELF/PIL program-header analysis; upstream-contract cross-check"
+  },
+  "files": {
+    "a630_gmu.bin": {
+      "bytes": 32768,
+      "sha256": "b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f",
+      "md5": "1ade6a659713b4424a27eb2afd70d614",
+      "role": "GMU firmware (legacy flat ITCM, exactly 0x8000)"
+    },
+    "a630_sqe.fw": {
+      "bytes": 31980,
+      "sha256": "34edacb6fdedfbfc07ed5cd1d29b0b57a3543ef5be6ab34a43bd64686826fa1e",
+      "md5": "02d7f5fb33d0e23bc67b285596fbd0aa",
+      "role": "SQE microcode"
+    },
+    "a630_zap.b00": {
+      "bytes": 148,
+      "sha256": "b2975f6a4c28a98197c1d694f6e275e71b23ec7e31e32ff5d1f83fdb80a94282",
+      "md5": "d1d3565cdd83c5a1341c78f722134fe6",
+      "role": "PIL segment ph[0] (ELF header + hash table)"
+    },
+    "a630_zap.b01": {
+      "bytes": 6536,
+      "sha256": "d2ecdfe6fc83745b6fcbcd960b2df180ce570e35c00d0bba5a0a609fc35d45a7",
+      "md5": "bbbd0a173dc72b08e42f971e834ab1d1",
+      "role": "PIL segment ph[1]"
+    },
+    "a630_zap.b02": {
+      "bytes": 1968,
+      "sha256": "519b5538809f54ee566246b0520746a8ea82ca9384ea6bddb0b0e0d3c2de520c",
+      "md5": "81b15d4791f7d789ca684773be68021f",
+      "role": "PIL segment ph[2]"
+    },
+    "a630_zap.elf": {
+      "bytes": 14256,
+      "sha256": "c9751419b74e0c5321b8c897182a5edd946b38ae5414580dc4b1e5f010130993",
+      "md5": "a0d5e1dbe9154a3fd219177c6e8b9bad",
+      "role": "full ZAP shader ELF image"
+    },
+    "a630_zap.mdt": {
+      "bytes": 6684,
+      "sha256": "e0dffc7e45dfb05c681419881ab876ec974b6dc60b369394c2c9c6d9f631595e",
+      "md5": "3fa0dfb5859900eb8d052d69aa44a09c",
+      "role": "ZAP MDT header (the file a6xx_catalog.c .zapfw names)"
+    }
+  },
+  "pil_structure": {
+    "elf_class": 1,
+    "elf_class_name": "ELF32",
+    "e_machine": "0xa4",
+    "e_machine_name": "EM_HEXAGON",
+    "e_machine_decimal": 164,
+    "e_machine_uapi_pin": "Linux v6.12 include/uapi/linux/elf-em.h: EM_HEXAGON 164, EM_AARCH64 183 (0xb7), EM_ARM 40; fetched via GitHub contents API, blob sha ef38c2bc5ab7",
+    "phoff": 52,
+    "phentsize": 32,
+    "phnum": 3,
+    "ph_filesz": [148, 6536, 1968],
+    "segment_map": "ph[0].p_filesz=148 -> a630_zap.b00; ph[1].p_filesz=6536 -> a630_zap.b01; ph[2].p_filesz=1968 -> a630_zap.b02",
+    "correction": "An earlier checker assumed the ZAP MDT/ELF should be AARCH64 (0xb7). That was a CHECKER defect, not a firmware defect: the ZAP shader is a Qualcomm Hexagon DSP ELF32 image (EM_HEXAGON 0xa4), as confirmed against Linux v6.12 elf-em.h. The corrected check is stronger: it ties every .bNN size to the ELF program header."
+  },
+  "public_mirror_deltas": {
+    "reference": "scripts/data/adreno-a630-firmware.json (ONE reachable public mirror, endlessm/linux-firmware@master)",
+    "a630_gmu.bin": "device 32768 B sha b07f9029... vs public 32768 B sha da8d9b1b... - SAME size, DIFFERENT build",
+    "a630_sqe.fw": "device 31980 B sha 34edacb6... vs public 34188 B sha 1c21b527... - DIFFERENT size and build",
+    "a630_zap": "device a630_zap.elf 14256 B sha c9751419... vs public a630_zap.mbn 14256 B sha 4aef4aff... - SAME size, DIFFERENT content (signed split chain vs single .mbn)"
+  },
+  "upstream_contract": {
+    "catalog_zapfw": "a6xx_catalog.c:897 .zapfw = \"a630_zap.mdt\"",
+    "catalog_module_firmware": "a6xx_catalog.c:1047-1049 MODULE_FIRMWARE(\"qcom/a630_zap.mbn\")",
+    "gpu_pas_id": "a6xx_gpu.c:17 #define GPU_PAS_ID 13",
+    "gmu_legacy_gate": "a6xx_gmu.c:739-750 if (fw_image->size > 0x8000) return -EINVAL (flat ITCM writes)",
+    "device_satisfies": "the device HAS the .mdt that .zapfw names, plus the .b00/.b01/.b02 PIL segments, and NO .mbn (uses the signed split chain); a630_gmu.bin is exactly 0x8000 and passes the legacy gate"
+  },
+  "honest_boundary": "ROUND 38 HOST-VERIFIED record of a DEVICE-SOURCED read-only extraction. This CLOSES the '3 vendor-signed ZAP blobs are absent' blocker ONLY at the FILE-PRESENCE level: the blobs were never missing from the DEVICE, only from our workspace tree, and are now located. It does NOT unblock stage 5: TrustZone PAS authentication (qcom_scm_pas_auth_and_reset, GPU_PAS_ID 13), an A6XX_GEN1 kernel backend caller with CONFIG_XNU_NATIVE_ADRENO=y, the full CX/GX genpd + 6 clocks + RPMh/PDC power-up sequence (round-35 device probe measured CX DOWN / GX OFF), and a real device kgsl SMMU stage-1 context are ALL still unimplemented. gpu AREA status STAYS host-verified; no GPU register was read or written, no firmware was loaded, no driver ran. One unit, one read-only recovery-session extraction."
+}
