@@ -58,6 +58,19 @@ the offset before reading it.
 - `scripts/verify-enchilada-gmu-boot-v1.py` — cross verifier: pinned
   a6xx_gmu.c/a6xx_gmu.xml slices + pinned PDC headers vs module defines +
   plan order + no-modern-construct checks (213 checks).
+- `AdrenoGmuBusV1.h` / `AdrenoGmuBusV1.c` — A6XX_GEN1 bus adapter (round 44):
+  translates the domain/word-offset op model to real MMIO windows
+  (word-offset addressing `offset << 2`, RSCC window derived at
+  `gmu_mmio + 0x23000`, per-domain byte guards, fail-closed refusals);
+  NO mapping/clock/regulator/power action — caller wires windows only.
+- `tests/adreno-gmu-bus-v1-test.cpp` — 7 test groups: Make validation,
+  resolve bounds, RSCC slice, read/write roundtrip + NULL-PDC refusal,
+  bulk refusals, real PlanRpmhInit end-to-end vs simulated windows,
+  bounds-violation aborts Execute.
+- `scripts/verify-enchilada-gmu-bus-v1.py` — cross verifier: pinned
+  a6xx_gmu.c io-contract slices (:1771 RSCC delta, :642-643 setup_pdc,
+  :590-605 ucode) + pinned PDC headers vs adapter translation checks
+  (40 checks).
 
 ## Verification (HOST-VERIFIED)
 
