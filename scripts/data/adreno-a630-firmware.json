@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "target": "enchilada A630 (SDM845, ADRENO_6XX_GEN1, legacy GMU)",
+  "note": "OBSERVATIONS from ONE reachable mirror, NOT canonical/official. Cross-checked by two independent network paths (jsdelivr + GitHub API base64). Several other mirrors were unreachable in this environment. See evidence/stage5-gpu-firmware-v1.md.",
+  "mirror": "https://cdn.jsdelivr.net/gh/endlessm/linux-firmware@master/",
+  "mirror_api": "https://api.github.com/repos/endlessm/linux-firmware/contents/",
+  "generated": "2026-11-10",
+  "linux_source_pin": "scripts/data/adreno-a630-inputs.json (linux.files a6xx_gmu.c/a6xx_gpu.c/a6xx_catalog.c/a6xx_gmu.xml)",
+  "files": {
+    "qcom/a630_sqe.fw": {
+      "bytes": 34188,
+      "sha256": "1c21b527d9183487cc550dabbb3f43e555df5a977a461934fc61f0635a9aa90c",
+      "role": "SQE microcode",
+      "signed_chain_required": false,
+      "observation": "first LE dwords 0x00000000,0x016ee207,0x010020e2,0x01000000; buf[0]&0xfff=0x000 (NOT a verdict: a6xx_ucode_check_version reads the MAPPED BO vaddr after adreno_fw_create_bo)"
+    },
+    "qcom/a630_gmu.bin": {
+      "bytes": 32768,
+      "sha256": "da8d9b1b1f5c1a0b311f32567093b4828f3c80031dd8435f91ac13c664e173a6",
+      "role": "GMU firmware (legacy flat ITCM)",
+      "signed_chain_required": false,
+      "observation": "exactly 0x8000 B = ADRENO_FW_V1_GMU_MAX_BYTES; passes a6xx_gmu.c:739-750 legacy size gate"
+    },
+    "qcom/sdm845/a630_zap.mbn": {
+      "bytes": 14256,
+      "sha256": "4aef4aff842b7db4f33faaa21e8d8281df1b0c4f09db0b0ee98f6eba9e9b43cd",
+      "role": "ZAP shader (public single blob)",
+      "signed_chain_required": true,
+      "observation": "driver's .zapfw is a630_zap.mdt (signed split .mdt/.b00/.b01 via GPU_PAS_ID 13), NOT this .mbn; MODULE_FIRMWARE lists the .mbn but the signed chain is vendor-only"
+    }
+  },
+  "upstream_contract": {
+    "gmu_legacy_max_bytes": "0x8000 (a6xx_gmu.c:739-750)",
+    "gmu_load": "ONE flat gmu_write_bulk to REG_A6XX_GMU_CM3_ITCM_START (0xc00), NO block_header parse",
+    "modern_block_header_bytes": 16,
+    "modern_planner": "work/UniXNU/kits/AdrenoFirmware/AdrenoFirmware.c AdrenoFirmwarePlanGmu (sheng, A740 only)",
+    "sqe_whereami_predicate": "(((buf[0]&0xf)==0xa && (buf[2]&0xf)>=1) || (buf[0]&0xfff)>=0x190) (a6xx_gpu.c:731-736)",
+    "gpu_pas_id": 13
+  },
+  "honest_boundary": "No device, no flash, CI build+link is a build artifact not a measurement. gpu area stays host-verified. Power-up gate (round 22/28) unchanged."
+}
