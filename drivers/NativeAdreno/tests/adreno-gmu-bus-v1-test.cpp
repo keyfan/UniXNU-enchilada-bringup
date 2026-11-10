@@ -108,10 +108,27 @@ int main(void)
                        ADRENO_GMU_BOOT_V1_PDC_ENABLE_PDC, &v) == 0);
         CHECK(v == ADRENO_GMU_BOOT_V1_ENABLE_PDC_VALUE);
         CHECK(bus.write_bulk(bus.cookie, kAdrenoGmuBootV1DomainPdc, 0, data, 2) == 0);
+        /* round 46: values == NULL is legal ONLY with a registered bulk image;
+         * this group registers none, so NULL still refuses */
         CHECK(bus.write_bulk(bus.cookie, kAdrenoGmuBootV1DomainPdc, 0, 0, 2) != 0);
         CHECK(bus.write_bulk(bus.cookie, kAdrenoGmuBootV1DomainPdc, 0, data, 0) != 0);
         /* 8193 words from word 0 exceeds the 8192-word PDC window */
         CHECK(bus.write_bulk(bus.cookie, kAdrenoGmuBootV1DomainPdc, 0, data, 8193) != 0);
+        /* round 46: a registered image serves values == NULL (model contract) */
+        w.bulk_image = data;
+        w.bulk_words = 2u;
+        CHECK(AdrenoGmuBusV1Make(&w, &bus) == 0);
+        CHECK(bus.write_bulk(bus.cookie, kAdrenoGmuBootV1DomainPdc, 0, 0, 2) == 0);
+        {
+            uint32_t v0 = 0, v1 = 0;
+            CHECK(bus.read(bus.cookie, kAdrenoGmuBootV1DomainPdc, 0, &v0) == 0);
+            CHECK(bus.read(bus.cookie, kAdrenoGmuBootV1DomainPdc, 1, &v1) == 0);
+            CHECK(v0 == 0x4520u && v1 == 0x4510u);
+        }
+        /* image too small for the requested span -> fail closed */
+        CHECK(bus.write_bulk(bus.cookie, kAdrenoGmuBootV1DomainPdc, 0, 0, 3) != 0);
+        w.bulk_image = 0;
+        w.bulk_words = 0u;
     }
 
     /* Group 6: the adapter executes a REAL PlanRpmhInit stream end-to-end

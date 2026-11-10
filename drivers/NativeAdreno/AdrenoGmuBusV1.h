@@ -47,6 +47,13 @@ struct AdrenoGmuBusV1Windows {
     uint32_t           pdc_seq_bytes;/* size guard, bytes */
     volatile uint8_t *pdc_mmio;      /* "gmu_pdc" window base */
     uint32_t           pdc_bytes;    /* size guard, bytes */
+    /* Round 46: optional bulk image for the ONE ITCM WriteBulk op. The
+     * AdrenoGmuBootV1 model contract sends values == NULL and expects the
+     * cookie to resolve the image (AdrenoGmuBootV1.h bus contract). When
+     * bulk_image is non-NULL the adapter serves bulk_words dwords from it;
+     * when NULL a values==NULL bulk op fails closed (unchanged r44 rule). */
+    const uint32_t    *bulk_image;   /* may be NULL */
+    uint32_t           bulk_words;   /* image capacity in dwords */
 };
 
 /* The bus the plan executor consumes. cookie points at the resolved window

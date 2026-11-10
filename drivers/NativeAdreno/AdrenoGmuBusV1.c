@@ -6,6 +6,8 @@
 struct AdrenoGmuBusV1Cookie {
     volatile uint8_t *base[kAdrenoGmuBusV1DomainCount];
     uint32_t          bytes[kAdrenoGmuBusV1DomainCount];
+    const uint32_t   *bulk_image;   /* optional ITCM image (round 46) */
+    uint32_t          bulk_words;   /* image capacity in dwords */
 };
 
 static struct AdrenoGmuBusV1Cookie g_gmu_bus_v1_cookie;
@@ -50,10 +52,18 @@ static int bus_write_bulk(void *cookie, uint32_t domain, uint32_t offset,
     if (c == 0 || domain >= kAdrenoGmuBusV1DomainCount ||
         c->base[domain] == 0)
         return 1;
-    /* Bulk data is caller-owned (cookie-resolved per the model contract);
-     * values == NULL is legal ONLY when the caller registered a bulk image,
-     * which round 44 does NOT do: refuse so no op silently writes garbage. */
-    if (values == 0 || words == 0)
+    /* Round 46: values == NULL is legal ONLY when the caller registered a
+     * bulk image in AdrenoGmuBusV1Windows (the model contract sends NULL
+     * and expects the cookie to resolve the ITCM image). No image and
+     * NULL values -> fail closed (unchanged r44 rule for unregistered
+     * callers). */
+    const uint32_t *src = values;
+    if (src == 0) {
+        if (c->bulk_image == 0 || words == 0 || words > c->bulk_words)
+            return 1;
+        src = c->bulk_image;
+    }
+    if (words == 0)
         return 1;
     {
         uint64_t span = ((uint64_t)offset << 2) + ((uint64_t)words << 2);
@@ -63,7 +73,7 @@ static int bus_write_bulk(void *cookie, uint32_t domain, uint32_t offset,
     if (AdrenoGmuBusV1Resolve(cookie, domain, offset, &p) != 0)
         return 1;
     for (uint32_t i = 0; i < words; ++i)
-        p[i] = values[i];
+        p[i] = src[i];
     return 0;
 }
 
@@ -101,6 +111,8 @@ int AdrenoGmuBusV1Make(const struct AdrenoGmuBusV1Windows *windows,
     g_gmu_bus_v1_cookie.bytes[kAdrenoGmuBusV1DomainPdcSeq] = windows->pdc_seq_bytes;
     g_gmu_bus_v1_cookie.base[kAdrenoGmuBusV1DomainPdc] = windows->pdc_mmio;
     g_gmu_bus_v1_cookie.bytes[kAdrenoGmuBusV1DomainPdc] = windows->pdc_bytes;
+    g_gmu_bus_v1_cookie.bulk_image = windows->bulk_image;
+    g_gmu_bus_v1_cookie.bulk_words = windows->bulk_words;
 
     bus->cookie = &g_gmu_bus_v1_cookie;
     bus->write = bus_write;
