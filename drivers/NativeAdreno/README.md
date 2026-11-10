@@ -40,8 +40,24 @@ the offset before reading it.
 - `tests/adreno-catalog-test.cpp` — 10 host test groups (A630/A740 lookup,
   cross-generation gap, unknown-chip refusal, firmware names/masks, blocked
   assessment, A740 reference feasible case, DT chipid + kgsl window).
+- `AdrenoHfiV1.h` / `AdrenoHfiV1.c` — legacy GMU HFI v1 transport (2 queues,
+  no 4-dword alignment, no 0xfafafafa padding, v1 startup table).
+- `AdrenoFirmwareV1.h` / `AdrenoFirmwareV1.c` — legacy flat ITCM ≤0x8000
+  firmware-load contract (no block_header parsing).
+- `AdrenoGmuBootV1.h` / `AdrenoGmuBootV1.c` — A630 LEGACY GMU cold-boot
+  bring-up SEQUENCE model (round 42): ordered op stream (rpmh_start →
+  GENERAL_7=1 → flat ITCM bulk → CM3 config/fence/chipid → power_config →
+  gmu_start → gfx_rail_on → [sptprac] → hfi_start) + RSC/PDC sequencer init
+  plan, all routed through caller-supplied bus callbacks; every offset
+  sha-pinned (a6xx_gmu.xml + 3-tree PDC sources).
+- `tests/adreno-gmu-boot-v1-test.cpp` — 7 test groups: pure predicates,
+  refusals, exact 33-op SPTP cold stream, sptprac insertion at idle<SPTP,
+  RSC/PDC TCS1/TCS3 plan, synthetic bus execution, bus refusal contract.
 - `scripts/check-enchilada-adreno-host.py` — C11 + C++17 host runner, mirrors
   `scripts/check-enchilada-dsi-backlight-host.py` (sanitizers when available).
+- `scripts/verify-enchilada-gmu-boot-v1.py` — cross verifier: pinned
+  a6xx_gmu.c/a6xx_gmu.xml slices + pinned PDC headers vs module defines +
+  plan order + no-modern-construct checks (213 checks).
 
 ## Verification (HOST-VERIFIED)
 
@@ -65,6 +81,10 @@ clang -std=c11 -Wall -Wextra -Werror -pedantic \
 Both must pass. This is a **host** claim only: no CI compile, no flash, no
 device verification. `porting.toml` gpu area is `host-verified` with a `host`
 evidence entry; `evidence/stage5-gpu-feasibility.md` records the audit.
+Round-38 correction to the honest boundary: the three vendor-signed A630
+blobs ARE present on the device (`/vendor/firmware/`, read-only extraction,
+`evidence/stage5-gpu-device-firmware.md`); the remaining blockers are the
+TrustZone PAS auth, the kernel-side caller, and the kgsl SMMU context.
 
 ## Proves / Does NOT prove
 

@@ -25,6 +25,7 @@ TESTS = [
     ('adreno-domain-state-test', [GPU / 'tests/adreno-domain-state-test.cpp'], ['AdrenoDomainState']),
     ('adreno-hfi-v1-test', [GPU / 'tests/adreno-hfi-v1-test.cpp'], ['AdrenoHfiV1']),
     ('adreno-firmware-v1-test', [GPU / 'tests/adreno-firmware-v1-test.cpp'], ['AdrenoFirmwareV1']),
+    ('adreno-gmu-boot-v1-test', [GPU / 'tests/adreno-gmu-boot-v1-test.cpp'], ['AdrenoGmuBootV1']),
 ]
 SOURCES = {
     'AdrenoCatalog': GPU / 'AdrenoCatalog.c',
@@ -33,6 +34,7 @@ SOURCES = {
     'AdrenoDomainState': GPU / 'AdrenoDomainState.c',
     'AdrenoHfiV1': GPU / 'AdrenoHfiV1.c',
     'AdrenoFirmwareV1': GPU / 'AdrenoFirmwareV1.c',
+    'AdrenoGmuBootV1': GPU / 'AdrenoGmuBootV1.c',
 }
 
 
@@ -67,7 +69,7 @@ def main():
         if result.returncode:
             sys.stderr.write(result.stderr)
             raise SystemExit(f'FAIL: {name} ({result.returncode})')
-    print(f'PASS: enchilada A630 catalog/hwinit/board-input/power-gate/domain-state/hfi-v1/firmware-v1 host tests ({"sanitized" if san else "without sanitizers"})')
+    print(f'PASS: enchilada A630 catalog/hwinit/board-input/power-gate/domain-state/hfi-v1/firmware-v1/gmu-boot-v1 host tests ({"sanitized" if san else "without sanitizers"})')
 
 
 if __name__ == '__main__':
