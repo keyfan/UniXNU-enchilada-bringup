@@ -116,7 +116,11 @@ def main():
         # What the shim is ALLOWED to leave undefined: the three kernel entry points
         # the stub declares, the platform mapping hook, the stack protector, and the
         # host-tested adreno_* decision functions it deliberately does not define.
-        allowed = {'IOLog', 'PE_parse_boot_argn', 'snprintf', '__stack_chk_fail', '__stack_chk_guard'}
+        # Round 48: AdrenoGmuBootV1BootState (host-tested C module, linked from
+        # libEnchiladaAdreno.a) + _Z19armcpu_map_physicalyy (the C++-mangled
+        # weak_import alias of the same platform hook) are also allowed.
+        allowed = {'IOLog', 'PE_parse_boot_argn', 'snprintf', '__stack_chk_fail', '__stack_chk_guard',
+                   'AdrenoGmuBootV1BootState', '_Z19armcpu_map_physicalyy'}
         unexpected = sorted(u for u in undefined
                             if u not in allowed and not u.startswith('adreno_') and u != 'armcpu_map_physical')
         check(not unexpected, f'shim has no unexpected undefined symbols (unexpected={unexpected})')

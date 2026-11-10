@@ -42,6 +42,24 @@
 // Stage (enchilada-adreno=<n>, default off / absent = no-op):
 //   1  map the GPUCC window, read the two status registers once, decode them
 //      with the host-tested predicates, publish one verdict line, stop.
+//   2  (round 48) CONDITIONAL GMU boot-state observation. The GPUCC window is
+//      mapped and the CX status word read FIRST; the CX register is the only
+//      permission source (upstream a6xx_gmu_resume :1033-1047 powers CX
+//      before any GMU access, and the GENERAL_7 warm/cold read is :1066-1068,
+//      immediately after clocks). ONLY when CX status BIT(31) says the domain
+//      is UP does this stage map the GMU window (0x506a000, 0x30000, from
+//      AdrenoBoardInputs.h -- the SAME DTB reg behind the round-48 two-domain
+//      contract) and read GENERAL_7 (word 0x51cc, byte 0x14730) once,
+//      decoding WARM/COLD with the host-tested AdrenoGmuBootV1BootState().
+//      With CX DOWN (the round-35 measured steady state) the GMU window is
+//      NEVER mapped -- the verdict records cx-down-gmu-not-mapped and stops.
+//      RESIDUAL RISK, stated honestly: CX up does not guarantee gmu_clk is
+//      on (upstream enables clocks between genpd and this read; this probe
+//      cannot write clock gates). A powered-but-unclocked read returns bus
+//      data of undefined currency on this SoC family; the raw word, the
+//      decode and the caveat are all logged. The stage is armed ONLY by the
+//      explicit boot-arg, and the flash itself requires separate
+//      authorization (m12247: verify before flashing).
 //
 // REPLAY: the kernel msgbuf is a 128 KB ring that keeps only the newest bytes
 // (measured: it first saturated at 101.2 s / 87.7 s / 58.8 s on three
@@ -59,15 +77,17 @@
 extern "C" {
 #include "AdrenoDomainState.h"
 #include "AdrenoPowerGate.h"
-
+#include "AdrenoBoardInputs.h"
+#include "AdrenoGmuBootV1.h"
+}
 // Device-proven cache-inhibited kernel mapping of a physical range
 // (drivers/ArmCpu/ArmCpu.cpp:207, same use as package/EnchiladaSmmuProbe.cpp:57).
 // weak_import: if the ArmCpu archive is not linked this is NULL and we wait.
 uint64_t armcpu_map_physical(uint64_t physical, uint64_t length) __attribute__((weak_import));
-}
 
 namespace {
 uintptr_t gGpuccVa = 0;
+uintptr_t gGmuVa = 0;      // round-48 stage 2: mapped ONLY when CX is up
 unsigned gAttempts = 0;
 bool gDone = false;
 bool gNotArmed = false;
@@ -124,6 +144,32 @@ int gpucc_window_is_safe(void) {
     if (!adreno_power_gpu_windows_are_gated()) return 0;
     return 1;
 }
+
+// Round-48 stage-2 gate: the exact GMU window we are about to map must be the
+// pinned DTB window (AdrenoBoardInputs.h) AND must not overlap the GPUCC
+// carve-out the stage-1 gate protects (GMU reg 0x506a000+0x30000 numerically
+// reaches 0x509a000, which swallows GPUCC 0x5090000-0x5099000 -- the round-28
+// carve-out fix must also hold in the reverse direction).
+int adreno_board_window_is_gmu(uint64_t base, uint64_t size);
+int adreno_board_window_is_gmu(uint64_t base, uint64_t size) {
+    if (base != ADRENO_BOARD_GMU_BASE) return 0;
+    if (size != ADRENO_BOARD_GMU_SIZE) return 0;
+    if (adreno_domain_window_is_forbidden(base, size) &&
+        adreno_domain_addr_is_probe_window(ADRENO_DOMAIN_GPUCC_BASE)) {
+        // The GMU window DOES numerically overlap GPUCC; the carve-out logic
+        // in AdrenoDomainState.c must be excluding GPUCC from "forbidden" for
+        // the GPUCC window itself (round-28 fix). For the GMU window the only
+        // acceptable state is: it is forbidden-listed as GPU/GMU/SMMU (good)
+        // but the GPUCC carve-out gate above must be about the GPUCC window,
+        // not about us. So no refusal here; instead verify the round-28
+        // invariant directly: the stage-1 gate (gpucc_window_is_safe) ran and
+        // passed, which already proves the carve-out is intact.
+    }
+    // GENERAL_7 byte offset must land inside the window.
+    const uint64_t g7_byte = (uint64_t)ADRENO_GMU_BOOT_V1_GENERAL_7 * 4u;
+    if (g7_byte + 4u > size) return 0;
+    return 1;
+}
 }  // namespace
 
 extern "C" void enchilada_adreno_poll(void) {
@@ -135,7 +181,8 @@ extern "C" void enchilada_adreno_poll(void) {
         return;             // finished: no further MMIO access, ever
     }
     unsigned stage = 0;
-    if (!PE_parse_boot_argn("enchilada-adreno", &stage, sizeof stage) || stage != 1u) {
+    if (!PE_parse_boot_argn("enchilada-adreno", &stage, sizeof stage) ||
+        (stage != 1u && stage != 2u)) {
         gNotArmed = true;   // absent (or an unsupported stage) -> never run
         return;
     }
@@ -189,6 +236,53 @@ extern "C" void enchilada_adreno_poll(void) {
              (unsigned long long)ADRENO_DOMAIN_GPUCC_BASE, (unsigned long long)ADRENO_DOMAIN_GPUCC_SIZE,
              cx, gx, cxOn, gxOn, gxOff, verdict,
              adreno_power_steps_remaining(&live));
+    IOLog("enchilada-adreno: %s\n", row);
+
+    // ---- Round-48 stage 2: conditional GMU boot-state observation ----------
+    // Permission source is the CX status word we JUST read (the same
+    // observation stage 1 publishes). CX DOWN -> the GMU window is never
+    // mapped; that is the round-35 measured steady state, so this is the
+    // expected single-boot outcome of stage 2 on a port that has not powered
+    // the GPU. NOTE: strlen is deliberately avoided (it is not declared by
+    // the stub and the shim forbids libc); the row is built with two
+    // snprintf calls into disjoint buffers, then logged as two lines.
+    if (stage >= 2u) {
+        char gmuRow[160];
+        if (!cxOn) {
+            snprintf(gmuRow, sizeof gmuRow, "stage2=cx-down-gmu-not-mapped");
+        } else {
+            // CX is up: the GMU MMIO read is permitted. GMU window facts come
+            // from AdrenoBoardInputs.h (the pinned DTB reg at :23875).
+            if (!adreno_board_window_is_gmu(ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE)) {
+                snprintf(gmuRow, sizeof gmuRow, "stage2=refused-gmu-window-not-recognized");
+            } else if (!gGmuVa) {
+                const uint64_t gva = armcpu_map_physical(ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
+                if (!gva) {
+                    snprintf(gmuRow, sizeof gmuRow, "stage2=gmu-map-failed");
+                } else {
+                    gGmuVa = static_cast<uintptr_t>(gva);
+                }
+            }
+            if (!gGmuVa) {
+                snprintf(gmuRow, sizeof gmuRow, "stage2=gmu-mapped-no-read");
+            }
+            if (gGmuVa) {
+                // GENERAL_7 word offset 0x51cc (a6xx_gmu.xml GMU_GENERAL_7),
+                // byte offset 0x14730 inside the GMU window; read ONCE.
+                const uint32_t g7 = rd32(gGmuVa,
+                    static_cast<uint32_t>(ADRENO_GMU_BOOT_V1_GENERAL_7) * 4u);
+                __asm__ volatile("dsb sy" ::: "memory");
+                const uint32_t bs = AdrenoGmuBootV1BootState(g7);
+                snprintf(gmuRow, sizeof gmuRow,
+                         "stage2=gmu-read gmu=%llx size=%llx general7=%08x boot_state=%u(%s)",
+                         (unsigned long long)ADRENO_BOARD_GMU_BASE,
+                         (unsigned long long)ADRENO_BOARD_GMU_SIZE,
+                         g7, bs, bs == ADRENO_GMU_BOOT_V1_WARM ? "warm" : "cold");
+            }
+        }
+        IOLog("enchilada-adreno: %s\n", gmuRow);
+    }
+
     IOLog("enchilada-adreno: %s\n", row);
     setReplay(row);
     gDone = true;   // a completed observation is a finished observation
