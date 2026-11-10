@@ -172,6 +172,17 @@ extern void enchilada_gauge_poll(void) __attribute__((weak_import));
 // BootProgressStubs.c/.symbols stay byte-identical. Reads identification + stream-match
 // registers only: no context program, no bank enable, no SMR/S2CR write.
 extern void enchilada_smmu_poll(void) __attribute__((weak_import));
+// enchilada stage-5: READ-ONLY GPUCC domain-state probe (EnchiladaAdrenoProbe.cpp,
+// enchilada-adreno=1, default off). Its strong definition lives in the -force_load'ed
+// libEnchiladaAdreno.a; a weak_import with a strong definition needs NO stub (same rule as the
+// three probes above), so BootProgressStubs.c/.symbols stay byte-identical.
+//
+// It reads the two GPUCC GDSC STATUS registers (CX 0x05091540 BIT(31), GX 0x05091010
+// BIT(16)/BIT(15)) and NOTHING ELSE. That is deliberate: the GPU/GMU/kgsl-SMMU windows are in the
+// collapsible gpu_cx/gpu_gx domain, so a cold read of them can hang this CPU before anything is
+// logged, whereas the GDSC status registers are polled by their own framework during a transition
+// and therefore cannot die with the domain. It answers "is the GPU domain up?" without touching it.
+extern void enchilada_adreno_poll(void) __attribute__((weak_import));
 extern char boot_process_rows[10][120] __attribute__((weak_import));
 extern unsigned boot_ui_trace_role_rows(unsigned,char [][120],unsigned,unsigned) __attribute__((weak_import));
 extern char native_touch_rows[4][120] __attribute__((weak_import));
@@ -1285,6 +1296,7 @@ static void monitor(void *arg, wait_result_t result) {
     if(enchilada_backlight_poll)enchilada_backlight_poll();
     if(enchilada_gauge_poll)enchilada_gauge_poll();
     if(enchilada_smmu_poll)enchilada_smmu_poll();
+    if(enchilada_adreno_poll)enchilada_adreno_poll();
     if(boot_ui_trace_snapshot)boot_ui_trace_snapshot(now);
     if(&boot_process_attempts && &boot_process_busy) {
       unsigned attempt=__atomic_load_n(&boot_process_attempts,__ATOMIC_RELAXED);

@@ -85,6 +85,7 @@ archives = [
   "build-enchilada-msm-dsi.py",         # libEnchiladaMsmDsi.a: MDSS DSI0 CMD DMA transport + DCS packets (stage-3 layer 2; no runtime probe yet)
   "build-enchilada-gauge.py",          # libEnchiladaGauge.a: READ-ONLY bq27xxx fuel-gauge probe (enchilada-gauge=1|2, default off), force-loaded
   "build-enchilada-smmu.py",           # libEnchiladaSmmu.a: READ-ONLY appSMMU stream survey (enchilada-smmu=1, default off), force-loaded
+  "build-enchilada-adreno.py",         # libEnchiladaAdreno.a: READ-ONLY GPUCC GDSC domain-state probe (enchilada-adreno=1, default off) + the 4 freestanding NativeAdreno C modules, force-loaded
 ]
 
 # The pin and early initializer are the sheng values: the same 21H461 kernelcache. The roots are the sheng list,
