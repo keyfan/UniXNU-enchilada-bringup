@@ -79,11 +79,16 @@ extern "C" {
 #include "AdrenoPowerGate.h"
 #include "AdrenoBoardInputs.h"
 #include "AdrenoGmuBootV1.h"
-}
+
 // Device-proven cache-inhibited kernel mapping of a physical range
 // (drivers/ArmCpu/ArmCpu.cpp:207, same use as package/EnchiladaSmmuProbe.cpp:57).
 // weak_import: if the ArmCpu archive is not linked this is NULL and we wait.
+// MUST live inside extern "C" (CI #224 link failure: outside it the C++
+// compiler mangled the name and ld could not match _armcpu_map_physical
+// in libArmCpu.a — EnchiladaSmmuProbe.cpp keeps its declaration inside
+// extern "C" for exactly this reason).
 uint64_t armcpu_map_physical(uint64_t physical, uint64_t length) __attribute__((weak_import));
+}
 
 namespace {
 uintptr_t gGpuccVa = 0;
