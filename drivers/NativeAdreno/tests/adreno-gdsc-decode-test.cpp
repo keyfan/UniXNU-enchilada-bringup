@@ -48,17 +48,25 @@ static void testDescriptors()
     check(gx.power_on_is_noop == 1u, "GX power-on is gdsc_gx_do_nothing_enable");
 }
 
+static void fill(adreno_gdsc_descriptor &d, uint32_t gdscr, uint32_t hw, uint16_t flags)
+{
+    d.gdscr = gdscr;
+    d.gds_hw_ctrl = hw;
+    d.clamp_io_ctrl = 0u;
+    d.flags = flags;
+    d.pwrsts = (uint8_t)(ADRENO_GDSC_PWRSTS_OFF_ON);
+    d.power_on_is_noop = 0u;
+    d.has_supply = 0u;
+    d.has_cxcs = 0u;
+}
+
 /* 2. gdsc.c:66-71 preference order: POLL_CFG_GDSCR > gds_hw_ctrl > gdscr. */
 static void testStatusOffsetSelection()
 {
     adreno_gdsc_descriptor d;
 
     /* All three candidates set: POLL_CFG_GDSCR wins. */
-    d.gdscr = 0x2000u;
-    d.gds_hw_ctrl = 0x3000u;
-    d.flags = ADRENO_GDSC_FLAG_POLL_CFG_GDSCR;
-    d.power_on_is_noop = 0u;
-    d.reserved = 0u;
+    fill(d, 0x2000u, 0x3000u, ADRENO_GDSC_FLAG_POLL_CFG_GDSCR);
     check(adreno_gdsc_status_offset(&d) == 0x2004u, "POLL_CFG_GDSCR selects gdscr + 0x4");
 
     /* No POLL_CFG_GDSCR, gds_hw_ctrl set: gds_hw_ctrl wins over gdscr. */
@@ -80,18 +88,13 @@ static void testMaskSelection()
     adreno_gdsc_descriptor d;
     adreno_gdsc_status s;
 
-    d.gdscr = 0x100cu;
-    d.gds_hw_ctrl = 0u;
-    d.flags = ADRENO_GDSC_FLAG_POLL_CFG_GDSCR;
-    d.power_on_is_noop = 0u;
-    d.reserved = 0u;
+    fill(d, 0x100cu, 0u, ADRENO_GDSC_FLAG_POLL_CFG_GDSCR);
     check(adreno_gdsc_derive(0x05090000ull, &d, &s) == 1, "derive succeeds for a polling descriptor");
     check(s.on_mask == (1u << 16), "polling: on mask is BIT(16) GDSC_POWER_UP_COMPLETE");
     check(s.off_mask == (1u << 15), "polling: off mask is BIT(15) GDSC_POWER_DOWN_COMPLETE");
     check(s.polls_cfg_gdscr == 1u, "polling flag recorded");
 
-    d.flags = ADRENO_GDSC_FLAG_VOTABLE;
-    d.gds_hw_ctrl = 0x1540u;
+    fill(d, 0x100cu, 0x1540u, ADRENO_GDSC_FLAG_VOTABLE);
     check(adreno_gdsc_derive(0x05090000ull, &d, &s) == 1, "derive succeeds for a non-polling descriptor");
     check(s.on_mask == (1u << 31), "non-polling: on mask is BIT(31) PWR_ON_MASK");
     check(s.off_mask == ADRENO_GDSC_NO_OFF_MASK, "non-polling: no dedicated off mask");
@@ -187,6 +190,132 @@ static void testDerivedAddressesAreReadable()
     check(adreno_domain_window_is_forbidden(gx.status_address, 4ull) == 0, "GX status read is not forbidden");
 }
 
+/* 7. Round 57: the CX enable plan is gdsc_enable()'s statement order. */
+static void testCxEnablePlan()
+{
+    const adreno_gdsc_descriptor cx = adreno_gdsc_cx_descriptor();
+    adreno_gdsc_plan plan;
+
+    check(adreno_gdsc_plan_cpu_enable(&cx, &plan) == 1, "CX enable plan builds");
+    check(plan.register_writes > 0u, "CX enable plan does write registers");
+    check(plan.count <= ADRENO_GDSC_MAX_STEPS, "CX enable plan fits the fixed array");
+
+    /* CX has no CLAMP_IO, no SW_RESET, no HW_CTRL, no RETAIN_FF_ENABLE. */
+    check(adreno_gdsc_plan_has(&plan, ADRENO_GDSC_STEP_ASSERT_CLAMP_IO) == 0,
+          "CX never asserts clamp IO on the way up");
+    check(adreno_gdsc_plan_has(&plan, ADRENO_GDSC_STEP_DEASSERT_CLAMP_IO) == 0,
+          "CX has no clamp IO to deassert");
+    check(adreno_gdsc_plan_has(&plan, ADRENO_GDSC_STEP_ASSERT_RESET_AON) == 0,
+          "CX has no AON reset");
+    check(adreno_gdsc_plan_has(&plan, ADRENO_GDSC_STEP_HWCTRL_ON) == 0,
+          "CX does not enter hardware trigger mode");
+
+    /* The steps CX DOES take, in gdsc.c:150/163-175/177/293 order. */
+    const int collapse = adreno_gdsc_plan_index_of(&plan, ADRENO_GDSC_STEP_UPDATE_COLLAPSE);
+    const int hwDelay = adreno_gdsc_plan_index_of(&plan, ADRENO_GDSC_STEP_UDELAY);
+    const int poll = adreno_gdsc_plan_index_of(&plan, ADRENO_GDSC_STEP_POLL_ON);
+    check(collapse >= 0, "CX clears the collapse bit");
+    check(poll >= 0, "CX polls for the ON state");
+    check(hwDelay >= 0, "CX waits before polling (gds_hw_ctrl is set)");
+    check(collapse < poll, "collapse write happens BEFORE the poll");
+    check(plan.steps[collapse].value == 0u, "the enable path CLEARS SW_COLLAPSE (value 0)");
+    check(plan.steps[collapse].mask == ADRENO_GDSC_SW_COLLAPSE_MASK, "collapse mask is BIT(0)");
+    check(plan.steps[collapse].offset == 0x106cu, "the collapse write targets gdscr 0x106c");
+
+    /* The poll must use the DERIVED status register and ON mask, not literals. */
+    check(plan.steps[poll].offset == 0x1540u, "CX polls the derived gds_hw_ctrl 0x1540");
+    check(plan.steps[poll].mask == (1u << 31), "CX polls BIT(31) PWR_ON_MASK");
+
+    /* gdsc.c:283: CX cannot be PWRSTS_RET, and it has no cxc list, so retention
+     * writes are absent -- an honest "not modelled" rather than a fake 0. */
+    check(adreno_gdsc_plan_has(&plan, ADRENO_GDSC_STEP_FORCE_MEM_ON) == 0,
+          "CX has no cxc list, so no retention write is planned");
+}
+
+/* 8. Round 57: the GX enable path performs ZERO GDSC register writes. */
+static void testGxEnableIsNoop()
+{
+    const adreno_gdsc_descriptor gx = adreno_gdsc_gx_descriptor();
+    adreno_gdsc_plan cpuPlan;
+    adreno_gdsc_plan genericPlan;
+    adreno_gdsc_plan disablePlan;
+
+    check(adreno_gdsc_plan_cpu_enable(&gx, &cpuPlan) == 1, "GX CPU enable plan builds");
+    check(cpuPlan.count == 0u, "GX CPU enable plan has NO steps at all");
+    check(cpuPlan.register_writes == 0u, "GX CPU enable plan performs ZERO register writes");
+
+    /* The generic gdsc_enable() would write registers: that contrast is the
+     * whole reason gdsc_gx_do_nothing_enable() exists. */
+    check(adreno_gdsc_plan_enable(&gx, &genericPlan) == 1, "generic GX enable plan builds");
+    check(genericPlan.register_writes > 0u,
+          "the generic path WOULD write GX registers, hence the no-op");
+
+    /* AON reset and clamp IO come BEFORE the collapse write on that path. */
+    const int aon = adreno_gdsc_plan_index_of(&genericPlan, ADRENO_GDSC_STEP_ASSERT_RESET_AON);
+    const int clamp = adreno_gdsc_plan_index_of(&genericPlan, ADRENO_GDSC_STEP_DEASSERT_CLAMP_IO);
+    const int collapse = adreno_gdsc_plan_index_of(&genericPlan, ADRENO_GDSC_STEP_UPDATE_COLLAPSE);
+    check(aon >= 0, "GX asserts AON reset");
+    check(clamp >= 0, "GX deasserts clamp IO");
+    check(aon >= 0 && clamp >= 0 && collapse >= 0 && aon < clamp && clamp < collapse,
+          "AON reset then clamp-IO release then collapse, in that order");
+    check(genericPlan.steps[clamp].offset == 0x1508u, "clamp IO targets clamp_io_ctrl 0x1508");
+
+    /* Disable is real for GX: it polls the down-complete bit. */
+    check(adreno_gdsc_plan_disable(&gx, &disablePlan) == 1, "GX disable plan builds");
+    check(disablePlan.register_writes > 0u, "GX disable DOES write registers");
+    const int pollOff = adreno_gdsc_plan_index_of(&disablePlan, ADRENO_GDSC_STEP_POLL_OFF);
+    check(pollOff >= 0, "GX disable polls for the OFF state");
+    check(disablePlan.steps[pollOff].mask == (1u << 15), "GX disable polls BIT(15)");
+    const int clampOn = adreno_gdsc_plan_index_of(&disablePlan, ADRENO_GDSC_STEP_ASSERT_CLAMP_IO);
+    check(clampOn > pollOff, "clamp IO is asserted AFTER the collapse finished");
+
+    check(adreno_gdsc_verify_gx_enable_writes_nothing() == 1,
+          "the mechanical safety property holds for the pinned descriptors");
+}
+
+/* 9. Round 57: CX disable takes the VOTABLE short-cut -- no polling at all. */
+static void testCxDisableDoesNotPoll()
+{
+    const adreno_gdsc_descriptor cx = adreno_gdsc_cx_descriptor();
+    adreno_gdsc_plan plan;
+
+    check(adreno_gdsc_plan_disable(&cx, &plan) == 1, "CX disable plan builds");
+    check(adreno_gdsc_plan_has(&plan, ADRENO_GDSC_STEP_UPDATE_COLLAPSE) == 1,
+          "CX sets the collapse bit on the way down");
+    check(adreno_gdsc_plan_has(&plan, ADRENO_GDSC_STEP_POLL_OFF) == 0,
+          "VOTABLE CX does NOT poll on disable (gdsc.c:153-161)");
+
+    const int collapse = adreno_gdsc_plan_index_of(&plan, ADRENO_GDSC_STEP_UPDATE_COLLAPSE);
+    check(collapse >= 0 && plan.steps[collapse].value == ADRENO_GDSC_SW_COLLAPSE_MASK,
+          "the disable path SETS SW_COLLAPSE (value == mask)");
+    check(collapse >= 0 && (collapse + 1) < (int)plan.count, "the disable plan ends with a delay");
+    check(collapse >= 0 && plan.steps[collapse + 1].kind == ADRENO_GDSC_STEP_UDELAY,
+          "the VOTABLE short-cut waits, then returns");
+    check(collapse >= 0 && plan.steps[collapse + 1].delay_us == 500u,
+          "the short-cut wait is TIMEOUT_US 500");
+}
+
+/* 10. Round 57: the plans stay comparable across descriptors and reject NULLs. */
+static void testPlanHelpers()
+{
+    const adreno_gdsc_descriptor cx = adreno_gdsc_cx_descriptor();
+    adreno_gdsc_plan plan;
+
+    check(adreno_gdsc_plan_enable(nullptr, &plan) == 0, "NULL descriptor cannot plan an enable");
+    check(adreno_gdsc_plan_enable(&cx, nullptr) == 0, "NULL output cannot receive a plan");
+    check(adreno_gdsc_plan_disable(nullptr, &plan) == 0, "NULL descriptor cannot plan a disable");
+    check(adreno_gdsc_plan_cpu_enable(nullptr, &plan) == 0, "NULL descriptor cannot plan a CPU enable");
+
+    check(adreno_gdsc_plan_has(nullptr, ADRENO_GDSC_STEP_POLL_ON) == 0, "NULL plan has no steps");
+    check(adreno_gdsc_plan_index_of(nullptr, ADRENO_GDSC_STEP_POLL_ON) == -1,
+          "NULL plan index is -1");
+
+    /* A real plan that simply does not contain a POLL_OFF step. */
+    check(adreno_gdsc_plan_disable(&cx, &plan) == 1, "CX disable plan builds for the absent-step check");
+    check(adreno_gdsc_plan_index_of(&plan, ADRENO_GDSC_STEP_POLL_OFF) == -1,
+          "an absent step reports -1, not 0");
+}
+
 int main()
 {
     std::printf("enchilada GPU GDSC derivation tests:\n");
@@ -203,6 +332,14 @@ int main()
     std::printf("  testDecodeAgreesWithDomainState: decode agrees with the existing predicates\n");
     testDerivedAddressesAreReadable();
     std::printf("  testDerivedAddressesAreReadable: both derived registers stay inside GPUCC\n");
+    testCxEnablePlan();
+    std::printf("  testCxEnablePlan: CX enable follows gdsc_enable()'s statement order\n");
+    testGxEnableIsNoop();
+    std::printf("  testGxEnableIsNoop: the CPU's GX enable writes NOTHING\n");
+    testCxDisableDoesNotPoll();
+    std::printf("  testCxDisableDoesNotPoll: VOTABLE CX skips the disable poll\n");
+    testPlanHelpers();
+    std::printf("  testPlanHelpers: NULL handling and index sentinels\n");
 
     if (g_failures != 0u) {
         std::printf("FAIL: %u of %u checks failed\n", g_failures, g_checks);

@@ -95,13 +95,91 @@ extern "C" {
  * !(val & on_mask) instead, so the off mask is reported as 0. */
 #define ADRENO_GDSC_NO_OFF_MASK             0u
 
+/* drivers/clk/qcom/gdsc.h:50-59 power-state bitfields. */
+#define ADRENO_GDSC_PWRSTS_OFF     0x01u  /* BIT(0) */
+#define ADRENO_GDSC_PWRSTS_RET     0x02u  /* BIT(1) */
+#define ADRENO_GDSC_PWRSTS_ON      0x04u  /* BIT(2) */
+#define ADRENO_GDSC_PWRSTS_OFF_ON  (ADRENO_GDSC_PWRSTS_OFF | ADRENO_GDSC_PWRSTS_ON)
+#define ADRENO_GDSC_PWRSTS_RET_ON  (ADRENO_GDSC_PWRSTS_RET | ADRENO_GDSC_PWRSTS_ON)
+
+/* drivers/clk/qcom/gdsc.c:119-137 SW_COLLAPSE bit written by gdsc_toggle_logic(). */
+#define ADRENO_GDSC_SW_COLLAPSE_MASK  0x00000001u  /* BIT(0) */
+/* drivers/clk/qcom/gdsc.c:231-250 clamp-IO / AON-reset masks. */
+#define ADRENO_GDSC_GMEM_CLAMP_IO_MASK 0x00000001u /* BIT(0) */
+#define ADRENO_GDSC_GMEM_RESET_MASK    0x00000010u /* BIT(4) */
+/* drivers/clk/qcom/gdsc.c:207-229 retention masks for the (empty) cxc list. */
+#define ADRENO_GDSC_RETAIN_MEM_BIT     14u
+#define ADRENO_GDSC_RETAIN_PERIPH_BIT  13u
+/* drivers/clk/qcom/gdsc.c:49-50 poll / toggle timeouts. */
+#define ADRENO_GDSC_STATUS_POLL_TIMEOUT_US 1500u
+#define ADRENO_GDSC_TIMEOUT_US             500u
+
 /* One GDSC descriptor: exactly the fields gdsc_check_status() reads. */
 struct adreno_gdsc_descriptor {
     uint32_t gdscr;          /* .gdscr                                   */
     uint32_t gds_hw_ctrl;    /* .gds_hw_ctrl (0 when the driver omits it) */
+    uint32_t clamp_io_ctrl;  /* .clamp_io_ctrl (0 when omitted)          */
     uint16_t flags;          /* .flags                                  */
+    uint8_t  pwrsts;         /* .pwrsts                                 */
     uint8_t  power_on_is_noop; /* .pd.power_on == gdsc_gx_do_nothing_enable */
-    uint8_t  reserved;       /* keep the struct size stable             */
+    uint8_t  has_supply;     /* .supply != NULL -> regulator steps exist  */
+    uint8_t  has_cxcs;       /* cxc_count != 0 -> mem-retention writes    */
+};
+
+/* ------------------------------------------------------------------------- *
+ * Round 57: the enable/disable SEQUENCE, not just the status register.
+ *
+ * gdsc_enable()  (gdsc.c:259-315) and gdsc_disable() (gdsc.c:317-364) are
+ * straight-line lists of conditional steps whose presence follows from the
+ * SAME descriptor fields used above. Encoding them as a plan makes the CX
+ * power-up path that AdrenoPowerUpV1 step 0 calls derived rather than asserted,
+ * and it makes one safety property checkable arithmetic:
+ *
+ *   the CPU's GX enable path performs ZERO GDSC register writes, because
+ *   gpu_gx_gdsc.pd.power_on == gdsc_gx_do_nothing_enable (gdsc.c:604-616).
+ *
+ * That is why the device-measured GX word (rounds 35/49/50/52) sits at a
+ * permanent down-complete: the CPU never powers GX up; the GMU does.
+ * ------------------------------------------------------------------------- */
+
+#define ADRENO_GDSC_MAX_STEPS 8u
+
+enum adreno_gdsc_step_kind {
+    ADRENO_GDSC_STEP_NONE = 0,
+    ADRENO_GDSC_STEP_REGULATOR_ENABLE = 1,
+    ADRENO_GDSC_STEP_REGULATOR_DISABLE = 2,
+    ADRENO_GDSC_STEP_ASSERT_RESET = 3,
+    ADRENO_GDSC_STEP_DEASSERT_RESET = 4,
+    ADRENO_GDSC_STEP_ASSERT_RESET_AON = 5,
+    ADRENO_GDSC_STEP_DEASSERT_CLAMP_IO = 6,
+    ADRENO_GDSC_STEP_ASSERT_CLAMP_IO = 7,
+    ADRENO_GDSC_STEP_UPDATE_COLLAPSE = 8,
+    ADRENO_GDSC_STEP_UDELAY = 9,
+    ADRENO_GDSC_STEP_POLL_ON = 10,
+    ADRENO_GDSC_STEP_POLL_OFF = 11,
+    ADRENO_GDSC_STEP_FORCE_MEM_ON = 12,
+    ADRENO_GDSC_STEP_CLEAR_MEM_ON = 13,
+    ADRENO_GDSC_STEP_HWCTRL_ON = 14,
+    ADRENO_GDSC_STEP_HWCTRL_OFF = 15,
+    ADRENO_GDSC_STEP_RETAIN_FF_ON = 16
+};
+
+/* One step. `writes` is 1 only when the step touches a GDSC register; a step
+ * that only waits, or only votes on a regulator, leaves the registers alone. */
+struct adreno_gdsc_step {
+    uint8_t  kind;      /* enum adreno_gdsc_step_kind                     */
+    uint8_t  writes;    /* 1 when `offset`/`mask`/`value` are meaningful  */
+    uint16_t delay_us;  /* wait performed by this step, when any          */
+    uint32_t offset;    /* register offset inside the controller file     */
+    uint32_t mask;      /* mask for register steps                        */
+    uint32_t value;     /* value written for register steps               */
+};
+
+struct adreno_gdsc_plan {
+    uint32_t gdscr;
+    uint32_t count;           /* steps used                                 */
+    uint32_t register_writes; /* number of steps that actually write        */
+    struct adreno_gdsc_step steps[ADRENO_GDSC_MAX_STEPS];
 };
 
 /* Derived values for one descriptor. */
@@ -141,6 +219,34 @@ int adreno_gdsc_is_off(const struct adreno_gdsc_descriptor *desc, uint32_t statu
 /* Mechanical link to AdrenoDomainState.h: 1 when both descriptors re-derive the
  * five constants in that header exactly, 0 otherwise. */
 int adreno_gdsc_verify_domain_state_constants(void);
+
+/* ---- round 57: the enable/disable step sequence (gdsc.c:259-364) ---- */
+
+/* Build the plan gdsc_enable() would execute for this descriptor.
+ * Returns 1 on success, 0 for a NULL argument or if the plan would not fit. */
+int adreno_gdsc_plan_enable(const struct adreno_gdsc_descriptor *desc,
+                            struct adreno_gdsc_plan *out);
+
+/* Build the plan gdsc_disable() would execute for this descriptor. */
+int adreno_gdsc_plan_disable(const struct adreno_gdsc_descriptor *desc,
+                             struct adreno_gdsc_plan *out);
+
+/* Build the plan the CPU actually executes on power-up: genpd calls
+ * sc->pd.power_on, which is gdsc_gx_do_nothing_enable() for GX (zero register
+ * writes) and gdsc_enable() for CX. */
+int adreno_gdsc_plan_cpu_enable(const struct adreno_gdsc_descriptor *desc,
+                                struct adreno_gdsc_plan *out);
+
+/* 1 when the plan contains a step of `kind`, 0 otherwise. */
+int adreno_gdsc_plan_has(const struct adreno_gdsc_plan *plan, uint8_t kind);
+
+/* Index of the first step of `kind`, or -1 when absent. */
+int adreno_gdsc_plan_index_of(const struct adreno_gdsc_plan *plan, uint8_t kind);
+
+/* Mechanical safety property: the CPU's GX enable path must perform ZERO GDSC
+ * register writes (gdsc.c:604-616 is a no-op apart from an optional regulator).
+ * Returns 1 when that holds for the pinned descriptors, 0 otherwise. */
+int adreno_gdsc_verify_gx_enable_writes_nothing(void);
 
 #ifdef __cplusplus
 }

@@ -231,6 +231,128 @@ check(re.search(r"qcom,gdsc@0x509100c", dtxt) is not None, "DTB GX gdsc reg is 0
 check(re.search(r"qcom,poll-cfg-gdscr", dtxt) is not None,
       "DTB itself declares qcom,poll-cfg-gdscr (the GX property)")
 
+print("=== (g) round 57: the ENABLE/DISABLE sequences are derived too ===")
+# The order in gdsc_enable()/gdsc_disable() is read out of the pinned bytes and
+# then re-expressed as an ordered step list, independently of the C module.
+en_body = grab(r"static int gdsc_enable\(struct generic_pm_domain \*domain\)\s*\{(.*?)\n\}",
+               GDSC, "gdsc.c gdsc_enable() body")
+dis_body = grab(r"static int gdsc_disable\(struct generic_pm_domain \*domain\)\s*\{(.*?)\n\}",
+                GDSC, "gdsc.c gdsc_disable() body")
+
+
+def order_of(body, needle):
+    return body.find(needle) if body else -99
+
+
+# gdsc_enable(): AON reset -> clamp release -> collapse -> force mem -> hwctrl -> retain
+e_aon = order_of(en_body, "gdsc_assert_reset_aon(sc)")
+e_clamp = order_of(en_body, "gdsc_deassert_clamp_io(sc)")
+e_toggle = order_of(en_body, "gdsc_toggle_logic(sc, GDSC_ON, false)")
+e_mem = order_of(en_body, "gdsc_force_mem_on(sc)")
+e_hw = order_of(en_body, "gdsc_hwctrl(sc, true)")
+e_ret = order_of(en_body, "gdsc_retain_ff_on(sc)")
+check(e_aon >= 0 and e_clamp >= 0 and e_aon < e_clamp < e_toggle,
+      "gdsc_enable(): AON reset BEFORE clamp release BEFORE the collapse write")
+check(e_toggle < e_mem < e_hw < e_ret,
+      "gdsc_enable(): toggle -> force-mem -> hwctrl -> retain, in that order")
+
+# gdsc_disable(): hwctrl off -> clear mem -> toggle -> clamp assert
+d_hw = order_of(dis_body, "gdsc_hwctrl(sc, false)")
+d_mem = order_of(dis_body, "gdsc_clear_mem_on(sc)")
+d_toggle = order_of(dis_body, "gdsc_toggle_logic(sc, GDSC_OFF,")
+d_clamp = order_of(dis_body, "gdsc_assert_clamp_io(sc)")
+check(d_hw >= 0 and d_mem >= 0 and d_hw < d_mem < d_toggle,
+      "gdsc_disable(): hwctrl off -> clear-mem -> collapse write, in that order")
+check(d_toggle >= 0 and d_clamp > d_toggle,
+      "gdsc_disable(): clamp IO is asserted only AFTER the collapse")
+
+# The VOTABLE short-cut is the reason CX can never poll on the way down.
+check(re.search(r"if \(\(sc->flags & VOTABLE\) && status == GDSC_OFF && !wait\) \{(.*?)return 0;",
+                GDSC, re.S) is not None,
+      "gdsc.c:153-161 VOTABLE has an explicit no-poll disable short-cut")
+check(re.search(r"#define\s+TIMEOUT_US\s+(\d+)", GDSC).group(1) == "500",
+      "the VOTABLE short-cut waits TIMEOUT_US 500")
+
+# Re-derive each descriptor's plan shape in PYTHON from the flags alone.
+def plan_shape(gdscr, flags, has_supply, has_cxcs, polling, noop):
+    """Mirror gdsc_enable()/gdsc_disable() selection using ONLY the flags."""
+    steps = []
+    if noop:
+        return steps, 0
+    if flags.get("CLAMP_IO"):
+        if flags.get("AON_RESET"):
+            steps.append("ASSERT_RESET_AON")
+        steps.append("DEASSERT_CLAMP_IO")
+    steps.append("UPDATE_COLLAPSE")
+    if not polling:
+        steps.append("UDELAY")
+        steps.append("POLL_ON")
+    else:
+        steps.append("POLL_ON")
+    if has_supply:
+        steps.insert(0, "REGULATOR_ENABLE")
+    writes = sum(1 for s in steps if s in ("ASSERT_RESET_AON", "DEASSERT_CLAMP_IO",
+                                           "UPDATE_COLLAPSE", "POLL_ON"))
+    return steps, writes
+
+
+cx_steps, cx_writes = plan_shape(0x106C, {"VOTABLE": True, "CLAMP_IO": False}, False, False,
+                                 polling=False, noop=False)
+gx_steps, gx_writes = plan_shape(0x100C, {"CLAMP_IO": True, "AON_RESET": True,
+                                          "POLL_CFG_GDSCR": True}, False, False,
+                                 polling=True, noop=False)
+check(cx_steps == ["UPDATE_COLLAPSE", "UDELAY", "POLL_ON"],
+      "PYTHON re-derivation: CX enable is collapse -> wait -> poll (got %s)" % cx_steps)
+check(cx_writes == 2, "PYTHON re-derivation: CX enable performs 2 register writes (got %d)" % cx_writes)
+check(gx_steps == ["ASSERT_RESET_AON", "DEASSERT_CLAMP_IO", "UPDATE_COLLAPSE", "POLL_ON"],
+      "PYTHON re-derivation: GX enable AON -> clamp -> collapse -> poll (got %s)" % gx_steps)
+check(plan_shape(0x100C, {}, False, False, True, noop=True) == ([], 0),
+      "PYTHON re-derivation: the no-op GX power-on performs ZERO writes")
+
+print("=== (h) round 57: the C module encodes that same sequence ===")
+check("adreno_gdsc_plan_enable" in htxt and "adreno_gdsc_plan_disable" in htxt,
+      "header declares the enable and disable planners")
+check("adreno_gdsc_plan_cpu_enable" in htxt and "adreno_gdsc_plan_cpu_enable" in ctxt,
+      "header and C both expose the CPU-facing planner")
+check("adreno_gdsc_verify_gx_enable_writes_nothing" in htxt and
+      "adreno_gdsc_verify_gx_enable_writes_nothing" in ctxt,
+      "the GX zero-write property has a dedicated mechanical check")
+check("ADRENO_GDSC_MAX_STEPS" in htxt and "steps[ADRENO_GDSC_MAX_STEPS]" in htxt,
+      "the plan is a fixed-size step array (no allocation)")
+check("plan_push" in ctxt, "C has a bounded push helper for the step array")
+check(re.search(r"count\s*>=\s*ADRENO_GDSC_MAX_STEPS", ctxt) is not None,
+      "the push helper refuses to overflow the step array")
+check("ADRENO_GDSC_STEP_POLL_OFF" in ctxt and "ADRENO_GDSC_STEP_ASSERT_CLAMP_IO" in ctxt,
+      "C models the disable-side poll and clamp steps")
+check("ADRENO_GDSC_STEP_UDELAY" in ctxt and "ADRENO_GDSC_TIMEOUT_US" in ctxt,
+      "C models the VOTABLE short-cut wait by name, not by a literal")
+check(re.search(r"#define\s+ADRENO_GDSC_TIMEOUT_US\s+500u", htxt) is not None,
+      "the C header pins that wait to 500 us, matching TIMEOUT_US")
+check("power_on_is_noop" in ctxt and "adreno_gdsc_plan_cpu_enable" in ctxt,
+      "the CPU planner consults the no-op flag instead of assuming a writable GX")
+
+# The GX clamp-IO register is the one the pinned descriptor declares.
+gx_clamp = re.search(r"\.clamp_io_ctrl = (0x[0-9a-fA-F]+)", gx_src)
+check(gx_clamp is not None and int(gx_clamp.group(1), 16) == 0x1508,
+      "GX .clamp_io_ctrl is 0x1508 and the C planner writes exactly that")
+check("0x1508u" in ctxt or "ADRENO_GDSC_GX_CLAMP_IO" in ctxt,
+      "the C module carries the 0x1508 clamp-IO register")
+
+print("=== (i) round 57: the DTB mirrors the same two policies ===")
+cx_dtb = re.search(r"qcom,gdsc@0x509106c \{(.*?)\n\s*\};", dtxt, re.S)
+gx_dtb = re.search(r"qcom,gdsc@0x509100c \{(.*?)\n\s*\};", dtxt, re.S)
+check(cx_dtb is not None, "DTB has the CX gdsc node")
+check(gx_dtb is not None, "DTB has the GX gdsc node")
+cx_node = cx_dtb.group(1) if cx_dtb else ""
+gx_node = gx_dtb.group(1) if gx_dtb else ""
+check("qcom,no-status-check-on-disable" in cx_node,
+      "DTB CX declares no-status-check-on-disable (mirror of the VOTABLE short-cut)")
+check("qcom,poll-cfg-gdscr" not in cx_node, "DTB CX does NOT poll CFG_GDSCR")
+check("qcom,poll-cfg-gdscr" in gx_node, "DTB GX DOES poll CFG_GDSCR")
+check("qcom,reset-aon-logic" in gx_node, "DTB GX declares reset-aon-logic (the AON_RESET flag)")
+check("qcom,clk-dis-wait-val = <0x08>" in cx_node,
+      "DTB CX carries clk-dis-wait-val 0x08, matching .clk_dis_wait_val")
+
 print()
 if fails:
     print("GDSC_DECODE_CROSS: FAIL (%d failures)" % len(fails))

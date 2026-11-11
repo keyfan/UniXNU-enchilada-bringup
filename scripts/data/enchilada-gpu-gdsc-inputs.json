@@ -38,7 +38,21 @@
         "toggle_timeout_us_define": 50,
         "poll_status": 103,
         "gx_do_nothing_enable": 604,
-        "gx_do_nothing_rationale": 596
+        "gx_do_nothing_rationale": 596,
+        "check_status": 60,
+        "update_collapse_bit": 119,
+        "toggle_logic": 139,
+        "votable_no_poll_shortcut": 153,
+        "force_mem_on": 207,
+        "clear_mem_on": 219,
+        "deassert_clamp_io": 231,
+        "assert_clamp_io": 237,
+        "assert_reset_aon": 243,
+        "retain_ff_on": 252,
+        "enable_sequence": 259,
+        "enable_sequence_end": 315,
+        "disable_sequence": 317,
+        "disable_sequence_end": 364
       },
       "gpucc_sdm845_c": {
         "gpu_cx_gdsc": 119,
@@ -106,6 +120,25 @@
       "power_on_is_noop": true
     }
   },
+  "round57_sequence_derivation": {
+    "status": "host-verified",
+    "why": "Round 56 derived the STATUS register and its masks. Round 57 derives the ENABLE/DISABLE step sequence, so what AdrenoPowerUpV1 step 0 means for CX is read out of gdsc_enable()/gdsc_disable() instead of being asserted.",
+    "enable_order": "PWRSTS_ON -> deassert_reset; SW_RESET -> assert+delay+deassert; CLAMP_IO -> (AON_RESET -> assert_reset_aon) + deassert_clamp_io; toggle_logic(ON); PWRSTS_OFF -> force_mem_on; delay 1; HW_CTRL -> hwctrl(on)+delay 1; RETAIN_FF_ENABLE -> retain_ff_on",
+    "disable_order": "PWRSTS_ON -> assert_reset; HW_CTRL -> hwctrl(off)+delay 1+poll(ON); PWRSTS_OFF -> clear_mem_on; PWRSTS_RET_ON -> return; toggle_logic(OFF, synced_poweroff); CLAMP_IO -> assert_clamp_io",
+    "votable_short_cut": "gdsc.c:153-161 -- (flags & VOTABLE) && status == GDSC_OFF && !wait performs udelay(TIMEOUT_US 500) and returns 0 WITHOUT polling. This is the upstream counterpart of the DTB's qcom,no-status-check-on-disable on gpu_cx_gdsc.",
+    "cx_plan": ["UPDATE_COLLAPSE(0x106c, value 0)", "UDELAY(1, gds_hw_ctrl set)", "POLL_ON(0x1540, BIT(31))", "UDELAY(1)"],
+    "gx_generic_plan": ["ASSERT_RESET_AON(0x1508, BIT(4))", "DEASSERT_CLAMP_IO(0x1508, BIT(0)=0)", "UPDATE_COLLAPSE(0x100c, value 0)", "POLL_ON(0x1010, BIT(16))"],
+    "gx_cpu_plan": [],
+    "gx_cpu_plan_writes": 0,
+    "gx_cpu_plan_why": "gpu_gx_gdsc.pd.power_on == gdsc_gx_do_nothing_enable AND the descriptor has no .supply and no .cxcs, so the CPU's GX enable path performs ZERO register writes. This is a PROVABLE zero, and it is why the device word 0x00088400 sits permanently down-complete.",
+    "cx_disable_plan_has_poll": false,
+    "dtb_corroboration": {
+      "qcom,no-status-check-on-disable": "gpu_cx_gdsc only",
+      "qcom,poll-cfg-gdscr": "gpu_gx_gdsc only",
+      "qcom,reset-aon-logic": "gpu_gx_gdsc only",
+      "qcom,clk-dis-wait-val": "<0x08> on gpu_cx_gdsc, matching .clk_dis_wait_val"
+    }
+  },
   "device_measurement_reused": {
     "source_rounds": [35, 49, 50, 52],
     "cx_status_word": "0x00005ff4",
@@ -117,6 +150,8 @@
     "path": "drivers/NativeAdreno/AdrenoGdscDecode.{h,c}",
     "host_test": "drivers/NativeAdreno/tests/adreno-gdsc-decode-test.cpp",
     "cross_verifier": "scripts/verify-enchilada-gdsc-decode.py",
+    "api_round56": ["adreno_gdsc_cx_descriptor", "adreno_gdsc_gx_descriptor", "adreno_gdsc_status_offset", "adreno_gdsc_derive", "adreno_gdsc_polls_cfg_gdscr", "adreno_gdsc_power_on_is_noop", "adreno_gdsc_is_on", "adreno_gdsc_is_off", "adreno_gdsc_verify_domain_state_constants"],
+    "api_round57": ["adreno_gdsc_plan_enable", "adreno_gdsc_plan_disable", "adreno_gdsc_plan_cpu_enable", "adreno_gdsc_plan_has", "adreno_gdsc_plan_index_of", "adreno_gdsc_verify_gx_enable_writes_nothing"],
     "honest_boundary": "Pure derivation from pinned sources + board DTB. NO MMIO, NO IOKit, NO firmware, NO kernel caller, NO device run, NO flash. gpu area STAYS host-verified; CONFIG_XNU_NATIVE_ADRENO remains n."
   }
 }
