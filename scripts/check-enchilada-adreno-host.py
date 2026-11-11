@@ -28,6 +28,7 @@ TESTS = [
     ('adreno-gmu-boot-v1-test', [GPU / 'tests/adreno-gmu-boot-v1-test.cpp'], ['AdrenoGmuBootV1']),
     ('adreno-gmu-bus-v1-test', [GPU / 'tests/adreno-gmu-bus-v1-test.cpp'], ['AdrenoGmuBusV1', 'AdrenoGmuBootV1']),
     ('adreno-gmu-caller-v1-test', [GPU / 'tests/adreno-gmu-caller-v1-test.cpp'], ['AdrenoGmuCallerV1', 'AdrenoGmuBusV1', 'AdrenoGmuBootV1', 'AdrenoDomainState']),
+    ('adreno-power-up-v1-test', [GPU / 'tests/adreno-power-up-v1-test.cpp'], ['AdrenoPowerUpV1', 'AdrenoGmuCallerV1', 'AdrenoGmuBusV1', 'AdrenoGmuBootV1', 'AdrenoDomainState']),
 ]
 SOURCES = {
     'AdrenoCatalog': GPU / 'AdrenoCatalog.c',
@@ -39,6 +40,7 @@ SOURCES = {
     'AdrenoGmuBootV1': GPU / 'AdrenoGmuBootV1.c',
     'AdrenoGmuBusV1': GPU / 'AdrenoGmuBusV1.c',
     'AdrenoGmuCallerV1': GPU / 'AdrenoGmuCallerV1.c',
+    'AdrenoPowerUpV1': GPU / 'AdrenoPowerUpV1.c',
 }
 
 def sanitizers(cxx, out):
@@ -72,7 +74,7 @@ def main():
         if result.returncode:
             sys.stderr.write(result.stderr)
             raise SystemExit(f'FAIL: {name} ({result.returncode})')
-    print(f'PASS: enchilada A630 catalog/hwinit/board-input/power-gate/domain-state/hfi-v1/firmware-v1/gmu-boot-v1/gmu-bus-v1/gmu-caller-v1 host tests ({"sanitized" if san else "without sanitizers"})')
+    print(f'PASS: enchilada A630 catalog/hwinit/board-input/power-gate/domain-state/hfi-v1/firmware-v1/gmu-boot-v1/gmu-bus-v1/gmu-caller-v1/power-up-v1 host tests ({"sanitized" if san else "without sanitizers"})')
 
 
 if __name__ == '__main__':
