@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "board": "enchilada",
+  "soc": "SDM845",
+  "round": 53,
+  "topic": "GPU dedicated kgsl SMMU read SAFETY study (HOST-VERIFIED, no device read performed)",
+  "status": "host-verified",
+  "purpose": "Establish, BEFORE any device action (m12247), that a READ of the kgsl SMMU register window is unsafe while gpu_cx is collapsed; encode the Linux v6.12 upstream rule that clocks + power domain must be enabled BEFORE any SMMU register access.",
+  "linux": {
+    "ref": "v6.12",
+    "mirror": "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/",
+    "files": {
+      "drivers/iommu/arm/arm-smmu/arm-smmu.c": {
+        "bytes": 67693,
+        "sha256": "d5a22b62915e52d2f01744fc68507a8bdf626b68fe090bef6a66a633ecb4fb4a"
+      },
+      "drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c": {
+        "bytes": 20423,
+        "sha256": "75760784bbf68942a4055acdc0886c3559c4993fd49e39e0a3abc20f5f52be44"
+      }
+    },
+    "upstream_rule": {
+      "title": "clocks + power domain BEFORE SMMU registers",
+      "arm_smmu_c": {
+        "clk_bulk_prepare_enable": 2196,
+        "device_cfg_probe": 2200,
+        "device_reset": 2255,
+        "pm_runtime_set_active": 2265,
+        "pm_runtime_enable": 2266,
+        "rpm_get_resume": 74,
+        "qcom_smmu_v2_of_match": 1973
+      },
+      "a6xx_gmu_c": {
+        "cx_genpd": 1033,
+        "gx_genpd": 1041,
+        "clocks_enable": 1047,
+        "msm_iommu_new": 1277
+      },
+      "order": "clk_bulk_prepare_enable(2196) < arm_smmu_device_cfg_probe(2200) < arm_smmu_device_reset(2255); pm_runtime_set_active/enable(2265/2266) and rpm_get resume BEFORE register access; a6xx_gmu creates the IOMMU only AFTER power (1277)"
+    }
+  },
+  "dtb": {
+    "path": "notes/mu-silicium/enchilada.dts",
+    "sha256": "e590ee3273499ee4230760aea9195073c0c195242eee11c95570e174ec202275",
+    "bytes": 784857,
+    "slice_kgsl_smmu": [13957, 13973],
+    "slice_apps_smmu": [13975, 13996],
+    "slice_gdsc_cx": [593, 605],
+    "slice_kgsl_iommu": [23848, 23925],
+    "facts": {
+      "kgsl_base": "0x5040000",
+      "kgsl_size": "0x10000",
+      "kgsl_phandle": "0x1ac",
+      "kgsl_iommu_cells": 1,
+      "kgsl_vdd_supply_phandle": "0x1a4",
+      "kgsl_clock": "gcc_gpu_memnoc_gfx_clk",
+      "gdsc_cx_phandle": "0x1a4",
+      "gdsc_cx_name": "gpu_cx_gdsc",
+      "apps_smmu_base": "0x15000000",
+      "apps_smmu_phandle": "0x29",
+      "apps_smmu_iommu_cells": 2,
+      "gpu_context_sids": [0, 2, 1, 4, 5]
+    }
+  },
+  "device_measurement_reused": {
+    "source_rounds": [35, 49, 50, 52],
+    "verdict": "cx-DOWN",
+    "cx_status_word": "0x00005ff4",
+    "gx_status_word": "0x00088400",
+    "decoded_rows": 1912,
+    "note": "REUSED, not re-measured in round 53. CX bit31 (PWR_ON_MASK) clear => gpu_cx collapsed => kgsl SMMU (on that rail) must NOT be read."
+  },
+  "gate": {
+    "module": "drivers/NativeAdreno/AdrenoKGSLSmmuGate.{h,c}",
+    "verdict_today": "RefusedCxDown",
+    "required_steps": ["clocks_enabled", "domain_powered"],
+    "honest_boundary": "Decision layer only. NO MMIO, NO IOKit, NO firmware, NO kernel caller, NO device run, NO flash. gpu area STAYS host-verified; CONFIG_XNU_NATIVE_ADRENO remains n. A real stage-1 SMMU context is future work AFTER a powered GMU."
+  }
+}
