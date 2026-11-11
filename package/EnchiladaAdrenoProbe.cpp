@@ -60,6 +60,17 @@
 //      decode and the caveat are all logged. The stage is armed ONLY by the
 //      explicit boot-arg, and the flash itself requires separate
 //      authorization (m12247: verify before flashing).
+//   3  (round 52) KERNEL-INSTANTIATED ORDERED POWER-UP PLAN. First real kernel
+//      caller of the round-51 AdrenoPowerUpV1 model (11th archive object, CI
+//      #227 green). PURE: InputsValid / CountsAreDistinct / PlanSize / Plan
+//      are side-effect-free; NO AdrenoPowerUpV1Bus is wired, so there are NO
+//      genpd / clock / MMIO writes. Execute() is never called (a real XNU
+//      backend wiring pm_runtime / clk ops is still future work). The row
+//      proves the model is linked into the kernel and emits the exact 5-op
+//      upstream order (a6xx_gmu.c:1033-1047), plus an honest composition gate
+//      built from the CX/GX words measured above: with CX DOWN and no GPU
+//      clock enabled, PreIsReady() is 0 and the round-46 caller would refuse
+//      -- the expected single-boot outcome, not a fault.
 //
 // REPLAY: the kernel msgbuf is a 128 KB ring that keeps only the newest bytes
 // (measured: it first saturated at 101.2 s / 87.7 s / 58.8 s on three
@@ -79,6 +90,7 @@ extern "C" {
 #include "AdrenoPowerGate.h"
 #include "AdrenoBoardInputs.h"
 #include "AdrenoGmuBootV1.h"
+#include "AdrenoPowerUpV1.h"   // round 51: ordered genpd + clock power-up MODEL (pure Plan)
 
 // Device-proven cache-inhibited kernel mapping of a physical range
 // (drivers/ArmCpu/ArmCpu.cpp:207, same use as package/EnchiladaSmmuProbe.cpp:57).
@@ -104,7 +116,13 @@ char gReplay[200];
 // carries BOTH rows: gReplay = stage-1 row, gGmuReplay = stage-2 row, and
 // the gDone branch logs both every 1 Hz tick.
 char gGmuReplay[160];
+// Round 52 stage 3: the ordered power-up PLAN row gets its own replay buffer.
+// The model is pure (Plan + gate, no bus callbacks, no MMIO writes); the row
+// is built ONCE from the host-tested AdrenoPowerUpV1 model and replayed with
+// the other two rows so a 128 KiB msgbuf ring wrap can never erase it.
+char gPlanReplay[200];
 bool gHaveGmuReplay = false;
+bool gHavePlanReplay = false;
 bool gHaveReplay = false;
 unsigned gReplayAttempt = 0;
 unsigned gTick = 0;
@@ -126,6 +144,15 @@ void setGmuReplay(const char *text) {
     for (; text[i] && i + 1 < sizeof gGmuReplay; ++i) gGmuReplay[i] = text[i];
     gGmuReplay[i] = 0;
     gHaveGmuReplay = i != 0;
+}
+
+// Round 52 stage 3: same no-libc copy loop, third buffer.
+void setPlanReplay(const char *text) {
+    if (!text) return;
+    unsigned i = 0;
+    for (; text[i] && i + 1 < sizeof gPlanReplay; ++i) gPlanReplay[i] = text[i];
+    gPlanReplay[i] = 0;
+    gHavePlanReplay = i != 0;
 }
 
 // In-domain register read: GPUCC base plus a byte offset the host-tested header
@@ -206,11 +233,15 @@ extern "C" void enchilada_adreno_poll(void) {
         // ring's retention window began at t≈323).
         if (gHaveGmuReplay)
             IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gGmuReplay, gTick, gReplayAttempt);
+        // Round 52: the stage-3 plan row is replayed with the other two so a
+        // ring wrap can never erase the only kernel-instantiated evidence.
+        if (gHavePlanReplay)
+            IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gPlanReplay, gTick, gReplayAttempt);
         return;             // finished: no further MMIO access, ever
     }
     unsigned stage = 0;
     if (!PE_parse_boot_argn("enchilada-adreno", &stage, sizeof stage) ||
-        (stage != 1u && stage != 2u)) {
+        (stage != 1u && stage != 2u && stage != 3u)) {
         gNotArmed = true;   // absent (or an unsupported stage) -> never run
         return;
     }
@@ -310,6 +341,59 @@ extern "C" void enchilada_adreno_poll(void) {
         }
         IOLog("enchilada-adreno: %s\n", gmuRow);
         setGmuReplay(gmuRow);   // round-49 replay fix: survive ring wrap
+    }
+
+    // ---- Round 52 stage 3: kernel-instantiated ORDERED POWER-UP PLAN -------
+    // FIRST kernel caller of the round-51 AdrenoPowerUpV1 model (the 11th
+    // archive object, CI #227 green). Deliberately PURE: InputsValid,
+    // CountsAreDistinct, PlanSize and Plan are side-effect-free -- no
+    // AdrenoPowerUpV1Bus is wired, so there are NO genpd / clock / MMIO
+    // writes of any kind. AdrenoPowerUpV1Execute() is NEVER called: a real
+    // XNU backend would wire pm_runtime / clk callbacks there, and that is
+    // still future work. The row proves the model is linked INTO the kernel
+    // and emits the exact 5-op upstream order (a6xx_gmu.c:1033-1047).
+    //
+    // Honest composition gate: pre is built from the CX / GX state ACTUALLY
+    // measured above, and this port enables no GPU clock (clocks_enabled=0).
+    // With the round-35 measured CX-DOWN steady state, PreIsReady() correctly
+    // returns 0 and the round-46 caller chain would refuse to boot the GMU.
+    // That is the expected single-boot outcome, NOT a fault.
+    if (stage >= 3u) {
+        struct AdrenoPowerUpV1Inputs in = {};
+        in.gxpd_present = 1u;      // the DTB DOES carry gpu_gx_gdsc (phandle 0x2a9)
+        in.gmu_clock_count = AdrenoPowerUpV1BoardGmuClockCount();   // 4
+        in.gpu_clock_count = AdrenoPowerUpV1BoardGpuClockCount();   // 6
+        in.a740_family = AdrenoPowerUpV1BoardIsA740Family();        // 0 (A630)
+        in.strict_gx = 0u;         // GX-OFF is expected; do not require GX
+        const int valid = AdrenoPowerUpV1InputsValid(&in);
+        const int distinct = AdrenoPowerUpV1CountsAreDistinct(in.gmu_clock_count,
+                                                              in.gpu_clock_count);
+        const uint32_t planSize = AdrenoPowerUpV1PlanSize(&in);
+        AdrenoPowerUpV1Op ops[ADRENO_POWER_UP_V1_STEP_COUNT];
+        for (unsigned i = 0; i < ADRENO_POWER_UP_V1_STEP_COUNT; ++i) {
+            ops[i].step = 0u; ops[i].guarded = 0u; ops[i].value = 0u;
+        }
+        uint32_t n = 0u;
+        const AdrenoPowerUpV1Status planRc = AdrenoPowerUpV1Plan(
+            &in, ops, ADRENO_POWER_UP_V1_STEP_COUNT, &n);
+        struct AdrenoGmuCallerV1Pre pre = {};
+        pre.cx_genpd_on = cxOn ? 1u : 0u;
+        pre.gx_genpd_on = gxOn ? 1u : 0u;
+        pre.clocks_enabled = 0u;   // this port does not enable GPU clocks
+        pre.require_gx = 0u;       // mirrors in.strict_gx
+        const int ready = AdrenoPowerUpV1PreIsReady(&pre);
+        char planRow[200];
+        snprintf(planRow, sizeof planRow,
+                 "stage3=plan steps=%u gxpd_guarded=%u core=%u hub=%u clocks=%u "
+                 "valid=%d distinct=%d size=%u plan_rc=%u ready=%d mcx=%u mclk=0",
+                 n, ops[ADRENO_POWER_UP_V1_STEP_GX_GENPD_ON].guarded,
+                 ops[ADRENO_POWER_UP_V1_STEP_SET_CORE_RATE].value,
+                 ops[ADRENO_POWER_UP_V1_STEP_SET_HUB_RATE].value,
+                 ops[ADRENO_POWER_UP_V1_STEP_CLOCKS_ENABLE].value,
+                 valid, distinct, planSize, (unsigned)planRc, ready,
+                 cxOn ? 1u : 0u);
+        IOLog("enchilada-adreno: %s\n", planRow);
+        setPlanReplay(planRow);     // survive the 128 KiB msgbuf ring wrap
     }
 
     IOLog("enchilada-adreno: %s\n", row);

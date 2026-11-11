@@ -119,8 +119,14 @@ def main():
         # Round 48: AdrenoGmuBootV1BootState (host-tested C module, linked from
         # libEnchiladaAdreno.a) + _Z19armcpu_map_physicalyy (the C++-mangled
         # weak_import alias of the same platform hook) are also allowed.
+        # Round 52: the pure AdrenoPowerUpV1 Plan/gate helpers resolve from the
+        # SAME archive; Execute() is deliberately NOT called.
         allowed = {'IOLog', 'PE_parse_boot_argn', 'snprintf', '__stack_chk_fail', '__stack_chk_guard',
-                   'AdrenoGmuBootV1BootState', '_Z19armcpu_map_physicalyy'}
+                   'AdrenoGmuBootV1BootState', '_Z19armcpu_map_physicalyy',
+                   'AdrenoPowerUpV1BoardGmuClockCount', 'AdrenoPowerUpV1BoardGpuClockCount',
+                   'AdrenoPowerUpV1BoardIsA740Family', 'AdrenoPowerUpV1InputsValid',
+                   'AdrenoPowerUpV1CountsAreDistinct', 'AdrenoPowerUpV1PlanSize',
+                   'AdrenoPowerUpV1Plan', 'AdrenoPowerUpV1PreIsReady'}
         unexpected = sorted(u for u in undefined
                             if u not in allowed and not u.startswith('adreno_') and u != 'armcpu_map_physical')
         check(not unexpected, f'shim has no unexpected undefined symbols (unexpected={unexpected})')
