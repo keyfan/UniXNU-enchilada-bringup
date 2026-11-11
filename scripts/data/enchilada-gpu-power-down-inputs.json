@@ -1,0 +1,120 @@
+{
+  "_comment": "Round-59 pins for the A630 GMU TEARDOWN derivation. Every entry is an exact Linux v6.12 source that the C module's ordering claims are re-derived from. HOST-VERIFIED only: no MMIO is performed, no domain is powered, no firmware is loaded, nothing here is a device measurement.",
+  "schema_version": 1,
+  "round": 59,
+  "board": "enchilada",
+  "soc": "SDM845",
+  "status": "host-verified",
+  "linux": {
+    "mirror": "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/",
+    "files": {
+      "drivers/gpu/drm/msm/adreno/a6xx_gmu.c": {
+        "bytes": 48981,
+        "sha256": "c14fbb253e602bfd2585d757da871dde08ea63b811ff3c6808f657f4522f78d4",
+        "role": "a6xx_gmu_stop() teardown order, and a6xx_gmu_resume() for the contrasting power-up order"
+      },
+      "drivers/clk/qcom/gdsc.c": {
+        "bytes": 15019,
+        "sha256": "e1210770ad3e4406adaca4eb0d6d103823d73a65068cf1ff48183bb1a347d32d",
+        "role": "the GX-before-CX hardware constraint, the VOTABLE no-poll disable, gdsc_gx_do_nothing_enable"
+      },
+      "drivers/clk/qcom/gdsc.h": {
+        "bytes": 2863,
+        "sha256": "ba487640dc1a0acbecb3605417b2bd34418c6914d24c64a54a145565d1a15f86",
+        "role": "pwrsts and flag bit definitions"
+      },
+      "drivers/gpu/drm/msm/adreno/a6xx_gpu.c": {
+        "bytes": 69087,
+        "sha256": "c33479377574ed193e82c272b3708e19a2b2153088f246e2639d8a43fef943a2",
+        "role": "a6xx_gpu_sw_reset / bus-clear helpers called from a6xx_gmu_force_off (context only)"
+      }
+    }
+  },
+  "upstream_rule": {
+    "a6xx_gmu_c": {
+      "stop_signature": 1184,
+      "not_active_gate": 1189,
+      "hang_branch": 1196,
+      "bus_vote_clear": 1202,
+      "gx_put": 1210,
+      "gx_before_cx_comment": 1204,
+      "clocks_disable": 1212,
+      "cx_put": 1214,
+      "resume_cx_get": 1033,
+      "resume_gx_get": 1041,
+      "resume_clocks_enable": 1047,
+      "resume_core_rate": 1044,
+      "resume_hub_rate": 1045
+    },
+    "gdsc_c": {
+      "gx_before_cx_constraint": 590,
+      "gx_do_nothing_rationale": 585,
+      "votable_no_poll_shortcut": 153,
+      "toggle_logic_off_poll": 177
+    }
+  },
+  "derived_teardown_order": {
+    "steps": [
+      "GX_OFF (guarded: only when gmu->gxpd is valid)",
+      "CLOCKS_DISABLE (gmu->nr_clocks, 4 on this board)",
+      "CX_OFF (last, per the hardware constraint)"
+    ],
+    "step_count": 3,
+    "power_up_order_for_contrast": [
+      "CX_OFF_DOMAIN_ON",
+      "GX_ON",
+      "SET_CORE_RATE",
+      "SET_HUB_RATE",
+      "CLOCKS_ENABLE"
+    ],
+    "is_reverse_of_power_up": false,
+    "why_not_reverse": "Power-up enables clocks LAST; teardown disables them in the MIDDLE, because the CX domain must stay up until the clocks are gone. Rates are never restored (no clk_set_rate in a6xx_gmu_stop).",
+    "rates_restored": false,
+    "rollback_on_failure": false,
+    "rollback_rationale": "a6xx_gmu_stop ignores every return value and proceeds; re-acquiring CX to redo a partial teardown would invent behavior upstream does not have. The module stops at the failing step and leaves *pre cleared so the round-46 caller refuses."
+  },
+  "findings": {
+    "cx_off_is_unverified": {
+      "statement": "The CX domain's disable plan performs NO status poll (VOTABLE short-cut, gdsc.c:153-161, peer of the board DTB's qcom,no-status-check-on-disable), so the CPU has no evidence that CX reached off-complete -- only that the put was issued.",
+      "gx_is_verifiable": "GX disable DOES poll its derived down-complete bit, so the two domains are genuinely asymmetric.",
+      "exposed_as": "AdrenoPowerDownV1CxOffIsUnverified()"
+    },
+    "step_enums_are_separate_namespaces": {
+      "statement": "ADRENO_POWER_UP_V1_STEP_CX_GENPD_ON and ADRENO_POWER_DOWN_V1_STEP_GX_GENPD_OFF are BOTH 0. Comparing an up-step against a down-step with == or != is a category error that would silently 'pass'.",
+      "caught_by": "the first host-test run (m43156), which failed on ops[0].step != pops[0].step",
+      "fix": "assert each plan's own order position by position, plus differing op counts; cross-namespace numeric comparison removed from both the test and AdrenoPowerDownV1Verify()"
+    },
+    "gx_guarded_mirrors_power_up": {
+      "statement": "The GX teardown op is guarded (skipped, not failed) when gxpd_present == 0, exactly mirroring the round-51 power-up contract, so the plan shape stays input-independent."
+    }
+  },
+  "module": {
+    "header": "drivers/NativeAdreno/AdrenoPowerDownV1.h",
+    "source": "drivers/NativeAdreno/AdrenoPowerDownV1.c",
+    "host_test": "drivers/NativeAdreno/tests/adreno-power-down-v1-test.cpp",
+    "cross_verifier": "scripts/verify-enchilada-power-down-v1.py",
+    "api": [
+      "AdrenoPowerDownV1ShouldRun",
+      "AdrenoPowerDownV1InputsValid",
+      "AdrenoPowerDownV1StepStatus",
+      "AdrenoPowerDownV1StepGuarded",
+      "AdrenoPowerDownV1PlanSize",
+      "AdrenoPowerDownV1Plan",
+      "AdrenoPowerDownV1Execute",
+      "AdrenoPowerDownV1CxOffIsUnverified",
+      "AdrenoPowerDownV1Verify"
+    ],
+    "bus_callbacks": ["genpd_off", "clocks_disable"],
+    "deliberately_absent_callbacks": ["genpd_on", "clocks_enable", "set_rate"]
+  },
+  "device_measurement_reused": {
+    "note": "No new device run this round. These are the round-35/49/50/52 GPUCC observations the derivation is consistent with, reused verbatim and NOT re-measured.",
+    "cx_status_word": "0x00005ff4",
+    "gx_status_word": "0x00088400",
+    "verdict": "cx-DOWN",
+    "gx_off": 1,
+    "rows": 1912,
+    "source_rounds": [35, 49, 50, 52]
+  },
+  "honest_boundary": "HOST-VERIFIED ONLY. No MMIO, no CI run, no flash, no device execution, no firmware load, no IOPowerSource, no genpd/clock backend. The gpu area therefore STAYS host-verified: this module derives an ORDER from pinned upstream text, it does not prove the hardware obeys it, and it cannot power CX (the domain is still measured DOWN on hardware). CONFIG_XNU_NATIVE_ADRENO remains n."
+}
