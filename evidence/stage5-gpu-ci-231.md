@@ -84,10 +84,10 @@ present and `stage3=exec` is absent.
 ## Honest boundary
 
 **CI-COMPILE-ONLY.** This run proves the code compiles and links into a real
-XNU kernel; it proves nothing about runtime behaviour. No flash was performed,
-the standing flash authorization (`m39510`) was **not** exercised, no MMIO was
-issued, and `CONFIG_XNU_NATIVE_ADRENO` remains `n`. The gpu area **STAYS
-`host-verified`**.
+XNU kernel; it proves nothing about runtime behaviour. No device run was
+performed, no flash was performed, the standing flash authorization (`m39510`)
+was **not** exercised, no MMIO was issued, and `CONFIG_XNU_NATIVE_ADRENO`
+remains `n`. The gpu area **STAYS `host-verified`**.
 
 What stage 5 still needs: a real XNU genpd/clock backend, TrustZone PAS
 authentication for `GPU_PAS_ID 13`, and the kgsl SMMU stage-1 context — which
