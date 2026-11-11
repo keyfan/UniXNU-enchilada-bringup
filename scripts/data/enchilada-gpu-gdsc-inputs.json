@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "board": "enchilada",
+  "soc": "SDM845",
+  "round": 56,
+  "topic": "GPU GDSC status-register derivation (HOST-VERIFIED, no device read performed)",
+  "status": "host-verified",
+  "purpose": "Until round 55 the four constants in drivers/NativeAdreno/AdrenoDomainState.h (CX status 0x05091540, GX status 0x05091010, CX on-bit 31, GX on/off-bits 16/15) were ASSERTED in a comment. This pins the three Linux v6.12 sources that DERIVE them, so the derivation becomes mechanically checkable instead of asserted (m13019, m12247).",
+  "linux": {
+    "ref": "v6.12",
+    "mirror": "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/",
+    "files": {
+      "drivers/clk/qcom/gdsc.c": {
+        "bytes": 15019,
+        "sha256": "e1210770ad3e4406adaca4eb0d6d103823d73a65068cf1ff48183bb1a347d32d"
+      },
+      "drivers/clk/qcom/gdsc.h": {
+        "bytes": 2863,
+        "sha256": "ba487640dc1a0acbecb3605417b2bd34418c6914d24c64a54a145565d1a15f86"
+      },
+      "drivers/clk/qcom/gpucc-sdm845.c": {
+        "bytes": 5176,
+        "sha256": "80c2fbef5c65df986f4c391bbeedbf53e8744e5dd326f0e05dc6b4021f542a54"
+      }
+    },
+    "upstream_rule": {
+      "title": "the GDSC status register and its masks are a FUNCTION of the descriptor, not a constant",
+      "gdsc_c": {
+        "status_register_select": 66,
+        "status_register_select_end": 71,
+        "cfg_gdscr_masks": 77,
+        "fallback_masks": 86,
+        "pwr_on_mask_define": 20,
+        "power_up_complete_define": 31,
+        "power_down_complete_define": 32,
+        "cfg_gdscr_offset_define": 34,
+        "poll_timeout_us_define": 49,
+        "toggle_timeout_us_define": 50,
+        "poll_status": 103,
+        "gx_do_nothing_enable": 604,
+        "gx_do_nothing_rationale": 596
+      },
+      "gpucc_sdm845_c": {
+        "gpu_cx_gdsc": 119,
+        "gpu_cx_gdsc_end": 128,
+        "gpu_gx_gdsc": 130,
+        "gpu_gx_gdsc_end": 139,
+        "gdsc_table": 148,
+        "gdsc_table_end": 151
+      },
+      "gdsc_h": {
+        "flag_pwrsts_off": 50,
+        "flag_votable": 61,
+        "flag_clamp_io": 62,
+        "flag_hw_ctrl": 63,
+        "flag_sw_reset": 64,
+        "flag_aon_reset": 65,
+        "flag_poll_cfg_gdscr": 66,
+        "flag_always_on": 67,
+        "flag_retain_ff_enable": 68,
+        "gx_do_nothing_prototype": 89
+      },
+      "order": "reg  = POLL_CFG_GDSCR ? gdscr + 0x4 : (gds_hw_ctrl ? gds_hw_ctrl : gdscr); masks = POLL_CFG_GDSCR ? {up=BIT(16), down=BIT(15)} : {on=PWR_ON_MASK BIT(31), off=!BIT(31)}"
+    }
+  },
+  "dtb": {
+    "path": "notes/mu-silicium/enchilada.dts",
+    "sha256": "e590ee3273499ee4230760aea9195073c0c195242eee11c95570e174ec202275",
+    "bytes": 784857,
+    "slice_gpucc": [6223, 6234],
+    "slice_gdsc_cx": [593, 605],
+    "slice_gdsc_gx": [607, 618],
+    "facts": {
+      "gpucc_base": "0x5090000",
+      "gpucc_size": "0x9000",
+      "gdsc_cx_name": "gpu_cx_gdsc",
+      "gdsc_cx_reg": "0x509106c",
+      "gdsc_gx_name": "gpu_gx_gdsc",
+      "gdsc_gx_reg": "0x509100c",
+      "gdsc_gx_poll_cfg_gdscr_property": true
+    }
+  },
+  "derivation": {
+    "gpucc_base": "0x05090000",
+    "cx": {
+      "source": "gpucc-sdm845.c:119-128",
+      "gdscr": "0x106c",
+      "gds_hw_ctrl": "0x1540",
+      "flags": ["VOTABLE"],
+      "polls_cfg_gdscr": false,
+      "status_offset": "0x1540",
+      "status_address": "0x05091540",
+      "on_bit": 31,
+      "off": "on-mask clear (no dedicated down bit)"
+    },
+    "gx": {
+      "source": "gpucc-sdm845.c:130-139",
+      "gdscr": "0x100c",
+      "gds_hw_ctrl": "0x0",
+      "flags": ["CLAMP_IO", "AON_RESET", "POLL_CFG_GDSCR"],
+      "polls_cfg_gdscr": true,
+      "status_offset": "0x1010",
+      "status_address": "0x05091010",
+      "on_bit": 16,
+      "off_bit": 15,
+      "power_on_is_noop": true
+    }
+  },
+  "device_measurement_reused": {
+    "source_rounds": [35, 49, 50, 52],
+    "cx_status_word": "0x00005ff4",
+    "gx_status_word": "0x00088400",
+    "decoded_rows": 1912,
+    "note": "REUSED, not re-measured in round 56. Explains the permanent gx_off=1: GX .power_on = gdsc_gx_do_nothing_enable, so the CPU never powers GX on and GX is the GMU's job."
+  },
+  "module": {
+    "path": "drivers/NativeAdreno/AdrenoGdscDecode.{h,c}",
+    "host_test": "drivers/NativeAdreno/tests/adreno-gdsc-decode-test.cpp",
+    "cross_verifier": "scripts/verify-enchilada-gdsc-decode.py",
+    "honest_boundary": "Pure derivation from pinned sources + board DTB. NO MMIO, NO IOKit, NO firmware, NO kernel caller, NO device run, NO flash. gpu area STAYS host-verified; CONFIG_XNU_NATIVE_ADRENO remains n."
+  }
+}
