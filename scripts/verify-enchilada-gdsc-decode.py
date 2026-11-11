@@ -206,7 +206,11 @@ check("'AdrenoGdscDecode.c', ['-mgeneral-regs-only']" in btxt,
 check("'AdrenoGdscDecode'" in btxt, "AdrenoGdscDecode is in the build-report source list")
 check("adreno-gdsc-decode-test" in rtxt, "check-enchilada-adreno-host.py runs the gdsc-decode host test")
 check("'AdrenoGdscDecode': GPU / 'AdrenoGdscDecode.c'" in rtxt, "the host runner maps the module source")
-check("gdsc-decode host tests" in rtxt, "the host runner PASS line mentions gdsc-decode")
+# Round 58 appended /power-up-gdsc to the shared PASS line, so the round-57
+# suite name no longer sits immediately before "host tests". Assert the two
+# facts separately instead of one contiguous phrase.
+check("gdsc-decode" in rtxt, "the host runner PASS line mentions gdsc-decode")
+check(rtxt.count("host tests") >= 1, "the host runner reports a host-tests PASS line")
 
 print("=== (e) task surface ===")
 ttxt = text(TEST)

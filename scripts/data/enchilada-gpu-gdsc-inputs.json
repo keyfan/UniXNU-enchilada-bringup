@@ -2,7 +2,7 @@
   "schema_version": 1,
   "board": "enchilada",
   "soc": "SDM845",
-  "round": 56,
+  "round": 58,
   "topic": "GPU GDSC status-register derivation (HOST-VERIFIED, no device read performed)",
   "status": "host-verified",
   "purpose": "Until round 55 the four constants in drivers/NativeAdreno/AdrenoDomainState.h (CX status 0x05091540, GX status 0x05091010, CX on-bit 31, GX on/off-bits 16/15) were ASSERTED in a comment. This pins the three Linux v6.12 sources that DERIVE them, so the derivation becomes mechanically checkable instead of asserted (m13019, m12247).",
@@ -81,9 +81,18 @@
     "path": "notes/mu-silicium/enchilada.dts",
     "sha256": "e590ee3273499ee4230760aea9195073c0c195242eee11c95570e174ec202275",
     "bytes": 784857,
-    "slice_gpucc": [6223, 6234],
-    "slice_gdsc_cx": [593, 605],
-    "slice_gdsc_gx": [607, 618],
+    "slice_gpucc": [
+      6223,
+      6234
+    ],
+    "slice_gdsc_cx": [
+      593,
+      605
+    ],
+    "slice_gdsc_gx": [
+      607,
+      618
+    ],
     "facts": {
       "gpucc_base": "0x5090000",
       "gpucc_size": "0x9000",
@@ -100,7 +109,9 @@
       "source": "gpucc-sdm845.c:119-128",
       "gdscr": "0x106c",
       "gds_hw_ctrl": "0x1540",
-      "flags": ["VOTABLE"],
+      "flags": [
+        "VOTABLE"
+      ],
       "polls_cfg_gdscr": false,
       "status_offset": "0x1540",
       "status_address": "0x05091540",
@@ -111,7 +122,11 @@
       "source": "gpucc-sdm845.c:130-139",
       "gdscr": "0x100c",
       "gds_hw_ctrl": "0x0",
-      "flags": ["CLAMP_IO", "AON_RESET", "POLL_CFG_GDSCR"],
+      "flags": [
+        "CLAMP_IO",
+        "AON_RESET",
+        "POLL_CFG_GDSCR"
+      ],
       "polls_cfg_gdscr": true,
       "status_offset": "0x1010",
       "status_address": "0x05091010",
@@ -126,8 +141,18 @@
     "enable_order": "PWRSTS_ON -> deassert_reset; SW_RESET -> assert+delay+deassert; CLAMP_IO -> (AON_RESET -> assert_reset_aon) + deassert_clamp_io; toggle_logic(ON); PWRSTS_OFF -> force_mem_on; delay 1; HW_CTRL -> hwctrl(on)+delay 1; RETAIN_FF_ENABLE -> retain_ff_on",
     "disable_order": "PWRSTS_ON -> assert_reset; HW_CTRL -> hwctrl(off)+delay 1+poll(ON); PWRSTS_OFF -> clear_mem_on; PWRSTS_RET_ON -> return; toggle_logic(OFF, synced_poweroff); CLAMP_IO -> assert_clamp_io",
     "votable_short_cut": "gdsc.c:153-161 -- (flags & VOTABLE) && status == GDSC_OFF && !wait performs udelay(TIMEOUT_US 500) and returns 0 WITHOUT polling. This is the upstream counterpart of the DTB's qcom,no-status-check-on-disable on gpu_cx_gdsc.",
-    "cx_plan": ["UPDATE_COLLAPSE(0x106c, value 0)", "UDELAY(1, gds_hw_ctrl set)", "POLL_ON(0x1540, BIT(31))", "UDELAY(1)"],
-    "gx_generic_plan": ["ASSERT_RESET_AON(0x1508, BIT(4))", "DEASSERT_CLAMP_IO(0x1508, BIT(0)=0)", "UPDATE_COLLAPSE(0x100c, value 0)", "POLL_ON(0x1010, BIT(16))"],
+    "cx_plan": [
+      "UPDATE_COLLAPSE(0x106c, value 0)",
+      "UDELAY(1, gds_hw_ctrl set)",
+      "POLL_ON(0x1540, BIT(31))",
+      "UDELAY(1)"
+    ],
+    "gx_generic_plan": [
+      "ASSERT_RESET_AON(0x1508, BIT(4))",
+      "DEASSERT_CLAMP_IO(0x1508, BIT(0)=0)",
+      "UPDATE_COLLAPSE(0x100c, value 0)",
+      "POLL_ON(0x1010, BIT(16))"
+    ],
     "gx_cpu_plan": [],
     "gx_cpu_plan_writes": 0,
     "gx_cpu_plan_why": "gpu_gx_gdsc.pd.power_on == gdsc_gx_do_nothing_enable AND the descriptor has no .supply and no .cxcs, so the CPU's GX enable path performs ZERO register writes. This is a PROVABLE zero, and it is why the device word 0x00088400 sits permanently down-complete.",
@@ -140,7 +165,12 @@
     }
   },
   "device_measurement_reused": {
-    "source_rounds": [35, 49, 50, 52],
+    "source_rounds": [
+      35,
+      49,
+      50,
+      52
+    ],
     "cx_status_word": "0x00005ff4",
     "gx_status_word": "0x00088400",
     "decoded_rows": 1912,
@@ -150,8 +180,80 @@
     "path": "drivers/NativeAdreno/AdrenoGdscDecode.{h,c}",
     "host_test": "drivers/NativeAdreno/tests/adreno-gdsc-decode-test.cpp",
     "cross_verifier": "scripts/verify-enchilada-gdsc-decode.py",
-    "api_round56": ["adreno_gdsc_cx_descriptor", "adreno_gdsc_gx_descriptor", "adreno_gdsc_status_offset", "adreno_gdsc_derive", "adreno_gdsc_polls_cfg_gdscr", "adreno_gdsc_power_on_is_noop", "adreno_gdsc_is_on", "adreno_gdsc_is_off", "adreno_gdsc_verify_domain_state_constants"],
-    "api_round57": ["adreno_gdsc_plan_enable", "adreno_gdsc_plan_disable", "adreno_gdsc_plan_cpu_enable", "adreno_gdsc_plan_has", "adreno_gdsc_plan_index_of", "adreno_gdsc_verify_gx_enable_writes_nothing"],
-    "honest_boundary": "Pure derivation from pinned sources + board DTB. NO MMIO, NO IOKit, NO firmware, NO kernel caller, NO device run, NO flash. gpu area STAYS host-verified; CONFIG_XNU_NATIVE_ADRENO remains n."
+    "api_round56": [
+      "adreno_gdsc_cx_descriptor",
+      "adreno_gdsc_gx_descriptor",
+      "adreno_gdsc_status_offset",
+      "adreno_gdsc_derive",
+      "adreno_gdsc_polls_cfg_gdscr",
+      "adreno_gdsc_power_on_is_noop",
+      "adreno_gdsc_is_on",
+      "adreno_gdsc_is_off",
+      "adreno_gdsc_verify_domain_state_constants"
+    ],
+    "api_round57": [
+      "adreno_gdsc_plan_enable",
+      "adreno_gdsc_plan_disable",
+      "adreno_gdsc_plan_cpu_enable",
+      "adreno_gdsc_plan_has",
+      "adreno_gdsc_plan_index_of",
+      "adreno_gdsc_verify_gx_enable_writes_nothing"
+    ],
+    "honest_boundary": "Pure derivation from pinned sources + board DTB. NO MMIO, NO IOKit, NO firmware, NO kernel caller, NO device run, NO flash. gpu area STAYS host-verified; CONFIG_XNU_NATIVE_ADRENO remains n.",
+    "api_round58": [
+      "AdrenoPowerUpGdscContract",
+      "AdrenoPowerUpGdscStepWrites",
+      "AdrenoPowerUpGdscGuardMatchesWrites",
+      "AdrenoPowerUpGdscDisableIsUnverified",
+      "AdrenoPowerUpGdscVerify"
+    ]
+  },
+  "round58_composition": {
+    "module": "drivers/NativeAdreno/AdrenoPowerUpGdsc.{h,c}",
+    "host_test": "drivers/NativeAdreno/tests/adreno-power-up-gdsc-test.cpp",
+    "cross_verifier": "scripts/verify-enchilada-power-up-gdsc.py",
+    "purpose": "Tie the round-57 derived GDSC step plans to the round-51 ordered power-up plan, so 'the CPU cannot act on this domain' is a derived fact rather than a comment.",
+    "invariant": {
+      "statement": "For every genpd step of the power-up plan, StepGuarded(step) == (the CPU's GDSC register writes for that domain == 0).",
+      "cx_guarded": 0,
+      "cx_enable_writes": 1,
+      "gx_guarded": 1,
+      "gx_enable_writes": 0,
+      "derivation": {
+        "cx": "gdsc.c:150 clears the collapse bit at 0x106c (ONE write); the 0x1540 status is then READ by gdsc_poll_status, not written",
+        "gx": "gpu_gx_gdsc.pd.power_on is gdsc_gx_do_nothing_enable() and the descriptor has neither .supply nor .cxcs, so nothing is left"
+      }
+    },
+    "disable_asymmetry": {
+      "cx_polls_on_disable": 0,
+      "cx_disable_writes": 1,
+      "gx_polls_on_disable": 1,
+      "gx_disable_writes_min": 1,
+      "hazard": "VOTABLE short-cut (gdsc.c:153-161, mirrored by the board DTB qcom,no-status-check-on-disable): a successful CX power-off has NO status confirmation. Never infer 'CX is quiet' from a zero return; round 53 showed a read of the powered-down kgsl SMMU may bus-abort.",
+      "exposed_as": "AdrenoPowerUpGdscDisableIsUnverified(which)"
+    },
+    "corrections_this_round": [
+      {
+        "claimed": "CX enable performs 2 register writes",
+        "actual": "1 write (the collapse clear); the status poll is a read",
+        "caught_by": "adreno-power-up-gdsc-test (c.cx_enable_writes == 2u)",
+        "fix": "constant and comment corrected to 1 in both the module and the test"
+      },
+      {
+        "claimed": "gdsc_disable() polls for OFF",
+        "actual": "the OFF poll lives in gdsc_toggle_logic (gdsc.c:177); gdsc_disable only polls for ON after dropping HW_CTRL",
+        "caught_by": "scripts/verify-enchilada-power-up-gdsc.py",
+        "fix": "cross verifier now asserts the toggle_logic poll plus the gdsc_disable ON poll separately"
+      }
+    ],
+    "verification": {
+      "host_suite": "14 suites, 0 failures",
+      "host_test_checks": 41,
+      "cross_checks": 66,
+      "strict_object_bytes": 3536,
+      "strict_symbols": 5,
+      "archive_objects": 14
+    },
+    "honest_boundary": "Derivation from sha256-pinned Linux v6.12 sources plus the vendored board DTB. No MMIO, no domain powered, no firmware loaded, no CI run, no device run. gpu area stays host-verified; CONFIG_XNU_NATIVE_ADRENO stays n."
   }
 }
