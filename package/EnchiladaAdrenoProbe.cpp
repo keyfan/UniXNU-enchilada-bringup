@@ -98,6 +98,13 @@ bool gDone = false;
 bool gNotArmed = false;
 
 char gReplay[200];
+// Round-49 replay fix (flash #10 lesson): the stage-2 line is IOLog'd ONCE
+// live (t≈295) but the 128 KiB msgbuf ring only retains from t≈323, so the
+// one-shot row wrapped away before the first decode. The replay therefore
+// carries BOTH rows: gReplay = stage-1 row, gGmuReplay = stage-2 row, and
+// the gDone branch logs both every 1 Hz tick.
+char gGmuReplay[160];
+bool gHaveGmuReplay = false;
 bool gHaveReplay = false;
 unsigned gReplayAttempt = 0;
 unsigned gTick = 0;
@@ -109,6 +116,16 @@ void setReplay(const char *text) {
     gReplay[i] = 0;
     gHaveReplay = i != 0;
     gReplayAttempt = gAttempts;
+}
+
+// Round-49: stage-2 row gets its own replay buffer, set once when the live
+// stage-2 line is IOLog'd. Same no-libc copy loop as setReplay().
+void setGmuReplay(const char *text) {
+    if (!text) return;
+    unsigned i = 0;
+    for (; text[i] && i + 1 < sizeof gGmuReplay; ++i) gGmuReplay[i] = text[i];
+    gGmuReplay[i] = 0;
+    gHaveGmuReplay = i != 0;
 }
 
 // In-domain register read: GPUCC base plus a byte offset the host-tested header
@@ -183,6 +200,12 @@ extern "C" void enchilada_adreno_poll(void) {
     if (gDone) {
         if (gHaveReplay)
             IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gReplay, gTick, gReplayAttempt);
+        // Round-49 replay fix: the stage-2 row is replayed with the stage-1
+        // row so a msgbuf ring wrap can never erase it again (flash #10
+        // lesson: the live one-shot row at t≈295 wrapped away before the
+        // ring's retention window began at t≈323).
+        if (gHaveGmuReplay)
+            IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gGmuReplay, gTick, gReplayAttempt);
         return;             // finished: no further MMIO access, ever
     }
     unsigned stage = 0;
@@ -286,6 +309,7 @@ extern "C" void enchilada_adreno_poll(void) {
             }
         }
         IOLog("enchilada-adreno: %s\n", gmuRow);
+        setGmuReplay(gmuRow);   // round-49 replay fix: survive ring wrap
     }
 
     IOLog("enchilada-adreno: %s\n", row);
