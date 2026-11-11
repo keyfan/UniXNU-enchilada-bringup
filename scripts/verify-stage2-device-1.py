@@ -15,10 +15,11 @@ from pathlib import Path
 
 DEV = Path(__file__).resolve().parents[1]
 W = DEV.parents[1]
-LOGDIR = sorted((W / "work" / "log").glob("stage2probe/untagged-*"))
+LOGDIR = sorted((W / "work" / "log").glob("stage2probe/untagged-*"),
+                key=lambda p: p.stat().st_mtime)
 if not LOGDIR:
     sys.exit("no stage2probe log dir yet")
-D = LOGDIR[-1]
+D = LOGDIR[-1]  # newest decoded log by mtime (flash #11 tag 20c89316 sorts before #10's 20df20d6 lexicographically)
 MSGBUF = D / "msgbuf.txt"
 LATEST = D / "latest.txt"
 HDR = D / "header.txt"
