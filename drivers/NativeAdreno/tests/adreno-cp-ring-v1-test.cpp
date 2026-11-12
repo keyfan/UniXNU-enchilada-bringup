@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// AdrenoCpRingV1 host test: 10 groups, CHECK() accumulates failures.
+// AdrenoCpRingV1 host test: 11 groups, CHECK() accumulates failures.
 #include <cstdint>
 #include <cstdio>
 #include "AdrenoCpRingV1.h"
@@ -182,17 +182,17 @@ static void testUndefinedSet()
     CHECK(adreno_cp_ring_undefined_name(0u)[0] == 'u');
     CHECK(adreno_cp_ring_undefined_anchor(0u)[0] == 'u');
     CHECK(adreno_cp_ring_undefined_name(kAdrenoCpRingUndefAll)[0] == 'u');
-    /* Round 71 CLOSED U1, U2 and U5: a packet can now be encoded... */
-    CHECK(adreno_cp_ring_undefined_open() == 12u);
-    CHECK(adreno_cp_ring_undefined_open() ==
-          (kAdrenoCpRingUndefRbCntlDefault | kAdrenoCpRingUndefRbCntlNoUpdate));
-    CHECK((adreno_cp_ring_undefined_open() & kAdrenoCpRingUndefMeInitOpcode) == 0u);
-    CHECK((adreno_cp_ring_undefined_open() & kAdrenoCpRingUndefPacketHeader) == 0u);
-    CHECK((adreno_cp_ring_undefined_open() & kAdrenoCpRingUndefRingSize) == 0u);
+    /* Round 72 closed the LAST two (U3/U4): NOTHING is open any more, so the
+     * ring is programmable AND a packet is encodable. The historical five-bit
+     * question is still reported in full. */
+    CHECK(adreno_cp_ring_undefined_open() == 0u);
+    CHECK(adreno_cp_ring_undefined() == kAdrenoCpRingUndefAll);
+    CHECK(adreno_cp_ring_undefined() == 31u);
     CHECK(adreno_cp_ring_can_encode_packet() == 1);
-    CHECK(adreno_cp_ring_undefined_open() != 0u);
-    /* ...but the RING still cannot be programmed: U3/U4 are the RB_CNTL word. */
-    CHECK(adreno_cp_ring_is_executable() == 0);
+    CHECK(adreno_cp_ring_is_executable() == 1);
+    /* "executable" is a statement about COMPUTABILITY, not about hardware. */
+    CHECK(adreno_cp_ring_is_executable() ==
+          (adreno_cp_ring_undefined_open() == 0u ? 1 : 0));
 }
 
 
@@ -281,11 +281,53 @@ static void testGeometry()
     CHECK(adreno_cp_ring_rb_cntl_fields(&bufsz, nullptr) == 1);
 }
 
+
+static void testRbCntl()
+{
+    /* adreno_common.xml:116-123 field layout, fed by msm_gpu.h:314-316. */
+    CHECK(kAdrenoCpRingRbCntlBufszLow == 0u);
+    CHECK(kAdrenoCpRingRbCntlBufszHigh == 5u);
+    CHECK(kAdrenoCpRingRbCntlBlkszLow == 8u);
+    CHECK(kAdrenoCpRingRbCntlBlkszHigh == 13u);
+    CHECK(kAdrenoCpRingRbCntlNoUpdatePos == 27u);
+    /* BUFSZ=12 -> 0xC ; BLKSZ=2 -> 0x200 ; together 0x20C. */
+    CHECK(adreno_cp_ring_pack_rb_cntl(12u, 2u, 0u) == 0x0000020cu);
+    CHECK(adreno_cp_ring_pack_rb_cntl(12u, 2u, 1u) == 0x0800020cu);
+    CHECK(kAdrenoCpRingRbCntlDefault == 0x0000020cu);
+    CHECK(kAdrenoCpRingRbCntlNoUpdate == 0x0800020cu);
+    /* The A630 branch (no extended APRIV) is the NO_UPDATE one. */
+    uint32_t a630 = 0, apriv = 0;
+    CHECK(adreno_cp_ring_rb_cntl_value(0, &a630) == 0);
+    CHECK(adreno_cp_ring_rb_cntl_value(1, &apriv) == 0);
+    CHECK(a630 == 0x0800020cu);
+    CHECK(apriv == 0x0000020cu);
+    CHECK((a630 ^ apriv) == (1u << 27));   /* differ EXACTLY in NO_UPDATE */
+    /* Field round-trip proves the placement rather than restating it. */
+    CHECK(adreno_cp_ring_unpack_field(a630, 0u, 5u) == 12u);
+    CHECK(adreno_cp_ring_unpack_field(a630, 8u, 13u) == 2u);
+    CHECK(adreno_cp_ring_unpack_field(a630, 27u, 27u) == 1u);
+    CHECK(adreno_cp_ring_unpack_field(a630, 16u, 17u) == 0u);  /* BUF_SWAP */
+    CHECK(adreno_cp_ring_unpack_field(a630, 20u, 20u) == 0u);  /* POLL_EN */
+    CHECK(adreno_cp_ring_unpack_field(a630, 31u, 31u) == 0u);  /* RPTR_WR_EN */
+    /* Packing then unpacking is the identity on the fields we set. */
+    uint32_t rt = adreno_cp_ring_pack_rb_cntl(
+        adreno_cp_ring_unpack_field(a630, 0u, 5u),
+        adreno_cp_ring_unpack_field(a630, 8u, 13u), 1u);
+    CHECK(rt == a630);
+    /* Refusals. */
+    CHECK(adreno_cp_ring_rb_cntl_value(0, nullptr) == 1);
+    CHECK(adreno_cp_ring_unpack_field(a630, 5u, 1u) == 0u);
+    CHECK(adreno_cp_ring_unpack_field(a630, 0u, 32u) == 0u);
+    /* A wrong BUFSZ is detectable, i.e. the field is really 6 bits wide. */
+    CHECK(adreno_cp_ring_pack_rb_cntl(64u, 2u, 0u) ==
+          adreno_cp_ring_pack_rb_cntl(0u, 2u, 0u));
+}
+
 static void testSelfCheck()
 {
     uint32_t count = 0;
     CHECK(adreno_cp_ring_verify(&count) == 0);
-    CHECK(count >= 60u);
+    CHECK(count >= 75u);
     CHECK(adreno_cp_ring_verify(nullptr) == 0);
 }
 
@@ -300,6 +342,7 @@ int main()
     testParityAndHeader();
     testMessage();
     testGeometry();
+    testRbCntl();
     testSelfCheck();
     if (failures) {
         std::printf("FAIL: enchilada A630 CP ring init/doorbell contract "
@@ -307,6 +350,6 @@ int main()
         return 1;
     }
     std::printf("PASS: enchilada A630 CP ring init/doorbell contract "
-                "(10 test groups, 0 failures)\n");
+                "(11 test groups, 0 failures)\n");
     return 0;
 }

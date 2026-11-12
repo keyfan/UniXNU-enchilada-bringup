@@ -37,6 +37,14 @@ PINS = [
      '7bdabea1ae7310697e0e2a4e0353cff2a7cf0ac2af746e5418e249d4584c86df'),
     ('P11_adreno_pm4_xml', CACHE / 'drivers/gpu/drm/msm/registers/adreno/adreno_pm4.xml',
      85907, 'ab27047cc9cde4bc5996d6eb528fbb2dbdfdd9dc4515f75bbbada43a23809536'),
+    # round 72: where CP_RB_CNTL's FIELDS actually live, and the generator that
+    # would emit the a6xx.xml.h accessors.
+    ('P12_adreno_common_xml',
+     CACHE / 'drivers/gpu/drm/msm/registers/adreno/adreno_common.xml', 15485,
+     'c733db8294d0bedc6191044b7a6acfc81495ba1f294c3108746999c596cf5e58'),
+    ('P13_gen_header',
+     CACHE / 'drivers/gpu/drm/msm/registers/gen_header.py', 27564,
+     '465b340f07d2fd299c83dc34c21b2b7cd71ef6a027aa9f93814683d3ea946ca6'),
 ]
 
 checks = 0
@@ -72,7 +80,7 @@ def line(name, number):
     return lines[number - 1] if 0 < number <= len(lines) else ''
 
 
-gpu_c, xml, gpu_h, sizes_h, msm_gpu_h, adreno_gpu_h, pm4_xml = (
+gpu_c, xml, gpu_h, sizes_h, msm_gpu_h, adreno_gpu_h, pm4_xml, common_xml, gen_hdr = (
     texts[k] for k, *_ in PINS)
 
 # ---- A2: CP register word offsets ---------------------------------------
@@ -214,6 +222,43 @@ u4_uses, u4_defs = count_uses_defs('AXXX_CP_RB_CNTL_NO_UPDATE')
 check(u4_uses > 0, 'A9 U4 AXXX_CP_RB_CNTL_NO_UPDATE is used')
 check(u4_defs == 0, f'A9 U4 is STILL never defined (got {u4_defs})')
 
+
+# ---- A12: CP_RB_CNTL fields, DERIVED in round 72 (P12:116-123) -----------
+CN = ' '.join(common_xml[115:123])
+check('offset="0x01c1" name="CP_RB_CNTL"' in CN, 'A12 P12:116 CP_RB_CNTL reg32')
+check('<bitfield name="BUFSZ" low="0" high="5"/>' in line('P12_adreno_common_xml', 117),
+      'A12 P12:117 BUFSZ low 0 high 5')
+check('<bitfield name="BLKSZ" low="8" high="13"/>' in line('P12_adreno_common_xml', 118),
+      'A12 P12:118 BLKSZ low 8 high 13')
+check('<bitfield name="BUF_SWAP" low="16" high="17"/>' in line('P12_adreno_common_xml', 119),
+      'A12 P12:119 BUF_SWAP 16..17')
+check('<bitfield name="POLL_EN" pos="20" type="boolean"/>' in line('P12_adreno_common_xml', 120),
+      'A12 P12:120 POLL_EN 20')
+check('<bitfield name="NO_UPDATE" pos="27" type="boolean"/>' in line('P12_adreno_common_xml', 121),
+      'A12 P12:121 NO_UPDATE 27')
+check('<bitfield name="RPTR_WR_EN" pos="31" type="boolean"/>' in line('P12_adreno_common_xml', 122),
+      'A12 P12:122 RPTR_WR_EN 31')
+# The round-71 reading of a6xx.xml:2282 was RIGHT and is the reason U3/U4 were
+# unreachable from there: that reg32 carries no fields at all.
+check('<reg32 offset="0x0802" name="CP_RB_CNTL"/>' in line('P2_a6xx_xml', 2282),
+      'A12 P2:2282 has CP_RB_CNTL as a BARE reg32 (no fields) -- why round 71 stalled')
+
+# Recompute the register from the pinned layout, independently of the module.
+def pack(lo, hi, val):
+    w = hi - lo + 1
+    return (val & ((1 << w) - 1)) << lo
+RB_DEFAULT = pack(0, 5, 12) | pack(8, 13, 2)
+RB_NOUPDATE = RB_DEFAULT | (1 << 27)
+check(RB_DEFAULT == 0x20C, 'A12 RB_CNTL default recomputes to 0x0000020C')
+check(RB_NOUPDATE == 0x0800020C, 'A12 RB_CNTL | NO_UPDATE is 0x0800020C')
+check(RB_NOUPDATE - RB_DEFAULT == (1 << 27),
+      'A12 the two branches differ EXACTLY in bit 27')
+
+# The generator that would emit the accessors is pinned, and it is a BUILD step.
+check('import xml.parsers.expat' in '\n'.join(gen_hdr[:20]),
+      'A12 P13 is an XML-driven generator (not data)')
+check('argparse' in '\n'.join(gen_hdr[:20]), 'A12 P13 is a command-line tool')
+
 # ---- A10: the FOUR round-71 pins that closed three of the five constants --
 check('SZ_32K' in '\n'.join(sizes_h[20:30]), 'A10 P8 sizes.h defines SZ_32K')
 check(re.search(r'#define\s+SZ_32K\s+0x00008000', '\n'.join(sizes_h)) is not None,
@@ -349,8 +394,9 @@ check(len(re.findall(r'OUT_PKT7', c)) >= 1,
 check('#include "AdrenoCpRingV1.h"' in c, 'B5 .c includes its own header')
 
 # B6: the honesty gate -- executable is 0 while U1/U2 are open
-check('return 0;' in c[c.find('int adreno_cp_ring_is_executable'):][:400],
-      'B6 is_executable() returns 0')
+check('adreno_cp_ring_undefined_open() == 0u ? 1 : 0' in
+      c[c.find('int adreno_cp_ring_is_executable'):][:400],
+      'B6 is_executable() is derived from the open set')
 check('return (uint32_t)kAdrenoCpRingUndefAll;' in c,
       'B6 undefined() reports all five')
 check('the RING cannot' in c or 'RING cannot be programmed' in h or
@@ -364,9 +410,9 @@ check('uint32_t need = (has_shadow_bo != 0u)' in c,
 check('kAdrenoCpRingStepCount - 1u)' in c, 'B7 the no-shadow need is five')
 
 # B8: host test shape
-check(t.count('static void test') == 10, 'B8 10 test functions')
+check(t.count('static void test') == 11, 'B8 11 test functions')
 tflat = t.replace('"\n                "', '')
-check('PASS: enchilada A630 CP ring init/doorbell contract (10 test groups, 0 failures)'
+check('PASS: enchilada A630 CP ring init/doorbell contract (11 test groups, 0 failures)'
       in tflat, 'B8 PASS line')
 for grp in ('testOffsets', 'testPlan', 'testPlanWithoutShadow', 'testMeInit',
             'testShadowAndDoorbell', 'testUndefinedSet', 'testParityAndHeader',
@@ -415,24 +461,50 @@ for api in ('adreno_cp_ring_parity', 'adreno_cp_ring_type7_header',
             'adreno_cp_ring_can_encode_packet'):
     check(re.search(r'\b' + api + r'\s*\([^;]*\)\s*\{', c, re.S) is not None,
           f'B11 .c defines {api}')
-check('kAdrenoCpRingUndefOpenNow = 12u' in h, 'B11 the open set is U3|U4 = 12')
+check('kAdrenoCpRingUndefOpenNow = 0u' in h,
+      'B11 the open set is EMPTY after round 72')
 check('return (uint32_t)kAdrenoCpRingUndefOpenNow;' in c,
       'B11 undefined_open() returns exactly that mask')
 check('adreno_cp_ring_undefined_open() &\n            (kAdrenoCpRingUndefMeInitOpcode | kAdrenoCpRingUndefPacketHeader))\n               == 0u;'
       in c or 'kAdrenoCpRingUndefMeInitOpcode | kAdrenoCpRingUndefPacketHeader' in c,
       'B11 can_encode_packet() keys off U1|U2 being closed')
-check('a PACKET can now be encoded' in c, 'B11 the packet/ring asymmetry is stated')
-check(t.count('static void test') == 10, 'B11 10 test functions')
+check('every word the ring must write is computable' in c,
+      'B11 the round-72 consequence is stated in prose')
+check(t.count('static void test') == 11, 'B11 11 test functions')
 tflat2 = t.replace('"\n                "', '')
-check('(10 test groups, 0 failures)' in tflat2, 'B11 PASS line says 10 groups')
+check('(11 test groups, 0 failures)' in tflat2, 'B11 PASS line says 11 groups')
 for grp in ('testParityAndHeader', 'testMessage', 'testGeometry'):
     check(f'{grp}();' in t, f'B11 {grp} invoked')
 
+
+# B12: round-72 constants and API
+B72 = [('kAdrenoCpRingRbCntlBufszLow', '0u'),
+       ('kAdrenoCpRingRbCntlBufszHigh', '5u'),
+       ('kAdrenoCpRingRbCntlBlkszLow', '8u'),
+       ('kAdrenoCpRingRbCntlBlkszHigh', '13u'),
+       ('kAdrenoCpRingRbCntlNoUpdatePos', '27u'),
+       ('kAdrenoCpRingRbCntlDefault', '0x0000020cu'),
+       ('kAdrenoCpRingRbCntlNoUpdate', '0x0800020cu')]
+for sym, val in B72:
+    check(re.search(r'#define\s+' + sym + r'\s+' + re.escape(val) + r'\b', h) is not None,
+          f'B12 {sym}={val}')
+for api in ('adreno_cp_ring_pack_rb_cntl', 'adreno_cp_ring_unpack_field',
+            'adreno_cp_ring_rb_cntl_value'):
+    check(re.search(r'\b' + api + r'\s*\([^;]*\)\s*\{', c, re.S) is not None,
+          f'B12 .c defines {api}')
+check('kAdrenoCpRingUndefOpenNow = 0u' in h, 'B12 the open set is EMPTY now')
+check('adreno_cp_ring_undefined_open() == 0u ? 1 : 0' in c,
+      'B12 is_executable() is derived from the open set, not hard-coded')
+check(t.count('static void test') == 11, 'B12 11 test functions')
+tflat3 = t.replace('"\n                "', '')
+check('(11 test groups, 0 failures)' in tflat3, 'B12 PASS line says 11 groups')
+check('testRbCntl();' in t, 'B12 testRbCntl invoked')
+
 print(f'Domain A: {len(PINS)} sha256-pinned sources; 7 CP offsets, the 6-step order, '
       f'the 8-dword ME_INIT payload, the doorbell barrier order, and the FIVE '
-      f'round-70 unknowns re-derived (three CLOSED, two still open)')
+      f'round-70 unknowns re-derived and ALL FIVE now CLOSED')
 print('Domain B: AdrenoCpRingV1 .h/.c/test mirror; the real 0x70C80008 header; '
-      'can_encode_packet()==1 but is_executable()==0 (U3/U4); 24th unit/suite')
+      'CP_RB_CNTL 0x0800020C; open set EMPTY; 24th unit/suite')
 print(f'CP_RING_CROSS: {"PASS" if not fails else "FAIL"} '
       f'({checks} checks, {len(fails)} failures)')
 for f in fails:

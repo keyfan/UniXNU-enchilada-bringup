@@ -191,15 +191,13 @@ const char *adreno_cp_ring_undefined_anchor(uint32_t bit)
         return "adreno_gpu.h:659-665 the OUT_PKT7 body; CP_TYPE7_PKT 0x70000000 from "
                "adreno_pm4.xml:234 + PM4_PARITY 0x9669 from :637-643)";
     case kAdrenoCpRingUndefRbCntlDefault:
-        /* PARTIALLY derived: formula known, field accessors open. */
-        return "msm_gpu.h:314-316 gives the FORMULA "
-               "(BUFSZ(ilog2(SZ/8)) | BLKSZ(ilog2(BLKSZ/8))); the "
-               "AXXX_CP_RB_CNTL_BUFSZ/BLKSZ accessors are generated-header-only";
+        /* DERIVED round 72. */
+        return "adreno_common.xml:116-123 CP_RB_CNTL bitfields (BUFSZ 0..5, "
+               "BLKSZ 8..13) fed by msm_gpu.h:314-316 -> 0x0000020C";
     case kAdrenoCpRingUndefRbCntlNoUpdate:
-        /* STILL OPEN. */
-        return "a6xx_gpu.c:1131 ORs AXXX_CP_RB_CNTL_NO_UPDATE; it is a generated "
-               "a6xx.xml.h bitfield accessor (no *.xml.h in the tree) and "
-               "CP_RB_CNTL has NO bitfields in a6xx.xml:2282";
+        /* DERIVED round 72. */
+        return "adreno_common.xml:121 NO_UPDATE pos 27 -> 0x08000200 over the "
+               "default, i.e. a6xx_gpu.c:1131 writes 0x0800020C";
     case kAdrenoCpRingUndefRingSize:
         /* DERIVED round 71. */
         return "msm_gpu.h:311 MSM_GPU_RINGBUFFER_SZ = SZ_32K, and sizes.h:26 "
@@ -288,21 +286,60 @@ int adreno_cp_ring_rb_cntl_fields(uint32_t *bufsz_field, uint32_t *blksz_field)
 
 uint32_t adreno_cp_ring_undefined_open(void)
 {
+    /* Round 72 closed the last two (U3/U4), so nothing is open any more. The
+     * five-bit historical mask survives as the round-70 question. */
     return (uint32_t)kAdrenoCpRingUndefOpenNow;
+}
+
+uint32_t adreno_cp_ring_pack_rb_cntl(uint32_t bufsz_field, uint32_t blksz_field,
+                                     uint32_t no_update)
+{
+    /* adreno_common.xml:117/:118/:121 field placement. */
+    uint32_t w = 0u;
+    uint32_t bw = kAdrenoCpRingRbCntlBufszHigh - kAdrenoCpRingRbCntlBufszLow + 1u;
+    uint32_t kw = kAdrenoCpRingRbCntlBlkszHigh - kAdrenoCpRingRbCntlBlkszLow + 1u;
+    w |= (bufsz_field & ((1u << bw) - 1u)) << kAdrenoCpRingRbCntlBufszLow;
+    w |= (blksz_field & ((1u << kw) - 1u)) << kAdrenoCpRingRbCntlBlkszLow;
+    if (no_update != 0u) {
+        w |= 1u << kAdrenoCpRingRbCntlNoUpdatePos;
+    }
+    return w;
+}
+
+uint32_t adreno_cp_ring_unpack_field(uint32_t word, uint32_t low, uint32_t high)
+{
+    uint32_t width;
+    if (high < low || high > 31u) {
+        return 0u;
+    }
+    width = high - low + 1u;
+    return (word >> low) & ((width >= 32u) ? 0xffffffffu : ((1u << width) - 1u));
+}
+
+int adreno_cp_ring_rb_cntl_value(int hw_apriv, uint32_t *out)
+{
+    if (out == 0) {
+        return 1;
+    }
+    /* a6xx_gpu.c:1127-1131. The ilog2 inputs come from msm_gpu.h:314-316. */
+    *out = adreno_cp_ring_pack_rb_cntl(kAdrenoCpRingBufszField,
+                                       kAdrenoCpRingBlkszField,
+                                       hw_apriv ? 0u : 1u);
+    return 0;
 }
 
 int adreno_cp_ring_is_executable(void)
 {
-    /* The ring is programmable only when its RB_CNTL word can be COMPUTED. It
-     * cannot: U4 (the NO_UPDATE bit) is still open and so are U3's two field
-     * accessors. Note the asymmetry with round 70: a PACKET can now be encoded
-     * (see can_encode_packet), the RING cannot be programmed. */
-    return 0;
+    /* Since round 72 every word the ring must write is computable: the packet
+     * header (round 71) AND the CP_RB_CNTL value (round 72). Nothing is
+     * undefined. This is still NOT a promise that a ring works -- nothing here
+     * has ever been written to hardware. */
+    return adreno_cp_ring_undefined_open() == 0u ? 1 : 0;
 }
 
 int adreno_cp_ring_can_encode_packet(void)
 {
-    /* Round 71 closed U1 and U2, so the header exists. This is what changed. */
+    /* Round 71 closed U1 and U2, so the header exists. */
     return (adreno_cp_ring_undefined_open() &
             (kAdrenoCpRingUndefMeInitOpcode | kAdrenoCpRingUndefPacketHeader))
                == 0u;
@@ -566,11 +603,6 @@ int adreno_cp_ring_verify(uint32_t *check_count)
     if (adreno_cp_ring_undefined_anchor(0u)[0] != 'u') {
         fails += 1u; 
     }
-    checks += 1u;
-    if (adreno_cp_ring_is_executable() != 0) {
-        fails += 1u; 
-    }
-
     /* ---- Round-71 encoders --------------------------------------------- */
     /* PM4_PARITY (P10:637-643). */
     checks += 1u;
@@ -731,40 +763,105 @@ int adreno_cp_ring_verify(uint32_t *check_count)
         }
     }
 
-    /* The open set shrank to exactly U3|U4, and the two that closed are the two
-     * that make a packet encodable. */
+    /* Round 72 closed the LAST two constants: nothing is open. */
     checks += 1u;
-    if (adreno_cp_ring_undefined_open() != 12u) {
+    if (adreno_cp_ring_undefined_open() != 0u) {
         fails += 1u;
     }
     checks += 1u;
-    if (adreno_cp_ring_undefined_open() !=
-        (kAdrenoCpRingUndefRbCntlDefault | kAdrenoCpRingUndefRbCntlNoUpdate)) {
-        fails += 1u;
+    if ((adreno_cp_ring_undefined_open() & kAdrenoCpRingUndefAll) !=
+        adreno_cp_ring_undefined_open()) {
+        fails += 1u; /* open stays a subset of the historical five */
     }
     checks += 1u;
-    if ((adreno_cp_ring_undefined_open() &
-         kAdrenoCpRingUndefMeInitOpcode) != 0u) {
-        fails += 1u; /* U1 closed */
-    }
-    checks += 1u;
-    if ((adreno_cp_ring_undefined_open() &
-         kAdrenoCpRingUndefPacketHeader) != 0u) {
-        fails += 1u; /* U2 closed */
-    }
-    checks += 1u;
-    if ((adreno_cp_ring_undefined_open() &
-         kAdrenoCpRingUndefRingSize) != 0u) {
-        fails += 1u; /* U5 closed */
+    if (adreno_cp_ring_undefined() != kAdrenoCpRingUndefAll) {
+        fails += 1u; /* the historical question is still reported in full */
     }
     checks += 1u;
     if (adreno_cp_ring_can_encode_packet() != 1) {
         fails += 1u;
     }
     checks += 1u;
-    if ((adreno_cp_ring_undefined_open() & kAdrenoCpRingUndefAll) !=
-        adreno_cp_ring_undefined_open()) {
-        fails += 1u; /* open is a subset of the historical five */
+    if (adreno_cp_ring_is_executable() != 1) {
+        fails += 1u; /* every word is computable since round 72 */
+    }
+
+    /* CP_RB_CNTL, derived in round 72 from adreno_common.xml:116-123. */
+    {
+        uint32_t w = 0u, w2 = 0u;
+        checks += 1u;
+        if (adreno_cp_ring_pack_rb_cntl(12u, 2u, 0u) != kAdrenoCpRingRbCntlDefault) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (kAdrenoCpRingRbCntlDefault != 0x0000020cu) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_cp_ring_pack_rb_cntl(12u, 2u, 1u) !=
+            kAdrenoCpRingRbCntlNoUpdate) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (kAdrenoCpRingRbCntlNoUpdate != 0x0800020cu) {
+            fails += 1u; /* DEFAULT | BIT(27) */
+        }
+        checks += 1u;
+        if (adreno_cp_ring_rb_cntl_value(0, &w) != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (w != kAdrenoCpRingRbCntlNoUpdate) {
+            fails += 1u; /* enchilada has NO extended APRIV */
+        }
+        checks += 1u;
+        if (adreno_cp_ring_rb_cntl_value(1, &w2) != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (w2 != kAdrenoCpRingRbCntlDefault) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (w == w2) {
+            fails += 1u; /* the two branches must differ */
+        }
+        checks += 1u;
+        if (((w ^ w2) & (1u << kAdrenoCpRingRbCntlNoUpdatePos)) == 0u) {
+            fails += 1u; /* they differ EXACTLY in NO_UPDATE */
+        }
+        /* Field round-trip, which is what proves the placement. */
+        checks += 1u;
+        if (adreno_cp_ring_unpack_field(w, kAdrenoCpRingRbCntlBufszLow,
+                                        kAdrenoCpRingRbCntlBufszHigh) != 12u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_cp_ring_unpack_field(w, kAdrenoCpRingRbCntlBlkszLow,
+                                        kAdrenoCpRingRbCntlBlkszHigh) != 2u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_cp_ring_unpack_field(w, kAdrenoCpRingRbCntlNoUpdatePos,
+                                        kAdrenoCpRingRbCntlNoUpdatePos) != 1u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_cp_ring_unpack_field(w, 16u, 17u) != 0u) {
+            fails += 1u; /* BUF_SWAP stays 0 */
+        }
+        checks += 1u;
+        if (adreno_cp_ring_unpack_field(w, 31u, 31u) != 0u) {
+            fails += 1u; /* RPTR_WR_EN stays 0 */
+        }
+        checks += 1u;
+        if (adreno_cp_ring_rb_cntl_value(0, 0) == 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_cp_ring_unpack_field(w, 5u, 1u) != 0u) {
+            fails += 1u; /* reversed range is refused, not UB */
+        }
     }
 
     if (check_count != 0) {

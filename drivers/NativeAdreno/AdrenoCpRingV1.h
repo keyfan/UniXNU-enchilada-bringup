@@ -22,7 +22,7 @@
 // modeled goes 5 -> 6. satisfied STAYS 0, and the verdict STAYS BLOCKED: a
 // model whose packet header encoding is unknown cannot issue a single packet.
 //
-// PROVENANCE (7 sha256 pins re-checked by scripts/verify-enchilada-cp-ring.py)
+// PROVENANCE (9 sha256 pins re-checked by scripts/verify-enchilada-cp-ring.py)
 // ---------------------------------------------------------------------------
 //  (P1) .cache/adreno-a630-source/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
 //       69087 B c33479377574ed193e82c272b3708e19a2b2153088f246e2639d8a43fef943a2
@@ -69,6 +69,16 @@
 //       ab27047cc9cde4bc5996d6eb528fbb2dbdfdd9dc4515f75bbbada43a23809536
 //       :229-234 the CP_TYPE0..7 tags; :246-248 adreno_pm4_type3_packets with
 //       CP_ME_INIT = 0x48.
+//  (P12) registers/adreno/adreno_common.xml  15485 B
+//       c733db8294d0bedc6191044b7a6acfc81495ba1f294c3108746999c596cf5e58
+//       :116-123 CP_RB_CNTL's FIELDS: BUFSZ 0..5, BLKSZ 8..13, BUF_SWAP 16..17,
+//       POLL_EN 20, NO_UPDATE 27, RPTR_WR_EN 31. This is the file round 71 had
+//       not pinned, and why U3/U4 looked unreachable: a6xx.xml:2282 declares
+//       CP_RB_CNTL as a BARE reg32 with no fields at all.
+//  (P13) registers/gen_header.py  27564 B
+//       465b340f07d2fd299c83dc34c21b2b7cd71ef6a027aa9f93814683d3ea946ca6
+//       the XML-driven generator that emits a6xx.xml.h; recorded so the
+//       accessors' origin is a named build step, not a mystery.
 //  (P3) .cache/adreno-a630-source/drivers/gpu/drm/msm/adreno/a6xx_gpu.h
 //       3251 B 8909f9d70b6122899c70ec01fb034a6244f652eef9a0451065d22e86b546033e
 //       :59-69 the A6XX_PROTECT_NORDWR / A6XX_PROTECT_RDONLY encoding that the
@@ -185,6 +195,26 @@ extern "C" {
 #define kAdrenoCpRingParityOpBit   23u /* P10:664 */
 #define kAdrenoCpRingParityLut     0x9669u /* P10:639 */
 
+/* ---- CP_RB_CNTL, DERIVED in round 72 (adreno_common.xml:116-123) ------- */
+/* The bitfield layout is in adreno_common.xml, NOT a6xx.xml (whose CP_RB_CNTL
+   at :2282 is a bare reg32 with no fields -- that is why round 71 could not
+   close U3/U4):
+        :117 BUFSZ     low 0  high 5
+        :118 BLKSZ     low 8  high 13
+        :119 BUF_SWAP  low 16 high 17
+        :120 POLL_EN   pos 20
+        :121 NO_UPDATE pos 27
+        :122 RPTR_WR_EN pos 31
+   Fed by msm_gpu.h:314-316 with ilog2(0x8000/8)=12 and ilog2(32/8)=2. */
+#define kAdrenoCpRingRbCntlBufszLow   0u
+#define kAdrenoCpRingRbCntlBufszHigh  5u
+#define kAdrenoCpRingRbCntlBlkszLow   8u
+#define kAdrenoCpRingRbCntlBlkszHigh  13u
+#define kAdrenoCpRingRbCntlNoUpdatePos 27u
+/* The two values the A630 init writes (a6xx_gpu.c:1127-1131). */
+#define kAdrenoCpRingRbCntlDefault    0x0000020cu
+#define kAdrenoCpRingRbCntlNoUpdate   0x0800020cu  /* DEFAULT | BIT(27) */
+
 /* ---- The constants that are STILL not derivable after round 71 --------- */
 /* Only U4 is fully open, plus U3's two field ACCESSORS. The mask keeps five
  * bits so the shape of the original question survives, but three of them are
@@ -196,8 +226,10 @@ enum adreno_cp_ring_undefined {
     kAdrenoCpRingUndefRbCntlNoUpdate = 8u, /* U4 -- STILL OPEN */
     kAdrenoCpRingUndefRingSize = 16u,      /* U5 -- DERIVED round 71 (0x8000) */
     kAdrenoCpRingUndefAll = 31u,
-    /* The subset that remains genuinely undefined today. */
-    kAdrenoCpRingUndefOpenNow = 12u /* U3 | U4 */
+    /* Round 72 closed U3 and U4 too, so NOTHING is undefined any more. The
+     * historical five-bit mask is kept because the question it encoded is the
+     * round-70 record; the OPEN set is now empty and that is the honest answer. */
+    kAdrenoCpRingUndefOpenNow = 0u
 };
 
 /* ---- The ordered ring bring-up (P1:1118-1153) ------------------------- */
@@ -292,12 +324,22 @@ const char *adreno_cp_ring_undefined_name(uint32_t bit);
 /* Pinned citation for one bit: for a DERIVED bit it states where the value now
  * comes from, for an open bit why it is still open. "unknown" out of range. */
 const char *adreno_cp_ring_undefined_anchor(uint32_t bit);
-/* 1 when the still-open set prevents the ring from being PROGRAMMED. It is 0
- * (blocked) today because U3/U4 make the RB_CNTL word uncomputable -- note the
- * asymmetry with round 70: a PACKET can now be encoded, the RING cannot. */
+/* 1 when the ring can be PROGRAMMED, i.e. every register word it must write is
+ * computable. Since round 72 closed U3/U4 this is 1: the full CP_ME_INIT message
+ * AND the CP_RB_CNTL word both exist. It is still NOT a promise that the ring
+ * works: nothing here has been written to hardware. */
 int adreno_cp_ring_is_executable(void);
-/* 1 when a full CP_ME_INIT message can be encoded (it can, since round 71). */
+/* 1 when a full CP_ME_INIT message can be encoded (since round 71). */
 int adreno_cp_ring_can_encode_packet(void);
+/* The two CP_RB_CNTL values, DERIVED in round 72. `hw_apriv` selects which of
+ * the a6xx_gpu.c:1127-1131 branches applies. Returns 0, or 1 on a NULL. */
+int adreno_cp_ring_rb_cntl_value(int hw_apriv, uint32_t *out);
+/* Rebuild a CP_RB_CNTL word from (bufsz_field, blksz_field, no_update) using the
+ * adreno_common.xml:116-123 layout. Lets a test prove the field placement. */
+uint32_t adreno_cp_ring_pack_rb_cntl(uint32_t bufsz_field, uint32_t blksz_field,
+                                     uint32_t no_update);
+/* Read a field back out of a CP_RB_CNTL word. */
+uint32_t adreno_cp_ring_unpack_field(uint32_t word, uint32_t low, uint32_t high);
 
 /* Self-check. Returns 0 when every invariant holds, else 1; *check_count
  * receives the number evaluated. */
