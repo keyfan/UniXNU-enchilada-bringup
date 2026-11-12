@@ -1,4 +1,4 @@
-﻿# Stage 5 GPU — A6XX_GEN1 BACKEND ADMISSION contract (ROUND 69)
+# Stage 5 GPU — A6XX_GEN1 BACKEND ADMISSION contract (ROUND 69)
 
 **Status: HOST-VERIFIED. ADJUDICATION ONLY.** This is NOT a GPU driver. It is a
 freestanding C module that states, in one tested place, the twelve prerequisites
@@ -45,9 +45,10 @@ all**: `drivers/Adreno740` has zero occurrences of `pas` / `PAS` / `trustzone` /
 `zap` in code, and the value `13` appears there only as a PWRUP struct byte
 offset (`NativeAdrenoPwrup.cpp:41`).
 
-The constant itself is already asserted locally in three headers —
-`AdrenoBoardInputs.h:90`, `AdrenoFirmwareV1.h:81`, `AdrenoMetalSeamV1.h:240` —
-and is derivable from two independent pins:
+The constant itself is already asserted locally in **five** headers —
+`AdrenoBoardInputs.h:90`, `AdrenoFirmwareV1.h:81`, `AdrenoMetalSeamV1.h:240`,
+`NativeAdrenoABI.h:230` and this module — and is derivable from two independent
+pins:
 
 | pin | line | text |
 | --- | --- | --- |
