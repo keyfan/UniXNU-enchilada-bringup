@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// AdrenoCpRingV1 host test: 7 groups, CHECK() accumulates failures.
+// AdrenoCpRingV1 host test: 10 groups, CHECK() accumulates failures.
 #include <cstdint>
 #include <cstdio>
 #include "AdrenoCpRingV1.h"
@@ -182,15 +182,110 @@ static void testUndefinedSet()
     CHECK(adreno_cp_ring_undefined_name(0u)[0] == 'u');
     CHECK(adreno_cp_ring_undefined_anchor(0u)[0] == 'u');
     CHECK(adreno_cp_ring_undefined_name(kAdrenoCpRingUndefAll)[0] == 'u');
-    /* The decisive one: an unencodable packet means NOT executable. */
+    /* Round 71 CLOSED U1, U2 and U5: a packet can now be encoded... */
+    CHECK(adreno_cp_ring_undefined_open() == 12u);
+    CHECK(adreno_cp_ring_undefined_open() ==
+          (kAdrenoCpRingUndefRbCntlDefault | kAdrenoCpRingUndefRbCntlNoUpdate));
+    CHECK((adreno_cp_ring_undefined_open() & kAdrenoCpRingUndefMeInitOpcode) == 0u);
+    CHECK((adreno_cp_ring_undefined_open() & kAdrenoCpRingUndefPacketHeader) == 0u);
+    CHECK((adreno_cp_ring_undefined_open() & kAdrenoCpRingUndefRingSize) == 0u);
+    CHECK(adreno_cp_ring_can_encode_packet() == 1);
+    CHECK(adreno_cp_ring_undefined_open() != 0u);
+    /* ...but the RING still cannot be programmed: U3/U4 are the RB_CNTL word. */
     CHECK(adreno_cp_ring_is_executable() == 0);
+}
+
+
+static void testParityAndHeader()
+{
+    /* adreno_gpu.h:637-643 PM4_PARITY, folded 4 bits at a time through 0x9669. */
+    /* 0x9669 bit 0 is SET, so parity(0) is 1 -- a popcount would say 0. This
+     * single case is what distinguishes a fold through the LUT from a sum. */
+    CHECK(adreno_cp_ring_parity(0u) == 1u);
+    CHECK(adreno_cp_ring_parity(8u) == 0u);
+    CHECK(adreno_cp_ring_parity(0x48u) == 1u);
+    CHECK(adreno_cp_ring_parity(0x7fu) == 0u);
+    CHECK(adreno_cp_ring_parity(0xffffffffu) == 1u);
+    CHECK(adreno_cp_ring_parity(1u) == 0u);
+    CHECK(adreno_cp_ring_parity(3u) == 1u);
+    /* adreno_pm4.xml:234 CP_TYPE7_PKT = 0x70000000. */
+    CHECK(kAdrenoCpRingType7Pkt == 0x70000000u);
+    /* adreno_pm4.xml:248 CP_ME_INIT = 0x48. */
+    CHECK(kAdrenoCpRingMeInitOpcode == 0x48u);
+    /* OUT_PKT7(ring, CP_ME_INIT, 8) -> 0x70C80008. */
+    CHECK(adreno_cp_ring_type7_header(0x48u, 8u) == 0x70c80008u);
+    CHECK(kAdrenoCpRingMeInitHeader == 0x70c80008u);
+    CHECK((adreno_cp_ring_type7_header(0x48u, 8u) & 0x70000000u) ==
+          kAdrenoCpRingType7Pkt);
+    CHECK(((adreno_cp_ring_type7_header(0x48u, 8u) >> 16) & 0x7fu) == 0x48u);
+    CHECK(((adreno_cp_ring_type7_header(0x48u, 8u) >> 15) & 1u) == 0u);
+    CHECK(((adreno_cp_ring_type7_header(0x48u, 8u) >> 23) & 1u) == 1u);
+    CHECK((adreno_cp_ring_type7_header(0x48u, 8u) & 0x7fffu) == 8u);
+    /* The opcode is masked to 7 bits, not truncated into the parity bit. */
+    CHECK(((adreno_cp_ring_type7_header(0xc8u, 1u) >> 16) & 0x7fu) == 0x48u);
+    CHECK(adreno_cp_ring_type7_header(0x48u, 8u) !=
+          adreno_cp_ring_type7_header(0x48u, 7u));
+}
+
+static void testMessage()
+{
+    uint32_t msg[9];
+    uint32_t count = 99;
+    CHECK(adreno_cp_ring_me_init_message(msg, 9u, &count) == 0);
+    CHECK(count == 9u);
+    /* header first, then the eight payload dwords -- that ordering is the point. */
+    CHECK(msg[0] == 0x70c80008u);
+    CHECK(msg[1] == 0x0000002fu);
+    CHECK(msg[2] == 0x00000003u);
+    CHECK(msg[3] == 0x20000000u);
+    for (uint32_t i = 4; i < 9u; ++i) CHECK(msg[i] == 0u);
+    CHECK(adreno_cp_ring_me_init_message_matches(msg, 9u) == 1);
+    /* The payload alone is NOT the message. */
+    CHECK(adreno_cp_ring_me_init_message_matches(msg, 8u) == 0);
+    CHECK(adreno_cp_ring_me_init_message_matches(msg + 1, 8u) == 0);
+    /* A header-less vector is refused. */
+    uint32_t bad[9];
+    for (uint32_t i = 0; i < 9u; ++i) bad[i] = msg[i];
+    bad[0] = 0x70000000u;
+    CHECK(adreno_cp_ring_me_init_message_matches(bad, 9u) == 0);
+    bad[0] = msg[0];
+    bad[8] = 1u;
+    CHECK(adreno_cp_ring_me_init_message_matches(bad, 9u) == 0);
+    /* Refusals leave *count at 0. */
+    count = 99;
+    CHECK(adreno_cp_ring_me_init_message(msg, 8u, &count) == 1);
+    CHECK(count == 0u);
+    CHECK(adreno_cp_ring_me_init_message(nullptr, 9u, &count) == 1);
+    CHECK(adreno_cp_ring_me_init_message(msg, 9u, nullptr) == 1);
+}
+
+static void testGeometry()
+{
+    /* sizes.h:26 SZ_32K = 0x8000; msm_gpu.h:311 the ring is exactly that. */
+    CHECK(adreno_cp_ring_buffer_bytes() == 0x8000u);
+    CHECK(adreno_cp_ring_buffer_dwords() == 0x2000u);
+    CHECK(adreno_cp_ring_buffer_bytes() == adreno_cp_ring_buffer_dwords() * 4u);
+    CHECK(kAdrenoCpRingBufferBytes == 0x8000u);
+    CHECK(kAdrenoCpRingBlockBytes == 32u);
+    CHECK(adreno_cp_ring_buffer_bytes() > kAdrenoCpRingBlockBytes);
+    /* msm_gpu.h:315-316: the two ilog2() inputs to the RB_CNTL formula. */
+    uint32_t bufsz = 0, blksz = 0;
+    CHECK(adreno_cp_ring_rb_cntl_fields(&bufsz, &blksz) == 0);
+    CHECK(bufsz == 12u);
+    CHECK(blksz == 2u);
+    CHECK((1u << bufsz) == adreno_cp_ring_buffer_bytes() / 8u);
+    CHECK((1u << blksz) == kAdrenoCpRingBlockBytes / 8u);
+    /* The two fields are distinct, so conflating them is detectable. */
+    CHECK(bufsz != blksz);
+    CHECK(adreno_cp_ring_rb_cntl_fields(nullptr, &blksz) == 1);
+    CHECK(adreno_cp_ring_rb_cntl_fields(&bufsz, nullptr) == 1);
 }
 
 static void testSelfCheck()
 {
     uint32_t count = 0;
     CHECK(adreno_cp_ring_verify(&count) == 0);
-    CHECK(count >= 40u);
+    CHECK(count >= 60u);
     CHECK(adreno_cp_ring_verify(nullptr) == 0);
 }
 
@@ -202,6 +297,9 @@ int main()
     testMeInit();
     testShadowAndDoorbell();
     testUndefinedSet();
+    testParityAndHeader();
+    testMessage();
+    testGeometry();
     testSelfCheck();
     if (failures) {
         std::printf("FAIL: enchilada A630 CP ring init/doorbell contract "
@@ -209,6 +307,6 @@ int main()
         return 1;
     }
     std::printf("PASS: enchilada A630 CP ring init/doorbell contract "
-                "(7 test groups, 0 failures)\n");
+                "(10 test groups, 0 failures)\n");
     return 0;
 }

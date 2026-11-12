@@ -22,7 +22,7 @@
 // modeled goes 5 -> 6. satisfied STAYS 0, and the verdict STAYS BLOCKED: a
 // model whose packet header encoding is unknown cannot issue a single packet.
 //
-// PROVENANCE (3 sha256 pins re-checked by scripts/verify-enchilada-cp-ring.py)
+// PROVENANCE (7 sha256 pins re-checked by scripts/verify-enchilada-cp-ring.py)
 // ---------------------------------------------------------------------------
 //  (P1) .cache/adreno-a630-source/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
 //       69087 B c33479377574ed193e82c272b3708e19a2b2153088f246e2639d8a43fef943a2
@@ -54,34 +54,77 @@
 //       :2283 CP_RB_RPTR_ADDR 0x0804 (reg64); :2284 CP_RB_RPTR 0x0806;
 //       :2285 CP_RB_WPTR 0x0807; :2286 CP_SQE_CNTL 0x0808;
 //       :2294 CP_SQE_INSTR_BASE 0x0830 (reg64).
+//  (P8) include/linux/sizes.h  1723 B
+//       67fe2ba4a05c73e3ce41b8249a5a63e609639ba9876ea0a2a828fd2755a3efa7
+//       :26 SZ_32K 0x00008000 (and :23 SZ_4K, :25 SZ_16K).
+//  (P9) drivers/gpu/drm/msm/msm_gpu.h  20026 B
+//       6c461e0bd0fd37e10dc5c25990c31e342273e936862826d5ae42cbf707d999e0
+//       :311 MSM_GPU_RINGBUFFER_SZ SZ_32K; :312 BLKSIZE 32; :314-316 the
+//       MSM_GPU_RB_CNTL_DEFAULT formula over BUFSZ/BLKSZ.
+//  (P10) drivers/gpu/drm/msm/adreno/adreno_gpu.h  18946 B
+//       7bdabea1ae7310697e0e2a4e0353cff2a7cf0ac2af746e5418e249d4584c86df
+//       :637-643 PM4_PARITY (0x9669 LUT); :659-665 OUT_PKT7 (type-7 header);
+//       :673-676 get_wptr() (the ring is MSM_GPU_RINGBUFFER_SZ >> 2 dwords).
+//  (P11) registers/adreno/adreno_pm4.xml  85907 B
+//       ab27047cc9cde4bc5996d6eb528fbb2dbdfdd9dc4515f75bbbada43a23809536
+//       :229-234 the CP_TYPE0..7 tags; :246-248 adreno_pm4_type3_packets with
+//       CP_ME_INIT = 0x48.
 //  (P3) .cache/adreno-a630-source/drivers/gpu/drm/msm/adreno/a6xx_gpu.h
 //       3251 B 8909f9d70b6122899c70ec01fb034a6244f652eef9a0451065d22e86b546033e
 //       :59-69 the A6XX_PROTECT_NORDWR / A6XX_PROTECT_RDONLY encoding that the
 //       a630_protect table uses (bit 31 = no-read-write, MASK_LEN 18..30,
 //       BASE_ADDR 0..17) -- recorded so a caller cannot "improve" the table.
 //
-// THE FIVE CONSTANTS THAT ARE **NOT** DERIVABLE (and are refused, not guessed)
+// ROUND 71 UPDATE -- THREE OF THE FIVE ARE NOW DEFINED (this corrects round 70)
 // ---------------------------------------------------------------------------
-// The pinned set contains the *calls* OUT_PKT7 / OUT_RING and the macros
-// MSM_GPU_RB_CNTL_DEFAULT / AXXX_CP_RB_CNTL_NO_UPDATE, but not their
-// definitions: those live in msm_gpu.h / adreno_gpu.h / msm_ringbuffer.h, which
-// are NOT pinned. A repo-wide scan of every pinned .c/.h/.xml finds the names
-// and never the bodies. Therefore:
-//   U1 CP_ME_INIT's numeric opcode      -- the XML register databases have
-//                                          ZERO occurrences of CP_ME_INIT.
-//   U2 the type-7 packet header encoding -- OUT_PKT7's body is unpinned.
-//   U3 MSM_GPU_RB_CNTL_DEFAULT's value   -- name only.
-//   U4 AXXX_CP_RB_CNTL_NO_UPDATE's bit   -- name only.
-//   U5 the ring size (MSM_GPU_RINGBUFFER_SZ) -- absent from every pinned file.
-// A ring that cannot encode a header cannot submit. So this module reports the
-// undefined set explicitly rather than presenting the order as executable.
+// Round 70 recorded five constants as undefined and said the next step was a
+// RESEARCH step: pin the headers that might define them. This round did exactly
+// that, and the result is a partial defeat of round 70's own claim, recorded
+// honestly rather than quietly:
+//   P8 include/linux/sizes.h        1723 B 67fe2ba4...a3efa7  :26 SZ_32K = 0x8000
+//   P9 drivers/gpu/drm/msm/msm_gpu.h 20026 B 6c461e0b...d999e0
+//      :311 #define MSM_GPU_RINGBUFFER_SZ SZ_32K
+//      :312 #define MSM_GPU_RINGBUFFER_BLKSIZE 32
+//      :314-316 #define MSM_GPU_RB_CNTL_DEFAULT (BUFSZ(ilog2(SZ/8)) | BLKSZ(...))
+//   P10 adreno/adreno_gpu.h         18946 B 7bdabea1...84c86df
+//      :637-643 PM4_PARITY(); :659-665 OUT_PKT7() (the type-7 header encoding)
+//   P11 registers/adreno/adreno_pm4.xml 85907 B ab27047c...23809536
+//      :234 CP_TYPE7_PKT = 0x70000000; :248 CP_ME_INIT = 0x48
+// So U1 (opcode), U2 (header encoding), U3 (RB_CNTL_DEFAULT is a FORMULA over
+// BUFSZ/BLKSZ) and U5 (ring size 0x8000) are DEFINED. What remains genuinely
+// open is narrower and now precisely named:
+//   U4 AXXX_CP_RB_CNTL_NO_UPDATE -- the OR term at a6xx_gpu.c:1131. It is a
+//      BITFIELD accessor from the GENERATED a6xx.xml.h, which is not in the tree
+//      (no *.xml.h exists), and CP_RB_CNTL carries NO bitfields in the pinned
+//      a6xx.xml (:2282 is a bare reg32). Likewise AXXX_CP_RB_CNTL_BUFSZ/BLKSZ.
+//   U3 is therefore downgraded, NOT removed: the formula is known, its two
+//      field accessors are not, so the VALUE still cannot be computed.
+// The module now emits the REAL type-7 header for CP_ME_INIT (0x70C80008,
+// parity(8)=0, parity(0x48)=1) and still reports is_executable()==0, because a
+// ring whose RB_CNTL enable word cannot be computed cannot be programmed.
+//
+// ROUND 70 TEXT (kept for the record, now partly superseded)
+// ---------------------------------------------------------
+// The round-70 claim was: "the pinned set contains the *calls* OUT_PKT7 /
+// OUT_RING and the macros MSM_GPU_RB_CNTL_DEFAULT / AXXX_CP_RB_CNTL_NO_UPDATE,
+// but not their definitions: those live in msm_gpu.h / adreno_gpu.h /
+// msm_ringbuffer.h, which are NOT pinned." That premise was true and the
+// conclusion drawn from it was too strong -- the definitions were reachable and
+// had simply not been fetched. The five items round 70 listed were:
+//   U1 CP_ME_INIT's numeric opcode      -> NOW 0x48 (P11:248)
+//   U2 the type-7 packet header encoding -> NOW P10:659-665
+//   U3 MSM_GPU_RB_CNTL_DEFAULT's value   -> formula NOW P9:314-316, fields open
+//   U4 AXXX_CP_RB_CNTL_NO_UPDATE's bit   -> STILL open (generated header)
+//   U5 the ring size                     -> NOW SZ_32K = 0x8000 (P8/P9:311)
 //
 // HONEST BOUNDARY
 // ---------------
-// HOST-VERIFIED, ORDER + PAYLOAD + REFUSAL ONLY. No BO, no IOVA, no mapping, no
-// doorbell write, no fence, no interrupt, no submit. CONFIG_XNU_NATIVE_ADRENO
-// remains n; the gpu area STAYS "host-verified"; no device run, no flash,
-// m39510 NOT exercised. It does NOT unblock stage 5.
+// HOST-VERIFIED, ORDER + PAYLOAD + HEADER + PARTIAL REFUSAL. No BO, no IOVA, no
+// mapping, no doorbell write, no fence, no interrupt, no submit. A real packet
+// can now be ENCODED on the host; it still cannot be ISSUED, because the ring's
+// control word cannot be computed. CONFIG_XNU_NATIVE_ADRENO remains n; the gpu
+// area STAYS "host-verified"; no device run, no flash, m39510 NOT exercised. It
+// does NOT unblock stage 5.
 // ---------------------------------------------------------------------------
 
 #ifndef ADRENO_CP_RING_V1_H
@@ -120,14 +163,41 @@ extern "C" {
 #define kAdrenoCpRingProtectLenMask 0x3fffu
 #define kAdrenoCpRingProtectAddrMask 0x3ffffu
 
-/* ---- The five constants the pinned sources do NOT define -------------- */
+/* ---- Ring geometry, DERIVED in round 71 (P8:26, P9:311-312) ------------- */
+#define kAdrenoCpRingBufferBytes   0x00008000u /* P9:311 SZ_32K (P8:26) */
+#define kAdrenoCpRingBufferDwords  0x00002000u /* 0x8000 / 4, see P10:673-676 */
+#define kAdrenoCpRingBlockBytes    32u         /* P9:312 */
+/* The two ilog2() field values the RB_CNTL formula feeds (P9:315-316). */
+#define kAdrenoCpRingBufszField    12u /* ilog2(0x8000 / 8) = ilog2(4096) */
+#define kAdrenoCpRingBlkszField    2u  /* ilog2(32 / 8)     = ilog2(4)    */
+
+/* ---- Type-7 packet header, DERIVED in round 71 (P11:234, P10:637-665) --- */
+#define kAdrenoCpRingType7Pkt      0x70000000u /* P11:234 CP_TYPE7_PKT */
+#define kAdrenoCpRingMeInitOpcode  0x48u       /* P11:248 CP_ME_INIT */
+/* The exact header OUT_PKT7(ring, CP_ME_INIT, 8) emits. Parity of cnt=8 is 0
+ * and parity of 0x48 is 1, so the two parity bits land at 0 and 23. */
+#define kAdrenoCpRingMeInitHeader  0x70c80008u
+/* CP_ME_INIT's opcode exceeds the 7-bit opcode field only if masked wrong; the
+ * encoder must apply the & 0x7F that P10:664 applies. */
+#define kAdrenoCpRingOpcodeMask    0x7fu
+#define kAdrenoCpRingCntMask       0xffffu
+#define kAdrenoCpRingParityCntBit  15u /* P10:663 */
+#define kAdrenoCpRingParityOpBit   23u /* P10:664 */
+#define kAdrenoCpRingParityLut     0x9669u /* P10:639 */
+
+/* ---- The constants that are STILL not derivable after round 71 --------- */
+/* Only U4 is fully open, plus U3's two field ACCESSORS. The mask keeps five
+ * bits so the shape of the original question survives, but three of them are
+ * now marked DERIVED and the API states which. */
 enum adreno_cp_ring_undefined {
-    kAdrenoCpRingUndefMeInitOpcode = 1u,   /* U1 */
-    kAdrenoCpRingUndefPacketHeader = 2u,   /* U2 */
-    kAdrenoCpRingUndefRbCntlDefault = 4u,  /* U3 */
-    kAdrenoCpRingUndefRbCntlNoUpdate = 8u, /* U4 */
-    kAdrenoCpRingUndefRingSize = 16u,      /* U5 */
-    kAdrenoCpRingUndefAll = 31u
+    kAdrenoCpRingUndefMeInitOpcode = 1u,   /* U1 -- DERIVED round 71 (0x48) */
+    kAdrenoCpRingUndefPacketHeader = 2u,   /* U2 -- DERIVED round 71 */
+    kAdrenoCpRingUndefRbCntlDefault = 4u,  /* U3 -- formula derived, fields open */
+    kAdrenoCpRingUndefRbCntlNoUpdate = 8u, /* U4 -- STILL OPEN */
+    kAdrenoCpRingUndefRingSize = 16u,      /* U5 -- DERIVED round 71 (0x8000) */
+    kAdrenoCpRingUndefAll = 31u,
+    /* The subset that remains genuinely undefined today. */
+    kAdrenoCpRingUndefOpenNow = 12u /* U3 | U4 */
 };
 
 /* ---- The ordered ring bring-up (P1:1118-1153) ------------------------- */
@@ -189,15 +259,45 @@ AdrenoCpRingShadowMode adreno_cp_ring_shadow_mode(int hw_apriv);
 int adreno_cp_ring_doorbell_order(uint32_t *barrier_before_write,
                                   uint32_t *write_wptr_after_barrier);
 
-/* The five undefined constants (bitmask of enum adreno_cp_ring_undefined). */
+/* ---- Round-71 encoders (DERIVED, host-verifiable, never issued) -------- */
+
+/* PM4_PARITY (P10:637-643): the parity bit PM4 puts in a type-7 header. */
+uint32_t adreno_cp_ring_parity(uint32_t value);
+/* The type-7 header OUT_PKT7 emits for (opcode, count) (P10:659-665). The
+ * opcode is masked to 7 bits and the count to 16, exactly as upstream does. */
+uint32_t adreno_cp_ring_type7_header(uint32_t opcode, uint32_t count);
+/* The FULL 9-dword message: the real header 0x70C80008 followed by the 8 payload
+ * dwords. This is the first byte sequence this port can produce that a CP could
+ * in principle consume; it still cannot be issued (see is_executable()). */
+int adreno_cp_ring_me_init_message(uint32_t *dwords, uint32_t capacity,
+                                   uint32_t *count);
+/* 1 when the 9-dword vector is exactly that message, 0 otherwise. */
+int adreno_cp_ring_me_init_message_matches(const uint32_t *dwords,
+                                           uint32_t count);
+/* The ring size in bytes (0x8000) and in dwords (0x2000), P8:26 / P9:311. */
+uint32_t adreno_cp_ring_buffer_bytes(void);
+uint32_t adreno_cp_ring_buffer_dwords(void);
+/* The two ilog2() field values the RB_CNTL formula consumes (P9:315-316). The
+ * formula itself is known; the AXXX_CP_RB_CNTL_BUFSZ/BLKSZ FIELD ACCESSORS that
+ * would turn these into bit positions are not, so this returns the inputs, not
+ * the register value. Returns 0, or 1 on any NULL. */
+int adreno_cp_ring_rb_cntl_fields(uint32_t *bufsz_field, uint32_t *blksz_field);
+
+/* The bits that are STILL undefined (kAdrenoCpRingUndefOpenNow today), and the
+ * full historical five-bit mask. */
+uint32_t adreno_cp_ring_undefined_open(void);
 uint32_t adreno_cp_ring_undefined(void);
-/* Name of one undefined constant bit, or "unknown". */
+/* Name of one bit, or "unknown". */
 const char *adreno_cp_ring_undefined_name(uint32_t bit);
-/* Pinned citation for one undefined constant bit, or "unknown". */
+/* Pinned citation for one bit: for a DERIVED bit it states where the value now
+ * comes from, for an open bit why it is still open. "unknown" out of range. */
 const char *adreno_cp_ring_undefined_anchor(uint32_t bit);
-/* 1 when the undefined set prevents a packet from being encoded at all. Always
- * 1 today: U1 and U2 alone are enough. */
+/* 1 when the still-open set prevents the ring from being PROGRAMMED. It is 0
+ * (blocked) today because U3/U4 make the RB_CNTL word uncomputable -- note the
+ * asymmetry with round 70: a PACKET can now be encoded, the RING cannot. */
 int adreno_cp_ring_is_executable(void);
+/* 1 when a full CP_ME_INIT message can be encoded (it can, since round 71). */
+int adreno_cp_ring_can_encode_packet(void);
 
 /* Self-check. Returns 0 when every invariant holds, else 1; *check_count
  * receives the number evaluated. */

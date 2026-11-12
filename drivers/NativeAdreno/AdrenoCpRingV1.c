@@ -157,7 +157,8 @@ int adreno_cp_ring_doorbell_order(uint32_t *barrier_before_write,
 
 uint32_t adreno_cp_ring_undefined(void)
 {
-    /* All five are genuinely undefined in the pinned set -- see the header. */
+    /* The historical five-bit question. Three are DERIVED since round 71; use
+     * adreno_cp_ring_undefined_open() for what is still open. */
     return (uint32_t)kAdrenoCpRingUndefAll;
 }
 
@@ -183,29 +184,128 @@ const char *adreno_cp_ring_undefined_anchor(uint32_t bit)
 {
     switch (bit) {
     case kAdrenoCpRingUndefMeInitOpcode:
-        return "a6xx_gpu.c:616/650 name CP_ME_INIT; the value is not in the "
-               "pinned a6xx.xml / adreno_common.xml (zero occurrences)";
+        /* DERIVED round 71. */
+        return "adreno_pm4.xml:248 <value name=\"CP_ME_INIT\" value=\"0x48\"/>";
     case kAdrenoCpRingUndefPacketHeader:
-        return "a6xx_gpu.c:616 uses OUT_PKT7; its definition is in an "
-               "unpinned header";
+        /* DERIVED round 71. */
+        return "adreno_gpu.h:659-665 the OUT_PKT7 body; CP_TYPE7_PKT 0x70000000 from "
+               "adreno_pm4.xml:234 + PM4_PARITY 0x9669 from :637-643)";
     case kAdrenoCpRingUndefRbCntlDefault:
-        return "a6xx_gpu.c:1128 names MSM_GPU_RB_CNTL_DEFAULT; value unpinned";
+        /* PARTIALLY derived: formula known, field accessors open. */
+        return "msm_gpu.h:314-316 gives the FORMULA "
+               "(BUFSZ(ilog2(SZ/8)) | BLKSZ(ilog2(BLKSZ/8))); the "
+               "AXXX_CP_RB_CNTL_BUFSZ/BLKSZ accessors are generated-header-only";
     case kAdrenoCpRingUndefRbCntlNoUpdate:
-        return "a6xx_gpu.c:1131 names AXXX_CP_RB_CNTL_NO_UPDATE; bit unpinned";
+        /* STILL OPEN. */
+        return "a6xx_gpu.c:1131 ORs AXXX_CP_RB_CNTL_NO_UPDATE; it is a generated "
+               "a6xx.xml.h bitfield accessor (no *.xml.h in the tree) and "
+               "CP_RB_CNTL has NO bitfields in a6xx.xml:2282";
     case kAdrenoCpRingUndefRingSize:
-        return "a6xx_gpu.c never states the ring size; MSM_GPU_RINGBUFFER_SZ "
-               "is absent from every pinned file";
+        /* DERIVED round 71. */
+        return "msm_gpu.h:311 MSM_GPU_RINGBUFFER_SZ = SZ_32K, and sizes.h:26 "
+               "SZ_32K = 0x8000";
     default:
         return "unknown";
     }
 }
 
+uint32_t adreno_cp_ring_parity(uint32_t value)
+{
+    /* P10:637-643 PM4_PARITY: fold the 32-bit word in 4-bit steps, then index
+     * the 0x9669 magic constant. */
+    uint32_t x = value ^ (value >> 4) ^ (value >> 8) ^ (value >> 12) ^
+                 (value >> 16) ^ (value >> 20) ^ (value >> 24) ^ (value >> 28);
+    return (kAdrenoCpRingParityLut >> (0xfu & x)) & 1u;
+}
+
+uint32_t adreno_cp_ring_type7_header(uint32_t opcode, uint32_t count)
+{
+    /* P10:663-664 verbatim, with the masks the source applies made explicit. */
+    uint32_t cnt = count & kAdrenoCpRingCntMask;
+    uint32_t op = opcode & kAdrenoCpRingOpcodeMask;
+    return kAdrenoCpRingType7Pkt |
+           (cnt << 0) |
+           (adreno_cp_ring_parity(cnt) << kAdrenoCpRingParityCntBit) |
+           (op << 16) |
+           (adreno_cp_ring_parity(op) << kAdrenoCpRingParityOpBit);
+}
+
+int adreno_cp_ring_me_init_message(uint32_t *dwords, uint32_t capacity,
+                                   uint32_t *count)
+{
+    uint32_t n = 0u;
+
+    if (dwords == 0 || count == 0) {
+        return 1;
+    }
+    *count = 0u;
+    /* ONE header dword + the 8 payload dwords = 9, not 10. */
+    if (capacity < kAdrenoCpRingMeInitDwords + 1u) {
+        return 1;
+    }
+    dwords[0] = adreno_cp_ring_type7_header(kAdrenoCpRingMeInitOpcode,
+                                            kAdrenoCpRingMeInitDwords);
+    if (adreno_cp_ring_me_init(&dwords[1], capacity - 1u, &n) != 0) {
+        return 1;
+    }
+    if (n != kAdrenoCpRingMeInitDwords) {
+        return 1;
+    }
+    *count = n + 1u;
+    return 0;
+}
+
+int adreno_cp_ring_me_init_message_matches(const uint32_t *dwords, uint32_t count)
+{
+    if (dwords == 0 || count != kAdrenoCpRingMeInitDwords + 1u) {
+        return 0;
+    }
+    if (dwords[0] != kAdrenoCpRingMeInitHeader) {
+        return 0;
+    }
+    return adreno_cp_ring_me_init_matches(&dwords[1], kAdrenoCpRingMeInitDwords);
+}
+
+uint32_t adreno_cp_ring_buffer_bytes(void)
+{
+    return kAdrenoCpRingBufferBytes;
+}
+
+uint32_t adreno_cp_ring_buffer_dwords(void)
+{
+    return kAdrenoCpRingBufferDwords;
+}
+
+int adreno_cp_ring_rb_cntl_fields(uint32_t *bufsz_field, uint32_t *blksz_field)
+{
+    if (bufsz_field == 0 || blksz_field == 0) {
+        return 1;
+    }
+    *bufsz_field = kAdrenoCpRingBufszField;
+    *blksz_field = kAdrenoCpRingBlkszField;
+    return 0;
+}
+
+uint32_t adreno_cp_ring_undefined_open(void)
+{
+    return (uint32_t)kAdrenoCpRingUndefOpenNow;
+}
+
 int adreno_cp_ring_is_executable(void)
 {
-    /* A ring is executable only when it can encode a packet AND knows its
-     * opcode. U2 (header) and U1 (opcode) are both open, so this is 0, and it
-     * stays 0 until an unpinned header is genuinely pinned. */
+    /* The ring is programmable only when its RB_CNTL word can be COMPUTED. It
+     * cannot: U4 (the NO_UPDATE bit) is still open and so are U3's two field
+     * accessors. Note the asymmetry with round 70: a PACKET can now be encoded
+     * (see can_encode_packet), the RING cannot be programmed. */
     return 0;
+}
+
+int adreno_cp_ring_can_encode_packet(void)
+{
+    /* Round 71 closed U1 and U2, so the header exists. This is what changed. */
+    return (adreno_cp_ring_undefined_open() &
+            (kAdrenoCpRingUndefMeInitOpcode | kAdrenoCpRingUndefPacketHeader))
+               == 0u;
 }
 
 int adreno_cp_ring_verify(uint32_t *check_count)
@@ -469,6 +569,202 @@ int adreno_cp_ring_verify(uint32_t *check_count)
     checks += 1u;
     if (adreno_cp_ring_is_executable() != 0) {
         fails += 1u; 
+    }
+
+    /* ---- Round-71 encoders --------------------------------------------- */
+    /* PM4_PARITY (P10:637-643). */
+    checks += 1u;
+    if (adreno_cp_ring_parity(0u) != 1u) {
+        fails += 1u; /* 0x9669 bit 0 is SET: parity(0) is 1, not 0 */
+    }
+    checks += 1u;
+    if (adreno_cp_ring_parity(8u) != 0u) {
+        fails += 1u; /* cnt=8 folds to 0 */
+    }
+    checks += 1u;
+    if (adreno_cp_ring_parity(0x48u) != 1u) {
+        fails += 1u; /* the opcode's parity is 1 */
+    }
+    checks += 1u;
+    if (adreno_cp_ring_parity(0x7fu) != 0u) {
+        fails += 1u; /* folds to 0x8 */
+    }
+    checks += 1u;
+    if (adreno_cp_ring_parity(0xffffffffu) != 1u) {
+        fails += 1u; /* folds to 0x0 -> LUT bit 0 */
+    }
+    checks += 1u;
+    if (adreno_cp_ring_parity(1u) != 0u) {
+        fails += 1u; /* folds to 0x1 -> LUT bit 1 */
+    }
+    /* The type-7 header. */
+    checks += 1u;
+    if (adreno_cp_ring_type7_header(0x48u, 8u) != 0x70c80008u) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if (adreno_cp_ring_type7_header(0x48u, 8u) != kAdrenoCpRingMeInitHeader) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if ((adreno_cp_ring_type7_header(0x48u, 8u) & 0x70000000u) !=
+        kAdrenoCpRingType7Pkt) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if (((adreno_cp_ring_type7_header(0x48u, 8u) >> 16) & 0x7fu) != 0x48u) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if (((adreno_cp_ring_type7_header(0x48u, 8u) >> 15) & 1u) != 0u) {
+        fails += 1u; /* count parity bit clear for cnt=8 */
+    }
+    checks += 1u;
+    if (((adreno_cp_ring_type7_header(0x48u, 8u) >> 23) & 1u) != 1u) {
+        fails += 1u; /* opcode parity bit set for 0x48 */
+    }
+    checks += 1u;
+    if (((adreno_cp_ring_type7_header(0xc8u, 1u) >> 16) & 0x7fu) != 0x48u) {
+        fails += 1u; /* the opcode is MASKED to 7 bits, not truncated */
+    }
+    checks += 1u;
+    if ((adreno_cp_ring_type7_header(0x48u, 8u) & 0x7fffu) != 8u) {
+        fails += 1u; /* count occupies bits 0..14 */
+    }
+
+    /* The full 9-dword message. */
+    {
+        uint32_t msg[9];
+        uint32_t bad[9];
+        uint32_t n = 0u;
+
+        checks += 1u;
+        if (adreno_cp_ring_me_init_message(msg, 9u, &n) != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (n != 9u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (msg[0] != 0x70c80008u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (msg[1] != 0x0000002fu || msg[2] != 0x00000003u ||
+            msg[3] != 0x20000000u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (msg[4] != 0u || msg[5] != 0u || msg[6] != 0u || msg[7] != 0u ||
+            msg[8] != 0u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_cp_ring_me_init_message_matches(msg, 9u) != 1) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_cp_ring_me_init_message_matches(msg, 8u) != 0) {
+            fails += 1u; /* the payload alone is not the message */
+        }
+        for (i = 0u; i < 9u; ++i) {
+            bad[i] = msg[i];
+        }
+        bad[0] = 0x70000000u;
+        checks += 1u;
+        if (adreno_cp_ring_me_init_message_matches(bad, 9u) != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_cp_ring_me_init_message(msg, 8u, &n) == 0) {
+            fails += 1u; /* capacity must cover header + payload */
+        }
+        checks += 1u;
+        if (n != 0u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_cp_ring_me_init_message(0, 9u, &n) == 0) {
+            fails += 1u;
+        }
+    }
+
+    /* Ring geometry + the two ilog2 fields. */
+    checks += 1u;
+    if (adreno_cp_ring_buffer_bytes() != 0x8000u) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if (adreno_cp_ring_buffer_dwords() != 0x2000u) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if (adreno_cp_ring_buffer_bytes() != adreno_cp_ring_buffer_dwords() * 4u) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if (adreno_cp_ring_buffer_bytes() != kAdrenoCpRingBufferBytes) {
+        fails += 1u;
+    }
+    {
+        uint32_t bufsz = 0u, blksz = 0u;
+        checks += 1u;
+        if (adreno_cp_ring_rb_cntl_fields(&bufsz, &blksz) != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (bufsz != 12u) {
+            fails += 1u; /* ilog2(0x8000/8) */
+        }
+        checks += 1u;
+        if (blksz != 2u) {
+            fails += 1u; /* ilog2(32/8) */
+        }
+        checks += 1u;
+        if ((1u << bufsz) != adreno_cp_ring_buffer_bytes() / 8u) {
+            fails += 1u; /* the field really is ilog2 of an eighth */
+        }
+        checks += 1u;
+        if (adreno_cp_ring_rb_cntl_fields(0, &blksz) == 0) {
+            fails += 1u;
+        }
+    }
+
+    /* The open set shrank to exactly U3|U4, and the two that closed are the two
+     * that make a packet encodable. */
+    checks += 1u;
+    if (adreno_cp_ring_undefined_open() != 12u) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if (adreno_cp_ring_undefined_open() !=
+        (kAdrenoCpRingUndefRbCntlDefault | kAdrenoCpRingUndefRbCntlNoUpdate)) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if ((adreno_cp_ring_undefined_open() &
+         kAdrenoCpRingUndefMeInitOpcode) != 0u) {
+        fails += 1u; /* U1 closed */
+    }
+    checks += 1u;
+    if ((adreno_cp_ring_undefined_open() &
+         kAdrenoCpRingUndefPacketHeader) != 0u) {
+        fails += 1u; /* U2 closed */
+    }
+    checks += 1u;
+    if ((adreno_cp_ring_undefined_open() &
+         kAdrenoCpRingUndefRingSize) != 0u) {
+        fails += 1u; /* U5 closed */
+    }
+    checks += 1u;
+    if (adreno_cp_ring_can_encode_packet() != 1) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if ((adreno_cp_ring_undefined_open() & kAdrenoCpRingUndefAll) !=
+        adreno_cp_ring_undefined_open()) {
+        fails += 1u; /* open is a subset of the historical five */
     }
 
     if (check_count != 0) {

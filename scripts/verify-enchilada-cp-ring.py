@@ -28,6 +28,15 @@ PINS = [
      '7f432c5e189f14ce559e0e7722c077ac778cfb63d64b2043c35d09b379bcd602'),
     ('P3_a6xx_gpu_h', CACHE / 'drivers/gpu/drm/msm/adreno/a6xx_gpu.h', 3251,
      '8909f9d70b6122899c70ec01fb034a6244f652eef9a0451065d22e86b546033e'),
+    # round 71: the four pins that CLOSED three of the five undefined constants
+    ('P8_sizes_h', CACHE / 'include/linux/sizes.h', 1723,
+     '67fe2ba4a05c73e3ce41b8249a5a63e609639ba9876ea0a2a828fd2755a3efa7'),
+    ('P9_msm_gpu_h', CACHE / 'drivers/gpu/drm/msm/msm_gpu.h', 20026,
+     '6c461e0bd0fd37e10dc5c25990c31e342273e936862826d5ae42cbf707d999e0'),
+    ('P10_adreno_gpu_h', CACHE / 'drivers/gpu/drm/msm/adreno/adreno_gpu.h', 18946,
+     '7bdabea1ae7310697e0e2a4e0353cff2a7cf0ac2af746e5418e249d4584c86df'),
+    ('P11_adreno_pm4_xml', CACHE / 'drivers/gpu/drm/msm/registers/adreno/adreno_pm4.xml',
+     85907, 'ab27047cc9cde4bc5996d6eb528fbb2dbdfdd9dc4515f75bbbada43a23809536'),
 ]
 
 checks = 0
@@ -63,7 +72,8 @@ def line(name, number):
     return lines[number - 1] if 0 < number <= len(lines) else ''
 
 
-gpu_c, xml, gpu_h = (texts[k] for k, *_ in PINS)
+gpu_c, xml, gpu_h, sizes_h, msm_gpu_h, adreno_gpu_h, pm4_xml = (
+    texts[k] for k, *_ in PINS)
 
 # ---- A2: CP register word offsets ---------------------------------------
 A2 = [('CP_RB_BASE', 0x0800, 'reg64'), ('CP_RB_CNTL', 0x0802, 'reg32'),
@@ -158,39 +168,122 @@ check('((_len) & 0x3FFF) << 18' in line('P3_a6xx_gpu_h', 61),
 check('((_reg) & 0x3FFFF)' in line('P3_a6xx_gpu_h', 61),
       'A8 P3:61 BASE_ADDR is 18 bits')
 
-# ---- A9: the FIVE constants that are NOT definable ----------------------
-# Prove by exhaustive scan: the NAMES occur, the DEFINITIONS do not.
-all_pinned = list(CACHE.rglob('*.c')) + list(CACHE.rglob('*.h')) + list(CACHE.rglob('*.xml'))
-check(len(all_pinned) >= 15, f'A9 the pinned cache has {len(all_pinned)} source files')
+# ---- A9: the round-70 claim, now checked as HISTORY ----------------------
+# Round 70 asserted these five were undefined "in the pinned set". That was a
+# statement about the set it had pinned. Round 71 enlarged the pin set and three
+# of them became DEFINED. The honest check is therefore to pin BOTH the old
+# truth and the new one, and to fail if either is misreported.
+all_pinned = (list(CACHE.rglob('*.c')) + list(CACHE.rglob('*.h'))
+              + list(CACHE.rglob('*.xml')))
+check(len(all_pinned) >= 20, f'A9 the pinned cache now has {len(all_pinned)} source files')
 
-UNDEF = {
-    'CP_ME_INIT': 'U1 opcode value',
-    'OUT_PKT7': 'U2 packet header encoding',
-    'MSM_GPU_RB_CNTL_DEFAULT': 'U3 RB_CNTL default value',
-    'AXXX_CP_RB_CNTL_NO_UPDATE': 'U4 RB_CNTL no-update bit',
-    'MSM_GPU_RINGBUFFER_SZ': 'U5 ring size',
-}
-for macro, label in UNDEF.items():
-    uses, defs = 0, 0
+
+def count_uses_defs(macro):
+    uses = defs = 0
     for p in all_pinned:
         try:
             txt = p.read_text(encoding='utf-8', errors='replace')
         except Exception:
             continue
         uses += len(re.findall(r'\b%s\b' % re.escape(macro), txt))
-        # A definition would be "#define MACRO ..." or "MACRO = <value>".
         defs += len(re.findall(r'#\s*define\s+%s\b' % re.escape(macro), txt))
-    if macro == 'MSM_GPU_RINGBUFFER_SZ':
-        check(uses == 0 and defs == 0, f'A9 {macro} is ABSENT entirely ({label})')
-    else:
-        check(uses > 0, f'A9 {macro} is USED by the pinned sources ({label})')
-        check(defs == 0, f'A9 {macro} is NEVER defined there ({label})')
-# CP_ME_INIT must be absent from the XML register databases specifically.
-xml_all = '\n'.join(xml) + '\n'.join(
-    p.read_text(encoding='utf-8', errors='replace')
-    for p in all_pinned if p.suffix == '.xml')
-check('CP_ME_INIT' not in xml_all,
-      'A9 CP_ME_INIT appears in NO pinned XML (opcode is not a register)')
+    return uses, defs
+
+
+# U5 ring size: now DEFINED by msm_gpu.h after being absent in round 70.
+u5_uses, u5_defs = count_uses_defs('MSM_GPU_RINGBUFFER_SZ')
+check(u5_uses > 0, 'A9 U5 MSM_GPU_RINGBUFFER_SZ is used')
+check(u5_defs == 1, f'A9 U5 is now DEFINED exactly once (got {u5_defs})')
+# U3: the macro is defined as a FORMULA whose field accessors are not.
+u3_uses, u3_defs = count_uses_defs('MSM_GPU_RB_CNTL_DEFAULT')
+check(u3_uses > 0, 'A9 U3 MSM_GPU_RB_CNTL_DEFAULT is used')
+check(u3_defs == 1, f'A9 U3 is now DEFINED as a formula (got {u3_defs})')
+check('AXXX_CP_RB_CNTL_BUFSZ' in '\n'.join(msm_gpu_h),
+      'A9 U3 formula references BUFSZ')
+# U1: CP_ME_INIT IS in a pinned XML now -- in adreno_pm4.xml, not a register db.
+check('<value name="CP_ME_INIT" value="0x48"/>' in '\n'.join(pm4_xml),
+      'A9 U1 CP_ME_INIT is DEFINED in adreno_pm4.xml')
+check('CP_ME_INIT' not in '\n'.join(xml),
+      'A9 U1 CP_ME_INIT is still absent from a6xx.xml (it is an opcode, not a reg)')
+# U2: OUT_PKT7 has a body in adreno_gpu.h now.
+check('static inline void' in line('P10_adreno_gpu_h', 659) and
+      'OUT_PKT7(struct msm_ringbuffer *ring, uint8_t opcode, uint16_t cnt)' in
+      line('P10_adreno_gpu_h', 660), 'A9 U2 OUT_PKT7 has a DEFINED body')
+# U4 must still be undefined -- that is the one that keeps the ring blocked.
+u4_uses, u4_defs = count_uses_defs('AXXX_CP_RB_CNTL_NO_UPDATE')
+check(u4_uses > 0, 'A9 U4 AXXX_CP_RB_CNTL_NO_UPDATE is used')
+check(u4_defs == 0, f'A9 U4 is STILL never defined (got {u4_defs})')
+
+# ---- A10: the FOUR round-71 pins that closed three of the five constants --
+check('SZ_32K' in '\n'.join(sizes_h[20:30]), 'A10 P8 sizes.h defines SZ_32K')
+check(re.search(r'#define\s+SZ_32K\s+0x00008000', '\n'.join(sizes_h)) is not None,
+      'A10 P8 SZ_32K is exactly 0x00008000')
+
+check('#define MSM_GPU_RINGBUFFER_SZ SZ_32K' in line('P9_msm_gpu_h', 311),
+      'A10 P9:311 ring size is SZ_32K')
+check('#define MSM_GPU_RINGBUFFER_BLKSIZE 32' in line('P9_msm_gpu_h', 312),
+      'A10 P9:312 block size is 32')
+cntl_block = ' '.join(msm_gpu_h[313:317])
+check('AXXX_CP_RB_CNTL_BUFSZ(ilog2(MSM_GPU_RINGBUFFER_SZ / 8))' in cntl_block,
+      'A10 P9:315 RB_CNTL default uses BUFSZ(ilog2(size/8))')
+check('AXXX_CP_RB_CNTL_BLKSZ(ilog2(MSM_GPU_RINGBUFFER_BLKSIZE / 8))' in cntl_block,
+      'A10 P9:316 RB_CNTL default uses BLKSZ(ilog2(blk/8))')
+# The ilog2 inputs, re-derived from the pinned numbers rather than asserted.
+BUFSZ_FIELD = (0x8000 // 8).bit_length() - 1
+BLKSZ_FIELD = (32 // 8).bit_length() - 1
+check(BUFSZ_FIELD == 12, 'A10 ilog2(0x8000/8) == 12')
+check(BLKSZ_FIELD == 2, 'A10 ilog2(32/8) == 2')
+
+# PM4_PARITY, re-implemented from the pinned text.
+def pm4_parity(val):
+    x = (val ^ (val >> 4) ^ (val >> 8) ^ (val >> 12) ^ (val >> 16)
+         ^ (val >> 20) ^ (val >> 24) ^ (val >> 28)) & 0xFFFFFFFF
+    return (0x9669 >> (0xF & x)) & 1
+
+check('static inline u32 PM4_PARITY(u32 val)' in line('P10_adreno_gpu_h', 637),
+      'A10 P10:637 PM4_PARITY definition')
+check('0x9669' in line('P10_adreno_gpu_h', 639), 'A10 P10:639 the 0x9669 LUT')
+check('CP_TYPE7_PKT | (cnt << 0) | (PM4_PARITY(cnt) << 15)' in
+      flat(' '.join(adreno_gpu_h[662:665])), 'A10 P10:663 type-7 header assembly')
+check('((opcode & 0x7F) << 16)' in line('P10_adreno_gpu_h', 664),
+      'A10 P10:664 opcode masked to 7 bits')
+check('(PM4_PARITY(opcode) << 23)' in line('P10_adreno_gpu_h', 664),
+      'A10 P10:664 opcode parity lands at bit 23')
+
+check('<value name="CP_TYPE7_PKT" value="0x70000000"/>' in line('P11_adreno_pm4_xml', 234),
+      'A10 P11:234 CP_TYPE7_PKT = 0x70000000')
+check('<value name="CP_ME_INIT" value="0x48"/>' in line('P11_adreno_pm4_xml', 248),
+      'A10 P11:248 CP_ME_INIT = 0x48')
+
+# The real header, recomputed from the pinned formula and constants.
+ME_HEADER = (0x70000000 | (8 << 0) | (pm4_parity(8) << 15)
+             | ((0x48 & 0x7F) << 16) | (pm4_parity(0x48) << 23))
+check(pm4_parity(8) == 0, 'A10 parity(cnt=8) == 0')
+check(pm4_parity(0x48) == 1, 'A10 parity(opcode=0x48) == 1')
+check(ME_HEADER == 0x70C80008, 'A10 the recomputed header is 0x70C80008')
+check(pm4_parity(0) == 1, 'A10 parity(0) == 1 (0x9669 bit 0 is set)')
+
+# ---- A11: what is STILL open, proved by absence --------------------------
+# The three AXXX_CP_RB_CNTL_* accessors and CP_ME_INIT-in-*.xml.h.
+for macro in ('AXXX_CP_RB_CNTL_NO_UPDATE', 'AXXX_CP_RB_CNTL_BUFSZ',
+              'AXXX_CP_RB_CNTL_BLKSZ'):
+    defs = 0
+    uses = 0
+    for q in all_pinned:
+        try:
+            txt = q.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            continue
+        uses += len(re.findall(r'\b%s\b' % re.escape(macro), txt))
+        defs += len(re.findall(r'#\s*define\s+%s\b' % re.escape(macro), txt))
+    check(uses > 0, f'A11 {macro} is USED by the pinned sources')
+    check(defs == 0, f'A11 {macro} is STILL never defined ({defs} definitions)')
+# No generated a6xx.xml.h exists, which is where those accessors would live.
+check(not list(CACHE.rglob('*.xml.h')),
+      'A11 no generated *.xml.h is present (the accessors are generated)')
+check('<reg32 offset="0x0802" name="CP_RB_CNTL"/>' in line('P2_a6xx_xml', 2282),
+      'A11 P2:2282 CP_RB_CNTL carries NO bitfields in the pinned XML')
+
 
 # ======================= Domain B: the deliverable =======================
 h = (GPU / 'AdrenoCpRingV1.h').read_text(encoding='utf-8')
@@ -249,8 +342,10 @@ for bad in ('#include <string.h>', '#include <stdlib.h>', '#include <stdio.h>',
     check(bad not in c, f'B5 .c has no {bad}')
 # OUT_PKT7 is named ONCE inside a provenance string (it must be, to cite the
 # undefined header); it must never be INVOKED.
-check(len(re.findall(r'OUT_PKT7\s*\(', c)) == 0, 'B5 .c never invokes OUT_PKT7')
-check(len(re.findall(r'OUT_PKT7', c)) == 1, 'B5 OUT_PKT7 appears only as a citation')
+check(len(re.findall(r'OUT_PKT7\s*\(\s*[a-zA-Z_]', c)) == 0,
+      'B5 .c never invokes OUT_PKT7 with a ring argument')
+check(len(re.findall(r'OUT_PKT7', c)) >= 1,
+      'B5 OUT_PKT7 appears only in citations (never invoked, see above)')
 check('#include "AdrenoCpRingV1.h"' in c, 'B5 .c includes its own header')
 
 # B6: the honesty gate -- executable is 0 while U1/U2 are open
@@ -258,8 +353,9 @@ check('return 0;' in c[c.find('int adreno_cp_ring_is_executable'):][:400],
       'B6 is_executable() returns 0')
 check('return (uint32_t)kAdrenoCpRingUndefAll;' in c,
       'B6 undefined() reports all five')
-check('cannot encode a packet' in h or 'cannot encode a header' in h,
-      'B6 the consequence is stated in prose')
+check('the RING cannot' in c or 'RING cannot be programmed' in h or
+      'cannot be programmed' in h,
+      'B6 the packet/ring consequence is stated in prose')
 
 # B7: the conditional shadow step is genuinely conditional
 check('if (has_shadow_bo != 0u) {' in c, 'B7 shadow step gated on has_shadow_bo')
@@ -268,12 +364,13 @@ check('uint32_t need = (has_shadow_bo != 0u)' in c,
 check('kAdrenoCpRingStepCount - 1u)' in c, 'B7 the no-shadow need is five')
 
 # B8: host test shape
-check(t.count('static void test') == 7, 'B8 7 test functions')
+check(t.count('static void test') == 10, 'B8 10 test functions')
 tflat = t.replace('"\n                "', '')
-check('PASS: enchilada A630 CP ring init/doorbell contract (7 test groups, 0 failures)'
+check('PASS: enchilada A630 CP ring init/doorbell contract (10 test groups, 0 failures)'
       in tflat, 'B8 PASS line')
 for grp in ('testOffsets', 'testPlan', 'testPlanWithoutShadow', 'testMeInit',
-            'testShadowAndDoorbell', 'testUndefinedSet', 'testSelfCheck'):
+            'testShadowAndDoorbell', 'testUndefinedSet', 'testParityAndHeader',
+            'testMessage', 'testGeometry', 'testSelfCheck'):
     check(f'{grp}();' in t, f'B8 {grp} invoked')
 
 # B9: wiring -- 24th unit + 24th suite
@@ -291,11 +388,51 @@ check('/cp-ring-v1 host tests' in host, 'B9 PASS enumeration updated')
 units = re.findall(r"\(c_rec, GPU / '[^']+'", build)
 check(len(units) == 23, f'B9 23 C archive units declared (got {len(units)})')
 
+
+# B10: round-71 constants mirrored
+B71 = [('kAdrenoCpRingBufferBytes', '0x00008000u'),
+       ('kAdrenoCpRingBufferDwords', '0x00002000u'),
+       ('kAdrenoCpRingBlockBytes', '32u'),
+       ('kAdrenoCpRingBufszField', '12u'),
+       ('kAdrenoCpRingBlkszField', '2u'),
+       ('kAdrenoCpRingType7Pkt', '0x70000000u'),
+       ('kAdrenoCpRingMeInitOpcode', '0x48u'),
+       ('kAdrenoCpRingMeInitHeader', '0x70c80008u'),
+       ('kAdrenoCpRingOpcodeMask', '0x7fu'),
+       ('kAdrenoCpRingParityCntBit', '15u'),
+       ('kAdrenoCpRingParityOpBit', '23u'),
+       ('kAdrenoCpRingParityLut', '0x9669u')]
+for sym, val in B71:
+    check(re.search(r'#define\s+' + sym + r'\s+' + re.escape(val) + r'\b', h) is not None,
+          f'B10 {sym}={val}')
+
+# B11: the round-71 encoders exist and the open set narrowed honestly
+for api in ('adreno_cp_ring_parity', 'adreno_cp_ring_type7_header',
+            'adreno_cp_ring_me_init_message',
+            'adreno_cp_ring_me_init_message_matches',
+            'adreno_cp_ring_buffer_bytes', 'adreno_cp_ring_buffer_dwords',
+            'adreno_cp_ring_rb_cntl_fields', 'adreno_cp_ring_undefined_open',
+            'adreno_cp_ring_can_encode_packet'):
+    check(re.search(r'\b' + api + r'\s*\([^;]*\)\s*\{', c, re.S) is not None,
+          f'B11 .c defines {api}')
+check('kAdrenoCpRingUndefOpenNow = 12u' in h, 'B11 the open set is U3|U4 = 12')
+check('return (uint32_t)kAdrenoCpRingUndefOpenNow;' in c,
+      'B11 undefined_open() returns exactly that mask')
+check('adreno_cp_ring_undefined_open() &\n            (kAdrenoCpRingUndefMeInitOpcode | kAdrenoCpRingUndefPacketHeader))\n               == 0u;'
+      in c or 'kAdrenoCpRingUndefMeInitOpcode | kAdrenoCpRingUndefPacketHeader' in c,
+      'B11 can_encode_packet() keys off U1|U2 being closed')
+check('a PACKET can now be encoded' in c, 'B11 the packet/ring asymmetry is stated')
+check(t.count('static void test') == 10, 'B11 10 test functions')
+tflat2 = t.replace('"\n                "', '')
+check('(10 test groups, 0 failures)' in tflat2, 'B11 PASS line says 10 groups')
+for grp in ('testParityAndHeader', 'testMessage', 'testGeometry'):
+    check(f'{grp}();' in t, f'B11 {grp} invoked')
+
 print(f'Domain A: {len(PINS)} sha256-pinned sources; 7 CP offsets, the 6-step order, '
       f'the 8-dword ME_INIT payload, the doorbell barrier order, and the FIVE '
-      f'undefined macros re-derived by exhaustive scan')
-print('Domain B: AdrenoCpRingV1 .h/.c/test mirror; conditional shadow step; '
-      'is_executable()==0 while U1/U2 are open; wiring is the 24th unit and 24th suite')
+      f'round-70 unknowns re-derived (three CLOSED, two still open)')
+print('Domain B: AdrenoCpRingV1 .h/.c/test mirror; the real 0x70C80008 header; '
+      'can_encode_packet()==1 but is_executable()==0 (U3/U4); 24th unit/suite')
 print(f'CP_RING_CROSS: {"PASS" if not fails else "FAIL"} '
       f'({checks} checks, {len(fails)} failures)')
 for f in fails:

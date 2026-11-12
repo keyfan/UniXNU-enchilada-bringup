@@ -1,6 +1,6 @@
 # Stage 5 GPU — A630 CP ring init / doorbell contract (ROUND 70)
 
-**Status: HOST-VERIFIED. ORDER + PAYLOAD + REFUSAL ONLY.** This is NOT a GPU
+**Status: HOST-VERIFIED. ORDER + PAYLOAD + HEADER + PARTIAL REFUSAL.** This is NOT a GPU
 driver. It encodes the exact CP-ring bring-up an A6XX_GEN1 backend must perform,
 the exact `CP_ME_INIT` payload, and the doorbell ordering rule — and, with equal
 care, the **five constants that no pinned source defines**, because those five
@@ -76,7 +76,7 @@ as executable.
 | `drivers/NativeAdreno/AdrenoCpRingV1.h` | 3 sha256 pins; 7 CP offsets; the 8-dword payload constants; the 6-step enum; the 5-bit undefined enum; 11 APIs |
 | `drivers/NativeAdreno/AdrenoCpRingV1.c` | freestanding C11, no libc/MMIO/IOKit; conditional shadow step; payload builder + strict matcher; doorbell order; the refusal set |
 | `drivers/NativeAdreno/tests/adreno-cp-ring-v1-test.cpp` | 7 test groups, `CHECK()` accumulates failures |
-| `scripts/verify-enchilada-cp-ring.py` | method-2 cross-verifier, **139 checks** (Domain A = 3 pinned sources + an exhaustive define-scan; Domain B = deliverable) |
+| `scripts/verify-enchilada-cp-ring.py` | method-2 cross-verifier, **215 checks** (Domain A = 7 pinned sources + an exhaustive define-scan; Domain B = deliverable) |
 | `scripts/build-enchilada-adreno.py` | 24th archive unit |
 | `scripts/check-enchilada-adreno-host.py` | 24th host suite |
 | `drivers/NativeAdreno/AdrenoGen1BackendV1.c` | admission row moved: `cp-ring` modeled 0 → 1, `modeled_count` 5 → 6 |
@@ -111,6 +111,76 @@ that would ship as a silent off-by-one in a real ring allocator.
 
 Plus the record checker: `enchilada: 15 structured areas checked`, and the
 round-69 cross-verifier re-run green at 230 checks with the new row.
+
+
+## ROUND 71: three of the five "undefined" constants are now DEFINED
+
+Round 70 closed with a claim and a named next step: five constants were undefined,
+and "pinning msm_gpu.h / adreno_gpu.h / msm_ringbuffer.h" was the research step.
+**That step was taken, and it defeated three fifths of round 70's own claim.** The
+correction is recorded here rather than quietly superseded.
+
+| # | round-70 status | round-71 status | evidence |
+| --- | --- | --- | --- |
+| U1 `CP_ME_INIT` opcode | undefined | **0x48** | `adreno_pm4.xml:248` |
+| U2 type-7 header encoding | undefined | **defined** | `adreno_gpu.h:659-665` + `:637-643` parity |
+| U3 `MSM_GPU_RB_CNTL_DEFAULT` | undefined | **formula known, fields open** | `msm_gpu.h:314-316` |
+| U4 `AXXX_CP_RB_CNTL_NO_UPDATE` | undefined | **still open** | generated `a6xx.xml.h` only |
+| U5 ring size | absent | **0x8000** (`SZ_32K`) | `msm_gpu.h:311` + `sizes.h:26` |
+
+Four new sha256 pins make it checkable: `sizes.h` 1723 B
+`67fe2ba4…a3efa7`, `msm_gpu.h` 20026 B `6c461e0b…d999e0`, `adreno/adreno_gpu.h`
+18946 B `7bdabea1…84c86df`, `registers/adreno/adreno_pm4.xml` 85907 B
+`ab27047c…23809536`.
+
+### What this changes in the deliverable
+
+The module can now **encode a real packet**. `adreno_cp_ring_type7_header()`
+reimplements `PM4_PARITY` and `OUT_PKT7` from the pinned bodies, and
+`adreno_cp_ring_me_init_message()` emits the full nine dwords:
+
+```
+0x70C80008   <- type-7 header: CP_TYPE7_PKT | cnt 8 | parity(8)=0@15
+                | opcode 0x48<<16 | parity(0x48)=1@23
+0x0000002F  0x00000003  0x20000000  0  0  0  0  0
+```
+
+This is the first byte sequence this port could produce that a CP might in
+principle consume. Two details are load-bearing and are now asserted: the opcode
+is **masked** to 7 bits (not truncated into the parity bit at 23), and
+`parity(0)` is **1**, because `0x9669` bit 0 is set — a popcount would answer 0
+and produce a wrong header on every packet.
+
+### What it does NOT change
+
+`adreno_cp_ring_is_executable()` is **still 0**, and the admission table does not
+move (modeled=6, satisfied=0, BLOCKED). A packet can now be encoded; the **ring
+cannot be programmed**, because U4 and U3's two field accessors would produce the
+`CP_RB_CNTL` word and they are still unknown. The asymmetry is now explicit in
+the API: `adreno_cp_ring_can_encode_packet() == 1` while
+`adreno_cp_ring_is_executable() == 0`.
+
+Why U4 resists: `AXXX_CP_RB_CNTL_NO_UPDATE`, `_BUFSZ` and `_BLKSZ` are bitfield
+accessors emitted by the **generated** `a6xx.xml.h`, which is not in the tree
+(no `*.xml.h` exists), and the pinned `a6xx.xml:2282` declares `CP_RB_CNTL` as a
+bare `reg32` with **no bitfields**. The verifier proves that absence by
+exhaustive scan rather than asserting it.
+
+## Round-71 verifications
+
+1. Host suite #24 now reports **10 test groups** (3 new: parity/header,
+   message, geometry) — `PASS: enchilada A630 CP ring init/doorbell contract
+   (10 test groups, 0 failures)`.
+2. `CP_RING_CROSS: PASS (215 checks, 0 failures)` — up from 139, with Domain A
+   re-deriving the four new pins, the parity table, the header arithmetic and the
+   *residual* absence of U4, and Domain A9 rewritten to check the round-70 claim
+   as **history** rather than as current truth.
+3. Strict freestanding compile: arm64 Mach-O **5240 B**, native COFF 4954 B,
+   `R71_STRICT: PASS`.
+
+Two defects were found and fixed inside this round's own work: a capacity guard
+`+2` where header+payload is `+1` (it demanded 10 slots for a 9-dword message),
+and three wrong parity expectations that a hand-computed table exposed.
 
 ## Honest boundary
 
