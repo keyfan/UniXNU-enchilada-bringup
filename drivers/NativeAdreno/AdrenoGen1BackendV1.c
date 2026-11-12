@@ -237,9 +237,11 @@ int enchilada_gen1_backend_admit(struct enchilada_gen1_admission *out)
      * pinned source (AdrenoCpRingV1.c adreno_cp_ring_is_executable() == 0).
      * modeled = 1 therefore records the order, not a working ring. */
     out->items[kEnchiladaGen1PrereqCpRing].modeled = 1u;
-    /* round 67: the zero gate that WAITS for a board VA map; the map itself is
-     * the missing input, so this is not "modelled" as an available input. */
-    out->items[kEnchiladaGen1PrereqBoardVaMap].modeled = 0u;
+    /* round 77: AdrenoVaMapV1 encodes the exact DERIVATION CHAIN for the GPU VA
+     * aperture and proves it terminates in a RUNTIME SMMU ID2.UBS read, so the
+     * DERIVATION is modelled. satisfied stays 0: three blockers remain (ID2
+     * unread, no powered SMMU, no page-table walker) and ready() is derived. */
+    out->items[kEnchiladaGen1PrereqBoardVaMap].modeled = 1u;
     /* rounds 35/49/50/52: narrow read-only sub-results only. */
     out->items[kEnchiladaGen1PrereqDeviceProof].modeled = 0u;
     /* CONFIG_XNU_NATIVE_ADRENO stays n. */
@@ -537,14 +539,14 @@ int enchilada_gen1_backend_verify(uint32_t *check_count)
         fails += 1u;
     }
 
-    /* Admission: 8 modelled (round 75 added SMMU_STAGE1's word model),
+    /* Admission: 9 modelled (round 77 added BOARD_VA_MAP's derivation),
      * 0 satisfied, BLOCKED. */
     checks += 1u;
     if (enchilada_gen1_backend_admit(&adm) != 0) {
         fails += 1u;
     }
     checks += 1u;
-    if (adm.modeled_count != 8u) {
+    if (adm.modeled_count != 9u) {
         fails += 1u;
     }
     checks += 1u;
@@ -556,7 +558,7 @@ int enchilada_gen1_backend_verify(uint32_t *check_count)
         fails += 1u;
     }
     checks += 1u;
-    if (adm.modeled_count + 4u != kEnchiladaGen1PrereqCount) {
+    if (adm.modeled_count + 3u != kEnchiladaGen1PrereqCount) {
         fails += 1u;
     }
     checks += 1u;
@@ -566,6 +568,10 @@ int enchilada_gen1_backend_verify(uint32_t *check_count)
     checks += 1u;
     if (adm.items[kEnchiladaGen1PrereqSmmuStage1].modeled != 1u) {
         fails += 1u; /* round 75 modelled the CONTEXT WORDS, not a context */
+    }
+    checks += 1u;
+    if (adm.items[kEnchiladaGen1PrereqBoardVaMap].modeled != 1u) {
+        fails += 1u; /* round 77 modelled the DERIVATION, not a map */
     }
     checks += 1u;
     if (adm.items[kEnchiladaGen1PrereqCpRing].modeled != 1u) {

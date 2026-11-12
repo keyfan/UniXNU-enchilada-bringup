@@ -75,8 +75,8 @@ the offset before reading it.
   ADMISSION contract (round 69): adjudicates the TWELVE prerequisites an A630
   kernel backend needs, with two independent columns (`modeled` in this tree vs
   `satisfied` by a device-capable backend) and a tri-state verdict. Since round
-  75: modeled=8, satisfied=0, verdict BLOCKED (cp-ring, zap-auth and kgsl-smmu-stage1
-  modelled; the MDT parser covers zap-auth's S6/S7). Also carries the A630 catalog pins,
+  77: modeled=9, satisfied=0, verdict BLOCKED (cp-ring, zap-auth, kgsl-smmu-stage1 and
+  board-va-map modelled; the MDT parser covers zap-auth's S6/S7). Also carries the A630 catalog pins,
   the four GMU memory regions (and REFUSES the a660/a7xx SZ_8K dummy widening),
   the five-step GMU resume plan with both generation-dependent rates, the
   SPTPRAC value/poll contract, the CP ring word offsets, and `GPU_PAS_ID 13`
@@ -104,6 +104,17 @@ the offset before reading it.
 - `tests/adreno-cp-ring-v1-test.cpp` — 7 test groups: word offsets, plan with and
   without a shadow BO, the payload builder + strict matcher (A7xx refused),
   shadow mode / doorbell order, the five undefined constants, self-check.
+- `AdrenoVaMapV1.h` / `AdrenoVaMapV1.c` — GPU VA aperture DERIVATION model (round 77):
+  encodes the mainline chain `max(16 MiB, aperture_start)..aperture_end` <- `(1<<ias)-1`
+  <- `ias = smmu->va_size` <- `arm_smmu_id_size_to_bits(ID2.UBS)` <- **a runtime ID2 read at
+  probe**, which is why the GPU VA range is not a board constant and no document could record
+  it. Both geometry shapes are implemented (plain TTBR0 and the TTBR1 variant), and
+  `adreno_va_gmu_end_is_gpu_end()` keeps the GMU's own 0x80000000 space (a6xx_gmu.c:1283)
+  from being mistaken for the GPU's. THREE blockers are named and derived into `ready()==0`,
+  and the first of them is downstream of the SMMU row's own CX requirement.
+- `tests/adreno-va-map-v1-test.cpp` — 7 test groups.
+- `scripts/verify-enchilada-va-map.py` — cross verifier: 3 sha256-pinned sources, aperture
+  recomputed for ias in 32..48 (98 checks).
 - `AdrenoSmmuStage1V1.h` / `AdrenoSmmuStage1V1.c` — ARM SMMU v2 stage-1 context WORD
   MODEL (round 75), the layer round 53 deliberately did not build: 10 CB byte offsets, the
   SCTLR default RECOMPUTED from the pinned bits (`0x1067` LE / `0x1077` BE, i.e.
