@@ -224,8 +224,12 @@ int enchilada_gen1_backend_admit(struct enchilada_gen1_admission *out)
      * satisfied stays 0: seven of the eight preconditions are absent, and
      * adreno_zap_auth_ready() is derived from that count so it cannot drift. */
     out->items[kEnchiladaGen1PrereqZapAuth].modeled = 1u;
-    /* round 53: a fail-closed READ-safety gate, not a stage-1 context. */
-    out->items[kEnchiladaGen1PrereqSmmuStage1].modeled = 0u;
+    /* round 75: AdrenoSmmuStage1V1 computes the actual stage-1 context words -
+     * SCTLR (CFIE|CFRE|AFE|TRE|M|S1_ASIDPNE = 0x1067), the S2CR field layout,
+     * and the six-write order with SCTLR LAST - so the CONTEXT is modelled.
+     * satisfied stays 0: all four inputs it needs are absent, and
+     * adreno_smmu_stage1_ready() is derived from that mask. */
+    out->items[kEnchiladaGen1PrereqSmmuStage1].modeled = 1u;
     /* round 70: AdrenoCpRingV1 now encodes the 6-step CP bring-up order, the
      * exact 8-dword CP_ME_INIT payload and the doorbell barrier rule, so the
      * ORDER is modelled. It is still NOT executable: five constants, including
@@ -533,14 +537,14 @@ int enchilada_gen1_backend_verify(uint32_t *check_count)
         fails += 1u;
     }
 
-    /* Admission: 7 modelled (round 73 added ZAP_AUTH's shape), 0 satisfied,
-     * BLOCKED. */
+    /* Admission: 8 modelled (round 75 added SMMU_STAGE1's word model),
+     * 0 satisfied, BLOCKED. */
     checks += 1u;
     if (enchilada_gen1_backend_admit(&adm) != 0) {
         fails += 1u;
     }
     checks += 1u;
-    if (adm.modeled_count != 7u) {
+    if (adm.modeled_count != 8u) {
         fails += 1u;
     }
     checks += 1u;
@@ -552,12 +556,16 @@ int enchilada_gen1_backend_verify(uint32_t *check_count)
         fails += 1u;
     }
     checks += 1u;
-    if (adm.modeled_count + 5u != kEnchiladaGen1PrereqCount) {
+    if (adm.modeled_count + 4u != kEnchiladaGen1PrereqCount) {
         fails += 1u;
     }
     checks += 1u;
     if (adm.items[kEnchiladaGen1PrereqZapAuth].modeled != 1u) {
         fails += 1u; /* round 73 modelled the SHAPE (and only the shape) */
+    }
+    checks += 1u;
+    if (adm.items[kEnchiladaGen1PrereqSmmuStage1].modeled != 1u) {
+        fails += 1u; /* round 75 modelled the CONTEXT WORDS, not a context */
     }
     checks += 1u;
     if (adm.items[kEnchiladaGen1PrereqCpRing].modeled != 1u) {

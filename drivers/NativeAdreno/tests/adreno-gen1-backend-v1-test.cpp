@@ -194,17 +194,17 @@ static void testAdmission()
 {
     struct enchilada_gen1_admission adm;
     CHECK(enchilada_gen1_backend_admit(&adm) == 0);
-    /* The whole point: seven modelled, zero satisfied. Round 70
+    /* The whole point: eight modelled, zero satisfied. Round 70
      * moved CP_RING from 0 to 1 by modelling the bring-up ORDER; the verdict
      * did not move, because nothing is satisfied. */
-    CHECK(adm.modeled_count == 7u);
+    CHECK(adm.modeled_count == 8u);
     CHECK(adm.satisfied_count == 0u);
     CHECK(adm.verdict == kEnchiladaGen1AdmitBlocked);
     CHECK(adm.verdict != kEnchiladaGen1AdmitReady);
     /* modelled + not-modelled == the whole set. */
-    CHECK(adm.modeled_count + 5u == kEnchiladaGen1PrereqCount);
+    CHECK(adm.modeled_count + 4u == kEnchiladaGen1PrereqCount);
     CHECK(kEnchiladaGen1PrereqCount == 12u);
-    /* Exactly these seven are modelled. */
+    /* Exactly these eight are modelled. */
     CHECK(adm.items[kEnchiladaGen1PrereqPowerPath].modeled == 1u);
     CHECK(adm.items[kEnchiladaGen1PrereqWindows].modeled == 1u);
     CHECK(adm.items[kEnchiladaGen1PrereqGmuBoot].modeled == 1u);
@@ -212,9 +212,9 @@ static void testAdmission()
     CHECK(adm.items[kEnchiladaGen1PrereqFirmware].modeled == 1u);
     CHECK(adm.items[kEnchiladaGen1PrereqCpRing].modeled == 1u);
     CHECK(adm.items[kEnchiladaGen1PrereqZapAuth].modeled == 1u);
-    /* And these five are NOT -- ZAP_AUTH above all, because the sheng tree
+    /* And these four are NOT -- ZAP_AUTH above all, because the sheng tree
      * contains no PAS code that could have been carried over. */
-    CHECK(adm.items[kEnchiladaGen1PrereqSmmuStage1].modeled == 0u);
+    CHECK(adm.items[kEnchiladaGen1PrereqSmmuStage1].modeled == 1u);
     CHECK(adm.items[kEnchiladaGen1PrereqBoardVaMap].modeled == 0u);
     CHECK(adm.items[kEnchiladaGen1PrereqDeviceProof].modeled == 0u);
     CHECK(adm.items[kEnchiladaGen1PrereqConfigOn].modeled == 0u);

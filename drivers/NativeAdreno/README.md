@@ -75,8 +75,8 @@ the offset before reading it.
   ADMISSION contract (round 69): adjudicates the TWELVE prerequisites an A630
   kernel backend needs, with two independent columns (`modeled` in this tree vs
   `satisfied` by a device-capable backend) and a tri-state verdict. Since round
-  74: modeled=7, satisfied=0, verdict BLOCKED (cp-ring and zap-auth modelled; MDT
-  parser added under zap-auth's S6/S7). Also carries the A630 catalog pins,
+  75: modeled=8, satisfied=0, verdict BLOCKED (cp-ring, zap-auth and kgsl-smmu-stage1
+  modelled; the MDT parser covers zap-auth's S6/S7). Also carries the A630 catalog pins,
   the four GMU memory regions (and REFUSES the a660/a7xx SZ_8K dummy widening),
   the five-step GMU resume plan with both generation-dependent rates, the
   SPTPRAC value/poll contract, the CP ring word offsets, and `GPU_PAS_ID 13`
@@ -104,6 +104,18 @@ the offset before reading it.
 - `tests/adreno-cp-ring-v1-test.cpp` — 7 test groups: word offsets, plan with and
   without a shadow BO, the payload builder + strict matcher (A7xx refused),
   shadow mode / doorbell order, the five undefined constants, self-check.
+- `AdrenoSmmuStage1V1.h` / `AdrenoSmmuStage1V1.c` — ARM SMMU v2 stage-1 context WORD
+  MODEL (round 75), the layer round 53 deliberately did not build: 10 CB byte offsets, the
+  SCTLR default RECOMPUTED from the pinned bits (`0x1067` LE / `0x1077` BE, i.e.
+  CFIE|CFRE|AFE|TRE|M|S1_ASIDPNE), the S2CR field layout (PRIVCFG 25..24, TYPE 17..16 with
+  TRANS 0/BYPASS 1/FAULT 2, EXIDVALID bit 10, CBNDX 7..0), and the six-write order with
+  **SCTLR LAST** because SCTLR.M is the bit that enables translation. Names all FOUR absent
+  inputs rather than assuming them: no page table, no ASID allocator, the streams still in
+  the firmware BYPASS handoff (round 53: Busy=10, id0=4c017e4c) so they do not fault, and CX
+  measured DOWN (round 35: cx=0x00005ff4). `ready()` is derived from that mask and is 0.
+- `tests/adreno-smmu-stage1-v1-test.cpp` — 6 test groups.
+- `scripts/verify-enchilada-smmu-stage1.py` — cross verifier: 3 sha256-pinned sources, with
+  the SCTLR default rebuilt from the pinned bit positions (117 checks).
 - `AdrenoMdtV1.h` / `AdrenoMdtV1.c` — XNU-side MDT/ELF32 PARSER (round 74): the four
   Qualcomm rules the ZAP handshake needs — `mdt_phdr_valid` (PT_LOAD + not HASH + non-zero
   memsz), `qcom_mdt_get_size` (min..ALIGN(max) over VALID phdrs only), the split `bNN`
