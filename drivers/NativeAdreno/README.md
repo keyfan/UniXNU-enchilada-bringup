@@ -75,7 +75,7 @@ the offset before reading it.
   ADMISSION contract (round 69): adjudicates the TWELVE prerequisites an A630
   kernel backend needs, with two independent columns (`modeled` in this tree vs
   `satisfied` by a device-capable backend) and a tri-state verdict. Since round
-  70: modeled=6, satisfied=0, verdict BLOCKED. Also carries the A630 catalog pins,
+  73: modeled=7, satisfied=0, verdict BLOCKED. Also carries the A630 catalog pins,
   the four GMU memory regions (and REFUSES the a660/a7xx SZ_8K dummy widening),
   the five-step GMU resume plan with both generation-dependent rates, the
   SPTPRAC value/poll contract, the CP ring word offsets, and `GPU_PAS_ID 13`
@@ -103,6 +103,23 @@ the offset before reading it.
 - `tests/adreno-cp-ring-v1-test.cpp` — 7 test groups: word offsets, plan with and
   without a shadow BO, the payload builder + strict matcher (A7xx refused),
   shadow mode / doorbell order, the five undefined constants, self-check.
+- `AdrenoZapAuthV1.h` / `AdrenoZapAuthV1.c` — Qualcomm PAS / ZAP auth SHAPE contract
+  (round 73): the exact SCM descriptor the handshake uses (`SVC_PIL 0x02`,
+  `PAS_AUTH_AND_RESET 0x05`, one SIP-owned arg — and the finding that those numeric
+  ids are NOT in the public `qcom_scm.h`, only in the internal one), the EIGHT-step
+  prerequisite chain from `adreno_gpu.c:43-156` with a per-step `present`/`reachable`
+  flag, and the result-semantics trap that makes a rejected image look like success
+  (`return ret ?: res.result[0]` — transport 0 alone is NOT enough). Exactly ONE of
+  the eight preconditions exists on enchilada today (`firmware-name`); `CONFIG_ARCH_QCOM`
+  is not even reachable because XNU has no such Kconfig, so that step's real content
+  is the SCM transport itself. `adreno_zap_auth_ready()` is derived from the count and
+  is 0.
+- `tests/adreno-zap-auth-v1-test.cpp` — 7 test groups: pasid, SCM shape, chain
+  presence/reachability, step names, result semantics, the -EOPNOTSUPP quiet fallback,
+  self-check.
+- `scripts/verify-enchilada-zap-auth.py` — cross verifier: 4 sha256-pinned sources
+  re-derive the call shape, the public-header absence and the eight anchors in strict
+  source order (114 checks).
 - `scripts/verify-enchilada-cp-ring.py` — cross verifier: 3 sha256-pinned sources
   re-derive the offsets, order, payload, barrier rule and protect encoding, and
   prove the five undefined macros by exhaustive scan (139 checks).

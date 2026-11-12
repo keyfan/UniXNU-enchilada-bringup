@@ -217,9 +217,13 @@ int enchilada_gen1_backend_admit(struct enchilada_gen1_admission *out)
     out->items[kEnchiladaGen1PrereqHfiV1].modeled = 1u;
     /* round 38 device-sourced blob inventory: file presence proven, load not. */
     out->items[kEnchiladaGen1PrereqFirmware].modeled = 1u;
-    /* ZAP_AUTH: modelled 0. Nothing in this tree models qcom_scm PAS auth; the
-     * sheng tree has no PAS code to port, and the 13 is a Linux-side fact. */
-    out->items[kEnchiladaGen1PrereqZapAuth].modeled = 0u;
+    /* round 73: AdrenoZapAuthV1 now encodes the exact SCM call shape (SVC_PIL
+     * 0x02 / PAS_AUTH_AND_RESET 0x05, one SIP-owned arg), the EIGHT-step
+     * prerequisite chain from adreno_gpu.c:43-156, and the result semantics that
+     * make a rejected image look like success. modelled = 1 records the SHAPE.
+     * satisfied stays 0: seven of the eight preconditions are absent, and
+     * adreno_zap_auth_ready() is derived from that count so it cannot drift. */
+    out->items[kEnchiladaGen1PrereqZapAuth].modeled = 1u;
     /* round 53: a fail-closed READ-safety gate, not a stage-1 context. */
     out->items[kEnchiladaGen1PrereqSmmuStage1].modeled = 0u;
     /* round 70: AdrenoCpRingV1 now encodes the 6-step CP bring-up order, the
@@ -529,14 +533,14 @@ int enchilada_gen1_backend_verify(uint32_t *check_count)
         fails += 1u;
     }
 
-    /* Admission: 6 modelled (round 70 added CP_RING's order), 0 satisfied,
+    /* Admission: 7 modelled (round 73 added ZAP_AUTH's shape), 0 satisfied,
      * BLOCKED. */
     checks += 1u;
     if (enchilada_gen1_backend_admit(&adm) != 0) {
         fails += 1u;
     }
     checks += 1u;
-    if (adm.modeled_count != 6u) {
+    if (adm.modeled_count != 7u) {
         fails += 1u;
     }
     checks += 1u;
@@ -548,12 +552,12 @@ int enchilada_gen1_backend_verify(uint32_t *check_count)
         fails += 1u;
     }
     checks += 1u;
-    if (adm.modeled_count + 6u != kEnchiladaGen1PrereqCount) {
+    if (adm.modeled_count + 5u != kEnchiladaGen1PrereqCount) {
         fails += 1u;
     }
     checks += 1u;
-    if (adm.items[kEnchiladaGen1PrereqZapAuth].modeled != 0u) {
-        fails += 1u; /* ZAP_AUTH is NOT modelled: sheng has no PAS code */
+    if (adm.items[kEnchiladaGen1PrereqZapAuth].modeled != 1u) {
+        fails += 1u; /* round 73 modelled the SHAPE (and only the shape) */
     }
     checks += 1u;
     if (adm.items[kEnchiladaGen1PrereqCpRing].modeled != 1u) {

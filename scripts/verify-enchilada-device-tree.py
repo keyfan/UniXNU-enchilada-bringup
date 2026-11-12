@@ -152,6 +152,23 @@ def main():
               % (len(gpu_clk), len(gmu_clk)))
         check(len(gpu_clk) != len(gmu_clk),
               'DEVICE the counts are DISTINCT on real hardware')
+        # Round 73: the ZAP node question, answered from the LIVE tree.
+        # mainline zap_shader_load_mdt() looks for a "zap-shader" CHILD of the
+        # gpu node (adreno_gpu.c:48). The vendor tree has none -- it puts
+        # qcom,pas-id / firmware-name / memory-region on qcom,kgsl-hyp instead.
+        r = subprocess.run([args.adb, 'shell', 'ls ' + K3D0], capture_output=True,
+                           text=True, timeout=120)
+        names = (r.stdout or '').split()
+        check('zap-shader' not in names,
+              'DEVICE qcom,kgsl-3d0 has NO zap-shader child (round-73 step S2)')
+        check(len(names) > 10, 'DEVICE the kgsl-3d0 node really was listed')
+        r = subprocess.run([args.adb, 'shell', 'ls ' + KHYP], capture_output=True,
+                           text=True, timeout=120)
+        hyp = (r.stdout or '').split()
+        for prop in ('memory-region', 'qcom,firmware-name', 'qcom,pas-id'):
+            check(prop in hyp,
+                  'DEVICE qcom,kgsl-hyp carries %s (the vendor alternative)' % prop)
+
         # kgsl IRQ is SPI 300 = 0x12c.
         irq = adb_bytes(args.adb, K3D0 + '/interrupts')
         check(irq == bytes.fromhex('000000000000012c00000000'),
