@@ -71,6 +71,24 @@ the offset before reading it.
   a6xx_gmu.c io-contract slices (:1771 RSCC delta, :642-643 setup_pdc,
   :590-605 ucode) + pinned PDC headers vs adapter translation checks
   (40 checks).
+- `AdrenoGen1BackendV1.h` / `AdrenoGen1BackendV1.c` — A6XX_GEN1 BACKEND
+  ADMISSION contract (round 69): adjudicates the TWELVE prerequisites an A630
+  kernel backend needs, with two independent columns (`modeled` in this tree vs
+  `satisfied` by a device-capable backend) and a tri-state verdict. Today
+  modeled=5, satisfied=0, verdict BLOCKED. Also carries the A630 catalog pins,
+  the four GMU memory regions (and REFUSES the a660/a7xx SZ_8K dummy widening),
+  the five-step GMU resume plan with both generation-dependent rates, the
+  SPTPRAC value/poll contract, the CP ring word offsets, and `GPU_PAS_ID 13`
+  with its two pins — recording that the value is NOT inherited from the
+  A740/sheng tree, which has no PAS concept in code.
+- `tests/adreno-gen1-backend-v1-test.cpp` — 9 test groups: catalog pins, GBIF
+  absence, resume plan order/rates, GMU regions, SPTPRAC, PAS/ZAP names, CP
+  ring offsets, the 12-way adjudication, self-check.
+- `scripts/verify-enchilada-gen1-backend.py` — cross verifier: 8 sha256-pinned
+  sources re-derive the PAS id, catalog entry, legacy markers, SPTPRAC, resume
+  order, GMU regions, CP ring, both GDSCs and BOTH DTB clock counts; Domain B
+  asserts the deliverable mirrors them and that all FIVE local copies of
+  `GPU_PAS_ID` still agree (230 checks).
 
 ## Verification (HOST-VERIFIED)
 
