@@ -70,7 +70,7 @@ observation-only).
 ## Two independent verifications
 
 1. `scripts/verify-ci-233-adreno.py` - artifact-based, derives the archive sha16
-   and kernel size/sha256 from the downloaded artifacts (45-style checks, 0
+   and kernel size/sha256 from the downloaded artifacts (41 checks, 0
    failures): 21 objects, sha16 changed, clean kernel.log, dirty bootstrap,
    Mach-O magic, changed sha256, all 8 + 15 symbols, stage-3 invariants.
 2. `work/tmp/_verify_ci233_dotnet.ps1` - .NET `Invoke-RestMethod` over run/job/
