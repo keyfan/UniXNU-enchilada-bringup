@@ -38,6 +38,7 @@ TESTS = [
     ('adreno-gpucc-window-v1-test', [GPU / 'tests/adreno-gpucc-window-v1-test.cpp'], ['AdrenoGpuccWindowV1', 'AdrenoPowerUpBackendV1', 'AdrenoPowerUpV1', 'AdrenoPowerUpGdsc', 'AdrenoGdscDecode', 'AdrenoClkCtlV1', 'AdrenoDomainState', 'AdrenoGmuCallerV1', 'AdrenoGmuBootV1', 'AdrenoGmuBusV1', 'AdrenoBoardInputs', 'AdrenoPowerGate', 'AdrenoHfiV1']),
     ('adreno-caller-v1-test', [GPU / 'tests/adreno-caller-v1-test.cpp'], ['AdrenoCallerV1', 'AdrenoGpuccWindowV1', 'AdrenoPowerUpBackendV1', 'AdrenoPowerUpV1', 'AdrenoPowerUpGdsc', 'AdrenoGdscDecode', 'AdrenoClkCtlV1', 'AdrenoDomainState', 'AdrenoGmuCallerV1', 'AdrenoGmuBootV1', 'AdrenoGmuBusV1', 'AdrenoBoardInputs', 'AdrenoPowerGate', 'AdrenoHfiV1']),
     ('adreno-metal-seam-v1-test', [GPU / 'tests/adreno-metal-seam-v1-test.cpp'], ['AdrenoMetalSeamV1']),
+    ('adreno-darwin-kmd-abi-v1-test', [GPU / 'tests/adreno-darwin-kmd-abi-v1-test.cpp'], ['AdrenoDarwinKmdAbiV1']),
 ]
 SOURCES = {
     'AdrenoCatalog': GPU / 'AdrenoCatalog.c',
@@ -59,6 +60,7 @@ SOURCES = {
     'AdrenoGpuccWindowV1': GPU / 'AdrenoGpuccWindowV1.c',
     'AdrenoCallerV1': GPU / 'AdrenoCallerV1.c',
     'AdrenoMetalSeamV1': GPU / 'AdrenoMetalSeamV1.c',
+    'AdrenoDarwinKmdAbiV1': GPU / 'AdrenoDarwinKmdAbiV1' / 'AdrenoDarwinKmdAbiV1.c',
 }
 
 def sanitizers(cxx, out):
@@ -92,7 +94,7 @@ def main():
         if result.returncode:
             sys.stderr.write(result.stderr)
             raise SystemExit(f'FAIL: {name} ({result.returncode})')
-    print(f'PASS: enchilada A630 catalog/hwinit/board-input/power-gate/domain-state/hfi-v1/firmware-v1/gmu-boot-v1/gmu-bus-v1/gmu-caller-v1/power-up-v1/kgsl-smmu-gate/gdsc-decode/power-up-gdsc/power-down-v1/clk-ctl-v1/power-up-backend-v1/gpucc-window-v1/caller-v1/metal-seam-v1 host tests ({"sanitized" if san else "without sanitizers"})')
+    print(f'PASS: enchilada A630 catalog/hwinit/board-input/power-gate/domain-state/hfi-v1/firmware-v1/gmu-boot-v1/gmu-bus-v1/gmu-caller-v1/power-up-v1/kgsl-smmu-gate/gdsc-decode/power-up-gdsc/power-down-v1/clk-ctl-v1/power-up-backend-v1/gpucc-window-v1/caller-v1/metal-seam-v1/darwin-kmd-abi-v1 host tests ({"sanitized" if san else "without sanitizers"})')
 
 
 if __name__ == '__main__':

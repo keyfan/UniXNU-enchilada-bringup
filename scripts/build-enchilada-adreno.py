@@ -96,6 +96,7 @@ def main():
         (c_rec, GPU / 'AdrenoGpuccWindowV1.c', ['-mgeneral-regs-only']),  # round 63
         (c_rec, GPU / 'AdrenoCallerV1.c', ['-mgeneral-regs-only']),  # round 64
         (c_rec, GPU / 'AdrenoMetalSeamV1.c', ['-mgeneral-regs-only']),  # round 65
+        (c_rec, GPU / 'AdrenoDarwinKmdAbiV1' / 'AdrenoDarwinKmdAbiV1.c', ['-mgeneral-regs-only']),  # round 66
     ]
     objects, commands = [], {}
     for rec, source, extra in units:
@@ -125,6 +126,9 @@ def main():
                  'AdrenoClkCtlV1', 'AdrenoPowerUpBackendV1', 'AdrenoGpuccWindowV1',
                  'AdrenoCallerV1', 'AdrenoMetalSeamV1'):
         sources += [GPU / f'{stem}.c', GPU / f'{stem}.h']
+    # Round 66: the ABI directory contract lives in its own subdirectory.
+    sources += [GPU / 'AdrenoDarwinKmdAbiV1' / 'AdrenoDarwinKmdAbiV1.c',
+                GPU / 'AdrenoDarwinKmdAbiV1' / 'NativeAdrenoABI.h']
     sources.append(GPU / 'NativeAdrenoA630HwInit.h')
     (OUT / 'build-report.json').write_text(json.dumps({
         'archive_sha256': digest,
