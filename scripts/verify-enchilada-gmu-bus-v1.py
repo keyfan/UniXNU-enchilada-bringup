@@ -166,8 +166,17 @@ def main():
          "RSCC base derived from GMU window")
     need("windows->gmu_bytes - ADRENO_GMU_BUS_V1_RSCC_DELTA" in ccode,
          "RSCC byte guard = gmu_bytes - delta")
-    # fail-closed refusals
-    need("values == 0 || words == 0" in ccode, "bulk refuses NULL/empty")
+    # fail-closed refusals. ROUND 46 CHANGED THIS CONTRACT: values == NULL is
+    # legal ONLY when a bulk image was registered, in which case the cookie
+    # resolves the ITCM image. The unconditional "values == 0 -> refuse" check
+    # was deliberately removed, so asserting it would now be asserting a rule
+    # the source no longer has. Assert the ACTUAL round-46 shape instead, which
+    # is a two-part refusal: NULL needs a registered image AND a sane word count.
+    need("if (c->bulk_image == 0 || words == 0 || words > c->bulk_words)"
+         in ccode, "bulk: NULL data needs a registered image of adequate size")
+    need("if (src == 0) {" in ccode, "bulk: NULL resolution is conditional")
+    need("src = c->bulk_image;" in ccode, "bulk: the cookie supplies the image")
+    need("if (words == 0)" in ccode, "bulk refuses a zero word count")
     need("domain >= kAdrenoGmuBusV1DomainCount" in ccode, "unknown domain refused")
     need("c->base[domain] == 0" in ccode, "NULL window refused")
     # typedef shares the model bus type
