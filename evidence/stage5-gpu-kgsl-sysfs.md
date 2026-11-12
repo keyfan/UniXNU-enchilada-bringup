@@ -122,6 +122,18 @@ C:\platform-tools\adb.exe shell "cat /sys/class/kgsl/kgsl-3d0/reset_count"
 C:\platform-tools\adb.exe shell "cat /sys/class/kgsl/kgsl-3d0/gpu_clock_stats"
 ```
 
+## Verification
+
+`scripts/verify-enchilada-kgsl-sysfs.py` re-reads all 28 attributes from the live
+phone on every run and confronts them with both pinned sources:
+
+- Domain A re-reads every attribute and compares it with the values recorded here.
+- Domain B proves the `Adreno630v2` string is **absent from both** the pinned
+  catalog and the vendored Mesa table, and that the document records the v2 suffix
+  as a downstream naming convention without claiming what it implies.
+
+`KGSL_SYSFS_VERIFY: PASS (61 checks, 0 failures)`.
+
 ## Honest boundary
 
 READ-ONLY DEVICE-SOURCED DRIVER STATE. No GPU register read or write, no MMIO, no
