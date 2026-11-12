@@ -74,8 +74,8 @@ the offset before reading it.
 - `AdrenoGen1BackendV1.h` / `AdrenoGen1BackendV1.c` — A6XX_GEN1 BACKEND
   ADMISSION contract (round 69): adjudicates the TWELVE prerequisites an A630
   kernel backend needs, with two independent columns (`modeled` in this tree vs
-  `satisfied` by a device-capable backend) and a tri-state verdict. Today
-  modeled=5, satisfied=0, verdict BLOCKED. Also carries the A630 catalog pins,
+  `satisfied` by a device-capable backend) and a tri-state verdict. Since round
+  70: modeled=6, satisfied=0, verdict BLOCKED. Also carries the A630 catalog pins,
   the four GMU memory regions (and REFUSES the a660/a7xx SZ_8K dummy widening),
   the five-step GMU resume plan with both generation-dependent rates, the
   SPTPRAC value/poll contract, the CP ring word offsets, and `GPU_PAS_ID 13`
@@ -89,6 +89,23 @@ the offset before reading it.
   order, GMU regions, CP ring, both GDSCs and BOTH DTB clock counts; Domain B
   asserts the deliverable mirrors them and that all FIVE local copies of
   `GPU_PAS_ID` still agree (230 checks).
+- `AdrenoCpRingV1.h` / `AdrenoCpRingV1.c` — A630 CP RING INITIALISATION and
+  DOORBELL contract (round 70): the six-step ring bring-up order with its one
+  CONDITIONAL step (the shadow-RPTR write happens only when a shadow BO exists),
+  the exact eight-dword `CP_ME_INIT` payload, the barrier-before-`CP_RB_WPTR`
+  doorbell rule, the WHERE_AM_I vs hardware shadow strategy, and the protect
+  encoding. With equal care it records the FIVE constants no pinned source
+  defines (`CP_ME_INIT`'s opcode, the type-7 header encoding,
+  `MSM_GPU_RB_CNTL_DEFAULT`, `AXXX_CP_RB_CNTL_NO_UPDATE`, the ring size), so
+  `adreno_cp_ring_is_executable()` is **0**: the order is known, a packet cannot
+  be encoded. This is why the admission table moved one row (modeled 5 -> 6) and
+  not the verdict.
+- `tests/adreno-cp-ring-v1-test.cpp` — 7 test groups: word offsets, plan with and
+  without a shadow BO, the payload builder + strict matcher (A7xx refused),
+  shadow mode / doorbell order, the five undefined constants, self-check.
+- `scripts/verify-enchilada-cp-ring.py` — cross verifier: 3 sha256-pinned sources
+  re-derive the offsets, order, payload, barrier rule and protect encoding, and
+  prove the five undefined macros by exhaustive scan (139 checks).
 
 ## Verification (HOST-VERIFIED)
 

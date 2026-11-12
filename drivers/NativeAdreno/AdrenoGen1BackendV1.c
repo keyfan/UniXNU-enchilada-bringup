@@ -222,9 +222,13 @@ int enchilada_gen1_backend_admit(struct enchilada_gen1_admission *out)
     out->items[kEnchiladaGen1PrereqZapAuth].modeled = 0u;
     /* round 53: a fail-closed READ-safety gate, not a stage-1 context. */
     out->items[kEnchiladaGen1PrereqSmmuStage1].modeled = 0u;
-    /* CP_RING: word offsets are pinned (P4) but no ring/fence/submit model
-     * exists in this tree, so it is recorded as NOT modelled. */
-    out->items[kEnchiladaGen1PrereqCpRing].modeled = 0u;
+    /* round 70: AdrenoCpRingV1 now encodes the 6-step CP bring-up order, the
+     * exact 8-dword CP_ME_INIT payload and the doorbell barrier rule, so the
+     * ORDER is modelled. It is still NOT executable: five constants, including
+     * the packet header encoding and the ME_INIT opcode, are undefined in every
+     * pinned source (AdrenoCpRingV1.c adreno_cp_ring_is_executable() == 0).
+     * modeled = 1 therefore records the order, not a working ring. */
+    out->items[kEnchiladaGen1PrereqCpRing].modeled = 1u;
     /* round 67: the zero gate that WAITS for a board VA map; the map itself is
      * the missing input, so this is not "modelled" as an available input. */
     out->items[kEnchiladaGen1PrereqBoardVaMap].modeled = 0u;
@@ -525,13 +529,14 @@ int enchilada_gen1_backend_verify(uint32_t *check_count)
         fails += 1u;
     }
 
-    /* Admission: 5 modelled, 0 satisfied, BLOCKED. */
+    /* Admission: 6 modelled (round 70 added CP_RING's order), 0 satisfied,
+     * BLOCKED. */
     checks += 1u;
     if (enchilada_gen1_backend_admit(&adm) != 0) {
         fails += 1u;
     }
     checks += 1u;
-    if (adm.modeled_count != 5u) {
+    if (adm.modeled_count != 6u) {
         fails += 1u;
     }
     checks += 1u;
@@ -543,7 +548,7 @@ int enchilada_gen1_backend_verify(uint32_t *check_count)
         fails += 1u;
     }
     checks += 1u;
-    if (adm.modeled_count + 7u != kEnchiladaGen1PrereqCount) {
+    if (adm.modeled_count + 6u != kEnchiladaGen1PrereqCount) {
         fails += 1u;
     }
     checks += 1u;
@@ -551,8 +556,8 @@ int enchilada_gen1_backend_verify(uint32_t *check_count)
         fails += 1u; /* ZAP_AUTH is NOT modelled: sheng has no PAS code */
     }
     checks += 1u;
-    if (adm.items[kEnchiladaGen1PrereqCpRing].modeled != 0u) {
-        fails += 1u;
+    if (adm.items[kEnchiladaGen1PrereqCpRing].modeled != 1u) {
+        fails += 1u; /* round 70 modelled the ORDER (and only the order) */
     }
     checks += 1u;
     if (adm.items[kEnchiladaGen1PrereqHfiV1].modeled != 1u) {

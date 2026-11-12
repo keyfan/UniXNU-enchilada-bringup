@@ -360,9 +360,9 @@ check('#include "AdrenoGen1BackendV1.h"' in c, 'B6 .c includes its own header')
 # B7: the adjudication is honest -- modeled != satisfied, 5 vs 0, BLOCKED
 check('out->items[kEnchiladaGen1PrereqZapAuth].modeled = 0u;' in c,
       'B7 ZAP_AUTH is recorded as NOT modelled')
-check('out->items[kEnchiladaGen1PrereqCpRing].modeled = 0u;' in c,
-      'B7 CP_RING is recorded as NOT modelled')
-check(c.count('.modeled = 1u;') == 5, 'B7 exactly five items are modelled')
+check('out->items[kEnchiladaGen1PrereqCpRing].modeled = 1u;' in c,
+      'B7 CP_RING is modelled since round 70 (the ORDER only)')
+check(c.count('.modeled = 1u;') == 6, 'B7 exactly six items are modelled (round 70 moved CP_RING)')
 check(c.count('.satisfied') >= 4, 'B7 satisfied is a separate column')
 check('kEnchiladaGen1AdmitBlocked' in c and
       'out->verdict = (out->satisfied_count == kEnchiladaGen1PrereqCount)' in c,
@@ -397,10 +397,11 @@ check("('adreno-gen1-backend-v1-test', [GPU / 'tests/adreno-gen1-backend-v1-test
       in host, 'B10 host checker has the TESTS entry')
 check("'AdrenoGen1BackendV1'" in build.split('sources = ')[1],
       'B10 build-report source list gains the stem')
-check('/gen1-backend-v1 host tests' in host, 'B10 PASS enumeration updated')
+check('/gen1-backend-v1/cp-ring-v1 host tests' in host,
+      'B10 PASS enumeration updated (round 70 appended cp-ring-v1)')
 # The unit count in the build script: 22 C units + the one C++ probe = 23.
 units = re.findall(r"\(c_rec, GPU / '[^']+'", build)
-check(len(units) == 22, f'B10 22 C archive units declared (got {len(units)})')
+check(len(units) == 23, f'B10 23 C archive units declared after round 70 (got {len(units)})')
 
 # B11: the FIVE local copies of GPU_PAS_ID must all agree with both pins.
 # A constant known in five places and adjudicated in none is exactly the gap
@@ -428,7 +429,7 @@ check(len(set(pas_values.values())) == 1,
 print(f'Domain A: {len(PINS)} sha256-pinned sources; PAS 13, catalog, legacy HFI, '
       f'sptprac, resume order, GMU regions, CP ring, GDSCs, DTB clocks all re-derived')
 print('Domain B: AdrenoGen1BackendV1 .h/.c/test mirror; 12 prerequisites adjudicated '
-      '(modeled 5, satisfied 0, BLOCKED); wiring is the 23rd unit and 23rd suite')
+      '(modeled 6 since round 70, satisfied 0, BLOCKED); wiring is the 23rd unit and 23rd suite')
 print(f'GEN1_BACKEND_CROSS: {"PASS" if not fails else "FAIL"} '
       f'({checks} checks, {len(fails)} failures)')
 for f in fails:
