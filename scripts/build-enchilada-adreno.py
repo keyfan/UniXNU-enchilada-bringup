@@ -91,6 +91,11 @@ def main():
         (c_rec, GPU / 'AdrenoGdscDecode.c', ['-mgeneral-regs-only']),  # round 56
         (c_rec, GPU / 'AdrenoPowerUpGdsc.c', ['-mgeneral-regs-only']),  # round 58
         (c_rec, GPU / 'AdrenoPowerDownV1.c', ['-mgeneral-regs-only']),  # round 59
+        (c_rec, GPU / 'AdrenoClkCtlV1.c', ['-mgeneral-regs-only']),  # round 61
+        (c_rec, GPU / 'AdrenoPowerUpBackendV1.c', ['-mgeneral-regs-only']),  # round 62
+        (c_rec, GPU / 'AdrenoGpuccWindowV1.c', ['-mgeneral-regs-only']),  # round 63
+        (c_rec, GPU / 'AdrenoCallerV1.c', ['-mgeneral-regs-only']),  # round 64
+        (c_rec, GPU / 'AdrenoMetalSeamV1.c', ['-mgeneral-regs-only']),  # round 65
     ]
     objects, commands = [], {}
     for rec, source, extra in units:
@@ -116,7 +121,9 @@ def main():
     for stem in ('AdrenoDomainState', 'AdrenoPowerGate', 'AdrenoBoardInputs', 'AdrenoCatalog',
                  'AdrenoHfiV1', 'AdrenoFirmwareV1', 'AdrenoGmuBootV1', 'AdrenoGmuBusV1',
                  'AdrenoGmuCallerV1', 'AdrenoPowerUpV1', 'AdrenoKGSLSmmuGate',
-                 'AdrenoGdscDecode', 'AdrenoPowerUpGdsc', 'AdrenoPowerDownV1'):
+                 'AdrenoGdscDecode', 'AdrenoPowerUpGdsc', 'AdrenoPowerDownV1',
+                 'AdrenoClkCtlV1', 'AdrenoPowerUpBackendV1', 'AdrenoGpuccWindowV1',
+                 'AdrenoCallerV1', 'AdrenoMetalSeamV1'):
         sources += [GPU / f'{stem}.c', GPU / f'{stem}.h']
     sources.append(GPU / 'NativeAdrenoA630HwInit.h')
     (OUT / 'build-report.json').write_text(json.dumps({

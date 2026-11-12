@@ -1,0 +1,265 @@
+{
+  "schema_version": 1,
+  "board": "enchilada",
+  "soc": "SDM845",
+  "round": 61,
+  "topic": "GPUCC clock-control derivation: the CLOCK half of the A630 power-up plan (HOST-VERIFIED, no MMIO, no device read)",
+  "status": "host-verified",
+  "purpose": "Round 51 encoded the ORDER of a6xx_gmu_resume() as five ops behind AdrenoPowerUpV1Bus callbacks; round 58 bound the two genpd steps to derived GDSC register writes. The three CLOCK steps (SET_CORE_RATE, SET_HUB_RATE, CLOCKS_ENABLE) stayed opaque: a bus callback may do anything and every existing test still passes. This pins the Linux v6.12 clock sources that DERIVE what those callbacks must actually write inside GPUCC, so the clock half becomes a checkable contract instead of trust (m13019, m12247).",
+  "linux": {
+    "ref": "v6.12",
+    "mirror": "https://cdn.jsdelivr.net/gh/torvalds/linux@v6.12/",
+    "files": {
+      "drivers/clk/qcom/gpucc-sdm845.c": {
+        "bytes": 5176,
+        "sha256": "80c2fbef5c65df986f4c391bbeedbf53e8744e5dd326f0e05dc6b4021f542a54"
+      },
+      "drivers/clk/qcom/clk-rcg2.c": {
+        "bytes": 40841,
+        "sha256": "ff1bc46cf2d10b3d31499f2188b3d9793a00ee4f1bc92a62c724c28cd0d8d6a5"
+      },
+      "drivers/clk/qcom/clk-rcg.h": {
+        "bytes": 5425,
+        "sha256": "a0a4b01dc9a6347bad020d8cbbd01a688f9615694b4a878d0643da0b30438929"
+      },
+      "drivers/clk/qcom/clk-branch.c": {
+        "bytes": 4934,
+        "sha256": "913cdda2b6ed31b05f37a0b3467a6a03e12a92b041382f7f760e287e5afeb59b"
+      },
+      "drivers/clk/qcom/clk-branch.h": {
+        "bytes": 3807,
+        "sha256": "d1cdd6eda43aaf475916c3e429ed70f83786b63a2cf1037d2639abf159b6519a"
+      },
+      "drivers/clk/clk.c": {
+        "bytes": 142840,
+        "sha256": "60dc2843b95ed663961bbf84fad352d4ebabefb37f6d23c49c1bcc383cafdf98",
+        "note": "clk_set_rate()'s `if (!clk) return 0;` NULL guard is the load-bearing fact of finding 1."
+      },
+      "drivers/gpu/drm/msm/msm_io_utils.c": {
+        "bytes": 3713,
+        "sha256": "85f4cc2feebb33b7e617aef0fdd55a316658d892c0baa0fb68dfad4791f7da7e"
+      },
+      "drivers/gpu/drm/msm/adreno/a6xx_gmu.c": {
+        "bytes": 48981,
+        "sha256": "c14fbb253e602bfd2585d757da871dde08ea63b811ff3c6808f657f4522f78d4"
+      },
+      "arch/arm64/boot/dts/qcom/sdm845.dtsi": {
+        "bytes": 151194,
+        "sha256": "e7af1c639d7548cb03a728aa85367a68c4964f18ef1d9ad39f91c5090dac8457"
+      },
+      "arch/arm64/boot/dts/qcom/sm8550.dtsi": {
+        "bytes": 150626,
+        "sha256": "4ee4807a9b347179f031e47bf01962e7db988ae111d7c9025169ebf726865236",
+        "note": "The SM8550 GMU node lists a clock literally named \"hub\"; the SDM845 one does not. That contrast is what makes finding 1 a generation fact rather than an omission."
+      }
+    },
+    "upstream_rule": {
+      "title": "the three clock steps of the power-up plan are a FUNCTION of the clock tree, not opaque callbacks",
+      "a6xx_gmu_c": {
+        "resume_cx_genpd": 1033,
+        "resume_gx_genpd_guarded": 1041,
+        "set_core_rate": 1044,
+        "set_hub_rate": 1045,
+        "set_hub_rate_end": 1046,
+        "clocks_prepare_enable": 1047,
+        "stop_gx_first": 1209,
+        "stop_clocks_disable": 1212,
+        "stop_cx_last": 1214,
+        "clocks_probe": 1481,
+        "core_clk_resolve": 1488,
+        "hub_clk_resolve": 1491
+      },
+      "msm_io_utils_c": {
+        "bulk_get_clock": 17,
+        "name_suffix_concat": "snprintf(n, \"%s_clk\", name); match on id == name OR id == name_clk",
+        "returns_null_when_absent": true
+      },
+      "clk_c": {
+        "clk_set_rate": 2596,
+        "null_guard": "if (!clk) return 0;  -- a NULL handle is a SUCCESSFUL no-op"
+      },
+      "gpucc_sdm845_c": {
+        "parent_map_0": 53,
+        "parent_map_0_end": 58,
+        "ftbl_gpu_cc_gmu_clk_src": 67,
+        "ftbl_end": 72,
+        "gmu_clk_src_rcg": 74,
+        "gmu_clk_src_rcg_end": 86,
+        "cx_gmu_clk_branch": 88,
+        "cx_gmu_clk_branch_end": 104,
+        "cxo_clk_branch": 106,
+        "cxo_clk_branch_end": 117,
+        "cx_gdsc": 119,
+        "gx_gdsc": 130,
+        "regmap_config": 153,
+        "max_register": "0x8008",
+        "protocol_wake_sleep_update": 190,
+        "protocol_wake_sleep_update_end": 193
+      },
+      "clk_rcg2_c": {
+        "cmd_reg": 23,
+        "cfg_reg": 29,
+        "m_reg": 38,
+        "n_reg": 39,
+        "d_reg": 40,
+        "cfg_src_div_shift": 34,
+        "cfg_src_sel_shift": 35,
+        "cfg_src_sel_mask": 36,
+        "cfg_mode_shift": 37,
+        "cfg_mode_mask": 38,
+        "cfg_mode_dual_edge": 39,
+        "cfg_hw_clk_ctrl_mask": 40,
+        "is_enabled": 67,
+        "update_config": 112,
+        "update_config_poll_bound": 500,
+        "configure": 418,
+        "cfg_word_assembly": 432,
+        "cfg_word_assembly_end": 441,
+        "shared_set_rate": 1189,
+        "shared_set_rate_end": 1207,
+        "parked_branch": 1198,
+        "parked_branch_end": 1205,
+        "shared_enable": 1216,
+        "shared_enable_end": 1239,
+        "force_enable": 1139,
+        "force_enable_end": 1166,
+        "clear_force_enable": 1149,
+        "force_enable_poll_bound": 500
+      },
+      "clk_rcg_h": {
+        "f_macro": 10,
+        "f_macro_body": "{ (f), (s), (2 * (h) - 1), (m), (n) }"
+      },
+      "clk_branch_c": {
+        "branch2_check_halt": 43,
+        "branch2_check_halt_end": 60,
+        "wait": 62,
+        "wait_end": 92,
+        "halt_poll_bound": 200,
+        "toggle": 94
+      },
+      "clk_branch_h": {
+        "cbcr_clk_off": 59,
+        "cbcr_noc_fsm_status": 60,
+        "fsm_status_on": 61,
+        "cbcr_clock_enable": 67
+      },
+      "sdm845_dtsi": {
+        "gmu_node": 4925,
+        "gmu_clock_names": 4941
+      },
+      "sm8550_dtsi": {
+        "gmu_node_hub_clock": "clock-names includes \"hub\" on the A740 node"
+      }
+    }
+  },
+  "dtb": {
+    "path": "notes/mu-silicium/enchilada.dts",
+    "sha256": "e590ee3273499ee4230760aea9195073c0c195242eee11c95570e174ec202275",
+    "bytes": 784857,
+    "slice_gpucc": [
+      6223,
+      6234
+    ],
+    "gmu_clock_names_line": 23890,
+    "facts": {
+      "gpucc_base": "0x5090000",
+      "gpucc_size": "0x9000",
+      "gmu_clock_names": "gmu_clk\\0cxo_clk\\0axi_clk\\0memnoc_clk",
+      "gmu_clock_count": 4,
+      "has_hub_clock": false
+    }
+  },
+  "derivation": {
+    "gpucc_base": "0x05090000",
+    "cx_gmu_cbcr": "0x1098",
+    "cxo_cbcr": "0x109c",
+    "rcg_cmd_rcgr": "0x1120",
+    "rcg_hid_width": 5,
+    "rcg_mnd_width": 0,
+    "freq_table": [
+      {
+        "source": "gpucc-sdm845.c:68 F(19200000, P_BI_TCXO, 1, 0, 0)",
+        "freq_hz": 19200000,
+        "src_cfg": 0,
+        "pre_div_stored": 1,
+        "cfg_word": "0x0001"
+      },
+      {
+        "source": "gpucc-sdm845.c:69 F(200000000, P_GPLL0_OUT_MAIN_DIV, 1.5, 0, 0)",
+        "freq_hz": 200000000,
+        "src_cfg": 6,
+        "pre_div_stored": 2,
+        "cfg_word": "0x0602"
+      },
+      {
+        "source": "gpucc-sdm845.c:70 F(500000000, P_GPU_CC_PLL1_OUT_MAIN, 1, 0, 0)",
+        "freq_hz": 500000000,
+        "src_cfg": 3,
+        "pre_div_stored": 1,
+        "cfg_word": "0x0301"
+      }
+    ]
+  },
+  "round61_findings": {
+    "finding_1_hub_clock_absent": {
+      "statement": "There is no clock whose bulk id is \"hub\" or \"hub_clk\" on SDM845, so a6xx_gmu.c:1045-1046 resolves a NULL handle and clk_set_rate(NULL, 150000000) is a SUCCESSFUL no-op. The 150 MHz hub-rate step is dead code on this board.",
+      "chain": [
+        "a6xx_gmu.c:1491-1493 gmu->hub_clk = msm_clk_bulk_get_clock(gmu->clocks, gmu->nr_clocks, \"hub\")",
+        "msm_io_utils.c:17-32 matches bulk id == \"hub\" OR == \"hub_clk\"; SDM845 names are gmu/cxo/axi/memnoc (sdm845.dtsi:4941 = enchilada.dts:23890), so no match",
+        "clk.c clk_set_rate(): `if (!clk) return 0;` -- success without touching any register"
+      ],
+      "a740_contrast": "The SM8550 GMU node lists a clock literally named \"hub\" (sm8550.dtsi gmu@3d6a000), so the SAME upstream line really programs an RCG there. The A740 path is not a different rate; it is a different shape.",
+      "consequence": "A backend that implements SET_HUB_RATE as a GPUCC register write on enchilada would encode behaviour this hardware does not have. AdrenoPowerUpV1HubRateHz() remains correct as a VALUE (the upstream ternary is exact) -- it is simply never programmed here."
+    },
+    "finding_2_core_rate_is_parked": {
+      "statement": "clk_set_rate(gmu->core_clk, 200000000) does NOT write CFG on a fresh boot: a6xx_gmu.c:1044 runs BEFORE clk_bulk_prepare_enable at :1047, so the shared RCG is still disabled and clk_rcg2_shared_set_rate() takes the parked branch.",
+      "chain": [
+        "200000000 selects the F(200000000, P_GPLL0_OUT_MAIN_DIV, 1.5, 0, 0) row (qcom_find_freq: first row with rate <= row.freq)",
+        "F() stores 2*h-1, so pre_div == 2 and src_cfg == 6; with mnd_width 0 there are no M/N/D writes and no DUAL_EDGE bit -- the whole CFG word is 0x0602",
+        "clk-rcg2.c:1198-1205 `if (!clk_hw_is_enabled(hw)) return __clk_rcg2_configure(rcg, f, &rcg->parked_cfg);` -- ZERO register writes",
+        "the real CFG write happens later inside clk_rcg2_shared_enable() (:1216-1239), which writes parked_cfg back"
+      ],
+      "consequence": "The derived plan for the disabled case is ONE PARK_CFG step with register_writes == 0. The enabled case is 6 steps / 4 writes / 2 polls."
+    },
+    "finding_3_two_of_four_clocks_are_gpucc": {
+      "statement": "The bulk prepare/enable covers FOUR clocks (sdm845.dtsi:4941), but only gpu_cc_cx_gmu_clk (GPUCC 0x1098) and gpu_cc_cxo_clk (GPUCC 0x109c) live in the GPUCC window. GCC_DDRSS_GPU_AXI_CLK and GCC_GPU_MEMNOC_GFX_CLK are GCC registers.",
+      "consequence": "Any count this module reports is a GPUCC-subset count (2), never the bulk count (4). Keeping them distinct is the same anti-conflation rule AdrenoPowerUpV1 applies to the 4-vs-6 GMU/kgsl clock counts."
+    },
+    "finding_4_branch_halt_is_a_disjunction": {
+      "statement": "clk_branch2_check_halt() when enabling accepts EITHER `(val & CBCR_CLK_OFF) == 0` OR `FIELD_GET(CBCR_NOC_FSM_STATUS, val) == FSM_STATUS_ON`.",
+      "consequence": "Modelling the halt wait as a single-mask POLL_CLEAR would drop the NOC-FSM acceptance path and could report a healthy clock as stalled. The module gives it a distinct step kind, POLL_BRANCH2_ON."
+    },
+    "correction_of_round_51_implication": {
+      "claimed_implicitly": "rounds 45-60 treated SET_HUB_RATE as a real clock-rate step and reported 150 MHz as data the backend would program",
+      "actual": "on enchilada the handle is NULL and nothing is programmed; the 150 MHz value is a no-op argument",
+      "status": "round 51's HubRateHz() value was and remains correct; only the implied EFFECT is corrected here. No prior boundary is retracted."
+    }
+  },
+  "module": {
+    "path": "drivers/NativeAdreno/AdrenoClkCtlV1.{h,c}",
+    "host_test": "drivers/NativeAdreno/tests/adreno-clk-ctl-v1-test.cpp",
+    "cross_verifier": "scripts/verify-enchilada-clk-ctl-v1.py",
+    "fetch_script": "scripts/fetch-enchilada-gpu-clk-sources.py",
+    "api": [
+      "AdrenoClkCtlV1HubClockPresent",
+      "AdrenoClkCtlV1HubSetRateIsNoop",
+      "AdrenoClkCtlV1HubStepWritesNothing",
+      "AdrenoClkCtlV1GmuClockCount",
+      "AdrenoClkCtlV1GpuccClockCount",
+      "AdrenoClkCtlV1FreqTable",
+      "AdrenoClkCtlV1SelectFreq",
+      "AdrenoClkCtlV1CfgWord",
+      "AdrenoClkCtlV1PlanSetCoreRate",
+      "AdrenoClkCtlV1PlanRcgEnable",
+      "AdrenoClkCtlV1PlanBranchEnable",
+      "AdrenoClkCtlV1Verify"
+    ],
+    "verification": {
+      "host_suite": "16 suites, 0 failures",
+      "host_test_checks": 76,
+      "strict_c_target": "aarch64-apple-darwin, freestanding"
+    },
+    "honest_boundary": "HOST-VERIFIED DERIVATION ONLY. No MMIO, nothing mapped, no domain powered, no clock enabled, no IOKit/firmware/kernel caller, no CI run, no device run, no flash. Reading a GPUCC register still requires the round-22/28 precondition chain; nothing here relaxes it. gpu area STAYS host-verified and CONFIG_XNU_NATIVE_ADRENO remains n."
+  }
+}
