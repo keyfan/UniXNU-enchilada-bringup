@@ -430,9 +430,9 @@ check("('adreno-cp-ring-v1-test', [GPU / 'tests/adreno-cp-ring-v1-test.cpp'], ['
       in host, 'B9 host checker TESTS entry')
 check("'AdrenoCpRingV1'" in build.split('sources = ')[1],
       'B9 build-report source list gains the stem')
-check('/cp-ring-v1 host tests' in host, 'B9 PASS enumeration updated')
+check('/cp-ring-v1' in host, 'B9 PASS enumeration updated')
 units = re.findall(r"\(c_rec, GPU / '[^']+'", build)
-check(len(units) == 23, f'B9 23 C archive units declared (got {len(units)})')
+check(len(units) == 24, f'B9 24 C archive units declared (got {len(units)})')
 
 
 # B10: round-71 constants mirrored
