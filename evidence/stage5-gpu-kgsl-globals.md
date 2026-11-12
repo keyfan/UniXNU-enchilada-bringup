@@ -124,6 +124,18 @@ C:\platform-tools\adb.exe shell "cat /sys/kernel/debug/kgsl/debug/strict_memory"
 C:\platform-tools\adb.exe shell "umount /sys/kernel/debug"
 ```
 
+## Verification
+
+`scripts/verify-enchilada-kgsl-globals.py` re-reads the whole table live — mounting
+debugfs, reading `active_cnt`, `ctx/`, `strict_memory` and `globals`, and then
+**always unmounting in a `finally` block** and asserting the mount count returned to
+its pre-round value. It also asserts the table's STRUCTURE (17 entries, four
+complete ring sets, real sizes) and that **every IOVA is exactly `0x0-0x0` with a
+degenerate range**, so a future run that sees a non-zero IOVA fails loudly instead
+of silently passing.
+
+`KGSL_GLOBALS_VERIFY: PASS (53 checks, 0 failures)`.
+
 ## Honest boundary
 
 DEVICE-SOURCED DRIVER INTERNAL STATE, read through a briefly-mounted debugfs that
