@@ -200,9 +200,11 @@ check("GPU / 'AdrenoVaMapV1.c', ['-mgeneral-regs-only']" in build,
       'B11 build script compiles the 28th unit')
 check("'AdrenoVaMapV1': GPU / 'AdrenoVaMapV1.c'," in host, 'B11 host SOURCES entry')
 check("('adreno-va-map-v1-test'" in host, 'B11 host TESTS entry')
-check('/va-map-v1 host tests' in host, 'B11 PASS enumeration updated')
-check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 27,
-      'B11 27 C archive units declared')
+check('/va-map-v1' in host, 'B11 PASS enumeration lists va-map-v1')
+check('/smmu-ctx-word-v1' in host,
+      'B11 and the later round-83 suite, so the enumeration is CUMULATIVE')
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 28,
+      'B11 28 C archive units declared')
 adm = (GPU / 'AdrenoGen1BackendV1.c').read_text(encoding='utf-8')
 check('out->items[kEnchiladaGen1PrereqBoardVaMap].modeled = 1u;' in adm,
       'B11 board-va-map is modeled=1 since round 77')

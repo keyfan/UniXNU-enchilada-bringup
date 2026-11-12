@@ -127,6 +127,29 @@ the offset before reading it.
 - `tests/adreno-smmu-stage1-v1-test.cpp` — 6 test groups.
 - `scripts/verify-enchilada-smmu-stage1.py` — cross verifier: 3 sha256-pinned sources, with
   the SCTLR default rebuilt from the pinned bit positions (117 checks).
+- `AdrenoSmmuCtxWordV1.h` / `AdrenoSmmuCtxWordV1.c` — the stage-1 context WORDS themselves
+  (round 83), closing a defect round 75 could not see. Round 75 answers *in what order* the
+  context-bank registers are written and never computes a VALUE: its plan takes `tcr`,
+  `mair0` and `mair1` from the caller, which is why its own test passes `tcr = 0x1234`. Worse,
+  its six writes are an incomplete **subsequence** of upstream's nine
+  (`arm-smmu.c:566-653`): CBA2R, CBAR, TCR2 and TTBR1 are missing entirely, TTBR0 carries no
+  ASID although P2:540-548 puts one in bits 63..48, and CONTEXTIDR is written although
+  upstream writes it only in the AArch32 branch (P2:625). This module derives TCR from
+  `(ias, coherent_walk, ttbr1)` per P1:393-412, TCR2 from `oas` per P1:414-418 (SEP 0x7,
+  PASIZE, plus AS for AArch64), CBAR/CBA2R per P2:581-612, MAIR per P3:1002-1011 split by
+  P2:560-561 (`0xF404FF44` / `0`), and TTBRn with the ASID in bits 63..48 for **both** TTBRs —
+  then emits all NINE writes with **SCTLR LAST** (round 75's one rule, preserved). Both write
+  counts are exposed as numbers (`round75_writes()` 6, `plan_writes()` 9) so the net +3
+  (four added, one dropped) stays measurable instead of becoming folklore. Round 75 is left
+  byte-identical: this CORRECTS, it does not rewrite. Three inputs stay absent and derived
+  into `ready()==0`: `ias` (ID2.UBS is a probe-time read), `asid` (no allocator) and a
+  populated LPAE table (none exists). Round 75's I3/I4 are deliberately NOT repeated here —
+  they gate whether a context may be PROGRAMMED, not which word to write.
+- `tests/adreno-smmu-ctx-word-v1-test.cpp` — 10 test groups; every expected value is
+  RE-DERIVED in the test from the pinned constants rather than copied from the module.
+- `scripts/verify-enchilada-smmu-ctx-word.py` — cross verifier: 4 sha256-pinned sources,
+  TCR recomputed at 7 ias × 2 coherency × 2 geometries, `id_size_to_bits` including its
+  collapsing default arm, the single CONTEXTIDR site, and the nine-site order (264 checks).
 - `AdrenoMdtV1.h` / `AdrenoMdtV1.c` — XNU-side MDT/ELF32 PARSER (round 74): the four
   Qualcomm rules the ZAP handshake needs — `mdt_phdr_valid` (PT_LOAD + not HASH + non-zero
   memsz), `qcom_mdt_get_size` (min..ALIGN(max) over VALID phdrs only), the split `bNN`

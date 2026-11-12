@@ -270,8 +270,8 @@ check("GPU / 'AdrenoMdtV1.c', ['-mgeneral-regs-only']" in build,
 check("'AdrenoMdtV1': GPU / 'AdrenoMdtV1.c'," in host, 'B11 host SOURCES entry')
 check("('adreno-mdt-v1-test'" in host, 'B11 host TESTS entry')
 check('/mdt-v1' in host, 'B11 PASS enumeration updated')
-check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 27,
-      'B11 27 C archive units declared')
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 28,
+      'B11 28 C archive units declared')
 check('a630_zap.mdt' in host, 'B11 the real blob path is passed to the test')
 
 print(f'Domain A: {len(PINS)} sha256-pinned sources; the three validity rules, the '

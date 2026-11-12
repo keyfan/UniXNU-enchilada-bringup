@@ -400,7 +400,7 @@ check("'AdrenoGen1BackendV1'" in build.split('sources = ')[1],
 check('/gen1-backend-v1' in host, 'B10 PASS enumeration updated')
 # The unit count in the build script: 22 C units + the one C++ probe = 23.
 units = re.findall(r"\(c_rec, GPU / '[^']+'", build)
-check(len(units) == 27, f'B10 27 C archive units declared (got {len(units)})')
+check(len(units) == 28, f'B10 28 C archive units declared (got {len(units)})')
 
 # B11: the FIVE local copies of GPU_PAS_ID must all agree with both pins.
 # A constant known in five places and adjudicated in none is exactly the gap
