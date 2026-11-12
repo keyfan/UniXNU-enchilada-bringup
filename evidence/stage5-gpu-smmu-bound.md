@@ -110,6 +110,18 @@ C:\platform-tools\adb.exe shell "cat /sys/devices/platform/soc/5040000.arm,smmu-
 C:\platform-tools\adb.exe shell "umount /sys/kernel/debug"
 ```
 
+## Verification
+
+`scripts/verify-enchilada-smmu-bound.py` re-reads the device on every run —
+mounting debugfs, reading `io-pgtable/pages`, the `arm-smmu` bind list, the kgsl
+SMMU `modalias` and its runtime-PM state, and then **always unmounting in a
+`finally` block** and asserting the mount count returned to its pre-round value.
+It also proves the correction is a *wording* fix: round 75's four blocker
+identifiers are still declared in `AdrenoSmmuStage1V1.h` and its `ready()` is
+still derived, so nothing was reversed.
+
+`SMMU_BOUND_VERIFY: PASS (35 checks, 0 failures)`.
+
 ## Honest boundary
 
 DEVICE-SOURCED DRIVER STATE, read through a briefly-mounted debugfs that was then
