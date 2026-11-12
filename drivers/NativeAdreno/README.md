@@ -75,7 +75,8 @@ the offset before reading it.
   ADMISSION contract (round 69): adjudicates the TWELVE prerequisites an A630
   kernel backend needs, with two independent columns (`modeled` in this tree vs
   `satisfied` by a device-capable backend) and a tri-state verdict. Since round
-  73: modeled=7, satisfied=0, verdict BLOCKED. Also carries the A630 catalog pins,
+  74: modeled=7, satisfied=0, verdict BLOCKED (cp-ring and zap-auth modelled; MDT
+  parser added under zap-auth's S6/S7). Also carries the A630 catalog pins,
   the four GMU memory regions (and REFUSES the a660/a7xx SZ_8K dummy widening),
   the five-step GMU resume plan with both generation-dependent rates, the
   SPTPRAC value/poll contract, the CP ring word offsets, and `GPU_PAS_ID 13`
@@ -103,6 +104,21 @@ the offset before reading it.
 - `tests/adreno-cp-ring-v1-test.cpp` — 7 test groups: word offsets, plan with and
   without a shadow BO, the payload builder + strict matcher (A7xx refused),
   shadow mode / doorbell order, the five undefined constants, self-check.
+- `AdrenoMdtV1.h` / `AdrenoMdtV1.c` — XNU-side MDT/ELF32 PARSER (round 74): the four
+  Qualcomm rules the ZAP handshake needs — `mdt_phdr_valid` (PT_LOAD + not HASH + non-zero
+  memsz), `qcom_mdt_get_size` (min..ALIGN(max) over VALID phdrs only), the split `bNN`
+  naming (last three chars replaced), and the metadata/split test
+  (`ehdr_size + hash_size == file size`). Validated against the REAL 6684-byte
+  `a630_zap.mdt` from this phone: only ONE of three segments is loadable, so `get_size`
+  answers 4096 from a 6684-byte container while the `p_filesz` sum is 8652 — and the three
+  `p_filesz` values (148/6536/1968) are exactly the device `.b00/.b01/.b02` sizes. PARSER
+  ONLY: `adreno_mdt_loader_available()` is 0 and `ready()` is derived from it, so zap-auth's
+  S6/S7 stay present=0 — their rules are modelled, their execution is not.
+- `tests/adreno-mdt-v1-test.cpp` — 6 test groups; group 6 parses the real blob and SKIPs
+  loudly if it is absent rather than passing silently.
+- `scripts/verify-enchilada-mdt.py` — cross verifier: 2 sha256-pinned sources plus an
+  INDEPENDENT Python reparse of the real blob confronted with the round-38 device
+  inventory (113 checks).
 - `AdrenoZapAuthV1.h` / `AdrenoZapAuthV1.c` — Qualcomm PAS / ZAP auth SHAPE contract
   (round 73): the exact SCM descriptor the handshake uses (`SVC_PIL 0x02`,
   `PAS_AUTH_AND_RESET 0x05`, one SIP-owned arg — and the finding that those numeric

@@ -43,6 +43,8 @@ TESTS = [
     ('adreno-gen1-backend-v1-test', [GPU / 'tests/adreno-gen1-backend-v1-test.cpp'], ['AdrenoGen1BackendV1']),
     ('adreno-cp-ring-v1-test', [GPU / 'tests/adreno-cp-ring-v1-test.cpp'], ['AdrenoCpRingV1']),
     ('adreno-zap-auth-v1-test', [GPU / 'tests/adreno-zap-auth-v1-test.cpp'], ['AdrenoZapAuthV1']),
+    ('adreno-mdt-v1-test', [GPU / 'tests/adreno-mdt-v1-test.cpp'], ['AdrenoMdtV1'],
+     [ROOT.parent.parent / 'work' / 'tmp' / 'a630-device-fw' / 'a630_zap.mdt']),
 ]
 SOURCES = {
     'AdrenoCatalog': GPU / 'AdrenoCatalog.c',
@@ -69,6 +71,7 @@ SOURCES = {
     'AdrenoGen1BackendV1': GPU / 'AdrenoGen1BackendV1.c',
     'AdrenoCpRingV1': GPU / 'AdrenoCpRingV1.c',
     'AdrenoZapAuthV1': GPU / 'AdrenoZapAuthV1.c',
+    'AdrenoMdtV1': GPU / 'AdrenoMdtV1.c',
 }
 
 def sanitizers(cxx, out):
@@ -93,16 +96,19 @@ def main():
     for name, source in SOURCES.items():
         objects[name] = out / f'{name}.o'
         subprocess.run([args.cc, '-std=c11', *common, '-c', str(source), '-o', str(objects[name])], check=True)
-    for name, sources, libs in TESTS:
+    for entry in TESTS:
+        name, sources, libs = entry[0], entry[1], entry[2]
+        extra_argv = [str(a) for a in entry[3]] if len(entry) > 3 else []
         binary = out / name
         subprocess.run([args.cxx, '-std=c++17', *common, *map(str, sources), *(str(objects[lib]) for lib in libs), '-o', str(binary)],
                        check=True)
-        result = subprocess.run([str(binary)], capture_output=True, text=True)
+        result = subprocess.run([str(binary), *extra_argv], capture_output=True,
+                                text=True)
         sys.stdout.write(result.stdout)
         if result.returncode:
             sys.stderr.write(result.stderr)
             raise SystemExit(f'FAIL: {name} ({result.returncode})')
-    print(f'PASS: enchilada A630 catalog/hwinit/board-input/power-gate/domain-state/hfi-v1/firmware-v1/gmu-boot-v1/gmu-bus-v1/gmu-caller-v1/power-up-v1/kgsl-smmu-gate/gdsc-decode/power-up-gdsc/power-down-v1/clk-ctl-v1/power-up-backend-v1/gpucc-window-v1/caller-v1/metal-seam-v1/darwin-kmd-abi-v1/metal-publish-v1/gen1-backend-v1/cp-ring-v1/zap-auth-v1 host tests ({"sanitized" if san else "without sanitizers"})')
+    print(f'PASS: enchilada A630 catalog/hwinit/board-input/power-gate/domain-state/hfi-v1/firmware-v1/gmu-boot-v1/gmu-bus-v1/gmu-caller-v1/power-up-v1/kgsl-smmu-gate/gdsc-decode/power-up-gdsc/power-down-v1/clk-ctl-v1/power-up-backend-v1/gpucc-window-v1/caller-v1/metal-seam-v1/darwin-kmd-abi-v1/metal-publish-v1/gen1-backend-v1/cp-ring-v1/zap-auth-v1/mdt-v1 host tests ({"sanitized" if san else "without sanitizers"})')
 
 
 if __name__ == '__main__':
