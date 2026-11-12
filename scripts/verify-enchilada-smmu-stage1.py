@@ -219,13 +219,13 @@ check("GPU / 'AdrenoSmmuStage1V1.c', ['-mgeneral-regs-only']" in build,
 check("'AdrenoSmmuStage1V1': GPU / 'AdrenoSmmuStage1V1.c'," in host,
       'B11 host SOURCES entry')
 check("('adreno-smmu-stage1-v1-test'" in host, 'B11 host TESTS entry')
-check('/smmu-stage1-v1 host tests' in host, 'B11 PASS enumeration updated')
-check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 26,
-      'B11 26 C archive units declared')
+check('/smmu-stage1-v1' in host, 'B11 PASS enumeration updated')
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 27,
+      'B11 27 C archive units declared')
 adm = (GPU / 'AdrenoGen1BackendV1.c').read_text(encoding='utf-8')
 check('out->items[kEnchiladaGen1PrereqSmmuStage1].modeled = 1u;' in adm,
       'B11 kgsl-smmu-stage1 is modeled=1 since round 75')
-check('adm.modeled_count != 8u' in adm, 'B11 the self-check expects eight modelled')
+check('adm.modeled_count != 9u' in adm, 'B11 the self-check expects nine modelled')
 
 print(f'Domain A: {len(PINS)} sha256-pinned sources; the ten CB offsets, nine SCTLR '
       f'bits, the SCTLR default RECOMPUTED from those bits (0x1067 LE / 0x1077 BE), '

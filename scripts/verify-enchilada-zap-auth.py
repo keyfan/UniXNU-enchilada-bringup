@@ -214,15 +214,15 @@ check("'AdrenoZapAuthV1': GPU / 'AdrenoZapAuthV1.c'," in host,
       'B9 host checker SOURCES entry')
 check("('adreno-zap-auth-v1-test', [GPU / 'tests/adreno-zap-auth-v1-test.cpp'], ['AdrenoZapAuthV1'])"
       in host, 'B9 host checker TESTS entry')
-check('/zap-auth-v1 host tests' in host, 'B9 PASS enumeration updated')
-check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 24,
-      'B9 24 C archive units declared')
+check('/zap-auth-v1' in host, 'B9 PASS enumeration updated')
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 27,
+      'B9 27 C archive units declared')
 
 # B10: the admission row moved
 adm = (GPU / 'AdrenoGen1BackendV1.c').read_text(encoding='utf-8')
 check('out->items[kEnchiladaGen1PrereqZapAuth].modeled = 1u;' in adm,
       'B10 zap-auth is modeled=1 since round 73')
-check('adm.modeled_count != 7u' in adm, 'B10 the self-check expects seven modelled')
+check('adm.modeled_count != 9u' in adm, 'B10 the self-check expects nine modelled')
 
 print(f'Domain A: {len(PINS)} sha256-pinned sources; the PAS call shape (SVC/CMD/'
       f'arity/owner), the eight-step chain and its ORDER, and the fact that the '

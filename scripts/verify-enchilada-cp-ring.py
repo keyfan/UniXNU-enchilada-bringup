@@ -432,7 +432,7 @@ check("'AdrenoCpRingV1'" in build.split('sources = ')[1],
       'B9 build-report source list gains the stem')
 check('/cp-ring-v1' in host, 'B9 PASS enumeration updated')
 units = re.findall(r"\(c_rec, GPU / '[^']+'", build)
-check(len(units) == 24, f'B9 24 C archive units declared (got {len(units)})')
+check(len(units) == 27, f'B9 27 C archive units declared (got {len(units)})')
 
 
 # B10: round-71 constants mirrored
