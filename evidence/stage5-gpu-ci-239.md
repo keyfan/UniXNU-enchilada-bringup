@@ -38,7 +38,10 @@ regime, or the archive link. This run closes that gap.
   — CI #238 was `28 objects, sha256 f90f1a3267b71762`. The **object count rose by
   one and the sha16 changed**, which together are structural proof that the
   round-83 unit compiled *and* joined the link. A cached artifact cannot do this.
-- `kernel.macho` **126,103,552 B**; CI #238 was 126,099,456 B, so **+4,096 B** —
+- `kernel.macho` **126,103,552 B**, sha256
+  `0be1d77ace20673f4980a0ea149965fb53c855c978fcc6903c18c0398929596a`; CI #238 was
+  126,099,456 B (`bdfdc5a05881b663b0450d283bbb015c6f8a590eb6e8aa2fe4ffd287d0d90cc5`),
+  so **+4,096 B** —
   the 29th object needed an extra page. Note this is the *opposite* of the
   rounds 43/45/59/78 case, where a new object linked without growing the image.
   Because the delta is observed in both directions across this project's history,
