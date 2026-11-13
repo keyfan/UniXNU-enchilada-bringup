@@ -82,8 +82,15 @@ def main():
           'the re-read comes from the real GPUCC status register')
     check('adreno_iommu_assess(&gi)' in code,
           'the verdict comes from the contract assess()')
-    check('gi.clocks_enabled  = 0u;' in code,
-          'clocks_enabled is honestly 0 -- this port enables no GPU clock')
+    # ROUND 99: this used to assert clocks_enabled == 0 because the port "enabled no
+    # GPU clock". The round-98 device log falsified that: stage 5 completed the
+    # CLOCKS_ENABLE leg (w=9), yet stage 4 still refused with verdict=4(refused-clocks-off)
+    # because the probe hard-coded 0. The property that must hold now is that the flag
+    # reflects the EXECUTOR's report, and only when stage 5 actually ran.
+    check('gi.clocks_enabled  = havePowerRun ? rep.pre.clocks_enabled : 0u;' in code,
+          'clocks_enabled reflects the executor report, gated on stage 5 having run')
+    check('havePowerRun = true;' in code,
+          'stage 5 marks that the power-up run happened')
     check('gi.kmem_mapped     = gSmmuVa ? 1u : 0u;' in code,
           'kmem_mapped reflects the ACTUAL mapping state')
     # A hard-coded CX word is the failure mode; assert it cannot appear.

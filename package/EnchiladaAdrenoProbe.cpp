@@ -457,6 +457,14 @@ extern "C" void enchilada_adreno_poll(void) {
         setPlanReplay(planRow);     // survive the 128 KiB msgbuf ring wrap
     }
 
+    // ROUND 99: the power-up report is declared OUTSIDE the stage-5 block so
+    // stage 4 can read the clocks the executor actually enabled. Round 98's
+    // device run showed stage 4 refusing with verdict=4(refused-clocks-off)
+    // while stage 5 had ALREADY enabled the clocks (w=9 includes the
+    // CLOCKS_ENABLE leg) -- the probe was hard-coding clocks_enabled=0.
+    struct AdrenoCallerV1Report rep = {};
+    bool havePowerRun = false;
+
     // ---- Round 95 stage 5: the MISSING IOKit caller of the power-up chain ---
     // Rounds 51/56/57/58/59/61/62 derived the ordered plan and round 62 supplied
     // an executor, but every layer spoke through callbacks and NOTHING ever
@@ -515,7 +523,7 @@ extern "C" void enchilada_adreno_poll(void) {
                 if (!okc) {
                     snprintf(pwRow, sizeof pwRow, "stage5=refused caller-make");
                 } else {
-                    struct AdrenoCallerV1Report rep = {};
+                    havePowerRun = true;   // rep is declared above, shared with stage 4
                     const AdrenoCallerV1Status rc = AdrenoCallerV1Run(&caller, &rep);
                     // Three INDEPENDENT facts, reported separately so a success in
                     // one cannot be read as a success in another:
@@ -586,7 +594,11 @@ extern "C" void enchilada_adreno_poll(void) {
         gi.window_base     = ADRENO_BOARD_KGSL_SMMU_BASE;
         gi.window_size     = ADRENO_BOARD_KGSL_SMMU_SIZE;
         gi.cx_status_word  = cxNow;       // RE-READ after stage 5 powered the rail
-        gi.clocks_enabled  = 0u;          // this port enables no GPU clock
+        // ROUND 99: report the clocks the EXECUTOR actually enabled, and only
+        // when stage 5 actually ran. Round 98's device log showed stage 4 refusing
+        // with verdict=4(refused-clocks-off) while stage 5 had already completed
+        // the CLOCKS_ENABLE leg -- the probe was hard-coding 0 here.
+        gi.clocks_enabled  = havePowerRun ? rep.pre.clocks_enabled : 0u;
         gi.kmem_mapped     = gSmmuVa ? 1u : 0u;
         gi.cb_already_owned = 0u;
         gi.stream_faults   = 0u;          // round 53: streams sit in BYPASS
