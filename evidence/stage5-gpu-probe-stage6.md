@@ -1,9 +1,10 @@
 # Round 103 — stage 6: ID0/ID1 probe behind the same gate
 
-**Status: HOST-VERIFIED + ARMED, NOT YET RUN ON HARDWARE.**
+**Status: HOST-VERIFIED + CI-VERIFIED (CI #246) + ARMED, NOT YET RUN ON HARDWARE.**
 No flash, no reboot, no device register read by stage 6. Everything below is a
-compile proof and static contract checks. The `stage6=id1 ...` row is UNKNOWN
-until a boot with `enchilada-adreno=6`.
+compile proof (now including a real XNU kernel link under the kernel own clang)
+and static contract checks. The `stage6=id1 ...` row is UNKNOWN until a boot with
+`enchilada-adreno=6`.
 
 ## What was wrong before this round
 
@@ -123,6 +124,51 @@ on this host (`shutil.which('clang++')` returns nothing). The stage-6 verifier's
 first "no second mapping" check wrongly counted the whole stage-4 block (which
 legitimately has TWO pre-existing maps: pre-gate + round-100 fallback) — it was
 narrowed to the stage-6 block itself.
+
+## CI #246 — compile/link proof (run 43438540052, success)
+
+Round 102 pushed the ASID unit to remote main but **never** sent it through CI;
+round 103 then extended that same unit. Host `-Werror` is not a compile proof
+under XNU's own clang / `-mgeneral-regs-only` archive link, so the change was
+dispatched (`dispatch_ci.py`, device_ref=main, unixnu_ref
+`8ddccb1e...`, xcode=26.6, data_seed_run_id=41552968815, skip_setup=true).
+
+* Run `43438540052` (#246), `workflow_dispatch`, **conclusion success**, device
+  head `b04783074d995cf168f7b00ecfa2090c342bae69` (the push that carried all 13
+  staged round-103 files).
+* `archive-23-build-enchilada-adreno.log`:
+  `PASS: libEnchiladaAdreno.a (31 objects, sha256 901a60db440b9f72)`.
+  CI #245 was `30 objects, sha256 97b3e86684d81c02`. The **+1 object and changed
+  sha16** are structural proof the ASID unit rebuilt and joined the link — a
+  cached artifact cannot produce that pair. Round 103 itself added **no** new C
+  unit, so `30 -> 31` is entirely round 102, exactly as the no-new-unit design
+  intended.
+* `kernel.macho` = 126,128,128 B, Mach-O 64 magic `cf fa ed fe`, sha256
+  `ec629ef24876b6e9e93fb7f2197dccc09325a9e444ecc71afe1abc1f96884318`.
+* `kernel.log` (36,731,089 B) is clean: `Undefined symbols` = 0, `Error 1` = 0.
+  The 16 `error:` / 8 `FAILED` / 11 `ld:` hits are upstream XNU warning context
+  and string literals (`"kcdata error: %d"`, `NETEM_LOG("| error: ...")`,
+  `ld: warning: -new_linker is obsolete`), not build errors.
+  `kernel-bootstrap.log` remains the intentionally failing baseline.
+* `scripts/verify-ci-246-adreno.py` (new, 90/90) asserts from the downloaded
+  artifacts: 17 `adreno_asid_*` exports (including the two NEW ones), 18
+  round-83 ctx-word exports, 24 retained ID2/probe/power-up **CamelCase**
+  exports, the `stage6=id1 id0=%08x id1=%08x cttw=%u` / `stage4=id2` / `stage5=run`
+  row formats IN the image, no `writel`/`readl`/`IOServiceOpen`/
+  `IOConnectCallMethod`/`qcom_scm_call`/zap-shader executable symbol, and no
+  `stage6=exec` / `stage3=exec` path.
+
+Two tooling fixes were needed on this host and are NOT part of the device repo:
+`push_via_api.py` gained a transient-422 retry (a 513-file tree timed out once),
+and `dispatch_ci.py` gained SSL/URLError retry (the watch job died on
+`ssl.SSLEOFError`). The 78.9 MB kernel artifact was fetched with the existing
+8-connection ranged downloader (`r99_parallel_dl.py` pattern, ~200 KB/s).
+
+Full sweep after CI: **68/68 verifiers** (67 pass in `r103_runall.py` plus the
+by-design `verify-enchilada-gmu-caller-v1-record.py` with its correct 40-hex
+argument `ead5834edce79b4b3ceb5108d6dca6e57496ee90` -> 28/28), and the 31/31
+host C++ suites still pass. `porting.toml` carries both the HOST-VERIFIED and
+the CI-VERIFIED ROUND 103 findings.
 
 ## Honest boundary
 
