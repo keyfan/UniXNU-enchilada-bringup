@@ -590,6 +590,23 @@ extern "C" void enchilada_adreno_poll(void) {
         // mapped, whether someone already owns the context bank, and whether the
         // target streams fault. This probe can only supply the first three
         // honestly -- it enables no clock and owns no bank, so those are 0.
+        // ROUND 100 ORDERING FIX (device-measured, second run): MAP BEFORE ASKING.
+        // The round-99 run refused with verdict=5(refused-unmapped) because the
+        // contract's 4th precondition is "the window is already mapped" (P2:2152 is
+        // the kernel's ioremap) while this code only mapped INSIDE the permitted
+        // branch -- so gSmmuVa was necessarily 0 at gate time and the gate could
+        // never pass. That is a chicken-and-egg, not a safety property: mapping a
+        // window is exactly what makes it safe to READ, and the CX check above
+        // already guards the physical hazard. The mapping is therefore taken first
+        // and released to the gate as a FACT.
+        if (!gSmmuVa && &armcpu_map_physical) {
+            const uint64_t sva = armcpu_map_physical(ADRENO_BOARD_KGSL_SMMU_BASE,
+                                                     ADRENO_BOARD_KGSL_SMMU_SIZE);
+            if (sva) {
+                gSmmuVa = static_cast<uintptr_t>(sva);
+            }
+        }
+
         struct adreno_iommu_gate_inputs gi = {};
         gi.window_base     = ADRENO_BOARD_KGSL_SMMU_BASE;
         gi.window_size     = ADRENO_BOARD_KGSL_SMMU_SIZE;
@@ -599,7 +616,7 @@ extern "C" void enchilada_adreno_poll(void) {
         // with verdict=4(refused-clocks-off) while stage 5 had already completed
         // the CLOCKS_ENABLE leg -- the probe was hard-coding 0 here.
         gi.clocks_enabled  = havePowerRun ? rep.pre.clocks_enabled : 0u;
-        gi.kmem_mapped     = gSmmuVa ? 1u : 0u;
+        gi.kmem_mapped     = gSmmuVa ? 1u : 0u;   // now a real fact, taken above
         gi.cb_already_owned = 0u;
         gi.stream_faults   = 0u;          // round 53: streams sit in BYPASS
 
@@ -611,8 +628,10 @@ extern "C" void enchilada_adreno_poll(void) {
             // junk: `refused` and `read 0x00000000` mean completely different
             // things, and confusing them is how a port invents a fact.
             snprintf(ioRow, sizeof ioRow,
-                     "stage4=refused verdict=%u(%s) cx=%08x cx_on=%d clocks=0",
-                     (unsigned)v, adreno_iommu_verdict_name(v), cx, cxOn ? 1 : 0);
+                     "stage4=refused verdict=%u(%s) cx=%08x cx_on_now=%d clocks=%u mapped=%u",
+                     (unsigned)v, adreno_iommu_verdict_name(v), cxNow,
+                     adreno_domain_cx_is_on(cxNow),
+                     (unsigned)gi.clocks_enabled, (unsigned)gi.kmem_mapped);
         } else {
             // CX is up and the gate permits: map the kgsl SMMU window, read once.
             if (!gSmmuVa) {

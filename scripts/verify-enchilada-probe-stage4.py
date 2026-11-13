@@ -112,8 +112,14 @@ def main():
         # The map call must appear AFTER that test, i.e. inside the else branch.
         i_perm = block.find('kAdrenoIommuProbePermitted')
         i_map = block.find('armcpu_map_physical(ADRENO_BOARD_KGSL_SMMU_BASE')
-        check(i_map > i_perm,
-              'the SMMU window is mapped ONLY after the gate permits (map comes after the test)')
+        # ROUND 100: this used to demand map AFTER permit. The round-99 device run
+        # falsified that: the contract's 4th precondition IS "already mapped", so
+        # gating first left gSmmuVa 0 at gate time and the gate could never pass
+        # (verdict=5 refused-unmapped). Mapping a window is what makes it safe to
+        # READ, and the CX check separately guards the physical hazard; so the map
+        # now comes BEFORE the assessment and is handed to it as a fact.
+        check(i_map < i_perm,
+              'the SMMU window is mapped BEFORE the gate is asked (the gate checks mapped-ness)')
         check('ADRENO_BOARD_KGSL_SMMU_BASE' in block,
               'the mapped window is the pinned kgsl SMMU base (0x05040000)')
         check('ADRENO_BOARD_APPS_SMMU_BASE' not in block,
