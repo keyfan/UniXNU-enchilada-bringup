@@ -91,6 +91,11 @@ extern "C" {
 #include "AdrenoBoardInputs.h"
 #include "AdrenoGmuBootV1.h"
 #include "AdrenoPowerUpV1.h"   // round 51: ordered genpd + clock power-up MODEL (pure Plan)
+// Round 94 stage 4: the SMMU ID2 probe CONTRACT (round 86). It decodes the ID2
+// word into ias/ipa/pa, and -- the load-bearing part -- refuses the read unless
+// CX is up, the window is the kgsl SMMU and the clocks are known on. This probe
+// calls the contract; it does not re-derive the field positions.
+#include "AdrenoIommuProbeV1.h"
 
 // Device-proven cache-inhibited kernel mapping of a physical range
 // (drivers/ArmCpu/ArmCpu.cpp:207, same use as package/EnchiladaSmmuProbe.cpp:57).
@@ -105,6 +110,7 @@ uint64_t armcpu_map_physical(uint64_t physical, uint64_t length) __attribute__((
 namespace {
 uintptr_t gGpuccVa = 0;
 uintptr_t gGmuVa = 0;      // round-48 stage 2: mapped ONLY when CX is up
+uintptr_t gSmmuVa = 0;     // round-94 stage 4: kgsl SMMU window, ONLY when CX is up
 unsigned gAttempts = 0;
 bool gDone = false;
 bool gNotArmed = false;
@@ -121,6 +127,11 @@ char gGmuReplay[160];
 // is built ONCE from the host-tested AdrenoPowerUpV1 model and replayed with
 // the other two rows so a 128 KiB msgbuf ring wrap can never erase it.
 char gPlanReplay[200];
+// Round 94 stage 4: the SMMU ID2 row gets its own replay buffer for the same
+// reason the other stages do -- the 128 KiB msgbuf ring wraps and a one-shot row
+// is lost before it can be read back.
+char gIommuReplay[220];
+bool gHaveIommuReplay = false;
 bool gHaveGmuReplay = false;
 bool gHavePlanReplay = false;
 bool gHaveReplay = false;
@@ -153,6 +164,15 @@ void setPlanReplay(const char *text) {
     for (; text[i] && i + 1 < sizeof gPlanReplay; ++i) gPlanReplay[i] = text[i];
     gPlanReplay[i] = 0;
     gHavePlanReplay = i != 0;
+}
+
+// Round 94 stage 4: fourth buffer, same no-libc copy loop.
+void setIommuReplay(const char *text) {
+    if (!text) return;
+    unsigned i = 0;
+    for (; text[i] && i + 1 < sizeof gIommuReplay; ++i) gIommuReplay[i] = text[i];
+    gIommuReplay[i] = 0;
+    gHaveIommuReplay = i != 0;
 }
 
 // In-domain register read: GPUCC base plus a byte offset the host-tested header
@@ -237,11 +257,14 @@ extern "C" void enchilada_adreno_poll(void) {
         // ring wrap can never erase the only kernel-instantiated evidence.
         if (gHavePlanReplay)
             IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gPlanReplay, gTick, gReplayAttempt);
+        // Round 94: the stage-4 SMMU ID2 row is replayed for the same reason.
+        if (gHaveIommuReplay)
+            IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gIommuReplay, gTick, gReplayAttempt);
         return;             // finished: no further MMIO access, ever
     }
     unsigned stage = 0;
     if (!PE_parse_boot_argn("enchilada-adreno", &stage, sizeof stage) ||
-        (stage != 1u && stage != 2u && stage != 3u)) {
+        (stage != 1u && stage != 2u && stage != 3u && stage != 4u)) {
         gNotArmed = true;   // absent (or an unsupported stage) -> never run
         return;
     }
@@ -394,6 +417,113 @@ extern "C" void enchilada_adreno_poll(void) {
                  cxOn ? 1u : 0u);
         IOLog("enchilada-adreno: %s\n", planRow);
         setPlanReplay(planRow);     // survive the 128 KiB msgbuf ring wrap
+    }
+
+    // ---- Round 94 stage 4: read the SMMU ID2 and derive `ias` --------------
+    // THIS IS THE ONE INPUT THE PORT HAS NEVER HAD. Round 77 proved the chain
+    //   ias <- ID2.UBS <- arm_smmu_id_size_to_bits() <- a probe-time READ
+    // and round 85 measured that no userspace route exists on this kernel
+    // (CONFIG_DEVMEM is not set, and the iommu debugfs exposes no address-size
+    // node at all). So the read has to happen HERE, in the kernel.
+    //
+    // SAFETY, and why it is code rather than a comment: every GPU/SMMU window
+    // sits in the collapsible gpu_cx/gpu_gx domain, and a read before CX is up
+    // is a bus access to an unclocked block (rounds 22/28). The round-86
+    // contract's adreno_iommu_read_permitted() is asked FIRST, with the CX state
+    // measured above as its only evidence, and it refuses with a named verdict.
+    // The window is mapped ONLY when it says permitted.
+    //
+    // The decode itself is the contract's: adreno_iommu_id2_decode() returns
+    // ias/ipa/pa plus the version gate, and adreno_iommu_stage1_words() mixes
+    // ias into the round-83 TCR/TTBR words. Nothing here re-derives a field.
+    if (stage >= 4u) {
+        char ioRow[220];
+        ioRow[0] = 0;
+
+        // The gate takes the FACTS, not a pre-chewed mask: the CX status word we
+        // just measured, whether clocks are known on, whether this window is
+        // mapped, whether someone already owns the context bank, and whether the
+        // target streams fault. This probe can only supply the first three
+        // honestly -- it enables no clock and owns no bank, so those are 0.
+        struct adreno_iommu_gate_inputs gi = {};
+        gi.window_base     = ADRENO_BOARD_KGSL_SMMU_BASE;
+        gi.window_size     = ADRENO_BOARD_KGSL_SMMU_SIZE;
+        gi.cx_status_word  = cx;          // measured above, decoded by AdrenoDomainState
+        gi.clocks_enabled  = 0u;          // this port enables no GPU clock
+        gi.kmem_mapped     = gSmmuVa ? 1u : 0u;
+        gi.cb_already_owned = 0u;
+        gi.stream_faults   = 0u;          // round 53: streams sit in BYPASS
+
+        const enum adreno_iommu_probe_verdict v = adreno_iommu_assess(&gi);
+
+        if (v != kAdrenoIommuProbePermitted) {
+            // The expected single-boot outcome while CX is down. Name the verdict
+            // so the log cannot be mistaken for a read that happened and returned
+            // junk: `refused` and `read 0x00000000` mean completely different
+            // things, and confusing them is how a port invents a fact.
+            snprintf(ioRow, sizeof ioRow,
+                     "stage4=refused verdict=%u(%s) cx=%08x cx_on=%d clocks=0",
+                     (unsigned)v, adreno_iommu_verdict_name(v), cx, cxOn ? 1 : 0);
+        } else {
+            // CX is up and the gate permits: map the kgsl SMMU window, read once.
+            if (!gSmmuVa) {
+                if (!&armcpu_map_physical) {
+                    snprintf(ioRow, sizeof ioRow, "stage4=wait-platform");
+                } else {
+                    const uint64_t sva = armcpu_map_physical(ADRENO_BOARD_KGSL_SMMU_BASE,
+                                                             ADRENO_BOARD_KGSL_SMMU_SIZE);
+                    if (!sva) {
+                        snprintf(ioRow, sizeof ioRow, "stage4=smmu-map-failed");
+                    } else {
+                        gSmmuVa = static_cast<uintptr_t>(sva);
+                    }
+                }
+            }
+            if (!gSmmuVa) {
+                if (ioRow[0] == 0) snprintf(ioRow, sizeof ioRow, "stage4=mapped-no-read");
+            } else {
+                // GR0_ID2 is byte 0x28 in the SMMU register frame (P1:65).
+                const uint32_t id2 = rd32(gSmmuVa, 0x28u);
+                __asm__ volatile("dsb sy" ::: "memory");
+
+                struct adreno_iommu_id2 d = {};
+                if (adreno_iommu_id2_decode(id2, &d) != 0) {
+                    snprintf(ioRow, sizeof ioRow, "stage4=id2-decode-refused id2=%08x", id2);
+                } else {
+                    // ias is only defined for v2+; ask the contract for the width
+                    // it would use, and let it refuse an implausible value rather
+                    // than trusting the word blindly. The version comes from the
+                    // pinned compatible string (qcom,smmu-v2), which round 82
+                    // re-confirmed on the device via the kgsl SMMU modalias.
+                    int okv = 0;
+                    // The compatible string is the one round 82 re-confirmed on
+                    // the device through the kgsl SMMU modalias
+                    // (of:Narm,smmu-kgslT<NULL>Cqcom,smmu-v2).
+                    const char *const compat[1] = { "qcom,smmu-v2" };
+                    const uint32_t ver = adreno_iommu_version_select(compat, 1u);
+                    const uint32_t vaBits = adreno_iommu_va_size(id2, ver, &okv);
+
+                    // Mix the measured ias into the round-83 words. This is the
+                    // first time that chain closes with a REAL input.
+                    struct adreno_iommu_stage1_words w = {};
+                    const int wok = adreno_iommu_stage1_words(
+                        id2, ver, adreno_iommu_coherent_walk(0u, 0u), &w) == 0;
+
+                    snprintf(ioRow, sizeof ioRow,
+                             "stage4=id2 id2=%08x ver=%u ias_ok=%d ias=%u ipa=%u pa=%u "
+                             "oas2=%u ptfs4k=%u vmid16=%u words_ok=%d plan_ok=%d "
+                             "tcr=%08x tcr2=%08x",
+                             id2, (unsigned)ver, okv, (unsigned)vaBits,
+                             (unsigned)d.ias_bits, (unsigned)d.oas_bits,
+                             (unsigned)adreno_iommu_stage1_oas(id2),
+                             (unsigned)d.ptfs_4k, (unsigned)d.vmid16,
+                             wok, (int)w.ok,
+                             (unsigned)w.tcr, (unsigned)w.tcr2);
+                }
+            }
+        }
+        IOLog("enchilada-adreno: %s\n", ioRow);
+        setIommuReplay(ioRow);
     }
 
     IOLog("enchilada-adreno: %s\n", row);

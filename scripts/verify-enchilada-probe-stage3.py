@@ -51,8 +51,9 @@ def main():
     code = re.sub(r'//[^\n]*', '', code)
 
     # --- A. stage-3 is a NEW, default-off arm --------------------------------
-    check('stage != 3u' in text and '(stage != 1u && stage != 2u && stage != 3u)' in text,
-          'stage-3 accepted by the boot-arg mask (and stages 1/2 kept)')
+    check('stage != 3u' in text and
+          '(stage != 1u && stage != 2u && stage != 3u && stage != 4u)' in text,
+          'stage-3 accepted by the boot-arg mask (and stages 1/2 kept; round 94 added 4)')
     check('if (stage >= 3u)' in text,
           'stage-3 block is gated behind stage >= 3 (stages 1/2 unaffected)')
 

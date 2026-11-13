@@ -364,6 +364,15 @@ kernel_args = [
   "debug=0x14e",
   "enchilada-touch=4","sheng-touch-hid=1",
   "armcpu-timer-intid=19","-apfs_shared_datavolume","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=2","sheng-log=1","sheng-autoreset=2400","pcpu=0xf0","enchilada-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","enchilada-cpufreq=2","native-data-writeback=1","native-ufs-diagnostics=1",
+  # Round 94: arm stage 4 of the Adreno probe -- the kernel-side SMMU ID2 read that
+  # derives `ias`. 18 bytes for the argument plus its separator, against the 49 bytes
+  # of headroom measured in this list (951/1000 joined). This is the ONLY route to
+  # the word: round 85 measured that userspace on this kernel cannot reach it
+  # (CONFIG_DEVMEM is not set; the iommu debugfs exposes no address-size node).
+  # The stage is fail-closed -- it reads the GPUCC CX status FIRST and refuses to map
+  # the SMMU window unless CX is up, so on a port that has never powered the GPU the
+  # expected single-boot outcome is `stage4=refused verdict=3(cx-down)` and no read.
+  "enchilada-adreno=4",
   "-no_slto_panic",
   "native-ufs-root=1",
   
