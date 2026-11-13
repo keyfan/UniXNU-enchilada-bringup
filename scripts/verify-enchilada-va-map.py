@@ -197,14 +197,14 @@ check('PASS: enchilada A630 GPU VA aperture derivation model (7 test groups, 0 f
 build = (DEV / 'scripts' / 'build-enchilada-adreno.py').read_text(encoding='utf-8')
 host = (DEV / 'scripts' / 'check-enchilada-adreno-host.py').read_text(encoding='utf-8')
 check("GPU / 'AdrenoVaMapV1.c', ['-mgeneral-regs-only']" in build,
-      'B11 build script compiles the 28th unit')
+      'B11 build script compiles the round-83 unit')
 check("'AdrenoVaMapV1': GPU / 'AdrenoVaMapV1.c'," in host, 'B11 host SOURCES entry')
 check("('adreno-va-map-v1-test'" in host, 'B11 host TESTS entry')
 check('/va-map-v1' in host, 'B11 PASS enumeration lists va-map-v1')
 check('/smmu-ctx-word-v1' in host,
       'B11 and the later round-83 suite, so the enumeration is CUMULATIVE')
-check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 28,
-      'B11 28 C archive units declared')
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 29,
+      'B11 29 C archive units declared')
 adm = (GPU / 'AdrenoGen1BackendV1.c').read_text(encoding='utf-8')
 check('out->items[kEnchiladaGen1PrereqBoardVaMap].modeled = 1u;' in adm,
       'B11 board-va-map is modeled=1 since round 77')
@@ -215,7 +215,7 @@ print(f'Domain A: {len(PINS)} sha256-pinned sources; the address-space chain, th
       f'statically, and the GMU-vs-GPU space distinction all re-derived; the aperture '
       f'is recomputed for ias in 32..48')
 print('Domain B: AdrenoVaMapV1 .h/.c/test mirror; clamp and both shapes implemented; '
-      'GMU/GPU distinction enforced; three blockers derived into ready()==0; 28th unit/suite')
+      'GMU/GPU distinction enforced; three blockers derived into ready()==0; the round-83 unit/suite')
 print(f'VA_MAP_CROSS: {"PASS" if not fails else "FAIL"} '
       f'({checks} checks, {len(fails)} failures)')
 for f in fails:

@@ -215,8 +215,8 @@ check("'AdrenoZapAuthV1': GPU / 'AdrenoZapAuthV1.c'," in host,
 check("('adreno-zap-auth-v1-test', [GPU / 'tests/adreno-zap-auth-v1-test.cpp'], ['AdrenoZapAuthV1'])"
       in host, 'B9 host checker TESTS entry')
 check('/zap-auth-v1' in host, 'B9 PASS enumeration updated')
-check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 28,
-      'B9 28 C archive units declared')
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 29,
+      'B9 29 C archive units declared')
 
 # B10: the admission row moved
 adm = (GPU / 'AdrenoGen1BackendV1.c').read_text(encoding='utf-8')

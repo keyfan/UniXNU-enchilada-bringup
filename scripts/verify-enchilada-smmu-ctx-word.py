@@ -415,20 +415,25 @@ check('want_tcr' in t, 'B7 the test re-derives the TCR word instead of hard-codi
 build = (DEV / 'scripts' / 'build-enchilada-adreno.py').read_text(encoding='utf-8')
 host = (DEV / 'scripts' / 'check-enchilada-adreno-host.py').read_text(encoding='utf-8')
 check("GPU / 'AdrenoSmmuCtxWordV1.c', ['-mgeneral-regs-only']" in build,
-      'C1 build script compiles the 28th unit')
+      'C1 build script compiles the round-83 unit')
 check("'AdrenoSmmuCtxWordV1': GPU / 'AdrenoSmmuCtxWordV1.c'," in host,
       'C1 host SOURCES entry')
 check("('adreno-smmu-ctx-word-v1-test'" in host, 'C1 host TESTS entry')
 check('/smmu-ctx-word-v1' in host, 'C1 PASS enumeration lists this suite')
 units = len(re.findall(r"\(c_rec, GPU / '[^']+'", build))
-check(units == 28, f'C2 28 C archive units declared (got {units})')
-# The bookkeeping the round-78 lesson demands: no stale 27 anywhere.
+check(units == 29, f'C2 29 C archive units declared (got {units})')
+# The bookkeeping the round-78 lesson demands: no stale count anywhere. The
+# stale values are BUILT here rather than written, because this file is one of
+# the files the loop below scans -- a literal would make it match itself.
+STALE_COUNTS = ('== ' + '27', '== ' + '28')
+CURRENT_COUNT = '== ' + '29'
 for name in ('verify-enchilada-cp-ring.py', 'verify-enchilada-gen1-backend.py',
              'verify-enchilada-mdt.py', 'verify-enchilada-smmu-stage1.py',
              'verify-enchilada-va-map.py', 'verify-enchilada-zap-auth.py'):
     s = (DEV / 'scripts' / name).read_text(encoding='utf-8')
-    check('== 27' not in s, f'C2 {name} no longer asserts 27 units')
-    check('== 28' in s, f'C2 {name} asserts the CURRENT 28 units')
+    check(not any(t in s for t in STALE_COUNTS),
+          f'C2 {name} no longer asserts a stale count')
+    check(CURRENT_COUNT in s, f'C2 {name} asserts the CURRENT 29 units')
 
 print(f'Domain A: {len(PINS)} sha256-pinned sources; the GR1 bases, the CBAR/CBA2R/'
       f'TCR2 fields, the TCR default RECOMPUTED at 7 ias x 2 coherency x 2 geometries, '
@@ -437,8 +442,8 @@ print(f'Domain A: {len(PINS)} sha256-pinned sources; the GR1 bases, the CBAR/CBA
 print('Domain B: AdrenoSmmuCtxWordV1 .h/.c/test mirror; the plan is 9 writes with the '
       'FOUR registers round 75 omitted, CONTEXTIDR dropped, SCTLR last; round 75 left '
       'byte-identical; three inputs missing; ready() derived and 0')
-print('Domain C: 28th archive unit and host suite wired; all six 27-unit assertions '
-      'moved to 28 (the round-78 drift class)')
+print('Domain C: the round-83 unit and host suite wired; all six stale 27-unit '
+      'assertions moved up (the round-78 drift class, now 29)')
 print(f'SMMU_CTX_WORD_CROSS: {"PASS" if not fails else "FAIL"} '
       f'({checks} checks, {len(fails)} failures)')
 for f in fails:
