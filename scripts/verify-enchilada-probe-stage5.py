@@ -137,6 +137,18 @@ def main():
           'the probe never calls the MMIO write32 member directly')
     check('&mmio' in blk, 'the MMIO triple is passed by pointer to the caller')
 
+    # --- H2. ORDERING: stage 5 must precede stage 4 -----------------------
+    # Round 96 device run: stage 4 refused at t=50.088 on a CX word that stage 5
+    # raised at t=50.365, so ID2 was unreachable on every boot. Round 98 swaps the
+    # order; this assertion locks it so a future edit cannot silently put stage 4
+    # back in front of the only code that powers the rail.
+    i_s5_block = code.find('if (stage >= 5u)')
+    i_s4_block = code.find('if (stage >= 4u)')
+    check(i_s5_block >= 0 and i_s4_block >= 0,
+          'both stage 4 and stage 5 blocks exist')
+    check(i_s5_block < i_s4_block,
+          'stage 5 executes BEFORE stage 4 (round-96 device finding)')
+
     # --- I. boot argument budget -----------------------------------------
     board = tomllib.loads(BOARD.read_text(encoding='utf-8'))
     args = board['payload']['kernel_args']

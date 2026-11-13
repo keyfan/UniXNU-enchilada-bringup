@@ -72,8 +72,14 @@ def main():
           'the probe includes the round-86 ID2 contract header')
     check('struct adreno_iommu_gate_inputs gi = {};' in code,
           'the gate is asked with the contract struct, not a bare mask')
-    check('gi.cx_status_word  = cx;' in code,
-          'gi.cx_status_word is the CX word MEASURED in this same poll')
+    # Round 98 changed this from the poll-start word to a RE-READ, because the first
+    # device run proved stage 4 was gating on a value stage 5 then invalidated:
+    #   t=50.088 stage4=refused cx=00005ff4 ; t=50.365 stage5 cx_after=80001fe0
+    # The property that must survive is that the word is MEASURED, never a constant.
+    check('gi.cx_status_word  = cxNow;' in code,
+          'gi.cx_status_word is a MEASURED word (re-read after stage 5)')
+    check("const uint32_t cxNow = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : cx;" in code,
+          'the re-read comes from the real GPUCC status register')
     check('adreno_iommu_assess(&gi)' in code,
           'the verdict comes from the contract assess()')
     check('gi.clocks_enabled  = 0u;' in code,
