@@ -19,6 +19,12 @@ void IOLog(const char *format, ...) __attribute__((format(printf, 1, 2)));
 // package/EnchiladaSmmuProbe.cpp:194 already does; <stdio.h> is not pulled in by
 // the other probes, so it is declared here for the host type-check only.
 int snprintf(char *buffer, size_t size, const char *format, ...) __attribute__((format(printf, 3, 4)));
+// Round 95 stage 5: AdrenoGpuccWindowV1 refuses to hand back an MMIO triple
+// without a delay function, because the GDSC plan genuinely waits between its
+// collapse-clear write and the status poll that observes the result. IODelay()
+// is the kernel's own busy-wait, so the shim supplies THAT rather than inventing
+// a spin loop calibrated by guesswork -- the distinction the window header draws.
+void IODelay(unsigned int microseconds);
 #ifdef __cplusplus
 }
 #endif

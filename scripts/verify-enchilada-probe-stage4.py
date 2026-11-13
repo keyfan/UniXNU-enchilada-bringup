@@ -61,9 +61,9 @@ def main():
     code = re.sub(r'//[^\n]*', '', code)
 
     # --- A. the stage is armed, default-off, and does not regress 1/2/3 ---
-    check('stage != 4u' in text, 'the boot-arg mask REJECTS stages above 4')
-    check('(stage != 1u && stage != 2u && stage != 3u && stage != 4u)' in text,
-          'stages 1/2/3/4 are all accepted, nothing else')
+    check('stage > 5u' in code, 'the boot-arg mask REJECTS stages above 5')
+    check('(stage < 1u || stage > 5u)' in code,
+          'stages 1..5 are all accepted, nothing else')
     check('if (stage >= 4u)' in code,
           'the stage-4 block is gated behind stage >= 4')
 
@@ -162,8 +162,8 @@ def main():
     board = tomllib.loads(BOARD.read_text(encoding='utf-8'))
     args = board['payload']['kernel_args']
     joined = ' '.join(args)
-    check('enchilada-adreno=4' in args,
-          'board.toml arms stage 4 with enchilada-adreno=4')
+    check('enchilada-adreno=5' in args,
+          'board.toml arms stage 5 (stage 4 requires it, since the mask is monotonic)')
     check(len(joined) <= 1000,
           'the kernel command line fits the 1000-byte limit (measured %d)' % len(joined))
     check('enchilada-touch=4' in args,

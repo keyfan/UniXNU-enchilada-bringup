@@ -126,7 +126,17 @@ def main():
                    'AdrenoPowerUpV1BoardGmuClockCount', 'AdrenoPowerUpV1BoardGpuClockCount',
                    'AdrenoPowerUpV1BoardIsA740Family', 'AdrenoPowerUpV1InputsValid',
                    'AdrenoPowerUpV1CountsAreDistinct', 'AdrenoPowerUpV1PlanSize',
-                   'AdrenoPowerUpV1Plan', 'AdrenoPowerUpV1PreIsReady'}
+                   'AdrenoPowerUpV1Plan', 'AdrenoPowerUpV1PreIsReady',
+                   # Round 95 stage 5: the IOKit caller of the power-up chain.
+                   # These resolve from libEnchiladaAdreno.a (all four modules are
+                   # archive objects) and from IOKit itself for the delay. They are
+                   # expected precisely because stage 5 is the stage that WRITES:
+                   # a caller that never referenced the executor would leave stage 5
+                   # dead code, which is the condition this list exists to catch.
+                   'AdrenoGpuccWindowV1Bind', 'AdrenoGpuccWindowV1SetDelay',
+                   'AdrenoGpuccWindowV1Mmio',
+                   'AdrenoCallerV1Make', 'AdrenoCallerV1Run',
+                   'IODelay'}
         unexpected = sorted(u for u in undefined
                             if u not in allowed and not u.startswith('adreno_') and u != 'armcpu_map_physical')
         check(not unexpected, f'shim has no unexpected undefined symbols (unexpected={unexpected})')

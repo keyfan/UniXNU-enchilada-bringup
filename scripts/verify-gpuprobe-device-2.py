@@ -106,7 +106,19 @@ def main():
          "only deref is a volatile 32-bit load", "volatile load present")
     stores = re.findall(r"\*\s*reinterpret_cast<[^>]*>\s*\([^)]*\)\s*=(?!=)", src)
     need(len(stores) == 0, "NO store through any pointer in the probe source", "stores=%d" % len(stores))
-    need("wmb" not in src and "WRITE" not in src, "no MMIO writes in the probe source", "no writes")
+    # Round 95 widened this from a literal "WRITE" substring test, which could not
+    # survive stage 5 (the stage that legitimately WRITES through the window
+    # adapter). The property that actually matters is still asserted, and more
+    # precisely: the probe performs NO direct store through any pointer, and it
+    # never invokes the MMIO write member itself -- every write goes through
+    # AdrenoGpuccWindowV1's bounded, gated callback. "wmb" stays forbidden because
+    # a barrier on a write path this probe does not own would be a lie about what
+    # it is doing.
+    need("wmb" not in src, "no write barrier in a probe that owns no write path", "no wmb")
+    need("mmio.write32(" not in src,
+         "the probe never calls the MMIO write member directly", "callbacks only")
+    need("AdrenoGpuccWindowV1Mmio(" in src,
+         "stage 5 writes only through the bounded window adapter", "adapter present")
 
     # ---- latest.txt cross-check (it is the FINAL diagnostic slot, NOT msgbuf) ----
     latest = LATEST.read_text(encoding="utf-8", errors="replace")

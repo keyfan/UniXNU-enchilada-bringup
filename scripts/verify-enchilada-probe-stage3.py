@@ -51,9 +51,10 @@ def main():
     code = re.sub(r'//[^\n]*', '', code)
 
     # --- A. stage-3 is a NEW, default-off arm --------------------------------
-    check('stage != 3u' in text and
-          '(stage != 1u && stage != 2u && stage != 3u && stage != 4u)' in text,
-          'stage-3 accepted by the boot-arg mask (and stages 1/2 kept; round 94 added 4)')
+    # Round 95: the mask is `stage < 1u || stage > 5u`. Assert the SHAPE, not a
+    # stage list, so a future stage cannot be added without touching this check.
+    check('(stage < 1u || stage > 5u)' in code and 'stage > 5u' in code,
+          'stage-3 accepted by the boot-arg mask (stages 1..5; rounds 94/95 widened it)')
     check('if (stage >= 3u)' in text,
           'stage-3 block is gated behind stage >= 3 (stages 1/2 unaffected)')
 
@@ -77,8 +78,12 @@ def main():
               f'probe has no {fn} callback reference')
     # The only dereference in the file must remain rd32()'s volatile load.
     loads = re.findall(r'reinterpret_cast<[^>]*>\s*\(', code)
-    check(len(loads) == 1 and 'volatile' in loads[0],
-          f'exactly one pointer cast (the rd32 volatile load): {loads}')
+    # Round 95 adds a second legitimate cast: the volatile uint8_t * handed to
+    # AdrenoGpuccWindowV1Bind for stage 5. The property that must survive is that
+    # EVERY cast is volatile -- a plain uint8_t * here would let a cacheable view
+    # of device memory exist.
+    check(len(loads) >= 1 and all('volatile' in x for x in loads),
+          f'every pointer cast is volatile (the rd32 load and the window base): {loads}')
     stores = re.findall(r'\*\s*reinterpret_cast\s*<[^>]*>\s*\([^;]*\)\s*=[^=]', code)
     check(not stores, f'no store through any pointer ({stores})')
 

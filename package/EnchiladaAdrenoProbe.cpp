@@ -96,6 +96,15 @@ extern "C" {
 // CX is up, the window is the kgsl SMMU and the clocks are known on. This probe
 // calls the contract; it does not re-derive the field positions.
 #include "AdrenoIommuProbeV1.h"
+// Round 95 stage 5: the power-up EXECUTION chain. These three were host-verified
+// models with no IOKit caller: AdrenoGpuccWindowV1 bounds a mapped GPUCC window,
+// AdrenoPowerUpBackendV1 supplies the four bus callbacks that actually emit the
+// derived writes, and AdrenoCallerV1 brackets the executor with a read-only
+// pre-observation and a post Precheck so "the writes happened" and "CX is now on"
+// stay separate verdicts. Stage 5 is the caller that was missing.
+#include "AdrenoGpuccWindowV1.h"
+#include "AdrenoPowerUpBackendV1.h"
+#include "AdrenoCallerV1.h"
 
 // Device-proven cache-inhibited kernel mapping of a physical range
 // (drivers/ArmCpu/ArmCpu.cpp:207, same use as package/EnchiladaSmmuProbe.cpp:57).
@@ -131,6 +140,9 @@ char gPlanReplay[200];
 // reason the other stages do -- the 128 KiB msgbuf ring wraps and a one-shot row
 // is lost before it can be read back.
 char gIommuReplay[220];
+// Round 95 stage 5: the power-up execution row, same replay discipline.
+char gPowerReplay[240];
+bool gHavePowerReplay = false;
 bool gHaveIommuReplay = false;
 bool gHaveGmuReplay = false;
 bool gHavePlanReplay = false;
@@ -175,9 +187,31 @@ void setIommuReplay(const char *text) {
     gHaveIommuReplay = i != 0;
 }
 
+// Round 95 stage 5: fifth buffer, same no-libc copy loop.
+void setPowerReplay(const char *text) {
+    if (!text) return;
+    unsigned i = 0;
+    for (; text[i] && i + 1 < sizeof gPowerReplay; ++i) gPowerReplay[i] = text[i];
+    gPowerReplay[i] = 0;
+    gHavePowerReplay = i != 0;
+}
+
 // In-domain register read: GPUCC base plus a byte offset the host-tested header
 // already bounds against GPUCC_SIZE / REG_STRIDE.
 uint32_t rd32(uintptr_t va, uint32_t off) {return *reinterpret_cast<volatile uint32_t *>(va + off);}
+
+// Round 95 stage 5 delay primitive. The GDSC plan genuinely waits between a
+// collapse-clear write and the status poll that observes it, and freestanding C
+// has no delay of its own -- AdrenoGpuccWindowV1 refuses to hand back an MMIO
+// triple with a NULL delay precisely so a caller cannot pretend. IOKit's
+// IODelay() is the kernel's own busy-wait; it is a FUNCTION CALL, not a spin
+// loop calibrated by guesswork, which is the distinction the window header
+// draws. Bounded so a 2 s plan cannot become a 20 s stall.
+int gpucc_udelay(void *, uint32_t usec) {
+    if (usec > 2000000u) return 1;      // refuse an absurd delay rather than block
+    IODelay(usec);
+    return 0;
+}
 
 // Byte offsets of the two status registers inside GPUCC. Derived, never typed,
 // so they cannot drift from the absolute addresses in the header.
@@ -260,11 +294,15 @@ extern "C" void enchilada_adreno_poll(void) {
         // Round 94: the stage-4 SMMU ID2 row is replayed for the same reason.
         if (gHaveIommuReplay)
             IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gIommuReplay, gTick, gReplayAttempt);
+        // Round 95: the stage-5 power-up execution row is the one that WROTE, so
+        // losing it to a ring wrap would lose the only record of the writes.
+        if (gHavePowerReplay)
+            IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gPowerReplay, gTick, gReplayAttempt);
         return;             // finished: no further MMIO access, ever
     }
     unsigned stage = 0;
     if (!PE_parse_boot_argn("enchilada-adreno", &stage, sizeof stage) ||
-        (stage != 1u && stage != 2u && stage != 3u && stage != 4u)) {
+        (stage < 1u || stage > 5u)) {
         gNotArmed = true;   // absent (or an unsupported stage) -> never run
         return;
     }
@@ -524,6 +562,85 @@ extern "C" void enchilada_adreno_poll(void) {
         }
         IOLog("enchilada-adreno: %s\n", ioRow);
         setIommuReplay(ioRow);
+    }
+
+    // ---- Round 95 stage 5: the MISSING IOKit caller of the power-up chain ---
+    // Rounds 51/56/57/58/59/61/62 derived the ordered plan and round 62 supplied
+    // an executor, but every layer spoke through callbacks and NOTHING ever
+    // connected them to a mapped window. This stage is that connection, and it is
+    // the only stage in this file that WRITES.
+    //
+    // SAFETY, and it is the whole design: AdrenoCallerV1Run() brackets the
+    // executor with a READ-ONLY pre-observation, so if the GPUCC window is mapped
+    // but dead the run stops with ZERO writes rather than failing at the first
+    // store. Arming is a separate decision from construction, and this stage
+    // additionally refuses unless the window passed the same gpucc_window_is_safe()
+    // gate stages 1-4 already rely on.
+    //
+    // WHAT IT STILL DOES NOT PROVE: `Up()` succeeding means the five ops executed;
+    // whether CX is now ON is a DIFFERENT question that Precheck answers by
+    // re-reading the status word. Round 35 measured CX DOWN and nothing proves the
+    // collapse clear raises it, so both verdicts are reported separately.
+    if (stage >= 5u) {
+        char pwRow[240];
+        pwRow[0] = 0;
+
+        if (!gGpuccVa) {
+            snprintf(pwRow, sizeof pwRow, "stage5=refused no-gpucc-window");
+        } else if (!gpucc_window_is_safe()) {
+            snprintf(pwRow, sizeof pwRow, "stage5=refused unsafe-window");
+        } else {
+            // Bind the window adapter over the mapping stages 1-4 already hold.
+            struct AdrenoGpuccWindowV1 win = {};
+            int okw = AdrenoGpuccWindowV1Bind(&win,
+                       reinterpret_cast<volatile uint8_t *>(gGpuccVa),
+                       static_cast<uint32_t>(ADRENO_DOMAIN_GPUCC_SIZE)) == 0;
+            if (okw) {
+                okw = AdrenoGpuccWindowV1SetDelay(&win, nullptr, gpucc_udelay) == 0;
+            }
+            // The window refuses without a delay for a real reason: the GDSC plan
+            // waits between its collapse-clear write and its status poll.
+            struct AdrenoPowerUpBackendV1Mmio mmio = {};
+            if (okw) {
+                okw = AdrenoGpuccWindowV1Mmio(&win, &mmio) == 0;
+            }
+            if (!okw) {
+                snprintf(pwRow, sizeof pwRow, "stage5=refused window-adapter-not-ready");
+            } else {
+                // Inputs: armed is the arm gate; the rest are board facts the
+                // host-verified headers pin (gx genpd present, 200 MHz core rate
+                // from a6xx_gmu.c, GX not required on this board).
+                struct AdrenoPowerUpBackendV1Inputs in = {};
+                in.armed        = 1u;
+                in.gxpd_present = 1u;
+                in.rcg_enabled  = 0u;      // this port has never started gmu_clk_src
+                in.core_rate_hz = 200000000u;
+                in.strict_gx    = 0u;      // GX-OFF is the expected steady state
+
+                struct AdrenoCallerV1 caller = {};
+                const int okc = AdrenoCallerV1Make(&caller, &mmio, &in) == 0;
+                if (!okc) {
+                    snprintf(pwRow, sizeof pwRow, "stage5=refused caller-make");
+                } else {
+                    struct AdrenoCallerV1Report rep = {};
+                    const AdrenoCallerV1Status rc = AdrenoCallerV1Run(&caller, &rep);
+                    // Three INDEPENDENT facts, reported separately so a success in
+                    // one cannot be read as a success in another:
+                    //   up_status       -- did the five ordered ops execute?
+                    //   precheck_status -- does the CX word now say the domain is up?
+                    //   before/after.cx -- the two status words, so the DELTA is visible
+                    snprintf(pwRow, sizeof pwRow,
+                             "stage5=run rc=%d up=%d up_fail=%u precheck=%d ops=%u "
+                             "w=%u r=%u cx_before=%08x cx_after=%08x cx_on_after=%u",
+                             (int)rc, (int)rep.up_status, (unsigned)rep.up_fail_index,
+                             (int)rep.precheck_status, (unsigned)rep.ops,
+                             (unsigned)rep.stats.writes, (unsigned)rep.stats.reads,
+                             rep.before.cx, rep.after.cx, (unsigned)rep.after.cx_on);
+                }
+            }
+        }
+        IOLog("enchilada-adreno: %s\n", pwRow);
+        setPowerReplay(pwRow);
     }
 
     IOLog("enchilada-adreno: %s\n", row);
