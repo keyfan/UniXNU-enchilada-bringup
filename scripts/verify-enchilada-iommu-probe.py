@@ -497,7 +497,7 @@ check(entry is not None and 'AdrenoSmmuCtxWordV1' in entry.group(0),
       'C1 the suite links AdrenoSmmuCtxWordV1 as well')
 
 units = re.findall(r"\(c_rec, GPU / '([^']+)'", build)
-check(len(units) == 29, f'C2 29 C archive units declared (got {len(units)})')
+check(len(units) == 30, f'C2 30 C archive units declared (got {len(units)})')
 check('AdrenoIommuProbeV1.c' in units, 'C2 the round-86 unit is the 29th')
 check(units[-1] == 'AdrenoIommuProbeV1.c',
       f'C2 the round-86 unit is LAST in the list (got {units[-1]})')
@@ -515,13 +515,16 @@ for name in SIBLINGS:
     check(p.is_file(), f'C2 {name} exists')
     s = p.read_text(encoding='utf-8')
     nums = re.findall(r'== (\d+)', s)
-    check('29' in nums, f'C2 {name} asserts the CURRENT 29 units (got {nums})')
+    # Match the BARE number, not a substring of a larger one: a naive '29' in nums
+    # test passed on any number containing 29 and was the wrong shape once the count
+    # moved. The current count is 30.
+    check('30' in nums, f'C2 {name} asserts the CURRENT 30 units (got {nums})')
     check('28' not in nums, f'C2 {name} no longer compares against 28')
     check('27' not in nums, f'C2 {name} no longer compares against 27')
     check('28 C archive units' not in s,
           f'C2 {name} no longer labels 28 archive units')
-    check('29 C archive units' in s or 'units == 29' in s or
-          'len(units) == 29' in s, f'C2 {name} labels the CURRENT 29 units')
+    check('30 C archive units' in s or 'units == 30' in s or
+          'len(units) == 30' in s, f'C2 {name} labels the CURRENT 30 units')
     check('28th' not in s, f'C2 {name} no longer says "28th"')
     # And no CR crept in while the count was edited.
     check('\r' not in s, f'C2 {name} is still pure LF after the edit')
@@ -534,7 +537,7 @@ for name in SIBLINGS:
 # makes 30 -- the number is DERIVED from the file, and the two counts are
 # asserted separately so neither can absorb the other's drift.
 suites = re.findall(r"\('adreno-[a-z0-9-]+-test'", host)
-check(len(suites) == 30, f'C3 the host runner declares 30 suites (got {len(suites)})')
+check(len(suites) == 31, f'C3 the host runner declares 31 suites (got {len(suites)})')
 check(len(suites) == len(units) + 1,
       'C3 one more host suite than C units: the a630-hwinit test is header-only')
 check(suites[-1] == "('adreno-iommu-probe-v1-test'",

@@ -220,8 +220,8 @@ check("'AdrenoSmmuStage1V1': GPU / 'AdrenoSmmuStage1V1.c'," in host,
       'B11 host SOURCES entry')
 check("('adreno-smmu-stage1-v1-test'" in host, 'B11 host TESTS entry')
 check('/smmu-stage1-v1' in host, 'B11 PASS enumeration updated')
-check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 29,
-      'B11 29 C archive units declared')
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 30,
+      'B11 30 C archive units declared')
 adm = (GPU / 'AdrenoGen1BackendV1.c').read_text(encoding='utf-8')
 check('out->items[kEnchiladaGen1PrereqSmmuStage1].modeled = 1u;' in adm,
       'B11 kgsl-smmu-stage1 is modeled=1 since round 75')

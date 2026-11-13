@@ -203,8 +203,8 @@ check("('adreno-va-map-v1-test'" in host, 'B11 host TESTS entry')
 check('/va-map-v1' in host, 'B11 PASS enumeration lists va-map-v1')
 check('/smmu-ctx-word-v1' in host,
       'B11 and the later round-83 suite, so the enumeration is CUMULATIVE')
-check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 29,
-      'B11 29 C archive units declared')
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 30,
+      'B11 30 C archive units declared')
 adm = (GPU / 'AdrenoGen1BackendV1.c').read_text(encoding='utf-8')
 check('out->items[kEnchiladaGen1PrereqBoardVaMap].modeled = 1u;' in adm,
       'B11 board-va-map is modeled=1 since round 77')

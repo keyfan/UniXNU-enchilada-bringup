@@ -17,7 +17,7 @@ static int failures = 0;
 // The exact number adreno_iommu_verify() evaluates. Pinned so a DELETED
 // assertion cannot pass silently: a self-check that loses checks still returns
 // 0, so the count is the only evidence the checks still exist.
-static const uint32_t kExpectedVerifyChecks = 183u;
+static const uint32_t kExpectedVerifyChecks = 187u;
 
 // ---- Field extraction, re-derived from the GENMASKs rather than the macros --
 static uint32_t field(uint32_t raw, uint32_t hi, uint32_t lo)
@@ -317,8 +317,17 @@ static void testGate()
     CHECK(adreno_iommu_assess(&c) == kAdrenoIommuProbeRefusedUnmapped);
     c = g; c.cb_already_owned = 1u;
     CHECK(adreno_iommu_assess(&c) == kAdrenoIommuProbeRefusedCbOwned);
+    /* ROUND 100: the READ gate no longer consults the stream. A stream cannot fault
+     * before the context that routes it exists, and that context needs the ias this
+     * very read supplies -- so requiring a fault here blocked the read forever on a
+     * cold boot (device: verdict=7 refused-no-stream with cx/clocks/mapped all
+     * satisfied). The condition moved to adreno_iommu_admit_program(). */
     c = g; c.stream_faults = 0u;
-    CHECK(adreno_iommu_assess(&c) == kAdrenoIommuProbeRefusedNoStream);
+    CHECK(adreno_iommu_assess(&c) == kAdrenoIommuProbePermitted);
+    /* ...and the PROGRAM gate still refuses on exactly that input. */
+    CHECK(adreno_iommu_admit_program(&c) == kAdrenoIommuProbeRefusedNoStream);
+    c = g; c.stream_faults = 1u;
+    CHECK(adreno_iommu_admit_program(&c) == kAdrenoIommuProbePermitted);
 
     /* Zero and non-power-of-two windows are INVALID before they are windows.
      * NOTE 0x8000 IS a power of two, so it is a valid SIZE and reaches the

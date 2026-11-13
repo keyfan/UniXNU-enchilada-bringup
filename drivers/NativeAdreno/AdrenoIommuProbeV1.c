@@ -1248,10 +1248,46 @@ int adreno_iommu_verify(uint32_t *check_count)
         }
     }
     checks += 1u;
+    /* ROUND 100: the READ gate must PERMIT with the stream unbound, and the PROGRAM
+     * gate must be the one that refuses. Both halves are asserted, because the whole
+     * point of the split is that neither verdict can drift into the other. */
     {
         struct adreno_iommu_gate_inputs c = g;
         c.stream_faults = 0u;
-        if (adreno_iommu_assess(&c) != kAdrenoIommuProbeRefusedNoStream) {
+        if (adreno_iommu_assess(&c) != kAdrenoIommuProbePermitted) {
+            fails += 1u;
+        }
+    }
+    checks += 1u;
+    {
+        struct adreno_iommu_gate_inputs c = g;
+        c.stream_faults = 0u;
+        if (adreno_iommu_admit_program(&c) != kAdrenoIommuProbeRefusedNoStream) {
+            fails += 1u;
+        }
+    }
+    checks += 1u;
+    {
+        struct adreno_iommu_gate_inputs c = g;
+        c.stream_faults = 1u;
+        if (adreno_iommu_admit_program(&c) != kAdrenoIommuProbePermitted) {
+            fails += 1u;
+        }
+    }
+    /* Delegation: every refusal assess() produces must propagate unchanged. */
+    checks += 1u;
+    {
+        struct adreno_iommu_gate_inputs c = g;
+        c.window_size = 0ull;
+        if (adreno_iommu_admit_program(&c) != kAdrenoIommuProbeRefusedInvalid) {
+            fails += 1u;
+        }
+    }
+    checks += 1u;
+    {
+        struct adreno_iommu_gate_inputs c = g;
+        c.cx_status_word = 0x00005ff4u;
+        if (adreno_iommu_admit_program(&c) != kAdrenoIommuProbeRefusedCxDown) {
             fails += 1u;
         }
     }

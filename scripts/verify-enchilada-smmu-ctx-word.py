@@ -421,19 +421,19 @@ check("'AdrenoSmmuCtxWordV1': GPU / 'AdrenoSmmuCtxWordV1.c'," in host,
 check("('adreno-smmu-ctx-word-v1-test'" in host, 'C1 host TESTS entry')
 check('/smmu-ctx-word-v1' in host, 'C1 PASS enumeration lists this suite')
 units = len(re.findall(r"\(c_rec, GPU / '[^']+'", build))
-check(units == 29, f'C2 29 C archive units declared (got {units})')
+check(units == 30, f'C2 30 C archive units declared (got {units})')
 # The bookkeeping the round-78 lesson demands: no stale count anywhere. The
 # stale values are BUILT here rather than written, because this file is one of
 # the files the loop below scans -- a literal would make it match itself.
 STALE_COUNTS = ('== ' + '27', '== ' + '28')
-CURRENT_COUNT = '== ' + '29'
+CURRENT_COUNT = '== ' + '30'
 for name in ('verify-enchilada-cp-ring.py', 'verify-enchilada-gen1-backend.py',
              'verify-enchilada-mdt.py', 'verify-enchilada-smmu-stage1.py',
              'verify-enchilada-va-map.py', 'verify-enchilada-zap-auth.py'):
     s = (DEV / 'scripts' / name).read_text(encoding='utf-8')
     check(not any(t in s for t in STALE_COUNTS),
           f'C2 {name} no longer asserts a stale count')
-    check(CURRENT_COUNT in s, f'C2 {name} asserts the CURRENT 29 units')
+    check(CURRENT_COUNT in s, f'C2 {name} asserts the CURRENT 30 units')
 
 print(f'Domain A: {len(PINS)} sha256-pinned sources; the GR1 bases, the CBAR/CBA2R/'
       f'TCR2 fields, the TCR default RECOMPUTED at 7 ias x 2 coherency x 2 geometries, '
