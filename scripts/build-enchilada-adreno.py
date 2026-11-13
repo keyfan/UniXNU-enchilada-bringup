@@ -137,7 +137,8 @@ def main():
                  'AdrenoCallerV1', 'AdrenoMetalSeamV1', 'AdrenoMetalPublishV1',
                  'AdrenoGen1BackendV1', 'AdrenoCpRingV1', 'AdrenoZapAuthV1',
                  'AdrenoMdtV1', 'AdrenoSmmuStage1V1',
-                 'AdrenoVaMapV1', 'AdrenoSmmuCtxWordV1', 'AdrenoIommuProbeV1'):
+                 'AdrenoVaMapV1', 'AdrenoSmmuCtxWordV1', 'AdrenoIommuProbeV1',
+                 'AdrenoSmmuAsidV1'):
         sources += [GPU / f'{stem}.c', GPU / f'{stem}.h']
     # Round 66: the ABI directory contract lives in its own subdirectory.
     sources += [GPU / 'AdrenoDarwinKmdAbiV1' / 'AdrenoDarwinKmdAbiV1.c',

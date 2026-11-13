@@ -35,6 +35,25 @@ uint32_t adreno_asid_capacity_from_id1(uint32_t id1_raw)
     return count;
 }
 
+uint32_t adreno_asid_s2cb_count_from_id1(uint32_t id1_raw)
+{
+    /* P1:62 ARM_SMMU_ID1_NUMS2CB GENMASK(23,16); P2:1865 reads exactly this field.
+     * Upper mask bits outside the field are ignored, as FIELD_GET would do. */
+    return (id1_raw & kAdrenoAsidId1Nums2cbMask) >> kAdrenoAsidId1Nums2cbShift;
+}
+
+int adreno_asid_init_from_id1(struct adreno_asid_bitmap *b, uint32_t id1_raw)
+{
+    const uint32_t numcb = adreno_asid_capacity_from_id1(id1_raw);
+    const uint32_t nums2cb = adreno_asid_s2cb_count_from_id1(id1_raw);
+
+    /* P2:1866 num_context_banks = FIELD_GET(ID1_NUMCB, id);
+     * P2:1865 num_s2_context_banks = FIELD_GET(ID1_NUMS2CB, id).
+     * init() enforces the P2:1867-1870 sanity check (num_s2 > num_cb is
+     * "impossible number of S2 context banks!"), so this is a pure delegation. */
+    return adreno_asid_init(b, numcb, nums2cb);
+}
+
 int adreno_asid_init(struct adreno_asid_bitmap *b, uint32_t num_context_banks,
                      uint32_t num_s2_context_banks)
 {
@@ -396,6 +415,39 @@ int adreno_asid_verify(uint32_t *check_count)
     checks += 1u;
     if (adreno_asid_cbar_offset(0x1f4u) != 0x1f4u * 4u) {
         fails += 1u; /* the pinned SMMU phandle value maps to a real offset */
+    }
+
+    /* ---- one ID1 word decodes BOTH fields (stage-6 device read) -------- */
+    /* 0x00020008u encodes NUMS2CB=2, NUMCB=8 -- a plausible probe word. */
+    {
+        const uint32_t id1 = 0x00020008u;
+        checks += 1u;
+        if (adreno_asid_s2cb_count_from_id1(id1) != 2u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_asid_capacity_from_id1(id1) != 8u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_asid_init_from_id1(&b, id1) != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (b.capacity != 8u || b.start != 2u) {
+            fails += 1u; /* start == num_s2_context_banks (P2:734) */
+        }
+        cbndx = 0xffffffffu;
+        checks += 1u;
+        if (adreno_asid_alloc(&b, &cbndx) != 0 || cbndx != 2u) {
+            fails += 1u; /* first-fit lands on the first non-reserved bank */
+        }
+        /* 0x00090008u encodes NUMS2CB=9 > NUMCB=8: P2:1867-1870 "impossible
+         * number of S2 context banks!" -- init_from_id1 must refuse. */
+        checks += 1u;
+        if (adreno_asid_init_from_id1(&b, 0x00090008u) == 0) {
+            fails += 1u;
+        }
     }
 
     /* ---- the absent inputs, derived ----------------------------------- */

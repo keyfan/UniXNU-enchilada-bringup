@@ -9,9 +9,10 @@ connection and it is the ONLY stage of this probe that writes.
 
 What this verifier asserts (each is a property the design stands or falls on):
 
-  1. Stage 5 is armed by `enchilada-adreno=5`, default-off, and stages 1-4 are
-     unchanged (a new stage must not regress the old ones, and must not widen what
-     the boot argument accepts).
+  1. Stage 5 is armed by `enchilada-adreno=6`, default-off, and stages 1-4 are
+     unchanged (a new stage must not regress the old ones; round 103 widened the
+     boot argument to 1..6 to admit the read-only stage 6, and this verifier
+     tracks that mask so the widening is auditable).
   2. It composes the three host-verified modules rather than re-implementing any of
      them: the window adapter, the executor's MMIO triple, and the caller.
   3. It refuses unless the SAME `gpucc_window_is_safe()` gate stages 1-4 use says
@@ -58,9 +59,9 @@ def main():
     code = re.sub(r'//[^\n]*', '', code)
 
     # --- A. armed, default-off, no regression of 1-4 ----------------------
-    check('stage > 5u' in code, 'the mask rejects stages above 5')
-    check('(stage < 1u || stage > 5u)' in code,
-          'the mask accepts exactly 1..5 and nothing else')
+    check('stage > 6u' in code, 'the mask rejects stages above 6')
+    check('(stage < 1u || stage > 6u)' in code,
+          'the mask accepts exactly 1..6 and nothing else')
     check('if (stage >= 5u)' in code, 'stage 5 is gated behind stage >= 5')
     for old in ('if (stage >= 2u)', 'if (stage >= 3u)', 'if (stage >= 4u)'):
         check(old in code, 'stage chain still contains %r' % old)
@@ -153,7 +154,7 @@ def main():
     board = tomllib.loads(BOARD.read_text(encoding='utf-8'))
     args = board['payload']['kernel_args']
     joined = ' '.join(args)
-    check('enchilada-adreno=5' in args, 'board.toml arms stage 5')
+    check('enchilada-adreno=6' in args, 'board.toml arms stage 6')
     check(len(joined) <= 1000,
           'the kernel command line fits the 1000-byte limit (measured %d)' % len(joined))
 

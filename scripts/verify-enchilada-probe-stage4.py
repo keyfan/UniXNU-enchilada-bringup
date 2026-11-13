@@ -61,9 +61,9 @@ def main():
     code = re.sub(r'//[^\n]*', '', code)
 
     # --- A. the stage is armed, default-off, and does not regress 1/2/3 ---
-    check('stage > 5u' in code, 'the boot-arg mask REJECTS stages above 5')
-    check('(stage < 1u || stage > 5u)' in code,
-          'stages 1..5 are all accepted, nothing else')
+    check('stage > 6u' in code, 'the boot-arg mask REJECTS stages above 6')
+    check('(stage < 1u || stage > 6u)' in code,
+          'stages 1..6 are all accepted, nothing else')
     check('if (stage >= 4u)' in code,
           'the stage-4 block is gated behind stage >= 4')
 
@@ -129,11 +129,15 @@ def main():
         check('stage4=refused verdict=%u(%s)' in block,
               'the refusal row names its verdict instead of looking like a zero read')
 
-    # --- D. the read and the decode are ONE access of ONE register --------
+    # --- D. ID2 once; stage 6 adds exactly two more reads behind the gate ---
     check('rd32(gSmmuVa, 0x28u)' in code,
-          'exactly one register read, GR0_ID2 at byte 0x28')
-    check(code.count('rd32(gSmmuVa') == 1,
-          'the SMMU window is dereferenced exactly once (no second access)')
+          'GR0_ID2 is read once, at byte 0x28 (stage 4)')
+    check('rd32(gSmmuVa, 0x20u)' in code,
+          'GR0_ID0 is read once, at byte 0x20 (stage 6, coherent_walk)')
+    check('rd32(gSmmuVa, 0x24u)' in code,
+          'GR0_ID1 is read once, at byte 0x24 (stage 6, NUMCB/NUMS2CB)')
+    check(code.count('rd32(gSmmuVa') == 3,
+          'the SMMU window is dereferenced exactly three times: ID2 once + ID0 once + ID1 once')
     check('dsb sy' in code,
           'a full barrier follows the register read')
     check('adreno_iommu_id2_decode(id2, &d)' in code,
@@ -181,8 +185,8 @@ def main():
     board = tomllib.loads(BOARD.read_text(encoding='utf-8'))
     args = board['payload']['kernel_args']
     joined = ' '.join(args)
-    check('enchilada-adreno=5' in args,
-          'board.toml arms stage 5 (stage 4 requires it, since the mask is monotonic)')
+    check('enchilada-adreno=6' in args,
+          'board.toml arms stage 6 (stage 4 requires it, since the mask is monotonic)')
     check(len(joined) <= 1000,
           'the kernel command line fits the 1000-byte limit (measured %d)' % len(joined))
     check('enchilada-touch=4' in args,
@@ -204,7 +208,7 @@ def main():
         print('FAIL: stage-4 kernel ID2 probe contract (%d failures)' % len(fails))
         return 1
     print('PASS: stage-4 kernel ID2 probe contract '
-          '(fail-closed gate, one register read, contract decode, no store)')
+          '(fail-closed gate, ID2 once + stage-6 ID0/ID1, contract decode, no store)')
     return 0
 
 

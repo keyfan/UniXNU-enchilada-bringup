@@ -98,6 +98,11 @@ extern "C" {
 /* P1:64 GENMASK(7,0): ID1.NUMCB is 8 bits wide, so <= 256 banks. */
 #define kAdrenoAsidId1NumcbMask      0x000000ffu
 #define kAdrenoAsidId1MaxBanks       256u
+/* P1:62 GENMASK(23,16): ID1.NUMS2CB is the stage-2 reserve, read at probe
+ * (P2:1865 num_s2_context_banks = FIELD_GET(ID1_NUMS2CB, id)). It becomes the
+ * first-fit start for a stage-1 domain (P2:734). */
+#define kAdrenoAsidId1Nums2cbMask    0x00ff0000u
+#define kAdrenoAsidId1Nums2cbShift   16u
 /* P1:366 of arm-smmu.h: upstream ALSO clamps its own bitmap to 128. */
 #define kAdrenoAsidMaxCbs            128u
 /* TTBRn_ASID is GENMASK_ULL(63,48): a 16-bit field (P1:169). */
@@ -137,6 +142,16 @@ enum adreno_asid_input {
  * been confused elsewhere in this tree. Returns the usable capacity, or 0 when the
  * encoded count is 0 or exceeds the ARM_SMMU_MAX_CBS ceiling. */
 uint32_t adreno_asid_capacity_from_id1(uint32_t id1_raw);
+
+/* P1:62 / P2:1865: decode the stage-2 reserve field of the SAME ID1 word. This is
+ * the second device-sourced register field the stage-6 probe supplies. */
+uint32_t adreno_asid_s2cb_count_from_id1(uint32_t id1_raw);
+
+/* Decode BOTH fields of one ID1 probe word and initialise the bitmap through
+ * adreno_asid_init(). Delegating (rather than duplicating) keeps the upstream
+ * P2:1867-1870 "impossible number of S2 context banks!" refusal in one place:
+ * init() already rejects num_s2 >= num_cb. Returns 0, or 1 on refusal. */
+int adreno_asid_init_from_id1(struct adreno_asid_bitmap *b, uint32_t id1_raw);
 
 /* Initialise the bitmap from the two probe values. `start` is the first bank the
  * caller may use (P2:734: num_s2_context_banks for a stage-1 domain). Refuses when

@@ -133,6 +133,8 @@ check('ARM_SMMU_MAX_CBS' in h or 'kAdrenoAsidMaxCbs' in h,
 
 B2 = [('kAdrenoAsidId1NumcbMask', '0x000000ffu'),
       ('kAdrenoAsidId1MaxBanks', '256u'),
+      ('kAdrenoAsidId1Nums2cbMask', '0x00ff0000u'),
+      ('kAdrenoAsidId1Nums2cbShift', '16u'),
       ('kAdrenoAsidMaxCbs', '128u'),
       ('kAdrenoAsidFieldBits', '16u'),
       ('kAdrenoAsidFieldMask', '0xffffull'),
@@ -142,7 +144,8 @@ for sym, val in B2:
     check(re.search(r'#define\s+' + sym + r'\s+' + re.escape(val) + r'\b', h) is not None,
           'B2 %s=%s' % (sym, val))
 
-APIS = ['adreno_asid_capacity_from_id1', 'adreno_asid_init', 'adreno_asid_alloc',
+APIS = ['adreno_asid_capacity_from_id1', 'adreno_asid_s2cb_count_from_id1',
+        'adreno_asid_init_from_id1', 'adreno_asid_init', 'adreno_asid_alloc',
         'adreno_asid_free', 'adreno_asid_is_owned', 'adreno_asid_count',
         'adreno_asid_ttbr_asid_field', 'adreno_asid_contextidr',
         'adreno_asid_s2cr_cbndx', 'adreno_asid_cbar_offset',

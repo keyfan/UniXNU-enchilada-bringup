@@ -105,6 +105,11 @@ extern "C" {
 #include "AdrenoGpuccWindowV1.h"
 #include "AdrenoPowerUpBackendV1.h"
 #include "AdrenoCallerV1.h"
+// Round 103 stage 6: the ASID / context-bank bitmap allocator. Its two new
+// entry points decode ID1.NUMCB and ID1.NUMS2CB from ONE probe word and return
+// the first-fit bank index plus the writer tuple. Including it here lets the
+// stage-6 row be built by the contract, with no local field re-derivation.
+#include "AdrenoSmmuAsidV1.h"
 
 // Device-proven cache-inhibited kernel mapping of a physical range
 // (drivers/ArmCpu/ArmCpu.cpp:207, same use as package/EnchiladaSmmuProbe.cpp:57).
@@ -142,6 +147,10 @@ char gPlanReplay[200];
 char gIommuReplay[220];
 // Round 95 stage 5: the power-up execution row, same replay discipline.
 char gPowerReplay[240];
+// Round 103 stage 6: the ID0/ID1/ASID row, same replay discipline. It is wider
+// than the other rows because it carries BOTH raw words and the whole tuple.
+char gId1Replay[300];
+bool gHaveId1Replay = false;
 bool gHavePowerReplay = false;
 bool gHaveIommuReplay = false;
 bool gHaveGmuReplay = false;
@@ -194,6 +203,15 @@ void setPowerReplay(const char *text) {
     for (; text[i] && i + 1 < sizeof gPowerReplay; ++i) gPowerReplay[i] = text[i];
     gPowerReplay[i] = 0;
     gHavePowerReplay = i != 0;
+}
+
+// Round 103 stage 6: sixth buffer, same no-libc copy loop.
+void setId1Replay(const char *text) {
+    if (!text) return;
+    unsigned i = 0;
+    for (; text[i] && i + 1 < sizeof gId1Replay; ++i) gId1Replay[i] = text[i];
+    gId1Replay[i] = 0;
+    gHaveId1Replay = i != 0;
 }
 
 // In-domain register read: GPUCC base plus a byte offset the host-tested header
@@ -298,11 +316,14 @@ extern "C" void enchilada_adreno_poll(void) {
         // losing it to a ring wrap would lose the only record of the writes.
         if (gHavePowerReplay)
             IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gPowerReplay, gTick, gReplayAttempt);
+        // Round 103: the stage-6 ID0/ID1/ASID row is replayed for the same reason.
+        if (gHaveId1Replay)
+            IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gId1Replay, gTick, gReplayAttempt);
         return;             // finished: no further MMIO access, ever
     }
     unsigned stage = 0;
     if (!PE_parse_boot_argn("enchilada-adreno", &stage, sizeof stage) ||
-        (stage < 1u || stage > 5u)) {
+        (stage < 1u || stage > 6u)) {
         gNotArmed = true;   // absent (or an unsupported stage) -> never run
         return;
     }
@@ -691,6 +712,47 @@ extern "C" void enchilada_adreno_poll(void) {
                              (unsigned)d.ptfs_4k, (unsigned)d.vmid16,
                              wok, (int)w.ok,
                              (unsigned)w.tcr, (unsigned)w.tcr2);
+
+                     // ---- Round 103 stage 6: ID0 + ID1 behind the SAME gate ----
+                     // Upstream probes ID0 -> ID1 -> ID2 (P2:1758, :1853, :1879),
+                     // so reading the two words stage 4 skipped is not a new hazard:
+                     // it is the prefix of the very sequence stage 4 already joined.
+                     // ID0.CTTW supplies coherent_walk (P2:1799-1805); sdm845.dtsi
+                     // has NO dma-coherent on adreno_smmu, so fw_says_coherent = 0
+                     // and the register alone decides. ID1.NUMCB/NUMS2CB are the two
+                     // fields the ASID allocator was missing (kAdrenoAsidInputId1).
+                     if (stage >= 6u) {
+                         const uint32_t s6id0 = rd32(gSmmuVa, 0x20u);
+                         const uint32_t s6id1 = rd32(gSmmuVa, 0x24u);
+                         __asm__ volatile("dsb sy" ::: "memory");
+                         const uint32_t s6cttw = adreno_iommu_coherent_walk(s6id0, 0u);
+                         const uint32_t s6numcb = adreno_asid_capacity_from_id1(s6id1);
+                         const uint32_t s6nums2cb = adreno_asid_s2cb_count_from_id1(s6id1);
+                         struct adreno_asid_bitmap s6bmp = {};
+                         const int s6init = adreno_asid_init_from_id1(&s6bmp, s6id1);
+                         const uint32_t s6cap = s6bmp.capacity;
+                         uint32_t s6cbndx = 0xffffffffu;
+                         const int s6alloc = adreno_asid_alloc(&s6bmp, &s6cbndx);
+                         const uint64_t s6ttbr = adreno_asid_ttbr_asid_field(s6cbndx);
+                         const uint32_t s6ctxidr = adreno_asid_contextidr(s6cbndx);
+                         const uint32_t s6s2cr = adreno_asid_s2cr_cbndx(s6cbndx);
+                         const uint32_t s6cbar = adreno_asid_cbar_offset(s6cbndx);
+                         struct adreno_iommu_stage1_words s6w = {};
+                         const int s6wok = adreno_iommu_stage1_words(id2, ver, s6cttw, &s6w) == 0;
+                         char s6Row[300];
+                         snprintf(s6Row, sizeof s6Row,
+                                  "stage6=id1 id0=%08x id1=%08x cttw=%u numcb=%u nums2cb=%u "
+                                  "cap=%u init=%d alloc=%d cbndx=%u ttbr=%llx ctxidr=%08x "
+                                  "s2cr=%08x cbar=%08x words_ok=%d tcr=%08x tcr2=%08x",
+                                  (unsigned)s6id0, (unsigned)s6id1, (unsigned)s6cttw,
+                                  (unsigned)s6numcb, (unsigned)s6nums2cb, (unsigned)s6cap,
+                                  s6init, s6alloc, (unsigned)s6cbndx,
+                                  (unsigned long long)s6ttbr, (unsigned)s6ctxidr,
+                                  (unsigned)s6s2cr, (unsigned)s6cbar, s6wok,
+                                  (unsigned)s6w.tcr, (unsigned)s6w.tcr2);
+                         IOLog("enchilada-adreno: %s\n", s6Row);
+                         setId1Replay(s6Row);
+                     }
                 }
             }
         }

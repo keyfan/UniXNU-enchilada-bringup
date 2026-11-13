@@ -372,7 +372,7 @@ kernel_args = [
   # The stage is fail-closed -- it reads the GPUCC CX status FIRST and refuses to map
   # the SMMU window unless CX is up, so on a port that has never powered the GPU the
   # expected single-boot outcome is `stage4=refused verdict=3(cx-down)` and no read.
-  "enchilada-adreno=5",   # round 95: stage 5 adds the IOKit caller of the power-up chain (WRITES)
+  "enchilada-adreno=6",   # round 103: stage 6 adds ID0/ID1 reads behind the SAME stage-4 gate (READ-ONLY)
   "-no_slto_panic",
   "native-ufs-root=1",
   

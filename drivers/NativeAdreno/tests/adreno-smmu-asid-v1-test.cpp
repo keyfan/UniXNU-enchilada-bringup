@@ -30,6 +30,9 @@ static void testCeilings()
     CHECK(kAdrenoAsidBitmapWords * 64u == kAdrenoAsidMaxCbs);
     /* An 8-bit bank index fits both the S2CR.CBNDX field and the low byte. */
     CHECK(kAdrenoAsidLow8Mask == 0xffu);
+    /* arm-smmu.h:62 ID1.NUMS2CB is GENMASK(23,16). */
+    CHECK(kAdrenoAsidId1Nums2cbMask == 0x00ff0000u);
+    CHECK(kAdrenoAsidId1Nums2cbShift == 16u);
 }
 
 static void testCapacity()
@@ -50,6 +53,22 @@ static void testCapacity()
     CHECK(adreno_asid_capacity_from_id1(0x0000ff80u) == 128u);
     /* Bit 31 is ID1.PAGESIZE and must not leak into the count. */
     CHECK(adreno_asid_capacity_from_id1(0x80000005u) == 5u);
+
+    /* ---- ONE ID1 word carries BOTH fields (stage-6 device read) -------- */
+    {
+        const uint32_t id1 = 0x00020008u; /* NUMS2CB=2, NUMCB=8 */
+        struct adreno_asid_bitmap b6{};
+        uint32_t cb6 = 0xffffffffu;
+        CHECK(adreno_asid_s2cb_count_from_id1(id1) == 2u);
+        CHECK(adreno_asid_s2cb_count_from_id1(0x00ab0000u) == 0xabu);
+        CHECK(adreno_asid_capacity_from_id1(id1) == 8u);
+        CHECK(adreno_asid_init_from_id1(&b6, id1) == 0);
+        CHECK(b6.capacity == 8u && b6.start == 2u);
+        CHECK(adreno_asid_alloc(&b6, &cb6) == 0 && cb6 == 2u);
+        /* NUMS2CB(9) > NUMCB(8): P2:1867-1870 "impossible number of S2
+         * context banks!" -- init_from_id1 must refuse. */
+        CHECK(adreno_asid_init_from_id1(&b6, 0x00090008u) != 0);
+    }
 }
 
 static void testInitRefusals()
@@ -219,8 +238,8 @@ static void testMissingAndVerify()
     CHECK(adreno_asid_verify(&count) == 0);
     /* Pin the EXACT count so a DELETED assertion cannot pass silently: the second
      * CHECK then fails if someone removes a check from the self-verifier. */
-    CHECK(count == 52u);
-    CHECK(count >= 52u);
+    CHECK(count == 58u);
+    CHECK(count >= 58u);
     CHECK(adreno_asid_verify(nullptr) == 0);
 }
 

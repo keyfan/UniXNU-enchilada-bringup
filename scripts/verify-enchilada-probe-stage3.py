@@ -51,10 +51,10 @@ def main():
     code = re.sub(r'//[^\n]*', '', code)
 
     # --- A. stage-3 is a NEW, default-off arm --------------------------------
-    # Round 95: the mask is `stage < 1u || stage > 5u`. Assert the SHAPE, not a
+    # Round 103: the mask is `stage < 1u || stage > 6u`. Assert the SHAPE, not a
     # stage list, so a future stage cannot be added without touching this check.
-    check('(stage < 1u || stage > 5u)' in code and 'stage > 5u' in code,
-          'stage-3 accepted by the boot-arg mask (stages 1..5; rounds 94/95 widened it)')
+    check('(stage < 1u || stage > 6u)' in code and 'stage > 6u' in code,
+          'stage-3 accepted by the boot-arg mask (stages 1..6; rounds 94/95/103 widened it)')
     check('if (stage >= 3u)' in text,
           'stage-3 block is gated behind stage >= 3 (stages 1/2 unaffected)')
 
