@@ -362,8 +362,59 @@ enum adreno_iommu_probe_verdict adreno_iommu_assess(
     if (in->cb_already_owned != 0u) {
         return kAdrenoIommuProbeRefusedCbOwned;
     }
-    /* 6. The stream must actually arrive. Round 53 measured the GPU streams in
-     *    the firmware BYPASS handoff (`Busy=10`), i.e. they do not fault yet. */
+    /* 6. THE STREAM DOES NOT BELONG IN THIS GATE. ROUND 100 CORRECTION.
+     *
+     *    Upstream `arm_smmu_device_cfg_probe()` (P2:1746-1936) reads ID0, then
+     *    ID1, then ID2 -- and a mechanical count over the text between the start
+     *    of that function and the ID2 read finds ZERO occurrences of "fault",
+     *    "BYPASS", "BUSY" or "wait". The `smr`/`s2cr` mentions in that span are
+     *    array ALLOCATION and `smmu->s2crs[i] = s2cr_init_val` (a BYPASS default),
+     *    i.e. initialisation, not a precondition. Upstream reads ID2 with no
+     *    streams bound, no page table and no ASID -- that is the whole point of a
+     *    probe register.
+     *
+     *    Round 53's `Busy=10` measurement is real, but it describes the state in
+     *    which a stream is NOT YET bound to a context bank. That is a condition
+     *    for PROGRAMMING a stage-1 context, not for READING an identification
+     *    register. Treating it as a read precondition created a second
+     *    chicken-and-egg: the stream can only fault once a context exists, so
+     *    requiring a fault before the read that is needed to BUILD that context
+     *    can never be satisfied on a cold boot.
+     *
+     *    So the stream is gated in `adreno_iommu_admit_program()` below, where it
+     *    genuinely belongs, and this function no longer refuses on it. Nothing is
+     *    weakened: the CX, clock, mapping and bank-ownership checks above still
+     *    run, and those are the ones that guard either a physical hazard or a
+     *    wrong answer for a READ.
+     */
+    return kAdrenoIommuProbePermitted;
+}
+
+/* The PROGRAMMING gate. This is a DIFFERENT question from "may I read ID2":
+ * writing a stage-1 context bank requires the inputs a context needs, and the
+ * stream must be routed to that bank (which is what makes it fault). Upstream
+ * `arm_smmu_init_domain_context()` (P2:665-876) is where those conditions live:
+ * it allocates a context bank (:777-795), builds the page-table config (:797-804)
+ * and only then calls `arm_smmu_write_context_bank()` (:834-835). The ID2 read
+ * happens in a completely different function, at probe time, long before any of
+ * this.
+ *
+ * Keeping the two gates separate is the point: an earlier revision folded the
+ * stream condition into the read gate, and on hardware that refused the ID2 read
+ * forever (verdict=7 refused-no-stream with cx/clocks/mapped all satisfied). */
+enum adreno_iommu_probe_verdict adreno_iommu_admit_program(
+    const struct adreno_iommu_gate_inputs *in)
+{
+    enum adreno_iommu_probe_verdict base;
+
+    /* Everything the READ requires is still required to PROGRAM. */
+    base = adreno_iommu_assess(in);
+    if (base != kAdrenoIommuProbePermitted) {
+        return base;
+    }
+    /* 6. Programming additionally needs the stream routed to this bank: a stream
+     *    still in the firmware BYPASS handoff (round 53: Busy=10, id0=4c017e4c)
+     *    never reaches translation, so a context for it would be dead weight. */
     if (in->stream_faults == 0u) {
         return kAdrenoIommuProbeRefusedNoStream;
     }

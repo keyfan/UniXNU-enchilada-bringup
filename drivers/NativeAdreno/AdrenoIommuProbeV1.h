@@ -401,6 +401,31 @@ enum adreno_iommu_probe_verdict adreno_iommu_assess(
     const struct adreno_iommu_gate_inputs *in);
 /* Convenience: 1 iff assess() == Permitted. Still pure, still caller-gated. */
 int adreno_iommu_read_permitted(const struct adreno_iommu_gate_inputs *in);
+
+/* ---- TWO DIFFERENT QUESTIONS, deliberately two functions (round 100) ----
+ *
+ * `adreno_iommu_assess()` answers "may I READ ID2?". That is a probe-time read of
+ * an identification register, and upstream `arm_smmu_device_cfg_probe()` reads
+ * ID0, ID1 and ID2 with NO streams bound, no page table and no ASID -- a
+ * mechanical count over the text between that function's start and the ID2 read
+ * finds zero occurrences of "fault", "BYPASS", "BUSY" or "wait".
+ *
+ * `adreno_iommu_admit_program()` answers "may I PROGRAM a stage-1 context?".
+ * That is a different operation with different inputs: upstream
+ * `arm_smmu_init_domain_context()` allocates a context bank, builds the pgtable
+ * config, and only then writes the bank -- and a stream still in the firmware
+ * BYPASS handoff (round 53: Busy=10) never reaches translation, so a context for
+ * it would be dead weight.
+ *
+ * FOLDING THEM WAS A REAL BUG. An earlier revision required `stream_faults`
+ * inside `assess()`, and the first device boot that satisfied CX, clocks and
+ * mapping still refused with verdict=7(refused-no-stream). A stream cannot fault
+ * before the context that routes it exists, and the context cannot be built
+ * without the `ias` that the read supplies -- so the read was blocked forever on
+ * a cold boot. The condition is not wrong, it was in the wrong function.
+ */
+enum adreno_iommu_probe_verdict adreno_iommu_admit_program(
+    const struct adreno_iommu_gate_inputs *in);
 /* Human-readable verdict name; static strings, never NULL. */
 const char *adreno_iommu_verdict_name(enum adreno_iommu_probe_verdict v);
 

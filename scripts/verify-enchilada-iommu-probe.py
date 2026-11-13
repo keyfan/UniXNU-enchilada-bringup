@@ -560,6 +560,57 @@ for src_name, src in (('header', h), ('source', c)):
     for pin in PIN_LINES:
         check(f'{pin}:' in src, f'B9 {src_name} cites {pin} at least once')
 
+
+# ---- B12: the READ gate and the PROGRAM gate must stay separate (round 100) ----
+# The first device boot that satisfied CX, clocks and mapping still refused with
+# verdict=7(refused-no-stream), because `stream_faults` had been folded into the
+# READ gate. A stream cannot fault before the context that routes it exists, and
+# that context needs the `ias` this very read supplies -- so the read was blocked
+# forever on a cold boot. Upstream reads ID2 at probe with nothing bound, which
+# this module must mirror.
+h = (GPU / 'AdrenoIommuProbeV1.h').read_text(encoding='utf-8')
+c = (GPU / 'AdrenoIommuProbeV1.c').read_text(encoding='utf-8')
+
+check('adreno_iommu_admit_program' in h,
+      'B12 the header declares a SEPARATE programming gate')
+check('adreno_iommu_admit_program' in c,
+      'B12 the .c defines the programming gate')
+
+# Split the two function bodies so the assertions are about behaviour, not text.
+def body_of(src, name):
+    i = src.find(name + '(')
+    if i < 0:
+        return ''
+    j = src.find('\n}\n', i)
+    return src[i:j] if j > 0 else src[i:]
+
+read_body = body_of(c, 'enum adreno_iommu_probe_verdict adreno_iommu_assess')
+prog_body = body_of(c, 'enum adreno_iommu_probe_verdict adreno_iommu_admit_program')
+check(read_body != '', 'B12 assess() body was located')
+check(prog_body != '', 'B12 admit_program() body was located')
+
+# THE POINT: the READ gate must not mention the stream at all.
+check('stream_faults' not in read_body,
+      'B12 the READ gate does NOT consult stream_faults (round-100 fix)')
+# And the PROGRAM gate must.
+check('stream_faults' in prog_body,
+      'B12 the PROGRAM gate DOES require stream_faults')
+check('kAdrenoIommuProbeRefusedNoStream' in prog_body,
+      'B12 the program gate returns the named no-stream verdict')
+
+# The read gate must still enforce everything that guards a READ.
+for must in ('kAdrenoIommuProbeRefusedCxDown',
+             'kAdrenoIommuProbeRefusedClocksOff',
+             'kAdrenoIommuProbeRefusedUnmapped',
+             'kAdrenoIommuProbeRefusedCbOwned',
+             'kAdrenoIommuProbeRefusedWrongWindow'):
+    check(must in read_body, f'B12 the READ gate still refuses on {must}')
+
+# admit_program() must DELEGATE to assess() rather than re-implement it, so the
+# two can never drift apart (the round-81 regression class).
+check('adreno_iommu_assess(in)' in prog_body,
+      'B12 admit_program() DELEGATES to assess() instead of copying the checks')
+
 print(f'Domain A: {len(PINS)} sha256-pinned sources; the ID2 field positions '
       f'recomputed from their GENMASK bounds, id_size_to_bits WITH its collapsing '
       f'default, the ipa/pa/va chain including the v1/v2 gate, stage-1 oas = '

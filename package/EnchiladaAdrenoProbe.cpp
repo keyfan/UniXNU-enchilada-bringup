@@ -618,7 +618,11 @@ extern "C" void enchilada_adreno_poll(void) {
         gi.clocks_enabled  = havePowerRun ? rep.pre.clocks_enabled : 0u;
         gi.kmem_mapped     = gSmmuVa ? 1u : 0u;   // now a real fact, taken above
         gi.cb_already_owned = 0u;
-        gi.stream_faults   = 0u;          // round 53: streams sit in BYPASS
+        // ROUND 100: this is a fact about PROGRAMMING, not about READING, and the
+        // field is still set honestly (round 53 measured the streams in the
+        // firmware BYPASS handoff). `adreno_iommu_assess()` -- the READ gate --
+        // deliberately does not consult it; `adreno_iommu_admit_program()` does.
+        gi.stream_faults   = 0u;
 
         const enum adreno_iommu_probe_verdict v = adreno_iommu_assess(&gi);
 
