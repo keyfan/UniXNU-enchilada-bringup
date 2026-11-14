@@ -123,17 +123,36 @@ extern "C" { volatile uint32_t armcpu_wdog[6] = { 0, 0, 0, 0, 0, 0 }; volatile u
 // armcpu_scm[]: avail(SDI) avail(dload) avail(io write) sdi-rc tcsr-before dload-rc write-rc tcsr-after
 extern "C" { volatile int64_t armcpu_scm[8] = { -99, -99, -99, -99, -99, -99, -99, -99 }; }
 struct ScmResult { uint64_t a0, a1; };
-static ScmResult scm (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3)
+// ROUND 110: the SCM `smc #0`, factored so a caller that must pass a 5th
+// register can reach it. `scm4` carries x4 as a PARAMETER; the original
+// 4-argument `scm` below still pins x4 = 0 exactly as it always did, so all
+// five DEVICE-PROVEN call sites keep byte-for-byte identical behaviour.
+//
+// The factoring exists because PAS mem_setup is QCOM_SCM_ARGS(3) and its size
+// lands in x4 (P6 qcom_scm-smc.c:171-173 with SCM_SMC_FIRST_REG_IDX == 2), so
+// the old 4-argument shape simply cannot express that call. Keeping ONE asm
+// block rather than copying it means there is still exactly one place in the
+// SCM path where the register list could be wrong.
+//
+// NOTE on "the one smc": this file has THREE `smc #0` instructions, not one --
+// this SCM one plus two PSCI paths (psciCall's SYSTEM_RESET at ~:849 and the
+// watchdog deadline reset at ~:958). Those are unrelated to SCM and untouched;
+// the claim here is only that the SCM instruction is not duplicated.
+static ScmResult scm4 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4)
 {
   register uint64_t x0 __asm__ ("x0") = fn;
   register uint64_t x1 __asm__ ("x1") = info;
   register uint64_t x2 __asm__ ("x2") = a2;
   register uint64_t x3 __asm__ ("x3") = a3;
-  register uint64_t x4 __asm__ ("x4") = 0;
+  register uint64_t x4 __asm__ ("x4") = a4;
   register uint64_t x5 __asm__ ("x5") = 0;
   __asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3), "+r" (x4), "+r" (x5)
                     :: "memory", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
   return { x0, x1 };
+}
+static ScmResult scm (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3)
+{
+  return scm4 (fn, info, a2, a3, 0);   // x4 = 0, exactly as this function always pinned it
 }
 static int64_t scmAvailable (uint32_t fn)
 {
@@ -209,6 +228,63 @@ extern "C" uint64_t armcpu_map_physical (uint64_t physical, uint64_t length)
   OSSharedPtr<IOMemoryDescriptor> d (IOMemoryDescriptor::withPhysicalAddress (physical, length, kIODirectionIn), OSNoRetain);
   IOMemoryMap *map = d ? d->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;   // kept: never released
   return map ? static_cast<uint64_t> (map->getVirtualAddress ()) : 0;
+}
+
+// ROUND 110: the exported SMC entry point, so a contract-only consumer can
+// request an SIP call WITHOUT containing an `smc` instruction itself. That is
+// what keeps the PAS contract host-testable and inside verify-ci-246's
+// forbidden-symbol boundary (see the note on the name, below).
+//
+// REGISTER MAP (authority: P6 qcom_scm-smc.c:166-173, pinned in round 108):
+//   x0 = fn                            the composed call value (base | FNID)
+//   x1 = arginfo                       QCOM_SCM_ARGS(n) -- NOT the peripheral
+//   x2 = a2 = args[0]                  the peripheral id for PAS (13)
+//   x3 = a3 = args[1]                  metadata phys / region phys
+//   x4 = a4 = args[2]                  region SIZE for mem_setup (ARGS(3))
+//   x5     = 0                         unused by all three PAS stages
+//
+// RETURN CHANNELS, kept separate on purpose -- this is the whole point of the
+// two output pointers. P6:204 makes res->result[0] = smc a1, and P6:209 makes
+// smc a0 the STATUS. Collapsing them into one value is the mistake the round-106
+// contract exists to prevent, so this wrapper refuses to collapse them:
+//   *transport_ret   <- a0, UNCONVERTED. Deliberately NOT run through
+//                       qcom_scm_remap_error(): the caller gets the raw secure
+//                       status and decides. 0 means the transport completed.
+//   *secure_result    <- a1, the secure world's result[0]. 0 means accepted.
+// Either output pointer may be NULL when that channel is not wanted.
+//
+// RETURN / OUTPUT CONTRACT, shaped to mirror P6's own control flow
+// (qcom_scm-smc.c:199-209: `if (ret) return ret;` BEFORE `res` is filled):
+//
+//   return 0            the SMC was made; *transport_ret = a0 (raw secure
+//                       status, 0 == completed) and *secure_result = a1
+//                       (the secure world's result[0], 0 == accepted).
+//   return nonzero      NO SMC WAS MADE (busy, or a NULL-argument refusal).
+//                       The two output pointers are left UNTOUCHED, so a caller
+//                       can never mistake a refusal for "clean transport, clean
+//                       result". The value is -EBUSY (busy) or -EINVAL.
+//
+// This is deliberately NOT "return a0": a0 is a secure status and every u64 is
+// a legal one, so folding "refused" into the return would make it
+// indistinguishable from a real rejection -- the exact conflation this line of
+// work exists to avoid.
+extern "C" int32_t armcpu_scm_busy = 0;
+extern "C" int32_t armcpu_scm_call (uint64_t fn, uint64_t arginfo, uint64_t a2,
+                                    uint64_t a3, uint64_t a4,
+                                    uint64_t *transport_ret, uint64_t *secure_result)
+{
+  ScmResult r;
+  // Non-blocking. A caller that cannot tolerate a refusal is a caller that
+  // needs a real lock, and that decision belongs with whoever wires the device
+  // run -- not with this shim.
+  if (__atomic_exchange_n (&armcpu_scm_busy, 1, __ATOMIC_ACQ_REL) != 0) {
+    return -16;   /* -EBUSY: no SMC made, outputs untouched */
+  }
+  r = scm4 (fn, arginfo, a2, a3, a4);
+  __atomic_store_n (&armcpu_scm_busy, 0, __ATOMIC_RELEASE);
+  if (transport_ret) *transport_ret = r.a0;
+  if (secure_result) *secure_result = r.a1;
+  return 0;
 }
 
 extern "C" void armcpu_wdog_sample (void)

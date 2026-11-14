@@ -243,25 +243,35 @@ def main():
           'does NOT unblock stage 5' in asid_h,
           'the header STILL states that this does NOT unblock stage 5 / render')
 
-    # ---- ROUND 109: stage 7 is a PLAN behind a TWO-KEY interlock ----
+    # ---- ROUND 109/110: stage 7 is a PLAN behind a TWO-KEY interlock ----
     # These assertions exist because stage 7 is the only code in this tree that
     # could ever make a secure-world call. They pin three properties:
     #   1. the boot-arg mask is UNCHANGED (1..6) -- stage 7 is reached INSIDE the
     #      stage-6 run, so widening the mask was never needed and the four stage
     #      verifiers keep their original assertions;
     #   2. the second key `enchilada-pas-exec` is REQUIRED before any execute;
-    #   3. the transport handed to the executor is NULL, so even the armed path
-    #      cannot make a call -- the ArmCpu export still does not exist.
+    #   3. ROUND 110 changed the transport from "always NULL" to "a real bridge,
+    #      but only when the exported symbol linked". The fail-closed property is
+    #      unchanged -- what changed is WHICH condition enforces it: it is now a
+    #      weak_import null check whose absence falls back to the printed plan.
     check('enchilada-pas-exec' in code,
           'R109 stage 7 requires the SECOND key enchilada-pas-exec')
-    check('armed ? "plan" : "armed-not-executed"' in code,
-          'R109 the row distinguishes plan from armed-not-executed')
-    check('struct adreno_zap_transport s7tr = {}' in code,
-          'R109 the transport is a zero-initialised (NULL) struct')
-    _armed_at = code.find('if (armed)')
+    # R110 replaced the two-way label with a three-way one (exec / no-symbol /
+    # not-executed). The REQUIREMENT -- that the row distinguishes the states
+    # rather than printing one blanket string -- is unchanged, so assert the
+    # distinguishing, not the old spelling.
+    check('armed-not-executed' in code and 'armed-no-symbol' in code,
+          'R109/R110 the row distinguishes not-executed / no-symbol / exec')
+    check('transport-symbol-unavailable' in code,
+          'R110 a missing export is NAMED, not silently swallowed')
+    check('&armcpu_scm_call != nullptr' in code,
+          'R110 the bridge is reached only after a weak_import null check')
+    check('int32_t armcpu_scm_call' in code and '__attribute__((weak_import))' in code,
+          'R110 the export is declared weak_import (links fine without it)')
+    _armed_at = code.find('if (!armed)')
     _exec_at = code.find('adreno_zap_pas_execute(&s7tr')
     check(_armed_at > 0 and _exec_at > _armed_at,
-          'R109 adreno_zap_pas_execute is reachable ONLY behind `if (armed)`')
+          'R110 adreno_zap_pas_execute is reachable ONLY behind the armed gate')
     check('kAdrenoZapExecNoTransport' in code,
           'R109 the unarmed/refused path is the named NoTransport status')
     check('(stage < 1u || stage > 6u)' in code,
@@ -278,6 +288,83 @@ def main():
               'R109 the probe source never spells the CI-246 literal #%d'
               % ('stage6=exec', 'stage3=exec', '_qcom_scm_call',
                  'adreno_zap_shader_load').index(_bad))
+    # R110: the two channels stay SEPARATE per stage, never collapsed.
+    check('t0=%llx s0=%llx' in code and 't2=%llx s2=%llx' in code,
+          'R110 the row reports transport and secure separately for all 3 stages')
+
+    # ==== ROUND 111: the POINTED protection for zapBridgeCall ==============
+    # WHY THIS EXISTS. In round 110 the write to the caller's out-parameter was
+    # spelled `out_result0[0] = ...` instead of `*out_result0 = ...`, so that
+    # stage-4/5's generic "no store through a pointer" scan would not have to
+    # learn an exception. That left a real hole: the scan does not match the
+    # `name[0] =` form, so from round 110 the pointer writes INSIDE this new
+    # function were protected by nothing at all -- the only gate at entry was a
+    # NULL check.
+    #
+    # The generic scan guards a specific property ("a store here would bypass
+    # the bounds that make the window safe" -- verify-enchilada-probe-stage5.py
+    # :117-119) and correctly should NOT fire on an out-parameter write. But the
+    # protection must not simply disappear. So this is the same property,
+    # asserted PRECISELY: inside zapBridgeCall the ONLY pointer write permitted
+    # is to out_result0, there is no MMIO write primitive, no volatile access
+    # and no cast. The generic scan keeps its original, unmodified regex.
+    _bridge_start = code.find('int zapBridgeCall(')
+    check(_bridge_start > 0, 'R111 zapBridgeCall exists and is locatable')
+    if _bridge_start > 0:
+        # Slice the exact function body: from the opening brace to the FIRST
+        # closing brace at column 0, which is how this file's functions end.
+        _open = code.find('{', _bridge_start)
+        _close = code.find('\n}', _open)
+        check(_open > 0 and _close > _open, 'R111 the bridge body is delimited')
+        _body = code[_open:_close] if (_open > 0 and _close > _open) else ''
+
+        # (a) NO dereference-store at all inside the bridge. If a future edit
+        # reintroduces `*p = ...`, this fires -- and so does stage-4/5's scan,
+        # which is the intended double coverage.
+        _store_re = re.compile(r'(?<![\w\)\]\*])\*\s*[A-Za-z_]\w*(?:\[[^\]]*\])?\s*=(?!=)')
+        _store_hits = []
+        for _m in _store_re.finditer(_body):
+            _pre = _body[max(0, _m.start() - 40):_m.start()]
+            if re.search(r'(?:const\s+)?[A-Za-z_][\w:<>]*\s+$', _pre):
+                continue          # a declaration, not a store
+            _store_hits.append(_m.group(0))
+        check(not _store_hits,
+              'R111 zapBridgeCall performs NO dereference-store (hits=%r)' % _store_hits[:3])
+
+        # (b) The ONLY pointer write in the whole function is the out-parameter.
+        # Enumerate every `X[0] =` / `X->f =` / `X.f =` write and require the
+        # receiver to be out_result0. This is what replaces the lost protection:
+        # not "no writes", but "exactly this one write, to exactly this target".
+        _writes = re.findall(r'([A-Za-z_]\w*)\s*(?:\[\s*\d+\s*\]|->\w+|\.\w+)\s*=(?!=)', _body)
+        _bad_targets = sorted(set(w for w in _writes if w != 'out_result0'))
+        # `b->field = ...` writes are struct-field stores through a pointer. They
+        # are bookkeeping on the bridge's OWN cookie, not MMIO, so allow the
+        # cookie local by name -- but ONLY that name.
+        _bad_targets = [w for w in _bad_targets if w != 'b']
+        check(not _bad_targets,
+              'R111 the only pointer writes are out_result0[0] and the cookie b '
+              '(other targets found: %r)' % _bad_targets)
+        check('out_result0[0] =' in _body.replace(' ', ' ') or
+              re.search(r'out_result0\s*\[\s*0\s*\]\s*=|out_result0\s*\[0\]\s*=', _body) is not None,
+              'R111 the out-parameter is written by name (out_result0[0] = ...)')
+
+        # (c) No volatile access, no cast, no MMIO primitive anywhere in it.
+        for _bad in ('volatile', 'reinterpret_cast', 'static_cast<volatile',
+                     'wr32', 'write32', 'out32', 'mmio', 'writel', 'readl',
+                     'IOConnectCall', 'IOServiceOpen'):
+            check(_bad not in _body,
+                  'R111 zapBridgeCall contains no %r' % _bad)
+
+        # (d) It must not reach the window adapter's write path either.
+        for _bad in ('AdrenoGpuccWindowV1Mmio', 'AdrenoCallerV1Run',
+                     'gpucc_udelay', 'armcpu_map_physical'):
+            check(_bad not in _body,
+                  'R111 zapBridgeCall does not call %r' % _bad)
+
+        # (e) The single symbol it IS allowed to call is the SMC export.
+        check('armcpu_scm_call(' in _body,
+              'R111 zapBridgeCall reaches the SMC export (its one hardware effect)')
+
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))

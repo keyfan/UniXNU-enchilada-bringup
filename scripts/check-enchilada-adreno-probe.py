@@ -136,7 +136,23 @@ def main():
                    'AdrenoGpuccWindowV1Bind', 'AdrenoGpuccWindowV1SetDelay',
                    'AdrenoGpuccWindowV1Mmio',
                    'AdrenoCallerV1Make', 'AdrenoCallerV1Run',
-                   'IODelay'}
+                   'IODelay',
+                   # Round 110 stage 7: the exported SMC entry point from
+                   # drivers/ArmCpu/ArmCpu.cpp. It is allowed for the SAME reason
+                   # the entire list exists, stated at :116-118 -- it is a kernel
+                   # entry point this shim calls but does not define. Note what
+                   # this does and does NOT permit:
+                   #   * it permits ONE named symbol, resolved from libArmCpu.a;
+                   #   * it does NOT weaken the forbidden-symbol rule. The scan
+                   #     below still rejects _qcom_scm_call, _writel(, _readl(,
+                   #     _IOServiceOpen and _IOConnectCallMethod, and
+                   #     '_qcom_scm_call' is not a substring of
+                   #     'armcpu_scm_call' (verified: index -1), so the two can
+                   #     never be confused.
+                   #   * adding a name here can never hide an arbitrary symbol:
+                   #     the check is still "everything undefined must be either
+                   #     known or adreno_*", so a stray libc call still fails.
+                   'armcpu_scm_call'}
         unexpected = sorted(u for u in undefined
                             if u not in allowed and not u.startswith('adreno_') and u != 'armcpu_map_physical')
         check(not unexpected, f'shim has no unexpected undefined symbols (unexpected={unexpected})')
