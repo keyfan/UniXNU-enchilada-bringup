@@ -397,6 +397,15 @@ kernel_args = [
   # the SMMU window unless CX is up, so on a port that has never powered the GPU the
   # expected single-boot outcome is `stage4=refused verdict=3(cx-down)` and no read.
   "enchilada-adreno=6",   # round 103: stage 6 adds ID0/ID1 reads behind the SAME stage-4 gate (READ-ONLY)
+  # ROUND 123, THE SECOND KEY. `enchilada-adreno=6` only ARMS stage 7; this key is what
+  # allows it to actually ISSUE the three PAS calls (pas_init_image, pas_mem_setup,
+  # pas_auth_and_reset) against the secure world. Two keys are required on purpose, and
+  # this one is added deliberately for one experiment: until ROUND 122 the row read
+  # `armed-not-executed why=not-armed` with ran=0 and no SMC was ever issued from this
+  # probe. Removing this line returns the port to the read-only posture without touching
+  # any code. It costs 21 bytes of the 1000-byte command line (970 used, 30 free, so
+  # 991 after this - it fits, but there is no room left for anything else).
+  "enchilada-pas-exec=1",
   "-no_slto_panic",
   "native-ufs-root=1",
   
