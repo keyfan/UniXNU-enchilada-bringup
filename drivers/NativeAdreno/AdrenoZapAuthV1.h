@@ -130,6 +130,38 @@ extern "C" {
 /* FNID(0x0C, 0x1C) == 0x0C1C; the exact id this probe queries for availability
  * AND sends in x0. Defined once so the two can never disagree. */
 #define kAdrenoZapShmBridgeFnid        ((kAdrenoZapScmSvcMp << 8) | kAdrenoZapScmMpShmBridgeEnable)
+/* ---- ROUND 142: the SHM_BRIDGE_CREATE reachability probe (SVC_MP/0x1E) ----
+ * qcom_scm_shm_bridge_create() (qcom_scm.c:1391-1416) is the call a full
+ * shmbridge flow needs: 4 VALUE arguments (pfn_and_ns_perm_flags,
+ * ipfn_and_s_perm_flags, size_and_flags, ns_vmids) mapped to x2/x3/x4/x5,
+ * arginfo = QCOM_SCM_ARGS(4, VAL, VAL, VAL, VAL) = 0x4 (VAL == 0 in this
+ * tree's qcom_scm.h arg-type enum). Its REAL bit layout is NOT derivable from
+ * the pinned set -- there is no caller in the tree, only the definition and its
+ * EXPORT -- so ROUND 142 uses FOUR OBVIOUSLY-GARBAGE arguments to make a
+ * BINARY reachability call:
+ *   - if the secure world answers a "parameter error" (QCOM_SCM_EINVAL_ARG
+ *     -2 / QCOM_SCM_EINVAL_ADDR -3 / the remap -EINVAL family) or the generic
+ *     QCOM_SCM_ERROR (-1) for a malformed call -> the command IS callable and
+ *     only the ARGUMENTS are wrong -> worth learning the real layout.
+ *   - if it answers QCOM_SCM_EOPNOTSUPP (-4) -> the command is NOT allowed ->
+ *     stop immediately, do not study the parameters.
+ * result[0] (smc a1) is the return, transport a0 the status. The four garbage
+ * args are all 0xFF on purpose: an obviously illegal value must NOT be
+ * dismissed as "a lucky guess that happened to work".
+ * svc=0x0C, cmd=0x1E -> fnid = FNID(0x0C, 0x1E) = 0x0C1E. */
+#define kAdrenoZapScmMpShmBridgeCreate 0x1eu /* qcom_scm.c:121 SHM_BRIDGE_CREATE */
+#define kAdrenoZapShmBridgeCreateFnid  ((kAdrenoZapScmSvcMp << 8) | kAdrenoZapScmMpShmBridgeCreate)
+/* QCOM_SCM_ARGS(4, VAL, VAL, VAL, VAL): 4 args, all VAL (type 0). Encoded
+ * against qcom_scm.h:29-40: count 4 + (0<<4)|(0<<6)|(0<<8)|(0<<10) == 0x4. */
+#define kAdrenoZapArgInfoShmBridgeCreate 0x04u
+/* Common error codes (qcom_scm.h:150-158) as UNSIGNED words, exactly what the
+ * transport a0 / secure result reads. -2 = EINVAL_ARG, -3 = EINVAL_ADDR,
+ * -4 = EOPNOTSUPP, -1 = generic ERROR. A parameter-error family (-2/-3/-1)
+ * means REACHABLE; -4 means NOT allowed. */
+#define kAdrenoZapScmEAlreadyEopnotsupp 0xFFFFFFFCULL   /* -4, qcom_scm.h:153 */
+#define kAdrenoZapScmEAlreadyEinvalArg  0xFFFFFFFEULL   /* -2, qcom_scm.h:155 */
+#define kAdrenoZapScmEAlreadyEinvalAddr 0xFFFFFFFDULL   /* -3, qcom_scm.h:154 */
+#define kAdrenoZapScmEAlreadyError      0xFFFFFFFFULL   /* -1, qcom_scm.h:156 */
 /* P2:709 QCOM_SCM_ARGS(1): one argument, and P2:710 that argument is the
  * peripheral id. P2:711 the owner is the SIP SMC owner.
  *
@@ -669,6 +701,64 @@ int adreno_zap_is_call_available_verdict(int transport_ret,
  * Makes no SCM call. */
 int adreno_zap_shm_bridge_enable_call(uint32_t base,
                                       struct adreno_zap_pas_call *out);
+
+/* ==========================================================================
+ * ROUND 142: THE SHM_BRIDGE_CREATE REACHABILITY PROBE (SVC_MP / 0x1E)
+ * ==========================================================================
+ * A dedicated record because the four CREATE arguments (x2/x3/x4/x5) cannot be
+ * expressed by struct adreno_zap_pas_call, which was shaped for the three PAS
+ * stages and carries only args0. This is the ONE call in the tree that needs a
+ * 5th value register, so it gets its own shape rather than distorting the
+ * stage contract.
+ *
+ * THE 4 ARGUMENTS' REAL BIT LAYOUT IS NOT IN THE PINNED SET. qcom_scm.c has no
+ * caller of qcom_scm_shm_bridge_create (only the definition and its EXPORT at
+ * :1417), so how pfn/perm/size/vmids are packed is unknowable from the pinned
+ * sources. ROUND 142 therefore does NOT implement the real call -- it sends
+ * four OBVIOUSLY-GARBAGE arguments (all-bits-one) once and reads the reply to
+ * answer a BINARY question: is the command reachable at all? */
+struct adreno_zap_shm_bridge_create {
+    uint32_t svc;        /* QCOM_SCM_SVC_MP = 0x0C                  (qcom_scm.c:112) */
+    uint32_t cmd;        /* QCOM_SCM_MP_SHM_BRIDGE_CREATE = 0x1E    (qcom_scm.c:121) */
+    uint32_t owner;      /* ARM_SMCCC_OWNER_SIP                     (.owner at :1398) */
+    uint32_t fnid;       /* FNID(0x0C, 0x1E) = 0x0C1E                               */
+    uint32_t x0;         /* base | 0x0C1E                                          */
+    uint32_t arginfo;    /* ARGS(4, VAL,VAL,VAL,VAL) = 0x4  (qcom_scm.h:29-40)       */
+    uint32_t arg_count;  /* arginfo & 0xF = 4                                       */
+    uint32_t garbage[4]; /* all-bits-one; the 4 probe arguments (x2/x3/x4/x5)        */
+    int required;        /* always 0: this is a reachability probe, not a PAS step   */
+    int is_metadata_call;/* 0                                                        */
+    int carries_size_arg;/* 0                                                        */
+};
+
+/* Build the SHM_BRIDGE_CREATE reachability-probe call record. `out` non-NULL.
+ * Sends svc=0x0C, cmd=0x1E, owner=SIP, arginfo=ARGS(4,VAL,VAL,VAL,VAL)=0x4,
+ * x0 = base | FNID(0x0C,0x1E) = base | 0x0C1E, and all FOUR garbage arguments
+ * set to all-bits-one (0xFFFFFFFFFFFFFFFF). Makes no SCM call. Returns 0, or 1
+ * on a NULL out or a base that fails adreno_zap_smc_base_gate(). */
+int adreno_zap_shm_bridge_create_probe(uint32_t base,
+                                       struct adreno_zap_shm_bridge_create *out);
+
+/* Decide REACHABILITY from a 4-garbage-arg SHM_BRIDGE_CREATE reply. This is the
+ * WRITTEN-DOWN binary discrimination, judged ONLY from the pinned error table
+ * (qcom_scm.h:150-158) plus the secure-world 0xFFCFFFxx family R141 observed.
+ *   transport_error = smc a0 (the secure status; 0 == transport completed)
+ *   secure_result   = smc a1 (res.result[0])
+ * Output *reachable:
+ *   1  REACHABLE     the command exists and is callable, but the arguments were
+ *                    rejected: EINVAL_ARG (-2), EINVAL_ADDR (-3), the generic
+ *                    ERROR (-1), OR the secure 0xFFCFFFxxxx family (a parameter-
+ *                    style error, not a "not supported"). Worth learning the
+ *                    real layout.
+ *   0  NOT_ALLOWED   the command is not permitted: EOPNOTSUPP (-4) or ENODEV
+ *                    (-19, the -ENODEV the brief names). Stop, do not study args.
+ *  -1  INCONCLUSIVE  everything else: transport refused (wrapper -16/-EINVAL),
+ *                    a clean 0/0 success (which for a garbage call would be
+ *                    remarkable and must be reported verbatim, not judged), or
+ *                    an unknown code.
+ * Returns 0, or 1 on a NULL out. */
+int adreno_zap_shm_bridge_create_judge(int64_t transport_error,
+                                       uint64_t secure_result, int *reachable);
 
 /* THE v13 THE BRIEF ASKED FOR, WITH avail FOLDED IN. This is the function the
  * probe uses; the two-argument form above is kept for callers that already know.

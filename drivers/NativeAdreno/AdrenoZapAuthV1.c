@@ -909,6 +909,92 @@ int adreno_zap_shm_bridge_enable_call(uint32_t base,
 }
 
 /* ==========================================================================
+ * ROUND 142: SHM_BRIDGE_CREATE reachability probe and its written-down judge.
+ * ========================================================================== */
+int adreno_zap_shm_bridge_create_probe(uint32_t base,
+                                       struct adreno_zap_shm_bridge_create *out)
+{
+    if (out == 0) {
+        return 1;
+    }
+    if (adreno_zap_smc_base_gate(base) == 0) {
+        return 1;
+    }
+    out->svc = kAdrenoZapScmSvcMp;          /* qcom_scm.c:112 0x0C SVC_MP       */
+    out->cmd = kAdrenoZapScmMpShmBridgeCreate; /* qcom_scm.c:121 0x1E             */
+    out->owner = kAdrenoZapScmOwnerSip;     /* qcom_scm.c:1398 .owner = SIP     */
+    out->fnid = adreno_zap_scm_fnid(out->svc, out->cmd); /* -> 0x0C1E           */
+    out->x0 = base | out->fnid;             /* P2:355-356                        */
+    out->arginfo = kAdrenoZapArgInfoShmBridgeCreate; /* 0x4 ARGS(4,VAL,VAL,VAL,VAL) */
+    out->arg_count = out->arginfo & 0x0Fu;  /* 4, derived                        */
+    /* Four all-bits-one args: an obviously invalid value that must NOT be
+     * dismissible as "a lucky guess that happened to be valid". */
+    out->garbage[0] = 0xFFFFFFFFu;
+    out->garbage[1] = 0xFFFFFFFFu;
+    out->garbage[2] = 0xFFFFFFFFu;
+    out->garbage[3] = 0xFFFFFFFFu;
+    out->required = 0;
+    out->is_metadata_call = 0;
+    out->carries_size_arg = 0;
+    return 0;
+}
+
+int adreno_zap_shm_bridge_create_judge(int64_t transport_error,
+                                       uint64_t secure_result, int *reachable)
+{
+    if (reachable == 0) {
+        return 1;
+    }
+    /* A transport refusal (the wrapper's -16 = -EBUSY or -22 = -EINVAL) means
+     * NO SMC was made; nothing learned. INCONCLUSIVE. */
+    if (transport_error == -16 || transport_error == -22) {
+        *reachable = -1;
+        return 0;
+    }
+    /* A clean transport with a clean secure_result (0/0) for garbage arguments
+     * would be remarkable: it is neither a -INVAL nor a -NOTSUPP, so report it
+     * INCONCLUSIVE and let the caller print the raw values verbatim. */
+    if (transport_error == 0 && secure_result == 0ULL) {
+        *reachable = -1;
+        return 0;
+    }
+    /* The secure world's 0xFFCFFFxx family (R141 measured 0xFFCFFFBB): a
+     * parameter-style rejection, NOT "not supported". REACHABLE.
+     *
+     * CAREFUL HERE. The comparison has to be done on the LOW 32 BITS. Writing
+     * `(transport_error & 0xFFFF0000) == 0xFFCFFF0000` is a bug that costs the
+     * whole round: the mask yields a 32-bit quantity (0xFFCF0000 for the
+     * observed value) and 0xFFCFFF0000 does not fit in 32 bits, so the test can
+     * never be true and every such reply would fall through to the caller as
+     * neither reachable nor not-allowed. The family is therefore tested with
+     * the 32-bit word and the 32-bit pattern. */
+    {
+        const uint32_t low = (uint32_t)((uint64_t)transport_error & 0xFFFFFFFFu);
+        if ((low & 0xFFFF0000u) == 0xFFCF0000u && (low & 0x0000FF00u) == 0x0000FF00u) {
+            *reachable = 1;
+            return 0;
+        }
+    }
+    /* NOT-ALLOWED: -4 EOPNOTSUPP (qcom_scm.h:153) or -19 ENODEV. Stop. */
+    if (transport_error == (int64_t)0xFFFFFFFFFFFFFFFCULL ||   /* -4 */
+        transport_error == -19) {
+        *reachable = 0;
+        return 0;
+    }
+    /* Parameter-error family -> REACHABLE (the command exists, args rejected):
+     * -2 EINVAL_ARG (qcom_scm.h:155), -3 EINVAL_ADDR (:154), -1 ERROR (:156). */
+    if (transport_error == (int64_t)0xFFFFFFFFFFFFFFFEULL ||   /* -2 */
+        transport_error == (int64_t)0xFFFFFFFFFFFFFFFDULL ||   /* -3 */
+        transport_error == (int64_t)0xFFFFFFFFFFFFFFFFULL) {   /* -1 */
+        *reachable = 1;
+        return 0;
+    }
+    /* Unknown code: report verbatim, do not infer. */
+    *reachable = -1;
+    return 0;
+}
+
+/* ==========================================================================
  * ROUND 129: IS_CALL_AVAILABLE, and the v13 that folds it in.
  * See the header for why the brief's svc=0x01 is wrong (that is SVC_BOOT;
  * SVC_INFO is 0x06 at P3:109, and this tree's own ArmCpu.cpp:165 already

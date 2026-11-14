@@ -263,6 +263,16 @@ def main():
                    #     the check is still "everything undefined must be either
                    #     known or adreno_*", so a stray libc call still fails.
                    'armcpu_scm_call',
+                   # Round 142: the FIVE-argument SMC entry point from the SAME
+                   # ArmCpu.cpp, added for the SHM_BRIDGE_CREATE reachability
+                   # probe (that call is QCOM_SCM_ARGS(4, ...) and its fourth
+                   # argument lives in x5, which armcpu_scm_call pins to 0). It
+                   # is the SAME kind of export as armcpu_scm_call directly
+                   # above; only the SHM_BRIDGE_CREATE probe references it, and
+                   # the five PAS/probe call sites keep calling armcpu_scm_call
+                   # unchanged. It does not relax the stub boundary (still two
+                   # headers, IOLog + snprintf + PE_parse_boot_argn).
+                   'armcpu_scm_call5',
                    # Round 127 stage 7: the writable physically-contiguous
                    # allocator from the SAME ArmCpu.cpp, added for the PAS
                    # init_image metadata buffer. It is the SAME kind of entry as

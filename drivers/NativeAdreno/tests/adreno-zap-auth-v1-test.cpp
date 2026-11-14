@@ -712,6 +712,60 @@ static void testPasExecute()
     CHECK(adreno_zap_is_call_available_call(base, 0x0C1Cu, &shmAvail) == 0);
     CHECK(shmAvail.args0 == (0x0C1Cu | (kAdrenoZapScmOwnerSip << kAdrenoZapSmcOwnerShiftForArg)));
 
+    // ========== ROUND 142: SHM_BRIDGE_CREATE reachability probe ==========
+    CHECK(kAdrenoZapScmMpShmBridgeCreate == 0x1eu);
+    CHECK(kAdrenoZapShmBridgeCreateFnid == 0x0C1Eu);   // (0x0C << 8) | 0x1E
+    CHECK(kAdrenoZapArgInfoShmBridgeCreate == 0x04u);  // ARGS(4,VAL,VAL,VAL,VAL)
+    struct adreno_zap_shm_bridge_create cr;
+    CHECK(adreno_zap_shm_bridge_create_probe(base, &cr) == 0);
+    CHECK(cr.svc == 0x0Cu);
+    CHECK(cr.cmd == 0x1Eu);
+    CHECK(cr.owner == kAdrenoZapScmOwnerSip);
+    CHECK(cr.fnid == 0x0C1Eu);
+    CHECK(cr.x0 == (base | 0x0C1Eu));
+    CHECK(cr.x0 == 0xC2000C1Eu);                       // THE shape the brief named
+    CHECK(cr.arginfo == 0x04u);
+    CHECK(cr.arg_count == 4u);
+    // The FOUR garbage args are all-bits-one, and each is distinct so a
+    // truncated register map cannot hide a dropped argument.
+    CHECK(cr.garbage[0] == 0xFFFFFFFFu);
+    CHECK(cr.garbage[1] == 0xFFFFFFFFu);
+    CHECK(cr.garbage[2] == 0xFFFFFFFFu);
+    CHECK(cr.garbage[3] == 0xFFFFFFFFu);
+    CHECK(cr.required == 0 && cr.is_metadata_call == 0 && cr.carries_size_arg == 0);
+    // Refusals: same base gate as every other call this module produces.
+    CHECK(adreno_zap_shm_bridge_create_probe(0xC1000000u, &cr) == 1);
+    CHECK(adreno_zap_shm_bridge_create_probe(base, nullptr) == 1);
+    // ---- the written-down judge ----
+    // NOT-ALLOWED: -4 EOPNOTSUPP (qcom_scm.h:153) -> 0
+    int rc = 7;
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-4, 0, &rc) == 0);
+    CHECK(rc == 0);
+    // NOT-ALLOWED: -19 ENODEV -> 0
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-19, 0, &rc) == 0);
+    CHECK(rc == 0);
+    // REACHABLE: -2 EINVAL_ARG / -3 EINVAL_ADDR / -1 ERROR -> 1
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-2, 0, &rc) == 0);
+    CHECK(rc == 1);
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-3, 0, &rc) == 0);
+    CHECK(rc == 1);
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-1, 0, &rc) == 0);
+    CHECK(rc == 1);
+    // REACHABLE: the R141 0xFFCFFFBB family
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)0xFFCFFFBBLL, 0, &rc) == 0);
+    CHECK(rc == 1);
+    // INCONCLUSIVE: transport refusal (-16 EBUSY / -22 EINVAL), a clean 0/0, or
+    // an unknown code -> -1
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-16, 0, &rc) == 0);
+    CHECK(rc == -1);
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-22, 0, &rc) == 0);
+    CHECK(rc == -1);
+    CHECK(adreno_zap_shm_bridge_create_judge(0, 0ULL, &rc) == 0);
+    CHECK(rc == -1);
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)0xDEADBEEFLL, 0, &rc) == 0);
+    CHECK(rc == -1);
+    CHECK(adreno_zap_shm_bridge_create_judge(0, 0, nullptr) == 1);
+
     // ========== ROUND 131: the SMCCC call type (FAST vs STD) ==============
     // Every base this port has sent sets bit31 (FAST_CALL). Upstream's PAS calls
     // clear it (qcom_scm.c:306 atomic=false -> qcom_scm-smc.c:160 STD_CALL).

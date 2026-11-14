@@ -201,6 +201,15 @@ uint64_t armcpu_map_physical(uint64_t physical, uint64_t length) __attribute__((
 int32_t armcpu_scm_call(uint64_t fn, uint64_t arginfo, uint64_t a2, uint64_t a3,
                         uint64_t a4, uint64_t *transport_ret,
                         uint64_t *secure_result) __attribute__((weak_import));
+// ROUND 142: the FIVE-argument SMC entry point (ArmCpu.cpp), for calls whose
+// FOURTH argument lives in x5 (QCOM_SCM_ARGS(4, VAL, VAL, VAL, VAL), e.g.
+// SHM_BRIDGE_CREATE). Same rule as armcpu_scm_call: the signature mirrors the
+// exporter exactly (x0/x1/x2/x3/x4/x5 in, two separate out-pointers). Only the
+// SHM_BRIDGE_CREATE reachability probe uses it; all five PAS/probe call sites
+// keep calling armcpu_scm_call (x5 pin 0), byte-for-byte unchanged.
+int32_t armcpu_scm_call5(uint64_t fn, uint64_t arginfo, uint64_t a2, uint64_t a3,
+                         uint64_t a4, uint64_t a5, uint64_t *transport_ret,
+                         uint64_t *secure_result) __attribute__((weak_import));
 // ROUND 127: the writable physically-contiguous allocator (ArmCpu.cpp). Same
 // weak_import rule and the same must-be-inside-extern-"C" reason as the two
 // declarations above.
@@ -1344,6 +1353,21 @@ extern "C" void enchilada_adreno_poll(void) {
                         // that already gates the p13 probe).
                         int s7av2 = -1;          // SVC_MP/0x1C known: 1/0/-1
                         uint32_t s7sb = 0;       // SHM_BRIDGE_ENABLE result[0]
+                        // ROUND 142: the SHM_BRIDGE_CREATE reachability probe
+                        // (SVC_MP/0x1E, 4 garbage args). It costs ONE extra SMC
+                        // that answers a BINARY question: is the command
+                        // reachable at all? If the secure world rejects the
+                        // garbage args with a parameter-error family -> the
+                        // command IS callable and only the args are wrong;
+                        // if it says EOPNOTSUPP/ENODEV -> the command is NOT
+                        // allowed and the shmbridge route is closed.
+                        //   sbcr = the create call's transport a0 (raw status)
+                        //   sbc0 = the create call's secure result[0]
+                        //   sbr  = the written-down verdict: 1 reachable,
+                        //          0 not-allowed, -1 inconclusive.
+                        uint64_t s7sbcr = 0;
+                        uint64_t s7sbc0 = 0;
+                        int s7sbr = -1;
                         if (s7sym) {
                             // ---- IS_CALL_AVAILABLE for SVC_MP / SHM_BRIDGE_ENABLE ----
                             // probe_fnid = FNID(0x0C, 0x1C) = 0x0C1C. The
@@ -1385,6 +1409,35 @@ extern "C" void enchilada_adreno_poll(void) {
                                 }
                                 // sbrc != 0: exporter refused; sb stays 0 and
                                 // av2 carries the inconclusive truth.
+                            }
+                            // ---- then SHM_BRIDGE_CREATE (4 garbage args) ----
+                            // The reachability probe: svc=0x0C/0x1E, arginfo
+                            // ARGS(4,VAL,VAL,VAL,VAL)=0x4, four all-bits-one
+                            // args through the NEW armcpu_scm_call5 (its 4th
+                            // value args lands in x5 -- the one register
+                            // armcpu_scm_call pins to 0). Read the reply with
+                            // the contract's written-down judge.
+                            struct adreno_zap_shm_bridge_create s7shmC = {};
+                            if (adreno_zap_shm_bridge_create_probe(s7base,
+                                                                   &s7shmC) == 0) {
+                                uint64_t sbct = 0;
+                                uint64_t sbcs = 0;
+                                const int32_t sbcr =
+                                    armcpu_scm_call5(s7shmC.x0, s7shmC.arginfo,
+                                                     s7shmC.garbage[0],
+                                                     s7shmC.garbage[1],
+                                                     s7shmC.garbage[2],
+                                                     s7shmC.garbage[3],
+                                                     &sbct, &sbcs);
+                                if (sbcr == 0) {
+                                    s7sbcr = sbct;
+                                    s7sbc0 = sbcs;
+                                    (void)adreno_zap_shm_bridge_create_judge(
+                                        (int64_t)(int32_t)(sbct & 0xFFFFFFFFu),
+                                        sbcs, &s7sbr);
+                                }
+                                // sbcr != 0: exporter refused; sbcr/sbc0 stay 0,
+                                // sbr stays -1 (inconclusive, "not asked").
                             }
                             // ---- IS_CALL_AVAILABLE for PAS_IS_SUPPORTED ----
                             // x0 = base | 0x0601, args[0] = 0x0207 | (SIP << 24).
@@ -1554,6 +1607,19 @@ extern "C" void enchilada_adreno_poll(void) {
                                  //         av2=1 sb=<other> -> unknown; report
                                  //                       verbatim, do not infer.
                                  "av2=%d sb=%x "
+                                 // ROUND 142: the SHM_BRIDGE_CREATE reachability
+                                 // probe (SVC_MP/0x1E, 4 garbage args):
+                                 //   sbcr = the create call's transport a0
+                                 //   sbc0 = the create call's secure result[0]
+                                 //   sbr  = written-down verdict, from the
+                                 //          contract judge (qcom_scm.h:150-158):
+                                 //          1 = reachable (args rejected with a
+                                 //              parameter error) -> worth
+                                 //              learning the arg layout
+                                 //          0 = NOT allowed (EOPNOTSUPP/ENODEV)
+                                 //              -> shmbridge route CLOSED
+                                 //         -1 = inconclusive (report verbatim)
+                                 "sbcr=%llx sbc0=%llx sbr=%d "
                                  // ROUND 131:
                                  //   ct   = the SMCCC call type actually used
                                  //          for the PAS stages ("fast"/"std"),
@@ -1641,6 +1707,9 @@ extern "C" void enchilada_adreno_poll(void) {
                                  (unsigned)s7x1s,
                                   // ROUND 140: the shmbridge two channels.
                                   s7av2, (unsigned)s7sb,
+                                  // ROUND 142: the SHM_BRIDGE_CREATE reachability.
+                                  (unsigned long long)s7sbcr,
+                                  (unsigned long long)s7sbc0, s7sbr,
                                   // ROUND 131: the call type that was actually
                                   // sent, and whether the captured x1 matched the
                                   // contract's pinned init_image arginfo.

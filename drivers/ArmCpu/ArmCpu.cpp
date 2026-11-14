@@ -144,17 +144,29 @@ struct ScmResult { uint64_t a0, a1; };
 // this SCM one plus two PSCI paths (psciCall's SYSTEM_RESET at ~:849 and the
 // watchdog deadline reset at ~:958). Those are unrelated to SCM and untouched;
 // the claim here is only that the SCM instruction is not duplicated.
-static ScmResult scm4 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4)
+//
+// ROUND 142: `scm5` is the ONE register-bearing asm block. It carries x5 as a
+// PARAMETER too, because SHM_BRIDGE_CREATE is QCOM_SCM_ARGS(4, VAL, VAL, VAL,
+// VAL) and its FOURTH argument (ns_vmids) lands in x5 (P6 qcom_scm-smc.c:171-173
+// with SCM_SMC_FIRST_REG_IDX == 2). `scm4` below is now a thin wrapper that
+// pins a5 = 0, so every existing call site -- including all EIGHT
+// scmDisableCrashdump / armcpu_scm[] calls, the only device-proven SCM path --
+// sends x5 = 0 exactly as before. Byte-for-byte identical, mechanically.
+static ScmResult scm5 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5)
 {
   register uint64_t x0 __asm__ ("x0") = fn;
   register uint64_t x1 __asm__ ("x1") = info;
   register uint64_t x2 __asm__ ("x2") = a2;
   register uint64_t x3 __asm__ ("x3") = a3;
   register uint64_t x4 __asm__ ("x4") = a4;
-  register uint64_t x5 __asm__ ("x5") = 0;
+  register uint64_t x5 __asm__ ("x5") = a5;
   __asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3), "+r" (x4), "+r" (x5)
                     :: "memory", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
   return { x0, x1 };
+}
+static ScmResult scm4 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4)
+{
+  return scm5 (fn, info, a2, a3, a4, 0);   // a5 = 0, exactly as this function always pinned x5
 }
 static ScmResult scm (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3)
 {
@@ -316,7 +328,9 @@ extern "C" uint64_t armcpu_dma_alloc_writable (uint64_t bytes, uint64_t *out_vir
 //   x2 = a2 = args[0]                  the peripheral id for PAS (13)
 //   x3 = a3 = args[1]                  metadata phys / region phys
 //   x4 = a4 = args[2]                  region SIZE for mem_setup (ARGS(3))
-//   x5     = 0                         unused by all three PAS stages
+//   x5     = 0                         unused by all three PAS stages; the
+//                                      five-argument armcpu_scm_call therefore
+//                                      keeps x5 pinned 0 exactly as it always was
 //
 // RETURN CHANNELS, kept separate on purpose -- this is the whole point of the
 // two output pointers. P6:204 makes res->result[0] = smc a1, and P6:209 makes
@@ -356,6 +370,28 @@ extern "C" int32_t armcpu_scm_call (uint64_t fn, uint64_t arginfo, uint64_t a2,
     return -16;   /* -EBUSY: no SMC made, outputs untouched */
   }
   r = scm4 (fn, arginfo, a2, a3, a4);
+  __atomic_store_n (&armcpu_scm_busy, 0, __ATOMIC_RELEASE);
+  if (transport_ret) *transport_ret = r.a0;
+  if (secure_result) *secure_result = r.a1;
+  return 0;
+}
+
+// ROUND 142: the FIVE-argument SCM entry point, for calls whose FOURTH argument
+// lives in x5 (QCOM_SCM_ARGS(4, VAL, VAL, VAL, VAL), e.g. SHM_BRIDGE_CREATE).
+// same weak_import/export rule and the same two output channels as
+// armcpu_scm_call above; the ONLY difference is the extra `a5` value register,
+// which this variant places in x5 via scm5. armcpu_scm_call stays as-is (x5 pin
+// 0), so existing PAS/probe call sites are byte-for-byte unchanged. Returns 0
+// when the SMC was made, -EBUSY/-EINVAL when it was refused (outputs untouched).
+extern "C" int32_t armcpu_scm_call5 (uint64_t fn, uint64_t arginfo, uint64_t a2,
+                                     uint64_t a3, uint64_t a4, uint64_t a5,
+                                     uint64_t *transport_ret, uint64_t *secure_result)
+{
+  ScmResult r;
+  if (__atomic_exchange_n (&armcpu_scm_busy, 1, __ATOMIC_ACQ_REL) != 0) {
+    return -16;   /* -EBUSY: no SMC made, outputs untouched */
+  }
+  r = scm5 (fn, arginfo, a2, a3, a4, a5);
   __atomic_store_n (&armcpu_scm_busy, 0, __ATOMIC_RELEASE);
   if (transport_ret) *transport_ret = r.a0;
   if (secure_result) *secure_result = r.a1;
