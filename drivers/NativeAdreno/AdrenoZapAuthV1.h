@@ -48,6 +48,26 @@
 //       qcom_scm_pas_auth_and_reset (:156) with the -EOPNOTSUPP quiet-fail
 //       (:162). :176 adreno_zap_shader_load() is the entry point.
 //
+//  (P6) drivers/firmware/qcom/qcom_scm-smc.c  5356 B   [ADDED IN ROUND 108]
+//       e9121b279b3813b8ca3e0ac27fdcbe367b1e12cbfcbf39d75c754d3bc88f8c45
+//       This file DEFINES __scm_smc_call(), which P3:70-74 only declares. It is
+//       the file that settles -- rather than infers -- what the SMC returns:
+//       :171     smc.args[1] = desc->arginfo;        x1 is the ARGINFO
+//       :172-173 smc.args[i + SCM_SMC_FIRST_REG_IDX] = desc->args[i];
+//       :35      #define SCM_SMC_FIRST_REG_IDX 2      so args[0] -> x2
+//       :204     res->result[0] = smc_res.a1;        result[0] is a1, NOT a0
+//       :209     return (long)smc_res.a0 ? qcom_scm_remap_error(smc_res.a0) : 0;
+//                a0 is the STATUS, mapped through qcom_scm_remap_error (P3:160).
+//       TWO CONSEQUENCES, both acted on in round 108:
+//       (a) the two-channel model is CORRECT -- transport_ret comes from a0 and
+//           secure_result from a1 -- but the naive reading "a0 IS result[0]" is
+//           WRONG. They are different registers; that is why the contract must
+//           keep them apart.
+//       (b) the REGISTER LAYOUT rounds 106-107 used was off by one: they put the
+//           peripheral in x1 and the first payload in x2. P6:171 puts ARGINFO in
+//           x1 and P6:172 puts args[0] in x2. Corrected in the typedef and the
+//           executor; the tests pin every slot.
+//
 // THE THING THIS ROUND MAKES HONEST
 // ---------------------------------
 // The ZAP handshake is NOT "call qcom_scm_pas_auth_and_reset(13)". It is an
@@ -321,10 +341,13 @@ int adreno_zap_smc_base_gate(uint32_t base);
  * how the verifier proves kAdrenoZapScmOwnerSip == 2 rather than 1. */
 uint32_t adreno_zap_smc_base_owner(uint32_t base);
 
-/* The provenance of the base, ALWAYS "derived-unpinned": none of P1-P5 pins it
- * because arm-smccc.h is not among the pinned sources. This string is what a
- * report must quote when it prints an x0, so the derivation can never be
- * mistaken for a pinned upstream fact. */
+/* The provenance of the base, ALWAYS "derived-unpinned": none of P1-P6 pins it.
+ * P6 (added in round 108) proves the RETURN mapping and the register layout, but
+ * it composes x0 from ARM_SMCCC_CALL_VAL(type, convention, OWNER, fnid) at
+ * P6:166-169 -- the base's numeric value still comes from arm-smccc.h, which is
+ * NOT among the pinned sources. So "derived" remains correct for the BASE even
+ * though the mapping is now proven. This string is what a report must quote when
+ * it prints an x0, so the derivation can never be mistaken for a pinned fact. */
 const char *adreno_zap_smc_base_provenance(void);
 
 /* Fill the call record for one stage. `blob_relocatable` is the phdr-derived
@@ -432,16 +455,34 @@ int adreno_zap_pas_verify(uint32_t *check_count);
  * -------------------------------------------------------------------------- */
 
 /* The injected transport. Returns 0 when the SMC transport itself completed;
- * nonzero is a transport failure. `out_result0` receives the secure world's
- * result[0] (x0 after the call). The 4 arguments match ArmCpu.cpp:126-137's
- * shape exactly (fn, info, a2, a3), so a wrapper over that existing function
- * is a pure forwarding shim with no semantic change.
+ * nonzero is a transport failure (the remapped smc a0). `out_result0` receives
+ * the secure world's result[0], which P6:204 proves is smc a1 -- NOT a0.
+ *
+ * THE PARAMETER NAMES ARE THE REGISTER MAP, and they were WRONG before round
+ * 108. P6:166-173 fills the SMC registers in this order:
+ *   x0 = CALL_VAL(type, conv, owner, FNID(svc,cmd))        <- P6:166-170
+ *   x1 = desc->arginfo                                     <- P6:171
+ *   x2 = desc->args[0]                                     <- P6:172-173, idx 2
+ *   x3 = desc->args[1]
+ *   x4 = desc->args[2]
+ *   x5 = desc->args[3]
+ * So the peripheral (args[0], P2:710) travels in **x2**, and **x1 carries the
+ * arginfo**, not the peripheral. Rounds 106-107 had this shifted by one slot:
+ * they put the peripheral in x1 and the first payload in x2, which would have
+ * sent arginfo=13 and a garbage args[0] to the secure world.
+ *
+ * `args2` exists because mem_setup is ARGS(3): its third argument (the region
+ * size, P2:673) lands in args[2] = x4. A wrapper over ArmCpu.cpp:126-137's
+ * CURRENT `scm(fn, info, a2, a3)` cannot carry it -- that function pins
+ * x4 = x5 = 0 (:132-133). See work/tmp/r107-scm-export-plan.md: the export must
+ * widen `scm()` before mem_setup can be issued at all.
  *
  * CONTRACT FOR IMPLEMENTORS: must not retain the pointers, must be callable
  * with `cookie` == NULL only if it never dereferences it, and must return
  * nonzero rather than fabricating a success when the SMC could not be made. */
-typedef int (*adreno_zap_scm_fn)(void *cookie, uint32_t fn, uint32_t info,
-                                 uint32_t a2, uint32_t a3, uint64_t *out_result0);
+typedef int (*adreno_zap_scm_fn)(void *cookie, uint32_t fn, uint32_t arginfo,
+                                 uint32_t args0, uint32_t args1, uint32_t args2,
+                                 uint64_t *out_result0);
 
 /* The injection point. A caller-facing struct rather than a bare function
  * pointer so a transport can carry state (e.g. a lock, a trace buffer) without

@@ -353,22 +353,27 @@ struct StubScm {
     uint32_t x1[4] = {0, 0, 0, 0};
     uint32_t x2[4] = {0, 0, 0, 0};
     uint32_t x3[4] = {0, 0, 0, 0};
+    uint32_t x4[4] = {0, 0, 0, 0};
     // fail_at == which call index fails; 4 or more means "never fail".
     uint32_t fail_at = 4;
     bool fail_transport = false;   // fail on the transport channel
     uint64_t fail_secure = 0;      // value put in result[0] when the secure world rejects
 };
 
-static int stubScm(void *cookie, uint32_t fn, uint32_t info, uint32_t a2,
-                   uint32_t a3, uint64_t *out)
+// Round 108: the parameter list IS the register map (P6:166-173):
+//   x0=fn id, x1=arginfo, x2=args[0]=peripheral, x3=args[1], x4=args[2].
+// The stub records each slot separately so a one-place shift fails a CHECK.
+static int stubScm(void *cookie, uint32_t fn, uint32_t arginfo, uint32_t a0,
+                   uint32_t a1, uint32_t a2, uint64_t *out)
 {
     StubScm *s = static_cast<StubScm *>(cookie);
     if (s == nullptr || out == nullptr) return -1;
     if (s->calls < 4u) {
         s->x0[s->calls] = fn;
-        s->x1[s->calls] = info;
-        s->x2[s->calls] = a2;
-        s->x3[s->calls] = a3;
+        s->x1[s->calls] = arginfo;
+        s->x2[s->calls] = a0;
+        s->x3[s->calls] = a1;
+        s->x4[s->calls] = a2;
     }
     if (s->calls == s->fail_at) {
         ++s->calls;
@@ -446,23 +451,31 @@ static void testPasExecute()
     CHECK(rep.first_failure == kAdrenoZapPasStageCount);   // sentinel: none
     CHECK(rep.have_done == 0x7u);
 
-    // ---- PARAMETER ASSEMBLY, pinned at the transport boundary ----
-    // x0 is the FUNCTION ID (base | SCM_SMC_FNID); the PERIPHERAL goes in x1.
-    // A wrapper that swapped them would still pass a naive stub, so every
-    // argument of every call is checked here.
+    // ---- PARAMETER ASSEMBLY, pinned against P6:166-173 ----
+    // THE LAYOUT WAS WRONG BEFORE ROUND 108. P6:171 puts `desc->arginfo` in
+    // x1 and P6:172-173 (SCM_SMC_FIRST_REG_IDX == 2, P6:35) puts `desc->args[0]`
+    // in x2. So the peripheral is in **x2**, and x1 is the arginfo. Rounds
+    // 106-107 had every slot one early, which would have sent arginfo=13 with a
+    // garbage args[0]. Each slot is asserted separately below.
     CHECK(s.x0[0] == 0xC2000201u);            // init_image      (PIL 0x01)
     CHECK(s.x0[1] == 0xC2000202u);            // mem_setup       (PIL 0x02)
     CHECK(s.x0[2] == 0xC2000205u);            // auth_and_reset  (PIL 0x05)
     CHECK(s.x0[0] == (base | 0x0201u));
     CHECK(s.x0[1] == (base | 0x0202u));
     CHECK(s.x0[2] == (base | 0x0205u));
-    // args[0] == GPU_PAS_ID 13 on EVERY stage (P2:710).
-    CHECK(s.x1[0] == 13u && s.x1[1] == 13u && s.x1[2] == 13u);
-    CHECK(s.x1[0] == kAdrenoZapPasId);
-    // x2/x3 differ per stage, and that difference IS the contract:
-    CHECK(s.x2[0] == 0x1000u && s.x3[0] == 0u);          // init:  metadata PHYS
-    CHECK(s.x2[1] == 0x40000000u && s.x3[1] == 0x1000u); // mem:   phys + SIZE
-    CHECK(s.x2[2] == 0u && s.x3[2] == 0u);               // auth:  peripheral only
+    // x1 is the ARGINFO, per stage, and it must NOT be 13.
+    CHECK(s.x1[0] == 0x82u && s.x1[1] == 0x03u && s.x1[2] == 0x01u);
+    CHECK(s.x1[0] == kAdrenoZapArgInfoInitImage);
+    CHECK(s.x1[1] == kAdrenoZapArgInfoMemSetup);
+    CHECK(s.x1[2] == kAdrenoZapArgInfoAuthAndReset);
+    CHECK(s.x1[0] != 13u);                    // the pre-108 bug, explicitly
+    // x2 is args[0] == the peripheral, on EVERY stage (P2:710 via P6:172).
+    CHECK(s.x2[0] == 13u && s.x2[1] == 13u && s.x2[2] == 13u);
+    CHECK(s.x2[0] == kAdrenoZapPasId);
+    // x3/x4 differ per stage, and that difference IS the contract:
+    CHECK(s.x3[0] == 0x1000u && s.x4[0] == 0u);          // init: metadata PHYS in x3
+    CHECK(s.x3[1] == 0x40000000u && s.x4[1] == 0x1000u); // mem:  phys in x3, SIZE in x4
+    CHECK(s.x3[2] == 0u && s.x4[2] == 0u);               // auth: peripheral only
     // The per-stage report records what was ACTUALLY sent, not what was planned.
     for (uint32_t i = 0; i < 3u; ++i) {
         CHECK(rep.stage[i].stage == i);

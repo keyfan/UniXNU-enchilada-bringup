@@ -1249,6 +1249,7 @@ AdrenoZapExecStatus adreno_zap_pas_execute(const struct adreno_zap_transport *t,
         uint32_t arg_info = 0u;
         uint32_t arg_a2 = 0u;
         uint32_t arg_a3 = 0u;
+        uint32_t arg_a4 = 0u;
         uint64_t result0 = 0u;
         int transport_ret = 0;
 
@@ -1270,32 +1271,42 @@ AdrenoZapExecStatus adreno_zap_pas_execute(const struct adreno_zap_transport *t,
 
         out->stage[i].x0 = plan.x0;
 
-        /* ---- PER-STAGE ARGUMENT ASSEMBLY --------------------------------
-         * x1 is ALWAYS args[0] == the peripheral id (P2:710), because that is
-         * what all three pinned descriptors put there. x2 and x3 differ:
-         *   init_image : x1 = 13, x2 = metadata phys, x3 = 0       (P2:584-617)
-         *   mem_setup  : x1 = 13, x2 = region phys, x3 = region size  (P2:670-673)
-         *   auth_reset : x1 = 13, x2 = 0, x3 = 0                   (P2:709-710)
-         * NOTE the peripheral goes in x1, NOT x0: x0 carries the function id
-         * (base | fnid). Confusing the two is the mistake this layout prevents,
-         * and it is why the stub records the whole 4-tuple. */
-        arg_info = kAdrenoZapPasId;
+        /* ---- PER-STAGE ARGUMENT ASSEMBLY (corrected in round 108) -------
+         * P6:166-173 is the authority for the register map, and it is NOT the
+         * layout rounds 106-107 assumed:
+         *   x0 = CALL_VAL(type, conv, owner, FNID)      <- plan.x0
+         *   x1 = arginfo                                <- plan.arginfo
+         *   x2 = args[0] = peripheral (13)              <- THE PERIPHERAL IS HERE
+         *   x3 = args[1]                                 (metadata phys / region phys)
+         *   x4 = args[2]                                 (region SIZE, mem_setup only)
+         *   x5 = args[3]                                 (unused by these three calls)
+         * The previous code put the peripheral in x1 and payload in x2/x3, i.e.
+         * every slot shifted one early. That would have sent arginfo=13 with a
+         * garbage args[0] -- a call the secure world rejects for the wrong
+         * reason, which is exactly the class of bug that looks like a policy
+         * failure on silicon. The stub in the tests records the whole tuple, so
+         * the shift is now pinned by assertion rather than by comment. */
+        arg_info = plan.arginfo;
+        arg_a2 = kAdrenoZapPasId; /* x2 = args[0] = peripheral (P2:710) */
+        arg_a3 = 0u;              /* x3 = args[1]                      */
+        arg_a4 = 0u;              /* x4 = args[2]                      */
         switch (i) {
         case kAdrenoZapPasStageInitImage:
-            arg_a2 = metadata_phys; /* the secure world reads this address */
+            /* ARGS(2, VAL, RW): args[0]=peripheral, args[1]=metadata phys. */
+            arg_a3 = metadata_phys; /* x3 */
             break;
         case kAdrenoZapPasStageMemSetup:
-            arg_a2 = region->phys;
-            arg_a3 = region->bytes;
+            /* ARGS(3): args[0]=peripheral, args[1]=region phys, args[2]=size. */
+            arg_a3 = region->phys;  /* x3 */
+            arg_a4 = region->bytes; /* x4 -- needs a transport that carries x4 */
             break;
         default:
-            arg_a2 = 0u;
-            arg_a3 = 0u;
+            /* ARGS(1): only the peripheral. */
             break;
         }
 
         transport_ret = t->call(t->cookie, plan.x0, arg_info, arg_a2, arg_a3,
-                                &result0);
+                                arg_a4, &result0);
         out->stage[i].called = 1;
         out->stages_run += 1u;
 
@@ -1321,6 +1332,8 @@ AdrenoZapExecStatus adreno_zap_pas_execute(const struct adreno_zap_transport *t,
 }
 
 /* ---- the ROUND 107 stub transport, used only by the self-check ---------- */
+/* Round 108: it records the whole x0..x5 tuple, because the register SHIFT is
+ * the bug this stub now exists to catch (see the typedef's note). */
 
 struct zap_stub_state {
     uint32_t calls;
@@ -1328,14 +1341,16 @@ struct zap_stub_state {
     uint32_t seen_x1[4];
     uint32_t seen_x2[4];
     uint32_t seen_x3[4];
+    uint32_t seen_x4[4];
+    uint32_t seen_x5[4];
     /* Per-call canned answers. fail_at = which call index to fail (>=4: none). */
     uint32_t fail_at;
     int fail_transport;      /* 1 -> fail via the transport channel           */
     uint32_t fail_secure;    /* value placed in result[0] on the failing call */
 };
 
-static int zap_stub_call(void *cookie, uint32_t fn, uint32_t info, uint32_t a2,
-                         uint32_t a3, uint64_t *out_result0)
+static int zap_stub_call(void *cookie, uint32_t fn, uint32_t arginfo, uint32_t a0,
+                         uint32_t a1, uint32_t a2, uint64_t *out_result0)
 {
     struct zap_stub_state *s = (struct zap_stub_state *)cookie;
 
@@ -1343,10 +1358,12 @@ static int zap_stub_call(void *cookie, uint32_t fn, uint32_t info, uint32_t a2,
         return -1;
     }
     if (s->calls < 4u) {
-        s->seen_x0[s->calls] = fn;
-        s->seen_x1[s->calls] = info;
-        s->seen_x2[s->calls] = a2;
-        s->seen_x3[s->calls] = a3;
+        s->seen_x0[s->calls] = fn;      /* x0 = fn id            */
+        s->seen_x1[s->calls] = arginfo; /* x1 = arginfo  (P6:171) */
+        s->seen_x2[s->calls] = a0;      /* x2 = args[0]  (P6:172) */
+        s->seen_x3[s->calls] = a1;      /* x3 = args[1]          */
+        s->seen_x4[s->calls] = a2;      /* x4 = args[2]          */
+        s->seen_x5[s->calls] = 0u;      /* x5 = args[3] (unused) */
     }
     if (s->calls == s->fail_at) {
         s->calls += 1u;
@@ -1483,31 +1500,61 @@ int adreno_zap_transport_verify(uint32_t *check_count)
     if (s.seen_x0[2] != 0xC2000205u) {
         fails += 1u; /* auth_reset */
     }
+    /* ---- ARGUMENT ASSEMBLY, pinned against P6:166-173 ----------------
+     * The register shift was WRONG before round 108, so every slot is asserted
+     * individually. x1 is the ARGINFO; the peripheral is in x2. */
     for (i = 0u; i < 3u; ++i) {
         checks += 1u;
-        if (s.seen_x1[i] != kAdrenoZapPasId) {
-            fails += 1u; /* args[0] == GPU_PAS_ID 13, EVERY stage (P2:710) */
+        if (s.seen_x2[i] != kAdrenoZapPasId) {
+            fails += 1u; /* x2 == args[0] == GPU_PAS_ID 13 on every stage (P6:172) */
         }
     }
+    /* x1 carries the per-stage ARGINFO, and it must equal what the resolver
+     * said -- 0x82 / 0x03 / 0x01. If x1 ever reads 13 again, the shift is
+     * back. */
     checks += 1u;
-    if (s.seen_x2[0] != 0x1000u) {
-        fails += 1u; /* init_image: the metadata PHYS ADDRESS */
+    if (s.seen_x1[0] != kAdrenoZapArgInfoInitImage) {
+        fails += 1u; /* x1 = ARGS(2, VAL, RW) = 0x82, NOT 13 */
     }
     checks += 1u;
-    if (s.seen_x3[0] != 0u) {
-        fails += 1u; /* init_image passes no size in x3 */
+    if (s.seen_x1[1] != kAdrenoZapArgInfoMemSetup) {
+        fails += 1u; /* x1 = ARGS(3) = 0x03 */
     }
     checks += 1u;
-    if (s.seen_x2[1] != 0x40000000u) {
-        fails += 1u; /* mem_setup: region phys */
+    if (s.seen_x1[2] != kAdrenoZapArgInfoAuthAndReset) {
+        fails += 1u; /* x1 = ARGS(1) = 0x01 */
     }
     checks += 1u;
-    if (s.seen_x3[1] != 0x1000u) {
-        fails += 1u; /* mem_setup: region SIZE in x3 */
+    if (s.seen_x1[0] != 0x82u || s.seen_x1[1] != 0x03u || s.seen_x1[2] != 0x01u) {
+        fails += 1u; /* the literal values, so a rename cannot hide a change */
+    }
+    /* init_image: ARGS(2,VAL,RW) -> x3 = metadata phys, x4 unused. */
+    checks += 1u;
+    if (s.seen_x3[0] != 0x1000u) {
+        fails += 1u;
     }
     checks += 1u;
-    if (s.seen_x2[2] != 0u || s.seen_x3[2] != 0u) {
-        fails += 1u; /* auth_and_reset carries only the peripheral */
+    if (s.seen_x4[0] != 0u) {
+        fails += 1u;
+    }
+    /* mem_setup: ARGS(3) -> x3 = region phys, x4 = region SIZE. This is the
+     * stage the old layout could not express at all. */
+    checks += 1u;
+    if (s.seen_x3[1] != 0x40000000u) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if (s.seen_x4[1] != 0x1000u) {
+        fails += 1u; /* the region size lands in x4, NOT x3 */
+    }
+    /* auth_and_reset: ARGS(1) -> x3 and x4 both unused. */
+    checks += 1u;
+    if (s.seen_x3[2] != 0u) {
+        fails += 1u;
+    }
+    checks += 1u;
+    if (s.seen_x4[2] != 0u) {
+        fails += 1u;
     }
     /* The per-stage report mirrors what the transport actually saw. */
     for (i = 0u; i < 3u; ++i) {

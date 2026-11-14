@@ -30,6 +30,15 @@ PINS = [
      'd9cc584a5ff50cf8701a7775ad0f2e94f1b46683d0549e8871847c9122394881'),
     ('P4_adreno_gpu_c', CACHE / 'drivers/gpu/drm/msm/adreno/adreno_gpu.c', 29592,
      'e6b5203fb56358d22542197bd251c1513dc2b2f1ae8aaf3f9d9fca129f6f00b7'),
+    # ROUND 108: the file that DEFINES __scm_smc_call and therefore settles the
+    # (smc a0, a1) -> (transport_ret, result[0]) mapping that rounds 106-107
+    # could only INFER from ArmCpu's device behaviour. Fetched from the same
+    # v6.12 jsdelivr mirror the other Adreno pins use, and recorded in
+    # scripts/data/adreno-a630-inputs.json so `fetch-adreno-a630-sources.py`
+    # reproduces it (a pin the fetch script does not know about is a pin that
+    # silently disappears on the next clean cache).
+    ('P6_qcom_scm_smc_c', CACHE / 'drivers/firmware/qcom/qcom_scm-smc.c', 5356,
+     'e9121b279b3813b8ca3e0ac27fdcbe367b1e12cbfcbf39d75c754d3bc88f8c45'),
 ]
 
 checks = 0
@@ -65,7 +74,83 @@ def line(name, number):
     return lines[number - 1] if 0 < number <= len(lines) else ''
 
 
-pub_h, scm_c, int_h, agpu = (texts[k] for k, *_ in PINS)
+pub_h, scm_c, int_h, agpu = (texts[k] for k in
+                             ('P1_public_qcom_scm_h', 'P2_qcom_scm_c',
+                              'P3_internal_qcom_scm_h', 'P4_adreno_gpu_c'))
+smc_c = texts['P6_qcom_scm_smc_c']
+
+# ================= ROUND 108: P6 SETTLES THE MAPPING ========================
+# Rounds 106-107 could only INFER that (smc a0, a1) == (transport_ret,
+# result[0]), because the file that fills res->result[] was not pinned. P6 is
+# that file. It says TWO things, and the second one was NOT what we assumed:
+#
+#   1. result[0] is smc a1, NOT a0          (P6:204)
+#   2. a0 is the STATUS, remapped to errno  (P6:209)
+#
+# So the two-channel model is CORRECT -- transport_ret is a0-derived and
+# result[0] is a1 -- but the register IDs are swapped relative to a naive
+# "a0 = result[0]" reading. The assertions below pin both halves verbatim.
+
+# A12a: the result fill, exactly.
+check(line('P6_qcom_scm_smc_c', 204).strip() == 'res->result[0] = smc_res.a1;',
+      'A12 P6:204 result[0] is smc_res.a1 -- the SECURE RESULT, not a0')
+check(line('P6_qcom_scm_smc_c', 205).strip() == 'res->result[1] = smc_res.a2;',
+      'A12 P6:205 result[1] is smc_res.a2')
+check(line('P6_qcom_scm_smc_c', 206).strip() == 'res->result[2] = smc_res.a3;',
+      'A12 P6:206 result[2] is smc_res.a3')
+# A12b: a0 is the status and is CONVERTED to a negative errno.
+check('return (long)smc_res.a0 ? qcom_scm_remap_error(smc_res.a0) : 0;'
+      in line('P6_qcom_scm_smc_c', 209),
+      'A12 P6:209 a0 is the STATUS: nonzero -> qcom_scm_remap_error()')
+check('if (ret)' in line('P6_qcom_scm_smc_c', 200),
+      'A12 P6:200 a transport failure RETURNS EARLY, so res is never filled')
+# A12c: qcom_scm_remap_error maps the raw a0 to a negative errno -- this is what
+# makes transport_ret an int and not the raw a0.
+remap = ' '.join(int_h[159:176])
+check('static inline int qcom_scm_remap_error(int err)' in remap,
+      'A12 P3:160 qcom_scm_remap_error exists in the internal header')
+check('case QCOM_SCM_ERROR:' in remap and 'return -EIO;' in remap,
+      'A12 P3:163-164 QCOM_SCM_ERROR (-1) -> -EIO')
+check('case QCOM_SCM_EOPNOTSUPP:' in remap and 'return -EOPNOTSUPP;' in remap,
+      'A12 P3:168-169 EOPNOTSUPP -> -EOPNOTSUPP (the quiet-fallback value)')
+
+# A12d: THE CONSISTENCY CHECK the task asked for -- P6:209 vs P2:729.
+# P6 turns a0 into a negative errno and returns it; P2:729 then does
+# `return ret ?: res.result[0]`, i.e. it uses ret if nonzero, else result[0].
+# Those two compose to exactly the contract's (transport_ret, secure_result).
+check('return ret ? : res.result[0];' in line('P2_qcom_scm_c', 729),
+      'A12 P2:729 return ret ?: res.result[0] -- the collapsed form the '
+      'contract keeps split')
+# The two files must agree: P6 supplies `ret` (from a0) and result[0] (from a1).
+check(line('P6_qcom_scm_smc_c', 204).strip() == 'res->result[0] = smc_res.a1;' and
+      'smc_res.a0' in line('P6_qcom_scm_smc_c', 209),
+      'A12 P6 and P2 are CONSISTENT: ret<-a0, result[0]<-a1, so '
+      'ret ?: result[0] reads (a0 ?: a1)')
+
+# A12e: THE REGISTER LAYOUT -- the correction this round had to make.
+# x1 is desc->arginfo and x2 is desc->args[0]. Rounds 106-107 had these one
+# slot early (peripheral in x1), which would have sent arginfo=13.
+check(line('P6_qcom_scm_smc_c', 171).strip() == 'smc.args[1] = desc->arginfo;',
+      'A12 P6:171 x1 is desc->arginfo -- NOT the peripheral')
+check('smc.args[i + SCM_SMC_FIRST_REG_IDX] = desc->args[i];'
+      in line('P6_qcom_scm_smc_c', 173),
+      'A12 P6:172-173 x2.. is desc->args[0]..')
+check(line('P6_qcom_scm_smc_c', 35).strip() == '#define SCM_SMC_FIRST_REG_IDX\t2',
+      'A12 P6:35 SCM_SMC_FIRST_REG_IDX is 2, so args[0] lands in x2')
+# x0 is the call value composed from the descriptor.
+check('SCM_SMC_FNID(desc->svc, desc->cmd)' in line('P6_qcom_scm_smc_c', 170),
+      'A12 P6:170 x0 carries SCM_SMC_FNID(svc, cmd)')
+check('smc.args[0] = ARM_SMCCC_CALL_VAL(' in line('P6_qcom_scm_smc_c', 166),
+      'A12 P6:166-169 x0 = CALL_VAL(type, convention, owner, fnid)')
+
+# A12f: the pin is REPRODUCIBLE, not a hand-dropped file.
+inputs = (DEV / 'scripts/data/adreno-a630-inputs.json').read_text(encoding='utf-8')
+check('drivers/firmware/qcom/qcom_scm-smc.c' in inputs,
+      'A12 the fetch manifest lists qcom_scm-smc.c (else the pin vanishes on a '
+      'clean cache)')
+check('e9121b279b3813b8ca3e0ac27fdcbe367b1e12cbfcbf39d75c754d3bc88f8c45' in inputs,
+      'A12 the fetch manifest carries the SAME sha256 as this verifier')
+check('5356' in inputs, 'A12 the fetch manifest carries the same byte count')
 
 # ---- A2: the public API surface (P1) ------------------------------------
 check('int qcom_scm_pas_init_image(u32 peripheral, const void *metadata, size_t size,'
@@ -482,12 +567,24 @@ check(ex.find('kAdrenoZapExecNoRegion') < ex.find('t->call('),
       'B14 the region gate precedes any transport call (no partial chain)')
 
 # B14d: argument assembly -- peripheral in x1, function id in x0.
-check('arg_info = kAdrenoZapPasId;' in ex,
-      'B14 args[0] is the peripheral id on EVERY stage (P2:710)')
-check('arg_a2 = metadata_phys;' in ex,
-      'B14 init_image passes the metadata physical address')
-check('arg_a2 = region->phys;' in ex and 'arg_a3 = region->bytes;' in ex,
-      'B14 mem_setup passes the region address AND size')
+# ROUND 108 CORRECTION: these three assertions used to require the OLD (wrong)
+# register layout -- peripheral in x1, payload in x2/x3. P6:171-173 proves the
+# peripheral is args[0] and lands in x2, with arginfo in x1. The assertions now
+# pin the CORRECT layout, and a regression to the shift fails here.
+check('arg_info = plan.arginfo;' in ex,
+      'B14 x1 carries the ARGINFO, not the peripheral (P6:171)')
+check('arg_a2 = kAdrenoZapPasId;' in ex,
+      'B14 x2 is args[0] == the peripheral id (P6:172, SCM_SMC_FIRST_REG_IDX=2)')
+check('arg_a3 = metadata_phys;' in ex,
+      'B14 init_image passes the metadata physical address in x3 (args[1])')
+check('arg_a3 = region->phys;' in ex and 'arg_a4 = region->bytes;' in ex,
+      'B14 mem_setup passes the region address in x3 and the SIZE in x4 (args[2])')
+check('kAdrenoZapPasId; /* x2 = args[0] = peripheral' in ex,
+      'B14 the code states the corrected mapping inline')
+# The transport typedef must carry 5 register arguments (x1..x4 plus fnid).
+check('uint32_t arginfo,\n                                 uint32_t args0, uint32_t args1, uint32_t args2,'
+      in h or ('arginfo,' in h and 'args0' in h and 'args1' in h and 'args2' in h),
+      'B14 the transport signature carries x1..x4 explicitly')
 check('plan.x0, arg_info, arg_a2, arg_a3' in ex,
       'B14 x0 is the function id and the peripheral travels in x1, not x0')
 

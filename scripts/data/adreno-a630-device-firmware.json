@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "target": "enchilada A630 (SDM845, ADRENO_6XX_GEN1, legacy GMU) - DEVICE-SOURCED firmware inventory",
-  "note": "SIZES + HASHES + PIL STRUCTURE recorded from a strictly READ-ONLY, fully reversible inspection of the phone's OWN vendor_a partition. The proprietary blob BYTES are deliberately NOT committed to this repository (they live in gitignored work/tmp/a630-device-fw/); this text manifest + scripts/verify-enchilada-device-firmware.py are the durable record. HOST-VERIFIED record of a DEVICE-SOURCED read-only extraction - NOT a device-verified GPU driver result.",
+  "note": "SIZES + HASHES + PIL STRUCTURE recorded from a strictly READ-ONLY, fully reversible inspection of the phone's OWN vendor_a partition. The proprietary blob BYTES are deliberately NOT committed to this repository (they live outside this repository worktree, and are additionally gitignored if ever copied into it); this text manifest + scripts/verify-enchilada-device-firmware.py are the durable record. HOST-VERIFIED record of a DEVICE-SOURCED read-only extraction - NOT a device-verified GPU driver result.",
   "source": "device 27f4f45d (OnePlus6 enchilada), TWRP 3.4.0-3 recovery, uid=0(root), Linux 4.9.179-perf+",
   "extraction": {
     "method": "one reversible READ-ONLY mount: mount -t ext4 -o ro /dev/block/by-name/vendor_a /vendor; confirmed (ro,seclabel,relatime); adb pull; umount in finally; verified VENDOR_MOUNTED_BEFORE=False and STATE_RESTORED=True",

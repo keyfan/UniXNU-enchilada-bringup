@@ -38,6 +38,10 @@
       "drivers/gpu/drm/msm/adreno/a6xx_gpu.h": {
         "bytes": 3251,
         "sha256": "8909f9d70b6122899c70ec01fb034a6244f652eef9a0451065d22e86b546033e"
+      },
+      "drivers/firmware/qcom/qcom_scm-smc.c": {
+        "bytes": 5356,
+        "sha256": "e9121b279b3813b8ca3e0ac27fdcbe367b1e12cbfcbf39d75c754d3bc88f8c45"
       }
     }
   }

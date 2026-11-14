@@ -14,6 +14,14 @@
 /refer/
 /.local*/
 /Mu_Basecore/
+# The repository's own work/ tree: host test objects, probe executables and the
+# 32 MiB pulled log windows. Anchored to the repository root on purpose - there is
+# an UNRELATED work/ directory one level up in the port working directory, outside
+# this repository, and a bare `work/` or `**/work/` rule would be ambiguous about
+# which one is meant. Nothing under this work/ was ever tracked (git ls-files
+# work/ = 0), so ignoring it changes no existing file; it exists because an
+# unqualified `git add -A` DID stage the whole tree once and had to be unstaged.
+/work/
 
 # What scripts/dump-device-facts.sh writes. It is this phone's own dump and does not belong to the
 # repository: the values it produces are copied into board.toml by hand, on purpose.

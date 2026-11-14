@@ -230,16 +230,34 @@ the offset before reading it.
   gate and the region gate fire BEFORE any call. No transport is exported yet;
   the minimal `ArmCpu.cpp` change that would provide one is specified in
   `work/tmp/r107-scm-export-plan.md` and deliberately NOT applied.
+- **ROUND 108: P6 settles the SMC return mapping, and corrects the register
+  layout.** `drivers/firmware/qcom/qcom_scm-smc.c` (5356 B, sha256 `e9121b27…`) is
+  now the fifth pin — it is the file that DEFINES `__scm_smc_call`, which P3 only
+  declared, and it is recorded in `scripts/data/adreno-a630-inputs.json` so the
+  fetch script reproduces it. It proves two things:
+  - **`res->result[0] = smc_res.a1` (P6:204)** — result[0] is `a1`, NOT `a0`, and
+    `a0` is the status routed through `qcom_scm_remap_error` (P6:209, P3:160).
+    So the two-channel model was RIGHT (transport from `a0`, secure result from
+    `a1`), but the naive reading "a0 IS result[0]" was wrong: they are different
+    registers, which is exactly why the contract must keep them apart.
+  - **`smc.args[1] = desc->arginfo` (P6:171) and `SCM_SMC_FIRST_REG_IDX == 2`
+    (P6:35)** — so `args[0]`, the peripheral, lands in **x2**, not x1. Rounds
+    106-107 had every slot one place early, which would have sent `arginfo = 13`
+    with a garbage `args[0]`. The transport typedef, the executor and the tests
+    are corrected; each register slot is now asserted individually, and a mutation
+    restoring the old shift fails 11 checks.
 - `tests/adreno-zap-auth-v1-test.cpp` — 11 test groups: pasid, SCM shape, chain
   presence/reachability, step names, result semantics, the -EOPNOTSUPP quiet fallback,
   self-check, the ROUND 106 three-stage contract, the derived SMC base with the
-  two-channel judgement, and the ROUND 107 transport seam plus its fail-closed
+  two-channel judgement, and the ROUND 107/108 transport seam plus its fail-closed
   orchestration (a stub SCM covers all-three-succeed and fail-at-each-stage, on
-  BOTH channels, asserting the call count stops at the failing stage).
-- `scripts/verify-enchilada-zap-auth.py` — cross verifier: 4 sha256-pinned sources
+  BOTH channels, asserting the call count stops at the failing stage AND that every
+  register slot x0..x4 carries what P6:166-173 says).
+- `scripts/verify-enchilada-zap-auth.py` — cross verifier: **5** sha256-pinned sources
   re-derive the call shape, the public-header absence and the eight anchors in strict
-  source order, plus the round-106 order, arginfo and function-id arithmetic and the
-  round-107 no-assembly boundary (281 checks). That boundary is proven live: injecting
+  source order, plus the round-106 order, arginfo and function-id arithmetic, the
+  round-107 no-assembly boundary, and the round-108 P6 return-mapping and register-
+  layout proofs (306 checks). The no-assembly boundary is proven live: injecting
   a real `smc #0` into the module makes the verifier FAIL on 5 assertions.
 - `scripts/verify-enchilada-cp-ring.py` — cross verifier: 3 sha256-pinned sources
   re-derive the offsets, order, payload, barrier rule and protect encoding, and
