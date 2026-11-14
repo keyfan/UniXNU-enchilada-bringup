@@ -268,3 +268,132 @@ R123→R133 把这一问**答完**了，答案是**否**：
 | R128 窗口 | `work/tmp/r128_window.bin` |
 | kernel.macho（R133/CI #254） | 126,132,224 B，sha256 `49e24c5b…9124` |
 | payload.img（R133） | 150,994,944 B，md5 `ac10bdad8f6ba75842880b38bfb70aba` |
+
+---
+
+## 十一、ROUND 136：为什么降级路径不适用
+
+> 本节由 ROUND 135–137 落盘（**2026-11-14**）。它**不改变** R134 的任何读数，
+> 而是补上 R134 当时**缺失**的一块：单纯 `v13=0` 还不足以把"绕过 PAS"堵死 ——
+> 光看驱动代码，`SECVID_TRUST_CNTL` 手动退出路径确实存在。
+> ROUND 136 用上游 DT 证据证明：**那条降级路径对我们的设备不适用**。
+
+### 背景：降级路径在代码里确实存在（所以才会被 R135 提出）
+
+R135 提出"上游可能有不依赖 PAS 的路径"。方向不空：`a6xx_gpu.c` 确实有一条
+CP 安全模式切换失败后的**手动退出**降级：**但它是给 DT 不声明 zap 的设备用的。**
+
+（CITED，pin 版 v6.12 `a6xx_gpu.c:1157-1181`，逐字）
+
+```
+    /*
+     * Try to load a zap shader into the secure world. If successful
+     * we can use the CP to switch out of secure mode. If not then we
+     * have no resource but to try to switch ourselves out manually. If we
+     * guessed wrong then access to the RBBM_SECVID_TRUST_CNTL register will
+     * be blocked and a permissions violation will soon follow.
+     */
+    ret = a6xx_zap_shader_init(gpu);
+    if (!ret) {
+        OUT_PKT7(gpu->rb[0], CP_SET_SECURE_MODE, 1);
+        OUT_RING(gpu->rb[0], 0x00000000);
+
+        a6xx_flush(gpu, gpu->rb[0]);
+        if (!a6xx_idle(gpu, gpu->rb[0]))
+            return -EINVAL;
+    } else if (ret == -ENODEV) {
+        /*
+         * This device does not use zap shader (but print a warning
+         * just in case someone got their dt wrong.. hopefully they
+         * have a debug UART to realize the error of their ways...
+         * if you mess this up you are about to crash horribly)
+         */
+        dev_warn_once(gpu->dev->dev,
+            "Zap shader not enabled - using SECVID_TRUST_CNTL instead\n");
+        gpu_write(gpu, REG_A6XX_RBBM_SECVID_TRUST_CNTL, 0x0);
+        ret = 0;
+```
+
+**进入降级的唯一开关是 `ret == -ENODEV`**（`a6xx_gpu.c:1172`），
+而 `-ENODEV` 只来自 `adreno_zap_shader_load()` 在 **DT 的 `zap-shader` 节点缺失/不可用**时返回。
+
+### 发现 B：GPU 驱动代码没有变，变的是 DT
+
+上游 `a6xx_gpu.c` master 与 pin 的 v6.12 **sha256 完全相同**（`c33479377574ed19`，
+pin 版 sha 前缀与 porting.toml 记录的 `a6xx_gpu.c (c3347937…)` 一致）。
+也就是说，降级路径**不是新加的**，更不是给 SDM845"发现没 PAS 时用的后门" ——
+它在所有版本都存在，服务的是**根本不用 zap 的那一类设备**。
+
+### 发现 A：SDM845 设计上就要走 zap
+
+（captain 已联网核实的事件，本节如实落盘；不以本地重现替代）
+
+上游 master `arch/arm64/boot/dts/qcom/sdm845.dtsi:4965`：
+
+```
+   gpu_zap_shader: zap-shader {
+            memory-region = <&gpu_mem>;
+   };
+```
+
+而我们 pin 的 v6.12 `sdm845.dtsi`（**151,194 B**）里 `zap` 出现次数 = **0**
+（本机对 `work/UniXNU-enchilada/.cache/…/sdm845.dtsi` re-grep，0 命中）。
+**SDM845 的主线 DT 声明了 `zap-shader` 节点 → 走 PAS 路径走 zap 是设计本身。**
+
+### 发现 C：降级路径不适用于我们的设备
+
+`adreno_gpu.c:48-51`（CITED，pin 版 v6.12，逐字）：
+
+```c
+    np = of_get_child_by_name(dev->of_node, "zap-shader");
+    if (!of_device_is_available(np)) {
+        zap_available = false;
+        return -ENODEV;
+    }
+```
+
+- 我们的设备 DT **声明了这个节点**：`notes/dt/sdm845-oneplus-common.dtsi:483` 有 `&gpu_zap_shader` 覆盖
+  （`firmware-name = "qcom/sdm845/OnePlus/enchilada/a630_zap.mbn"`）；
+- `a630_zap.mdt` 与 `.b00/.b01/.b02`（及 `.elf`）**全在手**（`work/tmp/a630-device-fw/`）；
+- 因此对这台机器，`of_device_is_available(np)` 为真，`adreno_zap_shader_load()` 走 **PAS 路径**
+  （`a6xx_gpu.c:819` `adreno_zap_shader_load(gpu, GPU_PAS_ID)`），**不返回 -ENODEV**。
+
+**结论：降级路径的进入条件（-ENODEV）对我们的设备不成立。SECVID_TRUST_CNTL 手动退出没有出口。**
+
+### 明确结论
+
+**SDM845 设计上就要走 zap，我们绕过它就是上游警告的 `crash horribly` 那种情况。**
+
+- R135 提的「上游可能有不依赖 PAS 的路径」**已否证**：降级路径存在，但开关是 **DT**，
+  而我们的 DT 明确声明 zap → 只能走 PAS。
+- 想直接 `SECVID_TRUST_CNTL = 0` 而不喂 zap，就是 `a6xx_gpu.c:1177` 逐字的
+  `if you mess this up you are about to crash horribly`（且 `:1181` 之前没有任何 zap 认证，
+  secure mode 不会真的退出）。
+
+### R134 的止损结论成立，且理由比原来更硬
+
+R134(e) 止损的核心是 `v13=0`（服务不存在）。ROUND 136 补上另一半，闭合成自洽的负结论：
+
+1. **该给的 PAS 服务不存在**：`avail=1` + `v13=0`（R129-133 判定）。
+2. **这台机器没有绕开它的合法出路**：DT 声明 zap → 降级路径进入条件（-ENODEV）不成立 →
+   手动 SECVID_TRUST_CNTL 是 crash horribly 分支。
+
+**一个不满足（服务不存在）** 已经足够，**两个都不满足（无合法绕路）** 让失败更不可挽回。
+**B 路线的止损判断不变，且理由更硬。**
+
+### 保持不变的诚实边界（R134 原有，全部保留）
+
+- `INTERRUPTED`（`t0=1`）的**成因未解释** —— 只证明**与 call type 无关**。
+- `v13=0` 是 secure world 对"13 号外设支持吗"的**答复**，不是对拒绝理由的推断。
+- stage 1/2 **从未执行**，不得写成"被拒绝"。
+- 准入表 **`modeled=9 / satisfied=0 / BLOCKED` 未变**；`CONFIG_XNU_NATIVE_ADRENO=n` 未变。
+- **不得**写"PAS 通过了"，**不得**写"GPU 能工作了"。
+- R135 判断「非 atomic 路径重试 INTERRUPTED」的更正：即使成立，也不改变结论 ——
+  `v13=0` 是 secure 的答复，重试同样拿不到不同策略答案（见 porting.toml ROUND 135-137 记录）。
+
+### 方法论教训（R107 的悬空引用不是笔误，是 pin 版本太旧的信号）
+
+`notes/dt/sdm845-oneplus-common.dtsi:483` 的 `&gpu_zap_shader` 是**真实意图**，
+但 pin 的 v6.12 base `sdm845.dtsi` 里这个节点**不存在**（`zap` grep 0 命中）。
+R107 当时把它判为"参考文档笔误"，**实际是 pin 的 base DT 落后于支持 SDM845 GPU 的版本**。
+**如果当时对照 master，就能早 29 轮知道 SDM845 走 zap 的设计。**
