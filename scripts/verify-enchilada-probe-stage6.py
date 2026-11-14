@@ -557,6 +557,142 @@ def main():
     check('s7metaPhys' in code[code.find('snprintf(s7Row'):],
           'R127 meta= is inside the single unconditional snprintf')
 
+    # ==== ROUND 129: is the 0/0 reply even an ANSWER? =====================
+    # r128 measured p13=0/0 -> v13=0 and could not tell two worlds apart:
+    #   (a) 0x02000207 exists and answers "not supported", or
+    #   (b) 0x02000207 does not exist and the monitor completed cleanly having
+    #       done nothing.
+    # Linux never faces this: P2:788-790 runs __qcom_scm_is_call_available()
+    # BEFORE qcom_scm_pas_supported() and short-circuits. This round adds that
+    # gate, so an availability query must be issued BEFORE the p13 question.
+    check('adreno_zap_is_call_available_call' in code,
+          'R129 the probe issues an IS_CALL_AVAILABLE query')
+    check('is_call_available_call(s7base, 0x0207u' in code,
+          'R129 ...about 0x0207, the PAS_IS_SUPPORTED function id')
+    _avail_at = code.find('adreno_zap_is_call_available_call(s7base, 0x0207u')
+    _p13_at = code.find('adreno_zap_pas_is_supported_call(s7base, &s7sup)')
+    check(_avail_at > 0 and _p13_at > _avail_at,
+          'R129 the availability query runs BEFORE the p13 question '
+          '(otherwise its answer could not inform that verdict)')
+    # The fold, not the bare decoder: a 0/0 reply must stop being a policy
+    # answer when the command is not known to exist.
+    check('adreno_zap_pas_supported_verdict_avail' in code,
+          'R129 the p13 verdict goes through the availability-aware fold')
+    # ...and it must be the function ACTUALLY CALLED, not merely mentioned. A
+    # mutation that swaps the call back to the two-argument decoder leaves the
+    # name above intact while restoring the round-128 ambiguity, so the call
+    # site itself is read.
+    _fold_at = code.find('adreno_zap_pas_supported_verdict_avail(')
+    _plain_at = code.find('adreno_zap_pas_supported_verdict(')
+    check(_fold_at > 0, 'R129 the fold is called at least once')
+    # The fold's call must come BEFORE any bare two-argument call, and a bare
+    # call to the p13 verdict inside this block is what the mutation produces.
+    _p13_block = code[code.find('s7avail'):]
+    _p13_block = _p13_block[:_p13_block.find('if (!armed)')] if 'if (!armed)' in _p13_block else _p13_block
+    check('adreno_zap_pas_supported_verdict_' in _p13_block,
+          'R129 the p13 verdict uses the _avail form inside the probe block')
+    check('adreno_zap_pas_supported_verdict(\n' not in _p13_block and
+          'adreno_zap_pas_supported_verdict(s7avail' not in _p13_block.replace('verdict_avail', 'verdict_X'),
+          'R129 the bare two-argument decoder is NOT what the p13 probe calls '
+          '(swapping it back would restore the r128 ambiguity)')
+    check('s7avail' in code,
+          'R129 the availability answer reaches the verdict')
+
+    # ---- the availability answer must be COMPUTED, not assumed ----
+    # A mutation that forces s7avail to a constant (e.g. `s7avail = 1;` after the
+    # query, or `int s7avail = 1;`) keeps every name above intact while making
+    # the fold meaningless -- every 0/0 would then read as a real policy answer.
+    # So the declaration must start at the INCONCLUSIVE value, and the verdict
+    # decoder must be the thing that moves it.
+    check('int s7avail = -1;' in code,
+          'R129 avail STARTS at -1 (inconclusive), not at 0 or 1')
+    check('adreno_zap_is_call_available_verdict(' in code,
+          'R129 avail is set by the decoder, not by a constant')
+    _after_q = code[code.find('adreno_zap_is_call_available_verdict('):]
+    _after_q = _after_q[:_after_q.find('then the PAS_IS_SUPPORTED')] if 'then the PAS_IS_SUPPORTED' in _after_q else _after_q[:400]
+    check(re.search(r'&s7avail\)', _after_q) is not None,
+          'R129 the decoder writes s7avail through its out-parameter')
+    # No assignment of a literal into s7avail AFTER its declaration: that is the
+    # "恒真" shape. The declaration `int s7avail = -1;` is the one permitted
+    # initialiser and is asserted above.
+    _after_decl = code[code.find('int s7avail = -1;') + len('int s7avail = -1;'):]
+    _const_assign = re.search(r's7avail\s*=\s*-?\d+\s*;', _after_decl)
+    check(_const_assign is None,
+          'R129 s7avail is never RE-assigned a literal after its declaration '
+          '(got %r)' % (_const_assign.group(0) if _const_assign else None))
+    # And no plain `s7avail = ` at all after the declaration: the decoder writes
+    # through its out-parameter (&s7avail), which is the only setter.
+    check('s7avail = ' not in _after_decl,
+          'R129 s7avail has no plain assignments after its declaration -- the '
+          'decoder out-parameter is the only setter')
+
+    # ---- the row carries the new fields ----
+    check('avail=%d av0=%x/%x x1s=%x' in code,
+          'R129 the row carries avail=, av0= and x1s=')
+    check('(unsigned)s7x1s' in code,
+          'R129 x1s= prints the arginfo actually sent in x1')
+    check('s7x1s = (uint64_t)s7sup.arginfo;' in code,
+          'R129 x1s is captured FROM the call record, not hard-coded')
+    # s0 must still be the real smc a1: x1s is a COMPARISON field, not a
+    # replacement. If someone "fixed" the echo by overwriting s0, this fails.
+    check('s7rep.stage[0].secure_result' in code,
+          'R129 s0 is still the real secure_result channel (not replaced by x1s)')
+
+    # ---- the availability shape: svc is 0x06, not the brief's 0x01 ----
+    _hdr = (DEV / 'drivers/NativeAdreno/AdrenoZapAuthV1.h').read_text(encoding='utf-8', errors='replace')
+    _authc = (DEV / 'drivers/NativeAdreno/AdrenoZapAuthV1.c').read_text(encoding='utf-8', errors='replace')
+    check('#define kAdrenoZapScmSvcInfo           0x06u' in _hdr,
+          'R129 SVC_INFO is pinned to 0x06 (P3:109); 0x01 is SVC_BOOT (P3:84)')
+    check('out->svc = kAdrenoZapScmSvcInfo;' in _authc,
+          'R129 the query really uses SVC_INFO')
+    check('0x0601u' in _authc,
+          'R129 the function id is FNID(0x06,0x01) == 0x0601')
+    # ...and it agrees with the call this tree already runs successfully.
+    _armcpu = (DEV / 'drivers/ArmCpu/ArmCpu.cpp').read_text(encoding='utf-8', errors='replace')
+    check('scm (0xC2000601, 0x1, fn, 0)' in _armcpu,
+          'R129 the new query matches ArmCpu.cpp scmAvailable x0 0xC2000601')
+    # The owner rides in args[0] for THIS call (P2:355-356), unlike the PAS
+    # stages where it rides in x0's base.
+    check('kAdrenoZapSmcOwnerShiftForArg' in _authc,
+          'R129 the SIP owner is OR-ed into args[0] (P2:355-356), not into x0')
+
+    # ---- no INTERRUPTED retry may be added ----
+    # P6:130-145: the non-atomic path retries EBUSY only; a0==1 is terminal.
+    # A retry loop here would turn one observed SMC into several and invalidate
+    # the ran=/calls= counters this row's evidential value rests on.
+    #
+    # NOTE: `code` here has comments STRIPPED (:85-86, :98), so this must assert
+    # against the RAW text. Asserting a comment phrase against `code` would fail
+    # for a perfectly documented change -- which is exactly what happened on the
+    # first run of this block.
+    check('A TERMINAL ANSWER HERE' in text,
+          'R129 the non-atomic retry rule is documented (comment, so check raw text)')
+    check('QCOM_SCM_V2_EBUSY' in text and 'qcom_scm-smc.c' in text,
+          'R129 ...citing the pinned source that retries EBUSY only')
+    # A retry would need a loop around the SMC; there must be none. Asserted on
+    # the comment-stripped `code`, because a loop is code.
+    _bridge = code[code.find('int zapBridgeCall('):]
+    _bridge = _bridge[:_bridge.find('\n}')]
+    for _loop in ('while (', 'for (', 'do {'):
+        check(_loop not in _bridge,
+              'R129 zapBridgeCall contains no %r retry loop' % _loop)
+
+    # ---- the row must FIT its buffer ----
+    # r129 added three fields; the recomputed reachable worst case exceeds the
+    # old 384, so the buffer grew to 512. A truncating snprintf would silently
+    # drop whichever diagnostic fell off the end.
+    _m = re.search(r'char s7Row\[(\d+)\]', code)
+    check(_m is not None, 'R129 s7Row has a declared bound')
+    if _m:
+        _bound = int(_m.group(1))
+        check(_bound >= 512,
+              'R129 s7Row is at least 512 bytes (got %d): the r129 field set has '
+              'a reachable worst case of 437' % _bound)
+        _s7replay = re.search(r'char gId1ReplayStage7\[(\d+)\]', code)
+        check(_s7replay is not None and int(_s7replay.group(1)) >= _bound,
+              'R129 the stage-7 replay buffer is at least as large as s7Row, '
+              'so the replay cannot truncate what the live row held')
+
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))

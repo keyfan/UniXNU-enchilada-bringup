@@ -517,9 +517,98 @@ int adreno_zap_pas_is_supported_call(uint32_t base,
  *                          an error instead of a verdict. Neither may be read as
  *                          "false" -- that is the P2:729 trap this port exists
  *                          to avoid.
- * Returns 0, or 1 on a NULL out. */
+ * Returns 0, or 1 on a NULL out.
+ *
+ * ROUND 129: THIS FUNCTION ALONE IS NOT ENOUGH, AND ITS `0` IS AMBIGUOUS.
+ * When the secure world answers 0/0 there are TWO very different worlds:
+ *   (a) the command id exists and its answer is "not supported", or
+ *   (b) the command id does not exist, in which case a monitor that does not
+ *       recognise a function typically completes with a0=0 and leaves a1=0.
+ * Linux never has to tell these apart because it asks FIRST --
+ * qcom_scm.c:788-790 runs __qcom_scm_is_call_available() before
+ * qcom_scm_pas_supported() (:792) and returns false without calling when the
+ * command is absent. This port skipped that step, so a bare 0/0 was being read
+ * as a policy answer it might not be. Use adreno_zap_pas_supported_verdict_avail()
+ * below, which takes the availability answer as an input and refuses to report
+ * "not supported" when the command was never known to exist. */
 int adreno_zap_pas_supported_verdict(int transport_ret, uint32_t secure_result,
                                     int *supported);
+
+/* ==========================================================================
+ * ROUND 129: IS_CALL_AVAILABLE -- "does this function id EXIST at all?"
+ * ==========================================================================
+ * THE PINNED CALL SHAPE (P2 qcom_scm.c:340-369, __qcom_scm_is_call_available):
+ *   svc       QCOM_SCM_SVC_INFO            = 0x06   (P3:109)
+ *   cmd       QCOM_SCM_INFO_IS_CALL_AVAIL  = 0x01   (P3:110)
+ *   arginfo   QCOM_SCM_ARGS(1)             = 0x01   (P2:351)
+ *   args[0]   SCM_SMC_FNID(svc_id, cmd_id) | (ARM_SMCCC_OWNER_SIP << 24)
+ *             (P2:355-356; the OWNER is OR'd into the low word, NOT into x0)
+ *   x0        base | FNID(0x06, 0x01) = base | 0x0601
+ *
+ * CAREFUL -- THE BRIEF SAID svc=0x01 AND THAT IS WRONG. P3:109 says
+ * QCOM_SCM_SVC_INFO is 0x06; 0x01 is QCOM_SCM_SVC_BOOT (P3:84). The pinned
+ * function is unambiguous (`.svc = QCOM_SCM_SVC_INFO` at P2:345), and this
+ * tree's OWN working call agrees: ArmCpu.cpp:165 passes 0xC2000601. Using 0x01
+ * would ask the BOOT service and produce an answer about a different function
+ * entirely, which would look like "PAS_IS_SUPPORTED does not exist".
+ *
+ * THE VERDICT IS a1, AND THE SEMANTICS ARE "NON-ZERO MEANS KNOWN".
+ * __qcom_scm_is_call_available ends `return ret ? false : !!res.result[0];`
+ * (P2:368) and result[0] is smc a1 (P6:204), so a NON-ZERO a1 means the
+ * function id is implemented. scmAvailable() in ArmCpu.cpp:163-167 encodes the
+ * same reading for the calls it probes (`a1 = 1 when available`).
+ * A non-zero a0 means the query itself did not complete, which is NOT an answer.
+ * -------------------------------------------------------------------------- */
+
+/* P3:109 / P3:110 -- named so no call site spells the svc/cmd pair inline. */
+#define kAdrenoZapScmSvcInfo           0x06u /* P3:109 QCOM_SCM_SVC_INFO      */
+#define kAdrenoZapScmInfoIsCallAvail   0x01u /* P3:110 INFO_IS_CALL_AVAIL     */
+#define kAdrenoZapArgInfoIsCallAvail   0x01u /* P2:351 ARGS(1)                */
+#define kAdrenoZapSmcOwnerShiftForArg  24u   /* P2:356 OWNER << 24 in args[0] */
+
+/* Build the IS_CALL_AVAILABLE call record that ASKS ABOUT `probe_fnid` (the
+ * low 16 bits of the function id whose existence we want to know about, e.g.
+ * 0x0207 for PAS_IS_SUPPORTED). `out` must be non-NULL.
+ * Returns 0, or 1 on a NULL out, a bad base, or a probe_fnid wider than 16 bits
+ * (a wider value cannot be a SCM_SMC_FNID and would silently ask about the
+ * wrong command). Sets x0 = base | 0x0601 and args0 = the composed query.
+ * Makes no SCM call. */
+int adreno_zap_is_call_available_call(uint32_t base, uint32_t probe_fnid,
+                                      struct adreno_zap_pas_call *out);
+
+/* Decode an IS_CALL_AVAILABLE reply.
+ *   1  KNOWN      transport_ret == 0 && secure_result != 0
+ *   0  UNKNOWN    transport_ret == 0 && secure_result == 0
+ *  -1  INCONCLUSIVE transport_ret != 0: the query itself did not complete, so
+ *                   nothing was learned. NOT the same as "unknown": unknown is
+ *                   an answer, inconclusive is the absence of one.
+ * Returns 0, or 1 on a NULL out. */
+int adreno_zap_is_call_available_verdict(int transport_ret,
+                                         uint32_t secure_result, int *known);
+
+/* THE v13 THE BRIEF ASKED FOR, WITH avail FOLDED IN. This is the function the
+ * probe uses; the two-argument form above is kept for callers that already know.
+ *
+ *   avail_known = adreno_zap_is_call_available_verdict() for the PAS_IS_SUPPORTED
+ *                 function id (1 known / 0 unknown / -1 inconclusive)
+ *   transport_ret / secure_result = the PAS_IS_SUPPORTED reply, raw
+ *
+ * Output `*supported`:
+ *    1  SUPPORTED        known==1, clean transport, secure_result == 1
+ *    0  NOT SUPPORTED    known==1, clean transport, secure_result == 0
+ *                        -- ONLY reachable when the command is known to exist,
+ *                        which is the whole point of this round.
+ *   -1  INCONCLUSIVE     everything else: the call failed, the answer was out
+ *                        of range, the availability query was inconclusive, OR
+ *                        the command is UNKNOWN (known==0) -- in that last case
+ *                        a 0/0 reply says nothing about PAS 13 and reporting 0
+ *                        would manufacture a policy rejection out of a missing
+ *                        command. That is exactly what round 128 could not rule
+ *                        out.
+ * Returns 0, or 1 on a NULL out. */
+int adreno_zap_pas_supported_verdict_avail(int avail_known, int transport_ret,
+                                           uint32_t secure_result,
+                                           int *supported);
 
 /* ==========================================================================
  * ROUND 107: THE SCM TRANSPORT SEAM (contract layer only -- NO smc here)

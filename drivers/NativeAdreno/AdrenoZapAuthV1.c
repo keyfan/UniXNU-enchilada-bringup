@@ -827,6 +827,98 @@ int adreno_zap_pas_is_supported_call(uint32_t base,
     return 0;
 }
 
+/* ==========================================================================
+ * ROUND 129: IS_CALL_AVAILABLE, and the v13 that folds it in.
+ * See the header for why the brief's svc=0x01 is wrong (that is SVC_BOOT;
+ * SVC_INFO is 0x06 at P3:109, and this tree's own ArmCpu.cpp:165 already
+ * passes 0xC2000601 for exactly this query).
+ * ========================================================================== */
+
+int adreno_zap_is_call_available_call(uint32_t base, uint32_t probe_fnid,
+                                     struct adreno_zap_pas_call *out)
+{
+    if (out == 0) {
+        return 1;
+    }
+    if (adreno_zap_smc_base_gate(base) == 0) {
+        return 1;
+    }
+    /* A SCM_SMC_FNID is 16 bits (P3:69: ((svc & 0xFF) << 8) | (cmd & 0xFF)).
+     * A wider value cannot be one, and masking it silently would ask about a
+     * DIFFERENT function than the caller named -- the exact class of quiet
+     * error this module keeps refusing. */
+    if (probe_fnid > 0xFFFFu) {
+        return 1;
+    }
+    out->stage = kAdrenoZapPasStageCount;    /* not one of the three stages  */
+    out->svc = kAdrenoZapScmSvcInfo;         /* P2:345 / P3:109 = 0x06      */
+    out->cmd = kAdrenoZapScmInfoIsCallAvail; /* P2:346 / P3:110 = 0x01      */
+    out->arginfo = kAdrenoZapArgInfoIsCallAvail; /* P2:351 ARGS(1)          */
+    out->arg_count = out->arginfo & 0x0Fu;
+    out->owner = kAdrenoZapScmOwnerSip;      /* P2:347                      */
+    /* P2:355-356 the OWNER is OR'd into args[0], which is the ONE place this
+     * call differs structurally from the three PAS stages: there the owner
+     * rides in x0's base, here it rides in the argument. Both are pinned, and
+     * conflating them is how a monitor gets asked about the wrong thing. */
+    out->args0 = probe_fnid | (kAdrenoZapScmOwnerSip << kAdrenoZapSmcOwnerShiftForArg);
+    out->fnid = adreno_zap_scm_fnid(out->svc, out->cmd); /* -> 0x0601          */
+    out->x0 = base | out->fnid;              /* P2:355-356 / the base gate   */
+    out->args1_kind = 0u;
+    out->required = 0;
+    out->is_metadata_call = 0;
+    out->carries_size_arg = 0;
+    return 0;
+}
+
+int adreno_zap_is_call_available_verdict(int transport_ret,
+                                         uint32_t secure_result, int *known)
+{
+    if (known == 0) {
+        return 1;
+    }
+    if (transport_ret != 0) {
+        /* The query itself did not complete: nothing was learned. This is NOT
+         * "unknown" -- unknown is an answer, this is the absence of one. */
+        *known = -1;
+        return 0;
+    }
+    /* P2:368 `return ret ? false : !!res.result[0];` -- NON-ZERO a1 means the
+     * function id is implemented. Note the polarity is the OPPOSITE of the
+     * PAS_IS_SUPPORTED reading (there 0 means "no"); carrying the wrong one
+     * across would invert this whole round's conclusion. */
+    *known = (secure_result != 0u) ? 1 : 0;
+    return 0;
+}
+
+int adreno_zap_pas_supported_verdict_avail(int avail_known, int transport_ret,
+                                           uint32_t secure_result,
+                                           int *supported)
+{
+    int base_verdict = -1;
+
+    if (supported == 0) {
+        return 1;
+    }
+    if (adreno_zap_pas_supported_verdict(transport_ret, secure_result,
+                                         &base_verdict) != 0) {
+        *supported = -1;
+        return 1;
+    }
+    /* THE ONE RULE THIS ROUND ADDS: a "not supported" answer is only meaningful
+     * when the command is KNOWN to exist. If the availability query said the
+     * command is absent (0), or could not answer (-1), then a 0/0 reply from
+     * PAS_IS_SUPPORTED cannot be read as a policy rejection -- a monitor that
+     * does not implement a function commonly completes cleanly having done
+     * nothing, which looks identical to "not supported". Downgrade to
+     * INCONCLUSIVE rather than report a verdict the evidence cannot carry. */
+    if (base_verdict == 0 && avail_known != 1) {
+        *supported = -1;
+        return 0;
+    }
+    *supported = base_verdict;
+    return 0;
+}
+
 int adreno_zap_pas_supported_verdict(int transport_ret, uint32_t secure_result,
                                     int *supported)
 {
@@ -1401,6 +1493,140 @@ int adreno_zap_pas_verify(uint32_t *check_count)
         checks += 1u;
         if (adreno_zap_pas_supported_verdict(0, 1u, 0) == 0) {
             fails += 1u; /* NULL out */
+        }
+    }
+
+    /* ---- ROUND 129: IS_CALL_AVAILABLE shape and the v13 fold ---------- */
+    {
+        struct adreno_zap_pas_call avail;
+        int known = 7;
+        int v = 7;
+
+        /* THE SVC IS 0x06, NOT 0x01. P3:109 says SVC_INFO is 0x06 and 0x01 is
+         * SVC_BOOT (P3:84). Pinning the number here is what stops the brief's
+         * typo from silently becoming the code. */
+        checks += 1u;
+        if (kAdrenoZapScmSvcInfo != 0x06u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (kAdrenoZapScmInfoIsCallAvail != 0x01u) {
+            fails += 1u;
+        }
+
+        /* Ask about PAS_IS_SUPPORTED's function id, 0x0207. */
+        checks += 1u;
+        if (adreno_zap_is_call_available_call(base, 0x0207u, &avail) != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (avail.svc != 0x06u || avail.cmd != 0x01u) {
+            fails += 1u; /* SVC_INFO / INFO_IS_CALL_AVAIL */
+        }
+        checks += 1u;
+        if (avail.fnid != 0x0601u) {
+            fails += 1u; /* FNID(0x06, 0x01) -- NOT 0x0106 */
+        }
+        checks += 1u;
+        if (avail.x0 != (base | 0x0601u)) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (avail.arginfo != 0x01u || avail.arg_count != 1u) {
+            fails += 1u; /* ARGS(1) */
+        }
+        /* P2:355-356: the OWNER is OR'd into args[0] for THIS call, which is
+         * structurally different from the PAS stages (owner rides in x0 there).
+         * 0x0207 | (2 << 24) == 0x02000207. */
+        checks += 1u;
+        if (avail.args0 != 0x02000207u) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (avail.args0 != (0x0207u | (kAdrenoZapScmOwnerSip << kAdrenoZapSmcOwnerShiftForArg))) {
+            fails += 1u;
+        }
+        /* It is not an ordered stage and can never be "required". */
+        checks += 1u;
+        if (avail.stage < kAdrenoZapPasStageCount || avail.required != 0) {
+            fails += 1u;
+        }
+        /* Refusals: bad base, NULL out, a fnid that cannot be a FNID. */
+        checks += 1u;
+        if (adreno_zap_is_call_available_call(0xC1000000u, 0x0207u, &avail) == 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_zap_is_call_available_call(base, 0x0207u, 0) == 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_zap_is_call_available_call(base, 0x10207u, &avail) == 0) {
+            fails += 1u; /* wider than 16 bits: cannot be a SCM_SMC_FNID */
+        }
+
+        /* THE POLARITY, asserted explicitly because it is the OPPOSITE of the
+         * PAS_IS_SUPPORTED reading: NON-ZERO a1 means KNOWN here. */
+        checks += 1u;
+        if (adreno_zap_is_call_available_verdict(0, 1u, &known) != 0 || known != 1) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_zap_is_call_available_verdict(0, 0u, &known) != 0 || known != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_zap_is_call_available_verdict(0, 0xDEADu, &known) != 0 || known != 1) {
+            fails += 1u; /* any non-zero is KNOWN, not just 1 */
+        }
+        checks += 1u;
+        if (adreno_zap_is_call_available_verdict(-1, 1u, &known) != 0 || known != -1) {
+            fails += 1u; /* the query failed: inconclusive, NOT "known" */
+        }
+        checks += 1u;
+        if (adreno_zap_is_call_available_verdict(0, 1u, 0) == 0) {
+            fails += 1u;
+        }
+
+        /* ---- THE FOLD: v13 must not claim "not supported" on a 0/0 reply
+         * when the command was never known to exist. ---- */
+        /* known + 0/0  -> 0  (a REAL policy answer) */
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict_avail(1, 0, 0u, &v) != 0 || v != 0) {
+            fails += 1u;
+        }
+        /* known + 0/1  -> 1 */
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict_avail(1, 0, 1u, &v) != 0 || v != 1) {
+            fails += 1u;
+        }
+        /* UNKNOWN + 0/0 -> -1, NOT 0. This is the round-129 property: the same
+         * reply means different things depending on whether the command exists,
+         * and round 128 could not tell them apart. */
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict_avail(0, 0, 0u, &v) != 0 || v != -1) {
+            fails += 1u;
+        }
+        /* INCONCLUSIVE availability + 0/0 -> -1 as well. */
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict_avail(-1, 0, 0u, &v) != 0 || v != -1) {
+            fails += 1u;
+        }
+        /* UNKNOWN + 0/1 still -> 1: a positive answer needs no availability
+         * support, because a monitor that says "supported" has plainly
+         * implemented the command. */
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict_avail(0, 0, 1u, &v) != 0 || v != 1) {
+            fails += 1u;
+        }
+        /* A failed transport is still -1 regardless of availability. */
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict_avail(1, -1, 0u, &v) != 0 || v != -1) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict_avail(1, 0, 1u, 0) == 0) {
+            fails += 1u;
         }
     }
 

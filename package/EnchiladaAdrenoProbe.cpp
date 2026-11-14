@@ -259,10 +259,17 @@ bool gHaveId1Replay = false;
 // stage-7 rows are emitted by the SAME poll, so the second one always overwrote
 // the first and only ONE of the two ever survived to the replay tick. The row
 // has also grown (p13/v13), and a 300-byte buffer that two different rows share
-// is a truncation waiting to happen. Sized from the REACHABLE worst case, not
-// from a round number: the longest possible label set plus every field at its
-// real maximum is 350 bytes (computed, not guessed), so 384 leaves margin.
-char gId1ReplayStage7[384];
+// is a truncation waiting to happen.
+//
+// SIZED FROM THE REACHABLE WORST CASE, RE-COMPUTED EACH ROUND THE ROW GROWS.
+// Round 126 computed 350 for its field set and chose 384. ROUND 129 adds three
+// more fields (avail/av0/x1s), and re-running the same arithmetic over the new
+// set gives 437 -- MORE than 384. That is not a hypothetical: snprintf would
+// truncate, and a truncated row silently drops whichever field fell off the end,
+// which for this line is the diagnostic the whole round exists to produce. So
+// the buffer is raised to 512 and the worst case is pinned by an assertion in
+// verify-enchilada-probe-stage6.py rather than by this comment.
+char gId1ReplayStage7[512];
 bool gHaveStage7Replay = false;
 bool gHavePowerReplay = false;
 bool gHaveIommuReplay = false;
@@ -351,6 +358,25 @@ void setStage7Replay(const char *text) {
 // were left untouched. The contract layer wants: return 0 == transport clean.
 // Those differ for the refusal case -- a refusal must NOT look like a clean
 // transport -- so the conversion is explicit rather than a cast.
+//
+// ROUND 129 CORRECTION: a0 == QCOM_SCM_INTERRUPTED (1) IS A TERMINAL ANSWER HERE.
+// An earlier note in this line's history implied the transport would retry an
+// interrupted call. It does not, and the pinned source is explicit about why:
+//   P6 qcom_scm-smc.c:125   if (atomic) { __scm_smc_do_quirk(smc, res); return 0; }
+//   P6 qcom_scm-smc.c:130   do {
+//   P6 qcom_scm-smc.c:140           if (res->a0 == QCOM_SCM_V2_EBUSY) { ... }
+//   P6 qcom_scm-smc.c:145   }  while (res->a0 == QCOM_SCM_V2_EBUSY);
+// The INTERRUPTED loop lives inside __scm_smc_do_quirk (:51-54), which the
+// NON-atomic path reaches through __scm_smc_do_quirk_handle_waitq -> :102 --
+// but that inner loop only re-issues on QCOM_SCM_INTERRUPTED; what it does NOT
+// do is treat the eventual a0 == 1 as retryable at the OUTER level, which only
+// retries EBUSY (-12). The PAS stages go through qcom_scm_call(..., atomic=false)
+// (P2:306) and therefore land on the outer loop's EBUSY-only rule. So when the
+// monitor leaves a0 == 1, that is where the call ENDS.
+// CONSEQUENCE FOR THIS PORT, stated so nobody "fixes" it later: t0=1 must NOT be
+// retried by adding a loop here. Doing so would depart from the upstream
+// non-atomic semantics and would turn one observed SMC into several, invalidating
+// the ran=/calls= counters that this row's whole evidential value rests on.
 struct ZapSmcBridge {
     unsigned calls;            // how many SMCs this bridge actually made
     uint64_t last_transport;   // smc a0 from the last completed call
@@ -1020,7 +1046,12 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool armed = PE_parse_boot_argn("enchilada-pas-exec",
                                                               &pasExec, sizeof pasExec) &&
                                            pasExec == 1u;
-                        char s7Row[384];
+                        // ROUND 129: 384 -> 512. The row gained avail/av0/x1s and
+                        // the recomputed REACHABLE worst case is 437 bytes, which
+                        // would have truncated. See the note on
+                        // gId1ReplayStage7 for why a truncated row is worse than a
+                        // long one here.
+                        char s7Row[512];
                         struct adreno_zap_pas_region s7region = {};
                         s7region.phys = kAdrenoZapRegionPhys;
                         // ROUND 126 DEFECT FIX: mem_setup's args[2] is a REGION
@@ -1197,7 +1228,69 @@ extern "C" void enchilada_adreno_poll(void) {
                         uint64_t s7p13a0 = 0;
                         uint64_t s7p13a1 = 0;
                         int s7p13v = -1;
+                        // ROUND 129: WAS THE 0/0 REPLY EVEN AN ANSWER?
+                        // A clean p13=0/0 has two readings and until this round
+                        // the row could not tell them apart:
+                        //   (a) 0x02000207 exists and its answer is "not supported"
+                        //   (b) 0x02000207 does not exist, and a monitor that does
+                        //       not implement a function commonly completes with
+                        //       a0=0 leaving a1=0 -- INDISTINGUISHABLE from (a) on
+                        //       the reply alone.
+                        // Linux never faces this because it asks first: P2:788-790
+                        // runs __qcom_scm_is_call_available() BEFORE
+                        // qcom_scm_pas_supported() and returns false without
+                        // calling when the command is absent. This port skipped
+                        // that gate, so round 128's v13=0 was being read as a
+                        // policy answer it might not be.
+                        //
+                        // So the availability query goes FIRST, and its answer is
+                        // folded into v13 by adreno_zap_pas_supported_verdict_avail().
+                        // avail: 1 = command known, 0 = unknown, -1 = query failed.
+                        //
+                        // THE SHAPE IS NOT THE BRIEF'S. The brief said svc=0x01;
+                        // P3:109 says SVC_INFO is 0x06 and P3:84 says 0x01 is
+                        // SVC_BOOT. This tree's own working call agrees with the
+                        // source: ArmCpu.cpp:165 passes 0xC2000601. Asking the
+                        // boot service would answer about a different function and
+                        // look exactly like "PAS_IS_SUPPORTED is missing" -- a
+                        // wrong finding with a plausible shape.
+                        int s7avail = -1;
+                        uint64_t s7availA0 = 0;
+                        uint64_t s7availA1 = 0;
+                        // x1s: WHAT WE SENT IN x1, for the echo test.
+                        // Round 129 also records the arginfo actually placed in x1
+                        // so a later reader can compare it with s0. If s0 == x1s,
+                        // the "secure result" may simply be x1 read back on a
+                        // monitor that did not write a1 -- and for init_image x1s
+                        // is 0x82, which is exactly what round 128 measured. This
+                        // field does NOT change how s0 is read; it only prints the
+                        // sent value beside it.
+                        uint64_t s7x1s = 0;
                         if (s7sym) {
+                            // ---- IS_CALL_AVAILABLE for PAS_IS_SUPPORTED ----
+                            // x0 = base | 0x0601, args[0] = 0x0207 | (SIP << 24).
+                            struct adreno_zap_pas_call s7q = {};
+                            if (adreno_zap_is_call_available_call(s7base, 0x0207u,
+                                                                  &s7q) == 0) {
+                                uint64_t qtransport = 0;
+                                uint64_t qsecure = 0;
+                                const int32_t qrc =
+                                    armcpu_scm_call(s7q.x0, s7q.arginfo,
+                                                    s7q.args0, 0u, 0u,
+                                                    &qtransport, &qsecure);
+                                if (qrc == 0) {
+                                    s7availA0 = qtransport;
+                                    s7availA1 = qsecure;
+                                    (void)adreno_zap_is_call_available_verdict(
+                                        (int)(int32_t)(qtransport & 0xFFFFFFFFu),
+                                        (uint32_t)(qsecure & 0xFFFFFFFFu),
+                                        &s7avail);
+                                }
+                                // qrc != 0: no SMC was made, so nothing was
+                                // learned and avail stays -1 (NOT 0 -- "we did
+                                // not ask" must not look like "it is absent").
+                            }
+                            // ---- then the PAS_IS_SUPPORTED question ----
                             struct adreno_zap_pas_call s7sup = {};
                             if (adreno_zap_pas_is_supported_call(s7base, &s7sup) == 0) {
                                 uint64_t p13transport = 0;
@@ -1206,10 +1299,16 @@ extern "C" void enchilada_adreno_poll(void) {
                                     armcpu_scm_call(s7sup.x0, s7sup.arginfo,
                                                     s7sup.args0, 0u, 0u,
                                                     &p13transport, &p13secure);
+                                // Record the arginfo we SENT, before anything can
+                                // be concluded from what came back.
+                                s7x1s = (uint64_t)s7sup.arginfo;
                                 if (p13rc == 0) {
                                     s7p13a0 = p13transport;
                                     s7p13a1 = p13secure;
-                                    (void)adreno_zap_pas_supported_verdict(
+                                    // NOTE the fold: this is the round-129 form, so
+                                    // a 0/0 reply with avail != 1 yields -1, not 0.
+                                    (void)adreno_zap_pas_supported_verdict_avail(
+                                        s7avail,
                                         (int)(int32_t)(p13transport & 0xFFFFFFFFu),
                                         (uint32_t)(p13secure & 0xFFFFFFFFu),
                                         &s7p13v);
@@ -1269,7 +1368,22 @@ extern "C" void enchilada_adreno_poll(void) {
                                  "mdt_ck=%08x seg_ck=%08x mdt_len=%u "
                                  "x0=%08x/%08x/%08x rc=%d ran=%u calls=%u "
                                  "t0=%llx s0=%llx t1=%llx s1=%llx t2=%llx s2=%llx "
-                                 "p13=%llx/%llx v13=%d t0r=%llx meta=%llx",
+                                 "p13=%llx/%llx v13=%d t0r=%llx meta=%llx "
+                                 // ROUND 129:
+                                 //   avail = 1 the PAS_IS_SUPPORTED command is
+                                 //           KNOWN to exist; 0 it does not;
+                                 //           -1 the query itself did not answer.
+                                 //           Without this, p13=0/0 is ambiguous.
+                                 //   av0   = the availability query's raw a0/a1
+                                 //           (%x each: these are status/verdict
+                                 //           words, not 64-bit payloads).
+                                 //   x1s   = the arginfo WE put in x1. Compare
+                                 //           it with s0: if s0 == x1s the "secure
+                                 //           result" may just be x1 echoed back on
+                                 //           a monitor that never wrote a1. For
+                                 //           init_image x1s is 0x82, which is
+                                 //           exactly what round 128 measured.
+                                 "avail=%d av0=%x/%x x1s=%x",
                                  armed ? (s7sym ? "exec" : "armed-no-symbol")
                                        : "armed-not-executed",
                                  s7why[0] ? s7why : "-",
@@ -1322,7 +1436,27 @@ extern "C" void enchilada_adreno_poll(void) {
                                  // -- with a measurement instead of an argument.
                                  // 0 means no buffer (no bytes, no symbol, or the
                                  // allocator refused), and `why=` names which.
-                                 (unsigned long long)s7metaPhys);
+                                 (unsigned long long)s7metaPhys,
+                                 // ROUND 129: availability of the
+                                 // PAS_IS_SUPPORTED command, then the two raw
+                                 // channels of that query, then the arginfo we
+                                 // sent in x1.
+                                 //
+                                 // READ THEM IN THIS ORDER:
+                                 //   avail=0  -> the command does not exist, so
+                                 //               v13 MUST be -1 (inconclusive)
+                                 //               whatever p13 said. Round 128's
+                                 //               v13=0 could not make this
+                                 //               distinction.
+                                 //   avail=1  -> the command exists, so
+                                 //               p13=0/0 -> v13=0 is a REAL
+                                 //               "PAS 13 not supported".
+                                 //   avail=-1 -> the query itself failed; also
+                                 //               inconclusive, and NOT "absent".
+                                 //   s0 vs x1s -> if equal, suspect echo.
+                                 s7avail,
+                                 (unsigned)s7availA0, (unsigned)s7availA1,
+                                 (unsigned)s7x1s);
                         IOLog("enchilada-adreno: %s\n", s7Row);
                         // ROUND 126: its own buffer, not the stage-6 one.
                         setStage7Replay(s7Row);

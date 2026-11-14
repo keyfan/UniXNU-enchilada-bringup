@@ -604,6 +604,74 @@ static void testPasExecute()
     CHECK(supported == -1);
     CHECK(adreno_zap_pas_supported_verdict(0, 1u, nullptr) == 1);
 
+    // ============ ROUND 129: IS_CALL_AVAILABLE + the v13 fold ==============
+    // THE CALL SHAPE. svc is 0x06 (SVC_INFO, P3:109) -- NOT 0x01, which is
+    // SVC_BOOT (P3:84). This tree's own ArmCpu.cpp:165 already passes
+    // 0xC2000601 for this very query, so a 0x01 here would be a different
+    // question entirely.
+    CHECK(kAdrenoZapScmSvcInfo == 0x06u);
+    CHECK(kAdrenoZapScmInfoIsCallAvail == 0x01u);
+    struct adreno_zap_pas_call avail;
+    CHECK(adreno_zap_is_call_available_call(base, 0x0207u, &avail) == 0);
+    CHECK(avail.svc == 0x06u);
+    CHECK(avail.cmd == 0x01u);
+    CHECK(avail.fnid == 0x0601u);          // FNID(0x06,0x01), NOT 0x0106
+    CHECK(avail.x0 == (base | 0x0601u));
+    CHECK(avail.x0 == 0xC2000601u);        // == what ArmCpu.cpp:165 sends
+    CHECK(avail.arginfo == 0x01u);         // ARGS(1)
+    CHECK(avail.arg_count == 1u);
+    CHECK(avail.owner == kAdrenoZapScmOwnerSip);
+    // P2:355-356 the OWNER rides in args[0] HERE, unlike the PAS stages where
+    // it rides in x0's base. 0x0207 | (2 << 24) == 0x02000207.
+    CHECK(avail.args0 == 0x02000207u);
+    CHECK(avail.stage >= kAdrenoZapPasStageCount);   // not an ordered stage
+    CHECK(avail.required == 0);
+    CHECK(avail.is_metadata_call == 0);
+    CHECK(avail.carries_size_arg == 0);
+    // Refusals.
+    CHECK(adreno_zap_is_call_available_call(0xC1000000u, 0x0207u, &avail) == 1);
+    CHECK(adreno_zap_is_call_available_call(base, 0x0207u, nullptr) == 1);
+    CHECK(adreno_zap_is_call_available_call(base, 0x10207u, &avail) == 1);  // >16 bits
+
+    // ---- the verdict, with the OPPOSITE polarity to PAS_IS_SUPPORTED ----
+    // Non-zero a1 means KNOWN. Getting this backwards would invert the whole
+    // round's conclusion, so it is asserted from both sides.
+    int known = 7;
+    CHECK(adreno_zap_is_call_available_verdict(0, 1u, &known) == 0);
+    CHECK(known == 1);                       // available
+    CHECK(adreno_zap_is_call_available_verdict(0, 0u, &known) == 0);
+    CHECK(known == 0);                       // NOT available
+    CHECK(adreno_zap_is_call_available_verdict(0, 0xDEADu, &known) == 0);
+    CHECK(known == 1);                       // any non-zero is KNOWN, not just 1
+    CHECK(adreno_zap_is_call_available_verdict(-1, 1u, &known) == 0);
+    CHECK(known == -1);                      // query failed: no answer learned
+    CHECK(adreno_zap_is_call_available_verdict(0, 1u, nullptr) == 1);
+
+    // ---- THE FOLD: the round-129 property ----
+    // Same 0/0 reply, different meaning depending on whether the command exists.
+    CHECK(adreno_zap_pas_supported_verdict_avail(1, 0, 0u, &supported) == 0);
+    CHECK(supported == 0);        // command KNOWN + a1==0 -> a REAL "not supported"
+    CHECK(adreno_zap_pas_supported_verdict_avail(1, 0, 1u, &supported) == 0);
+    CHECK(supported == 1);        // KNOWN + a1==1 -> supported
+    // The decisive one: the SAME reply must NOT become a policy answer when the
+    // command was never known to exist. Round 128 could not distinguish these.
+    CHECK(adreno_zap_pas_supported_verdict_avail(0, 0, 0u, &supported) == 0);
+    CHECK(supported == -1);       // UNKNOWN + a1==0 -> INCONCLUSIVE, not 0
+    CHECK(adreno_zap_pas_supported_verdict_avail(-1, 0, 0u, &supported) == 0);
+    CHECK(supported == -1);       // inconclusive availability -> also -1
+    // A positive answer needs no availability support: a monitor that says
+    // "supported" has plainly implemented the command.
+    CHECK(adreno_zap_pas_supported_verdict_avail(0, 0, 1u, &supported) == 0);
+    CHECK(supported == 1);
+    // A failed transport stays -1 whatever the availability said.
+    CHECK(adreno_zap_pas_supported_verdict_avail(1, -1, 0u, &supported) == 0);
+    CHECK(supported == -1);
+    CHECK(adreno_zap_pas_supported_verdict_avail(1, 0, 1u, nullptr) == 1);
+    // And the two-argument form still behaves exactly as round 126 left it, so
+    // the fold is an ADDITION, not a redefinition.
+    CHECK(adreno_zap_pas_supported_verdict(0, 0u, &supported) == 0);
+    CHECK(supported == 0);
+
     // THE TRAP ASSERTED DIRECTLY: judging this call on a0 alone reports
     // "unsupported" for every successful probe. a1==1 must never yield 0.
     supported = 0;
