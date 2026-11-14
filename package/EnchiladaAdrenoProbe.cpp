@@ -123,10 +123,26 @@ extern "C" {
 #if defined(__has_include)
 #  if __has_include("AdrenoZapBlobV1.h")
 #    include "AdrenoZapBlobV1.h"
-#  else
-#    define ADRENO_ZAP_BLOB_V1_H
 #  endif
 #endif
+// ROUND 113: the `#else` + `#define ADRENO_ZAP_BLOB_V1_H` that used to sit in
+// the block above is GONE and must not come back. It read like a "this branch
+// is handled" marker, but ADRENO_ZAP_BLOB_V1_H is precisely the sentinel that
+// the #ifndef below tests -- so defining it there told the fallback "a real
+// header was included, do not supply the stubs" at the exact moment none had
+// been. The result was CI #247: on any host without the generated header (every
+// CI host, and any local tree that never ran generate-zap-blob.py) the fallback
+// was skipped and the probe failed with 7 undeclared identifiers.
+//
+// What this guard deliberately does NOT do: it does not turn the absence into a
+// non-event by generating something. The absence is a REAL build condition -- it
+// is the condition CI is in -- and the fallback exists to make that condition
+// compile HONESTLY (present=0, "blob=absent"), not to hide it. So do not "fix" a
+// future red build by running generate-zap-blob.py before CI: that manufactures
+// the file, the fallback is never exercised, and this exact class of bug becomes
+// invisible again. The regression gate in scripts/check-enchilada-adreno-probe.py
+// compiles the probe against an include dir that PROVABLY lacks the header, which
+// is what keeps this path honest.
 #ifndef ADRENO_ZAP_BLOB_V1_H
 // No generated header on this host: declare the absent-stub shape. Present is 0
 // so every consumer below refuses, and the log line says "blob=absent".
@@ -135,10 +151,22 @@ extern "C" {
 #define kAdrenoZapSegBytes 0
 #define kAdrenoZapRegionPhys 0x8C415000u
 #define kAdrenoZapRegionBytes 0x2000u
-static const char kAdrenoZapMdtSha256[] = "absent";
-static const char kAdrenoZapSegSha256[] = "absent";
-static const unsigned char adreno_zap_mdt[1] = {0};
-static const unsigned char adreno_zap_seg[1] = {0};
+// ROUND 113: __attribute__((unused)) is not cosmetic here. The probe consumes
+// only the MACROS below (kAdrenoZapBlobPresent / kAdrenoZapSegBytes / the region
+// constants); these four data placeholders exist so the fallback has the same
+// SHAPE as the generated header, and nothing in this translation unit reads
+// them. Both real builders compile with -Werror
+// (build-enchilada-adreno.py:35, check-enchilada-adreno-probe.py:30), so
+// without the attribute this branch fails as -Wunused-const-variable -- a second,
+// independent reason CI #247 was red even after the sentinel bug was fixed.
+// The generated header does NOT need this because clang suppresses
+// unused-const-variable for declarations that arrive through an #include; a
+// fallback written inline in the .cpp gets no such treatment.
+#define ADRENO_ZAP_UNUSED __attribute__((unused))
+static const char kAdrenoZapMdtSha256[] ADRENO_ZAP_UNUSED = "absent";
+static const char kAdrenoZapSegSha256[] ADRENO_ZAP_UNUSED = "absent";
+static const unsigned char adreno_zap_mdt[1] ADRENO_ZAP_UNUSED = {0};
+static const unsigned char adreno_zap_seg[1] ADRENO_ZAP_UNUSED = {0};
 #endif
 #include "AdrenoZapAuthV1.h"
 #include "AdrenoMdtV1.h"

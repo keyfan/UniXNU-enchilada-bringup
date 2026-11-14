@@ -15,6 +15,7 @@ point -- the stub must not silently widen.
 import argparse
 import json
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
@@ -95,6 +96,50 @@ def main():
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     (out / 'EnchiladaAdrenoProbe.log').write_text(r.stdout)
     check(r.returncode == 0, f'EnchiladaAdrenoProbe.cpp strict C++17 arm64 ({r.returncode})')
+
+    # ---- ROUND 113 REGRESSION GATE: the probe MUST build WITHOUT the blob ----
+    # CI #247 was red because this file only compiled on a host that already had
+    # AdrenoZapBlobV1.h. The #else branch defined the same sentinel the #ifndef
+    # tested, so the fallback was skipped exactly when it was needed and the
+    # build died on 7 undeclared identifiers. That is the classic "green here,
+    # red there" shape: the header happens to exist on a developer box (the
+    # generator ran) and NEVER exists on CI (no extraction), so the broken path
+    # was the one nobody exercised locally.
+    #
+    # This gate closes that hole by compiling against an include directory built
+    # to PROVABLY lack the header -- it does not depend on whether this host
+    # happens to have one. -fsyntax-only is enough: the failure mode is a
+    # preprocessing/name-resolution error, not a codegen one.
+    #
+    # The flags mirror the real builders, -Werror included. That matters: the
+    # fallback's four unused static placeholders are a SECOND failure mode under
+    # -Werror that a lenient syntax check would miss entirely.
+    #
+    # DO NOT "fix" a future red build by running scripts/generate-zap-blob.py
+    # before CI. That would manufacture the header, this gate would test the
+    # WRONG branch, and the absent-header path would go back to being unbuilt
+    # and unverified everywhere. The absence is a real condition -- it is the
+    # condition CI is in -- and it is the thing being protected here.
+    iso = out / 'no-blob-include'
+    iso.mkdir(parents=True, exist_ok=True)
+    for stale in iso.glob('*.h'):
+        stale.unlink()
+    blob_name = 'AdrenoZapBlobV1.h'
+    for header in GPU.glob('*.h'):
+        if header.name != blob_name:
+            shutil.copy2(header, iso / header.name)
+    check(not (iso / blob_name).exists(),
+          f'R113 the isolated include dir provably lacks {blob_name}')
+    r2 = subprocess.run([args.cxx, '-target', 'arm64-apple-macos11', *STRICT_CXX,
+                         '-fsyntax-only', '-I', str(iso), '-I', str(STUB),
+                         str(shim)],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    (out / 'EnchiladaAdrenoProbe.noblob.log').write_text(r2.stdout)
+    _tail = ' | '.join(r2.stdout.strip().splitlines()[:3]) if r2.returncode else ''
+    check(r2.returncode == 0,
+          f'R113 the probe compiles WITHOUT {blob_name} (the CI condition) '
+          f'({r2.returncode}){(" :: " + _tail) if _tail else ""}')
+
     if r.returncode == 0:
         ok, detail = macho_ok(obj)
         check(ok, f'EnchiladaAdrenoProbe.o is an arm64 Mach-O object ({detail})')
