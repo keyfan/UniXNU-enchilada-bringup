@@ -360,6 +360,51 @@ int zapBridgeCall(void *cookie, uint32_t fn, uint32_t arginfo, uint32_t args0,
 // already bounds against GPUCC_SIZE / REG_STRIDE.
 uint32_t rd32(uintptr_t va, uint32_t off) {return *reinterpret_cast<volatile uint32_t *>(va + off);}
 
+// ---- ROUND 120: fold the embedded firmware through a CHECKSUM ---------------
+// WHY THIS EXISTS. Until this round the two generated arrays were DECLARED and
+// never READ: the probe consumed only the kAdrenoZap* macros, so clang treated
+// the arrays as dead data and dropped them. A REAL opt-in header (56906 B of
+// bytes) therefore produced a 15040-byte object with no adreno_zap_mdt /
+// adreno_zap_seg symbol in it at all -- the firmware never reached the image,
+// and PAS could never have worked no matter what the contract layer did.
+//
+// Recording the header's SHA256 string would NOT have fixed that: it puts the
+// DIGEST in the image, not the BYTES, and PAS needs the bytes (they get written
+// into gpu_region). So this walks both arrays byte by byte instead.
+//
+// THREE REASONS this is the right shape, not a coverage stunt:
+//   1. It FORCES the whole array into the image. A byte-at-a-time read through
+//      a loop the compiler cannot fold means the data has to be emitted.
+//   2. It is a genuinely useful integrity check: before issuing PAS, the bytes
+//      about to be handed to the secure world are summarised, so a mismatch
+//      against the pinned sha256 becomes visible instead of mysterious.
+//   3. It runs on the NON-EXECUTING path. The row below prints whether or not
+//      `enchilada-pas-exec` is set, so "are the bytes in the image?" is
+//      answerable without arming a secure-world call -- the two questions are
+//      decoupled.
+//
+// FNV-1a, 32-bit: freestanding, no libc, no table, cheap enough to run during a
+// boot poll. It is NOT a cryptographic digest and is not treated as one; the
+// authoritative provenance is still the pinned sha256 string.
+//
+// READ-ONLY BY CONSTRUCTION: the loop only loads from the arrays. No pointer is
+// ever stored through, which is what keeps stage-4/5's no-store assertions
+// meaningful rather than something this function had to be excused from.
+//
+// EMPTY CASE IS SAFE BY ARITHMETIC: with kAdrenoZapBlobPresent == 0 the lengths
+// are 0, so each loop body never executes and both sums stay at the FNV offset
+// basis. There is no special case and nothing to get wrong.
+uint32_t zapFnv1a(const unsigned char *data, uint32_t bytes)
+{
+    uint32_t h = 2166136261u;           // FNV-1a 32-bit offset basis
+    uint32_t i;
+    for (i = 0; i < bytes; ++i) {
+        h ^= static_cast<uint32_t>(data[i]);
+        h *= 16777619u;                 // FNV-1a 32-bit prime
+    }
+    return h;
+}
+
 // Round 95 stage 5 delay primitive. The GDSC plan genuinely waits between a
 // collapse-clear write and the status poll that observes it, and freestanding C
 // has no delay of its own -- AdrenoGpuccWindowV1 refuses to hand back an MMIO
@@ -969,9 +1014,23 @@ extern "C" void enchilada_adreno_poll(void) {
                         //   t<j>= transport status (smc a0) for stage j
                         //   s<j>= secure result[0] (smc a1) for stage j
                         // and `sym=` says whether the exported symbol existed.
+                        //
+                        // ROUND 120: mdt_ck / seg_ck are computed HERE and are
+                        // printed UNCONDITIONALLY -- on the not-armed path too.
+                        // That is the whole point: "did the firmware bytes reach
+                        // the image?" must be answerable without setting
+                        // enchilada-pas-exec=1, so the two questions stay
+                        // decoupled. With no bytes both lengths are 0 and both
+                        // sums are the FNV offset basis (0x811c9dc5) -- a fixed,
+                        // recognisable empty value rather than a misleading 0.
+                        const uint32_t s7mdtCk = zapFnv1a(adreno_zap_mdt,
+                                                          (uint32_t)kAdrenoZapMdtBytes);
+                        const uint32_t s7segCk = zapFnv1a(adreno_zap_seg,
+                                                          (uint32_t)kAdrenoZapSegBytes);
                         snprintf(s7Row, sizeof s7Row,
                                  "stage7=%s why=%s armed=%d exec_key=%d sym=%d "
                                  "blob=%s seg=%u region=%llx+%x stages=%u seq_ok=%d "
+                                 "mdt_ck=%08x seg_ck=%08x mdt_len=%u "
                                  "x0=%08x/%08x/%08x rc=%d ran=%u calls=%u "
                                  "t0=%llx s0=%llx t1=%llx s1=%llx t2=%llx s2=%llx",
                                  armed ? (s7sym ? "exec" : "armed-no-symbol")
@@ -983,6 +1042,8 @@ extern "C" void enchilada_adreno_poll(void) {
                                  (unsigned long long)kAdrenoZapRegionPhys,
                                  (unsigned)kAdrenoZapRegionBytes,
                                  (unsigned)s7n, s7seqOk,
+                                 (unsigned)s7mdtCk, (unsigned)s7segCk,
+                                 (unsigned)kAdrenoZapMdtBytes,
                                  s7seqOk ? (unsigned)s7seq[0].x0 : 0u,
                                  s7seqOk ? (unsigned)s7seq[1].x0 : 0u,
                                  s7seqOk ? (unsigned)s7seq[2].x0 : 0u,

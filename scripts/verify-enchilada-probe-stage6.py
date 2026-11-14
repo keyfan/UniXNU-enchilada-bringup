@@ -365,6 +365,79 @@ def main():
         check('armcpu_scm_call(' in _body,
               'R111 zapBridgeCall reaches the SMC export (its one hardware effect)')
 
+    # ==== ROUND 120: the firmware bytes must actually reach the image =======
+    # Until this round the two generated arrays were declared and never read, so
+    # clang dropped them: a REAL opt-in header produced a 15040-byte object with
+    # no adreno_zap_mdt / adreno_zap_seg symbol in it at all. Recording the
+    # header's sha256 STRING would not have been enough -- that puts the digest
+    # in the image, not the bytes, and PAS needs the bytes.
+    #
+    # The fix is a byte-at-a-time checksum. The assertions below pin the three
+    # properties that make it work, and each is independently breakable:
+    #   * the row CARRIES the two fields (so the result is observable);
+    #   * the checksum reads through a LOOP over both arrays (so the whole
+    #     array is referenced, not just element 0);
+    #   * the loop is READ-ONLY (so stage-4/5's no-store rule still holds).
+    check('mdt_ck=%08x' in code and 'seg_ck=%08x' in code,
+          'R120 the stage-7 row carries mdt_ck and seg_ck')
+    check('uint32_t zapFnv1a(' in code,
+          'R120 a checksum helper exists')
+    # The calls must pass BOTH arrays AND their real lengths -- passing 0, or a
+    # literal, would leave the array unreferenced and the bytes dropped again.
+    check('zapFnv1a(adreno_zap_mdt' in code and 'zapFnv1a(adreno_zap_seg' in code,
+          'R120 both firmware arrays are passed to the checksum')
+    check('kAdrenoZapMdtBytes' in code and 'kAdrenoZapSegBytes' in code,
+          'R120 the lengths come from the header defines, not a literal')
+    _fn_at = code.find('uint32_t zapFnv1a(')
+    check(_fn_at > 0, 'R120 the checksum function is locatable')
+    if _fn_at > 0:
+        _open = code.find('{', _fn_at)
+        _close = code.find('\n}', _open)
+        _fn = code[_open:_close] if (_open > 0 and _close > _open) else ''
+        # A loop over the byte count is what forces the WHOLE array in.
+        check(re.search(r'for\s*\(', _fn) is not None,
+              'R120 the checksum LOOPS (a straight-line read of one byte would '
+              'let the rest be dropped)')
+        # The bound must be the LENGTH PARAMETER, not a literal. `for (i = 0;
+        # i < 1; ++i) data[0]` is still a loop and still indexes "through data",
+        # so the two checks above would both pass while only one byte was read --
+        # which is exactly the regression this must catch. Demand the loop's
+        # condition compare against `bytes`.
+        check(re.search(r'for\s*\([^;]*;\s*\w+\s*<\s*bytes\s*;', _fn) is not None,
+              'R120 the loop bound is the LENGTH PARAMETER bytes, not a literal '
+              '(a bounded 1-iteration loop reads one byte and drops the rest)')
+        # And the indexed expression must use the loop variable, not a constant
+        # subscript -- `data[0]` inside a bytes-long loop is the same bug.
+        check(re.search(r'\bdata\s*\[\s*\w+\s*\]', _fn) is not None,
+              'R120 the loop indexes data by a VARIABLE (data[i]), not data[0]')
+        check(re.search(r'\bdata\s*\[\s*0\s*\]', _fn) is None,
+              'R120 the checksum never hard-codes data[0]')
+        # READ-ONLY: the generic store scan must not have been taught an
+        # exception, and the helper must not write through anything.
+        _store_re = re.compile(r'(?<![\w\)\]\*])\*\s*[A-Za-z_]\w*(?:\[[^\]]*\])?\s*=(?!=)')
+        _hits = []
+        for _m in _store_re.finditer(_fn):
+            _pre = _fn[max(0, _m.start() - 40):_m.start()]
+            if re.search(r'(?:const\s+)?[A-Za-z_][\w:<>]*\s+$', _pre):
+                continue
+            _hits.append(_m.group(0))
+        check(not _hits,
+              'R120 the checksum performs no pointer store (hits=%r)' % _hits[:3])
+        for _bad in ('volatile', 'reinterpret_cast', 'wr32', 'write32', 'mmio'):
+            check(_bad not in _fn, 'R120 the checksum contains no %r' % _bad)
+
+    # The empty case is arithmetic, not a special case: present=0 means the
+    # lengths are 0, so neither loop body runs. Pin the two defines so a future
+    # header cannot make "absent" carry a nonzero length.
+    check('#define kAdrenoZapMdtBytes 0' in code and '#define kAdrenoZapSegBytes 0' in code,
+          'R120 the no-header fallback declares both lengths 0')
+
+    # NOTE FOR WHOEVER READS THE ROW: the payload word is `blob=embedded` /
+    # `blob=absent`. Round 119's task text said `blob=present`; that was a typo
+    # in the brief, not the code, and the code was NOT changed to match it.
+    check('kAdrenoZapBlobPresent ? "embedded" : "absent"' in code,
+          'R120 the blob word is embedded/absent (NOT "present")')
+
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))
