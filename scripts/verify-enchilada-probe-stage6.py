@@ -630,9 +630,79 @@ def main():
     check('avail=%d av0=%x/%x x1s=%x' in code,
           'R129 the row carries avail=, av0= and x1s=')
     check('(unsigned)s7x1s' in code,
-          'R129 x1s= prints the arginfo actually sent in x1')
-    check('s7x1s = (uint64_t)s7sup.arginfo;' in code,
-          'R129 x1s is captured FROM the call record, not hard-coded')
+          'R129 x1s= prints an arginfo actually sent in x1')
+
+    # ==== ROUND 131: x1s must come from STAGE 0, not from the p13 probe ====
+    # THE DEFECT (round 130 found it by reading a device row that said x1s=1):
+    # the assignment was `s7x1s = (uint64_t)s7sup.arginfo;` -- s7sup is the
+    # PAS_IS_SUPPORTED record, whose arginfo is 0x01 -- while the comment beside
+    # it claimed 0x82. x1s exists to test whether s0 is the secure world's a1 or
+    # our own x1 echoed back; that only works when x1s and s0 come from the SAME
+    # call, and s0 is stage 0's secure_result.
+    check('s7x1s = (uint64_t)s7sup.arginfo;' not in code,
+          'R131 x1s is NOT taken from the PAS_IS_SUPPORTED probe (the r130 bug)')
+    check('s7x1s = (uint64_t)s7rep.stage[kAdrenoZapPasStageInitImage].arginfo;' in code,
+          'R131 x1s is taken from the STAGE 0 record (init_image)')
+    # It must be a READ-BACK, not the constant. `s7x1s = 0x82;` or
+    # `s7x1s = kAdrenoZapArgInfoInitImage;` would agree by construction and
+    # stop being evidence that the plan really sent that value.
+    check(re.search(r's7x1s\s*=\s*0x82', code) is None,
+          'R131 x1s is not the literal 0x82')
+    check(re.search(r's7x1s\s*=\s*\(uint64_t\)\s*kAdrenoZapArgInfoInitImage', code) is None,
+          'R131 x1s is not the header constant assigned directly')
+    # The cross-check against the constant, and its observable field.
+    check('s7x1s == (uint64_t)kAdrenoZapArgInfoInitImage' in code,
+          'R131 x1s is CROSS-CHECKED against the contract constant')
+    check('ct=%s x1ok=%d' in code,
+          'R131 the row carries ct= and x1ok=')
+    check('s7ct, s7x1Ok' in code, 'R131 both new fields are passed to snprintf')
+    # The capture must happen AFTER the chain ran, i.e. after the execute call,
+    # otherwise stage 0 has not been recorded yet and the field would read 0.
+    _cap = code.find('s7x1s = (uint64_t)s7rep.stage[kAdrenoZapPasStageInitImage].arginfo;')
+    _exec = code.find('adreno_zap_pas_execute(&s7tr')
+    check(_cap > _exec > 0,
+          'R131 the stage-0 capture runs AFTER adreno_zap_pas_execute')
+
+    # ==== ROUND 131: the SMCCC call type, selected by the pas-exec VALUE ====
+    # pas-exec=1 keeps FAST_CALL byte-for-byte (all the r127/r129 device evidence
+    # was taken with it); pas-exec=2 clears bit31 to match upstream's STD_CALL.
+    # A NEW boot arg was not possible: the command line is asserted at <=1000
+    # bytes and currently measures 991, so `enchilada-pas-calltype=std` (27 B)
+    # would overflow. Re-using the existing key costs zero bytes.
+    check('pasExec == 1u || pasExec == 2u' in code,
+          'R131 pas-exec admits BOTH 1 (fast) and 2 (std)')
+    check('const bool stdCall = execKey && pasExec == 2u;' in code,
+          'R131 STD is selected by value 2, and only by 2')
+    check('adreno_zap_smc_base_with_call_type(s7fastBase, 0,' in code,
+          'R131 the STD base is built through the gate-checked contract helper')
+    check('const uint32_t s7fastBase = adreno_zap_smc_base_derived();' in code,
+          'R131 the FAST base is still the derived one')
+    # The recast must be a GENERAL case, not applied unconditionally: pas-exec=1
+    # has to hand the sequence builder the exact same base as before.
+    _recast = code[code.find('if (stdCall) {'):]
+    _recast = _recast[:_recast.find('}')]
+    check('s7base = recast;' in _recast,
+          'R131 the recast replaces s7base ONLY inside the stdCall branch')
+    check('s7base = recast;' not in code.replace(_recast, '') if _recast else False,
+          'R131 there is no unconditional recast of s7base')
+    # The helper must exist in the contract layer with the documented shape, and
+    # must move EXACTLY bit31 (owner at 24..29 and SMC_64 at 30 survive).
+    _authc = (DEV / 'drivers/NativeAdreno/AdrenoZapAuthV1.c').read_text(encoding='utf-8', errors='replace')
+    _authh = (DEV / 'drivers/NativeAdreno/AdrenoZapAuthV1.h').read_text(encoding='utf-8', errors='replace')
+    check('int adreno_zap_smc_call_type(uint32_t base);' in _authh,
+          'R131 the contract declares the call-type reader')
+    check('int adreno_zap_smc_base_with_call_type(uint32_t base, int fast, uint32_t *out);' in _authh,
+          'R131 the contract declares the recast helper')
+    check('(base | kAdrenoZapSmcFastCall)' in _authc and
+          '(base & ~kAdrenoZapSmcFastCall)' in _authc,
+          'R131 the recast sets/clears bit31 and nothing else')
+    check('(std_base ^ base) != kAdrenoZapSmcFastCall' in _authc,
+          'R131 the self-check asserts the flip is EXACTLY one bit')
+    # The row reports the type read back from the base actually used.
+    check('adreno_zap_smc_call_type(s7base) == 0' in code,
+          'R131 ct= is derived from s7base (evidence), not echoed from stdCall')
+
+    # ---- the observable field ------------------------------------------
     # s0 must still be the real smc a1: x1s is a COMPARISON field, not a
     # replacement. If someone "fixed" the echo by overwriting s0, this fails.
     check('s7rep.stage[0].secure_result' in code,

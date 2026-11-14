@@ -405,7 +405,14 @@ kernel_args = [
   # probe. Removing this line returns the port to the read-only posture without touching
   # any code. It costs 21 bytes of the 1000-byte command line (970 used, 30 free, so
   # 991 after this - it fits, but there is no room left for anything else).
-  "enchilada-pas-exec=1",
+  # ROUND 132, THE VALUE IS THE EXPERIMENT. 1 = FAST_CALL (what rounds 127-130
+  # actually sent); 2 = STD_CALL, which is what upstream qcom_scm_call() uses for
+  # the three PAS calls because it passes atomic=false, and qcom_scm-smc.c picks
+  # FAST_CALL only when atomic. The word therefore changes from 0xC2000201 to
+  # 0x42000201, bit 31 cleared and nothing else. This costs ZERO extra command-line
+  # bytes: only the digit changes, so the 991/1000 budget is untouched. Flip back
+  # to 1 to return to the FAST_CALL behaviour of rounds 127-130.
+  "enchilada-pas-exec=2",
   "-no_slto_panic",
   "native-ufs-root=1",
   

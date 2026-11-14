@@ -1043,9 +1043,35 @@ extern "C" void enchilada_adreno_poll(void) {
                     // the ATTEMPT, the missing export gates the CALL.
                     {
                         unsigned pasExec = 0;
-                        const bool armed = PE_parse_boot_argn("enchilada-pas-exec",
-                                                              &pasExec, sizeof pasExec) &&
-                                           pasExec == 1u;
+                        const bool execKey = PE_parse_boot_argn("enchilada-pas-exec",
+                                                                &pasExec, sizeof pasExec);
+                        // ================= ROUND 131: pas-exec=2 =================
+                        // THE SECOND KEY'S VALUE NOW SELECTS THE SMCCC CALL TYPE.
+                        //
+                        //   absent   -> not armed, print the plan, issue nothing
+                        //   1        -> armed, FAST_CALL (bit31 set)  == unchanged
+                        //   2        -> armed, STD_CALL  (bit31 clear) == the new probe
+                        //   anything else -> not armed (refuse rather than guess)
+                        //
+                        // WHY THE VALUE AND NOT A NEW BOOT ARG. The merged kernel
+                        // command line is 991 bytes of a 1000-byte budget -- 9 bytes
+                        // left. `enchilada-pas-calltype=std` is 27 bytes and would
+                        // overflow it; even a terse `pas-std=1` needs 11 counting the
+                        // separator, which is still over. Re-using this key costs
+                        // ZERO bytes because `enchilada-pas-exec=1` and
+                        // `enchilada-pas-exec=2` are the same length, so the one
+                        // board.toml character that changes is the digit. The
+                        // 1000-byte budget is asserted by
+                        // verify-enchilada-probe-stage6.py:119.
+                        //
+                        // WHY `=1` MUST KEEP ITS EXACT MEANING. Round 127/129 device
+                        // evidence (x0=c2000201..., avail=1) was produced with
+                        // FAST_CALL. Reinterpreting `=1` would silently invalidate
+                        // the comparison against it, so `=1` stays byte-for-byte the
+                        // same call and only `=2` is new. The row reports which was
+                        // used (`ct=`), so the two runs can never be confused.
+                        const bool stdCall = execKey && pasExec == 2u;
+                        const bool armed = execKey && (pasExec == 1u || pasExec == 2u);
                         // ROUND 129: 384 -> 512. The row gained avail/av0/x1s and
                         // the recomputed REACHABLE worst case is 437 bytes, which
                         // would have truncated. See the note on
@@ -1183,7 +1209,28 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool s7metaOk = s7metaPhys != 0 && s7metaWhy[0] == 0;
 
                         struct adreno_zap_pas_report s7rep = {};
-                        const uint32_t s7base = adreno_zap_smc_base_derived();
+                        // ROUND 131: the base the PAS stages will actually use.
+                        // With pas-exec=1 it is the derived FAST_CALL base,
+                        // byte-for-byte what rounds 127-130 sent. With pas-exec=2
+                        // bit31 is cleared (STD_CALL), which is the shape upstream
+                        // qcom_scm_call() produces. The recast goes through the
+                        // contract helper so owner and SMC_64 cannot be disturbed;
+                        // if the helper ever refuses, the base falls back to the
+                        // derived one and `ct=` still reports which was used.
+                        const uint32_t s7fastBase = adreno_zap_smc_base_derived();
+                        uint32_t s7base = s7fastBase;
+                        if (stdCall) {
+                            uint32_t recast = 0u;
+                            if (adreno_zap_smc_base_with_call_type(s7fastBase, 0,
+                                                                   &recast) == 0) {
+                                s7base = recast;
+                            }
+                        }
+                        // What the row reports. Read BACK from s7base rather than
+                        // echoed from stdCall, so the field is evidence about the
+                        // value actually handed to the sequence builder.
+                        const char *s7ct =
+                            (adreno_zap_smc_call_type(s7base) == 0) ? "std" : "fast";
                         struct adreno_zap_pas_call s7seq[kAdrenoZapPasStageCount] = {};
                         uint32_t s7n = 0;
                         const int s7seqOk =
@@ -1258,14 +1305,23 @@ extern "C" void enchilada_adreno_poll(void) {
                         uint64_t s7availA0 = 0;
                         uint64_t s7availA1 = 0;
                         // x1s: WHAT WE SENT IN x1, for the echo test.
-                        // Round 129 also records the arginfo actually placed in x1
-                        // so a later reader can compare it with s0. If s0 == x1s,
-                        // the "secure result" may simply be x1 read back on a
-                        // monitor that did not write a1 -- and for init_image x1s
-                        // is 0x82, which is exactly what round 128 measured. This
-                        // field does NOT change how s0 is read; it only prints the
-                        // sent value beside it.
+                        // Round 129 added x1s so a later reader can compare it
+                        // with s0: if s0 == x1s, the "secure result" may simply be
+                        // x1 read back on a monitor that did not write a1.
+                        //
+                        // ROUND 131 CORRECTION: through round 130 the ASSIGNMENT
+                        // was taken from the PAS_IS_SUPPORTED probe (0x01) while
+                        // this very comment claimed "for init_image x1s is 0x82",
+                        // so the row printed x1s=1 and the comparison against
+                        // s0=0x82 tested nothing. The assignment now happens after
+                        // the PAS chain, from s7rep.stage[0] -- see the note there.
                         uint64_t s7x1s = 0;
+                        // ROUND 131: 1 when s7x1s equals the contract's pinned
+                        // init_image arginfo. Printed so a drifted plan is visible
+                        // in the row instead of silently making the echo test
+                        // meaningless. Starts at 0 ("no stage-0 x1 was captured",
+                        // which is the correct reading when the chain never ran).
+                        int s7x1Ok = 0;
                         if (s7sym) {
                             // ---- IS_CALL_AVAILABLE for PAS_IS_SUPPORTED ----
                             // x0 = base | 0x0601, args[0] = 0x0207 | (SIP << 24).
@@ -1290,34 +1346,31 @@ extern "C" void enchilada_adreno_poll(void) {
                                 // learned and avail stays -1 (NOT 0 -- "we did
                                 // not ask" must not look like "it is absent").
                             }
-                            // ---- then the PAS_IS_SUPPORTED question ----
-                            struct adreno_zap_pas_call s7sup = {};
-                            if (adreno_zap_pas_is_supported_call(s7base, &s7sup) == 0) {
-                                uint64_t p13transport = 0;
-                                uint64_t p13secure = 0;
-                                const int32_t p13rc =
-                                    armcpu_scm_call(s7sup.x0, s7sup.arginfo,
-                                                    s7sup.args0, 0u, 0u,
-                                                    &p13transport, &p13secure);
-                                // Record the arginfo we SENT, before anything can
-                                // be concluded from what came back.
-                                s7x1s = (uint64_t)s7sup.arginfo;
-                                if (p13rc == 0) {
-                                    s7p13a0 = p13transport;
-                                    s7p13a1 = p13secure;
-                                    // NOTE the fold: this is the round-129 form, so
-                                    // a 0/0 reply with avail != 1 yields -1, not 0.
-                                    (void)adreno_zap_pas_supported_verdict_avail(
-                                        s7avail,
-                                        (int)(int32_t)(p13transport & 0xFFFFFFFFu),
-                                        (uint32_t)(p13secure & 0xFFFFFFFFu),
-                                        &s7p13v);
+                                // ---- then the PAS_IS_SUPPORTED question ----
+                                struct adreno_zap_pas_call s7sup = {};
+                                if (adreno_zap_pas_is_supported_call(s7base, &s7sup) == 0) {
+                                    uint64_t p13transport = 0;
+                                    uint64_t p13secure = 0;
+                                    const int32_t p13rc =
+                                        armcpu_scm_call(s7sup.x0, s7sup.arginfo,
+                                                        s7sup.args0, 0u, 0u,
+                                                        &p13transport, &p13secure);
+                                    if (p13rc == 0) {
+                                        s7p13a0 = p13transport;
+                                        s7p13a1 = p13secure;
+                                        // NOTE the fold: this is the round-129 form, so
+                                        // a 0/0 reply with avail != 1 yields -1, not 0.
+                                        (void)adreno_zap_pas_supported_verdict_avail(
+                                            s7avail,
+                                            (int)(int32_t)(p13transport & 0xFFFFFFFFu),
+                                            (uint32_t)(p13secure & 0xFFFFFFFFu),
+                                            &s7p13v);
+                                    }
+                                    // p13rc != 0: the exporter refused, so NO SMC was
+                                    // made. a0/a1 stay 0 and v13 stays -1 -- which is
+                                    // the honest reading, not "unsupported".
                                 }
-                                // p13rc != 0: the exporter refused, so NO SMC was
-                                // made. a0/a1 stay 0 and v13 stays -1 -- which is
-                                // the honest reading, not "unsupported".
                             }
-                        }
                         if (!armed) {
                             s7why = "not-armed";
                         } else if (!s7sym) {
@@ -1343,6 +1396,43 @@ extern "C" void enchilada_adreno_poll(void) {
                             s7st = adreno_zap_pas_execute(&s7tr, s7base,
                                                           (uint32_t)s7metaPhys,
                                                           &s7region, &s7rep);
+                            // ROUND 131: x1s is the arginfo of STAGE 0
+                            // (init_image), taken from the executed call record.
+                            //
+                            // THE DEFECT THIS FIXES. Through round 130 this line
+                            // read `s7x1s = (uint64_t)s7sup.arginfo;` -- a few
+                            // lines ABOVE, inside the PAS_IS_SUPPORTED probe --
+                            // so it captured THAT call's arginfo, 0x01, while the
+                            // comment beside it claimed "for init_image x1s is
+                            // 0x82". The device row printed x1s=1, which is what
+                            // gave the inconsistency away.
+                            //
+                            // WHY IT MATTERED: x1s exists to test whether s0 is
+                            // really the secure world's a1 or merely our own x1
+                            // read back on a monitor that never wrote a1. The
+                            // comparison only means anything if x1s is the x1 of
+                            // the SAME call that produced s0 -- and s0 is stage
+                            // 0's secure_result. Comparing it against the p13
+                            // probe's arginfo tested nothing: round 130's
+                            // "s0=0x82 != x1s=0x01" did NOT falsify the echo
+                            // hypothesis, because the two numbers came from
+                            // different calls.
+                            //
+                            // NOT HARD-CODED. The value is read back from
+                            // s7rep.stage[0], which the contract layer filled
+                            // from the same plan it sent. A literal 0x82 here
+                            // would agree with the constant by construction and
+                            // would stop being evidence the moment the plan
+                            // changed. The probe also asserts the result against
+                            // kAdrenoZapArgInfoInitImage before trusting it (see
+                            // the x1ok check below).
+                            s7x1s = (uint64_t)s7rep.stage[kAdrenoZapPasStageInitImage].arginfo;
+                            // Cross-check against the contract constant. If the
+                            // plan ever stops sending init_image's pinned
+                            // arginfo, the row must say so rather than print a
+                            // number that silently disagrees with the header.
+                            s7x1Ok =
+                                (s7x1s == (uint64_t)kAdrenoZapArgInfoInitImage) ? 1 : 0;
                         }
                         // The row reports the two channels SEPARATELY, per
                         // stage, never collapsed into one number:
@@ -1383,7 +1473,19 @@ extern "C" void enchilada_adreno_poll(void) {
                                  //           a monitor that never wrote a1. For
                                  //           init_image x1s is 0x82, which is
                                  //           exactly what round 128 measured.
-                                 "avail=%d av0=%x/%x x1s=%x",
+                                 "avail=%d av0=%x/%x x1s=%x "
+                                 // ROUND 131:
+                                 //   ct   = the SMCCC call type actually used
+                                 //          for the PAS stages ("fast"/"std"),
+                                 //          read BACK from the base handed to
+                                 //          the sequence builder -- not echoed
+                                 //          from the boot arg.
+                                 //   x1ok = 1 when x1s equals the contract's
+                                 //          pinned init_image arginfo. 0 means
+                                 //          either the chain never ran (no
+                                 //          stage-0 record) or the plan has
+                                 //          drifted away from the header.
+                                 "ct=%s x1ok=%d",
                                  armed ? (s7sym ? "exec" : "armed-no-symbol")
                                        : "armed-not-executed",
                                  s7why[0] ? s7why : "-",
@@ -1456,7 +1558,11 @@ extern "C" void enchilada_adreno_poll(void) {
                                  //   s0 vs x1s -> if equal, suspect echo.
                                  s7avail,
                                  (unsigned)s7availA0, (unsigned)s7availA1,
-                                 (unsigned)s7x1s);
+                                 (unsigned)s7x1s,
+                                 // ROUND 131: the call type that was actually
+                                 // sent, and whether the captured x1 matched the
+                                 // contract's pinned init_image arginfo.
+                                 s7ct, s7x1Ok);
                         IOLog("enchilada-adreno: %s\n", s7Row);
                         // ROUND 126: its own buffer, not the stage-6 one.
                         setStage7Replay(s7Row);

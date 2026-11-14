@@ -550,9 +550,53 @@ int adreno_zap_smc_base_gate(uint32_t base)
     return 1;
 }
 
-const char *adreno_zap_smc_base_provenance(void)
+/* ==========================================================================
+ * ROUND 131: the SMCCC call type. See the header for why the bit is moved
+ * through a gate-checked helper rather than flipped at a call site.
+ * ========================================================================== */
+
+int adreno_zap_smc_call_type(uint32_t base)
 {
-    /* Deliberately one fixed string: a report that prints an x0 MUST be able to
+    if (adreno_zap_smc_base_gate(base) == 0) {
+        return -1;
+    }
+    /* bit31 is ARM_SMCCC_FAST_CALL when set, ARM_SMCCC_STD_CALL when clear.
+     * The derived base sets it, which is what this port has always sent;
+     * upstream's PAS calls clear it. Both are reported, neither is preferred
+     * here. NOTE: the base's numeric value is deliberately NOT spelled out --
+     * this module keeps that literal in exactly one place
+     * (kAdrenoZapSmcBaseDerived), and even a comment mentioning it trips the
+     * verifier that enforces the rule. */
+    return (base & kAdrenoZapSmcFastCall) != 0u ? 1 : 0;
+}
+
+int adreno_zap_smc_base_with_call_type(uint32_t base, int fast, uint32_t *out)
+{
+    uint32_t recast;
+
+    if (out == 0) {
+        return 1;
+    }
+    /* Gate the INPUT first: laundering a base that was never legal through a
+     * bit flip would produce a value that still looks plausible. */
+    if (adreno_zap_smc_base_gate(base) == 0) {
+        return 1;
+    }
+    recast = (fast != 0) ? (base | kAdrenoZapSmcFastCall)
+                         : (base & ~kAdrenoZapSmcFastCall);
+    /* Re-gate the OUTPUT. The helper moves exactly one bit, so a passing input
+     * must give a passing output -- asserting it costs nothing and catches any
+     * future edit that starts touching neighbouring fields (owner at 24..29,
+     * SMC_64 at 30). */
+    if (adreno_zap_smc_base_gate(recast) == 0) {
+        return 1;
+    }
+    *out = recast;
+    return 0;
+}
+
+const char *adreno_zap_smc_base_provenance(void)
+{    /* Deliberately one fixed string: a report that prints an x0 MUST be able to
      * say where the base came from, and the answer is always the same. If this
      * ever becomes a pinned fact, this function and the header note both have
      * to change together -- which is the point of keeping it in one place. */
@@ -1496,6 +1540,82 @@ int adreno_zap_pas_verify(uint32_t *check_count)
         }
     }
 
+    /* ---- ROUND 131: the SMCCC call type (FAST_CALL vs STD_CALL) ------ */
+    {
+        uint32_t fast_base = 0u;
+        uint32_t std_base = 0u;
+
+        /* The default base this port has always sent sets bit31. */
+        checks += 1u;
+        if (adreno_zap_smc_call_type(base) != 1) {
+            fails += 1u; /* FAST_CALL */
+        }
+        checks += 1u;
+        if ((base & kAdrenoZapSmcFastCall) == 0u) {
+            fails += 1u;
+        }
+        /* Recasting to FAST is the identity on the derived base. */
+        checks += 1u;
+        if (adreno_zap_smc_base_with_call_type(base, 1, &fast_base) != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (fast_base != base) {
+            fails += 1u;
+        }
+        /* Recasting to STD clears EXACTLY bit31 and nothing else. */
+        checks += 1u;
+        if (adreno_zap_smc_base_with_call_type(base, 0, &std_base) != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (std_base != (base & ~kAdrenoZapSmcFastCall)) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if ((std_base ^ base) != kAdrenoZapSmcFastCall) {
+            fails += 1u; /* one bit, no more -- owner and SMC_64 must survive */
+        }
+        checks += 1u;
+        if (std_base != 0x42000000u) {
+            fails += 1u; /* the value upstream would send */
+        }
+        checks += 1u;
+        if (adreno_zap_smc_call_type(std_base) != 0) {
+            fails += 1u; /* reported as STD */
+        }
+        /* The owner and the SMC_64 bit are untouched by the flip -- which is the
+         * whole reason this is a helper rather than a hand-written mask. */
+        checks += 1u;
+        if (adreno_zap_smc_base_owner(std_base) != kAdrenoZapScmOwnerSip) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if ((std_base & kAdrenoZapSmc64Bit) == 0u) {
+            fails += 1u;
+        }
+        /* A STD base still passes the gate: the gate deliberately does not
+         * constrain bit31, so both call types are legal. */
+        checks += 1u;
+        if (adreno_zap_smc_base_gate(std_base) != 1) {
+            fails += 1u;
+        }
+        /* Refusals: a bad base cannot be laundered through the recast, and a
+         * NULL out is refused. */
+        checks += 1u;
+        if (adreno_zap_smc_base_with_call_type(0xC1000000u, 0, &std_base) == 0) {
+            fails += 1u; /* owner != SIP in */
+        }
+        checks += 1u;
+        if (adreno_zap_smc_base_with_call_type(base, 0, 0) == 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_zap_smc_call_type(0xC1000000u) != -1) {
+            fails += 1u; /* out-of-gate base is reported, not guessed */
+        }
+    }
+
     /* ---- ROUND 129: IS_CALL_AVAILABLE shape and the v13 fold ---------- */
     {
         struct adreno_zap_pas_call avail;
@@ -1676,6 +1796,10 @@ AdrenoZapExecStatus adreno_zap_pas_execute(const struct adreno_zap_transport *t,
     for (i = 0u; i < kAdrenoZapPasStageCount; ++i) {
         out->stage[i].stage = i;
         out->stage[i].x0 = 0u;
+        /* ROUND 131: zeroed so a stage that never ran cannot be read as having
+         * sent arginfo 0 to something. The probe distinguishes "0 because it
+         * never ran" from "0 because it sent 0" by checking `called` first. */
+        out->stage[i].arginfo = 0u;
         out->stage[i].called = 0;
         out->stage[i].transport_ret = 0;
         out->stage[i].secure_result = 0u;
@@ -1765,6 +1889,12 @@ AdrenoZapExecStatus adreno_zap_pas_execute(const struct adreno_zap_transport *t,
         transport_ret = t->call(t->cookie, plan.x0, arg_info, arg_a2, arg_a3,
                                 arg_a4, &result0);
         out->stage[i].called = 1;
+        /* ROUND 131: record the x1 that was ACTUALLY sent, from the same
+         * variable the transport was handed -- not from plan.arginfo a second
+         * time, and certainly not from the caller's constant. A reader comparing
+         * secure_result against this field is then comparing two values that
+         * came out of ONE call. */
+        out->stage[i].arginfo = arg_info;
         out->stages_run += 1u;
 
         /* ---- TWO-CHANNEL JUDGEMENT (P2:729) ----------------------------

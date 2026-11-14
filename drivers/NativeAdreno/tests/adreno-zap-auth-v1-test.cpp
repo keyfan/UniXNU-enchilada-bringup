@@ -482,7 +482,20 @@ static void testPasExecute()
         CHECK(rep.stage[i].called == 1);
         CHECK(rep.stage[i].is_success == 1);
         CHECK(rep.stage[i].x0 == s.x0[i]);
+        // ROUND 131: the per-stage record now carries the x1 that was ACTUALLY
+        // sent. This is what makes the probe's x1s an observation rather than a
+        // restatement of a constant: the stub captured what arrived, and the
+        // report must agree with it.
+        CHECK(rep.stage[i].arginfo == s.x1[i]);
     }
+    CHECK(rep.stage[kAdrenoZapPasStageInitImage].arginfo == kAdrenoZapArgInfoInitImage);
+    CHECK(rep.stage[kAdrenoZapPasStageInitImage].arginfo == 0x82u);
+    CHECK(rep.stage[kAdrenoZapPasStageMemSetup].arginfo == 0x03u);
+    CHECK(rep.stage[kAdrenoZapPasStageAuthAndReset].arginfo == 0x01u);
+    // THE ROUND-131 BUG, asserted as a NEGATIVE so it cannot come back: stage 0's
+    // recorded x1 is NOT the p13 probe's arginfo, which is what round 130's row
+    // was mistakenly printing.
+    CHECK(rep.stage[kAdrenoZapPasStageInitImage].arginfo != kAdrenoZapArgInfoIsSupported);
 
     // ---- FAIL CLOSED, one stage at a time ----
     // For each stage: fail it and prove the chain STOPPED there. The assertion
@@ -667,6 +680,40 @@ static void testPasExecute()
     CHECK(adreno_zap_pas_supported_verdict_avail(1, -1, 0u, &supported) == 0);
     CHECK(supported == -1);
     CHECK(adreno_zap_pas_supported_verdict_avail(1, 0, 1u, nullptr) == 1);
+
+    // ========== ROUND 131: the SMCCC call type (FAST vs STD) ==============
+    // Every base this port has sent sets bit31 (FAST_CALL). Upstream's PAS calls
+    // clear it (qcom_scm.c:306 atomic=false -> qcom_scm-smc.c:160 STD_CALL).
+    // This is the shape that makes the one-boot comparison possible.
+    CHECK(kAdrenoZapSmcFastCall == 0x80000000u);
+    CHECK((base & kAdrenoZapSmcFastCall) != 0u);      // the derived base is FAST
+    CHECK(adreno_zap_smc_call_type(base) == 1);
+    CHECK(base == 0xC2000000u);
+    CHECK((base | 0x0201u) == 0xC2000201u);           // what device rows show
+
+    uint32_t fast2 = 0, std2 = 0;
+    CHECK(adreno_zap_smc_base_with_call_type(base, 1, &fast2) == 0);
+    CHECK(fast2 == base);                             // FAST is the identity
+    CHECK(adreno_zap_smc_base_with_call_type(base, 0, &std2) == 0);
+    CHECK(std2 == 0x42000000u);                       // what upstream would send
+    CHECK(adreno_zap_smc_call_type(std2) == 0);       // reported as STD
+    // The flip touches EXACTLY bit31: the owner field and SMC_64 must survive,
+    // which is the whole reason this is a helper rather than a hand mask.
+    CHECK((std2 ^ base) == kAdrenoZapSmcFastCall);
+    CHECK(adreno_zap_smc_base_owner(std2) == kAdrenoZapScmOwnerSip);
+    CHECK((std2 & kAdrenoZapSmc64Bit) != 0u);
+    // A STD base still passes the gate: bit31 is not constrained by it.
+    CHECK(adreno_zap_smc_base_gate(std2) == 1);
+    CHECK(adreno_zap_smc_base_gate(base) == 1);
+    // The composed x0 really differs in bit31 only.
+    CHECK(((std2 | 0x0201u) ^ (base | 0x0201u)) == kAdrenoZapSmcFastCall);
+    CHECK((std2 | 0x0201u) == 0x42000201u);
+    // Refusals: a bad base cannot be laundered through the recast.
+    CHECK(adreno_zap_smc_base_with_call_type(0xC1000000u, 0, &std2) == 1);
+    CHECK(adreno_zap_smc_base_with_call_type(base, 0, nullptr) == 1);
+    CHECK(adreno_zap_smc_call_type(0xC1000000u) == -1);
+    CHECK(adreno_zap_smc_call_type(0x02000000u) == -1);   // no SMC_64 either
+
     // And the two-argument form still behaves exactly as round 126 left it, so
     // the fold is an ADDITION, not a redefinition.
     CHECK(adreno_zap_pas_supported_verdict(0, 0u, &supported) == 0);

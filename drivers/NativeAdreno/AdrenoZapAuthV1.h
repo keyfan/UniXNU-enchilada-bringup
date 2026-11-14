@@ -401,11 +401,58 @@ uint32_t adreno_zap_pas_done_bit(uint32_t stage);
 int adreno_zap_pas_judge(int transport_ret, uint32_t secure_result,
                          struct adreno_zap_pas_result *out);
 
+/* 1 when the stage MUST run for a blob with this relocatable-ness. Stage 0 and
+ * stage 2 are unconditional (P5:236-249, P4:156); stage 1 is required exactly
+ * when the blob is relocatable (P5:251-258). Nothing here is hard-coded. */
+int adreno_zap_pas_stage_required(uint32_t stage, int blob_relocatable);
+
 /* ROUND 106 self-check for the three-stage contract. Returns 0 when every
  * invariant holds, else 1; *check_count receives the number evaluated. Kept
  * separate from adreno_zap_auth_verify() so the round-73 checks keep their
  * original meaning. */
 int adreno_zap_pas_verify(uint32_t *check_count);
+
+/* ==========================================================================
+ * ROUND 131: THE SMCCC CALL TYPE (FAST_CALL vs STD_CALL)
+ * ==========================================================================
+ * THE NEWLY-NOTICED DIFFERENCE. Every base this port has ever sent has bit31
+ * set -- 0xC2000201 for init_image -- i.e. ARM_SMCCC_FAST_CALL. Upstream's PAS
+ * calls do not:
+ *
+ *   P2 qcom_scm.c:306   return scm_smc_call(dev, desc, res, false);   <- atomic
+ *                                                                       = false
+ *   P6 qcom_scm-smc.c:160
+ *       u32 smccc_call_type = atomic ? ARM_SMCCC_FAST_CALL : ARM_SMCCC_STD_CALL;
+ *
+ * so upstream sends 0x42000201 and this port has been sending 0xC2000201.
+ *
+ * WHAT THIS DOES *NOT* CLAIM. It is NOT established that FAST_CALL is wrong or
+ * harmful here. is_call_available is issued with atomic=true (P2:254) -- so it
+ * uses FAST_CALL, exactly as this port does -- and it SUCCEEDED on the phone
+ * (avail=1). A fast call therefore reaches this monitor and gets answered. The
+ * call-type difference is a CANDIDATE explanation for the PAS rejection, kept
+ * as a one-boot-arg experiment precisely because it is not a conclusion.
+ *
+ * WHY A HELPER RATHER THAN A SECOND CONSTANT. The type bit lives in the base
+ * (bit31), and the base is also where the owner and the SMC_64 bit live, so
+ * flipping 31 by hand at a call site would be a silent way to corrupt the other
+ * two fields. This function moves exactly one bit and re-derives the result
+ * through the SAME gate every other call site uses.
+ * -------------------------------------------------------------------------- */
+
+/* 1 when `base` uses FAST_CALL (bit31 set), 0 when it uses STD_CALL.
+ * Refuses a base that does not pass adreno_zap_smc_base_gate(): returns -1.
+ * Note the gate does NOT constrain bit31, so both call types are legal inputs. */
+int adreno_zap_smc_call_type(uint32_t base);
+
+/* Recast `base` to the requested call type.
+ *   fast != 0  -> bit31 SET   (ARM_SMCCC_FAST_CALL, the port's current default)
+ *   fast == 0  -> bit31 CLEAR (ARM_SMCCC_STD_CALL, what upstream PAS sends)
+ * Every other bit is preserved, so owner and SMC_64 survive untouched.
+ * `out` must be non-NULL. Returns 0 on success, 1 on a NULL out or when the
+ * INPUT base fails the gate (so a caller cannot launder a bad base through this
+ * function -- the output is re-gated as well). */
+int adreno_zap_smc_base_with_call_type(uint32_t base, int fast, uint32_t *out);
 
 /* ==========================================================================
  * ROUND 126: THE mem_setup SPAN, and WHY `kAdrenoZapSegBytes` IS NOT IT
@@ -701,6 +748,24 @@ struct adreno_zap_transport {
 struct adreno_zap_pas_stage_result {
     uint32_t stage;              /* enum adreno_zap_pas_stage                */
     uint32_t x0;                 /* the fn id actually handed to the transport*/
+    /* ROUND 131: the arginfo actually handed to the transport -- the value that
+     * travelled in x1 for THIS stage. Recorded per stage so a caller can prove
+     * WHICH x1 produced a given secure_result.
+     *
+     * WHY IT IS NEEDED. The probe's x1s field exists to test whether
+     * secure_result is really the secure world's a1 or merely our own x1 read
+     * back on a monitor that never wrote a1. That comparison is only meaningful
+     * when x1s is the x1 of the SAME call that produced secure_result. Through
+     * round 130 the probe took x1s from the PAS_IS_SUPPORTED probe (0x01)
+     * instead of from stage 0 (0x82), so the two numbers came from different
+     * calls and the comparison tested nothing.
+     *
+     * WHY IT IS RECORDED HERE rather than read from the caller's constant: this
+     * field is filled from the same `plan` the transport was handed (see the
+     * `out->stage[i].arginfo = arg_info;` line in AdrenoZapAuthV1.c), so it is
+     * evidence about what was SENT, not a restatement of what we believe we
+     * sent. */
+    uint32_t arginfo;
     int called;                  /* 1 when the transport was invoked         */
     int transport_ret;
     uint32_t secure_result;
