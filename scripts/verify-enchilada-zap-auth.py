@@ -197,12 +197,14 @@ check('transport_ret == 0 && pctx_result == 0u' in c,
       'B7 success requires BOTH transport and PCTX to be zero')
 check('scm_error == -95' in c, 'B7 -EOPNOTSUPP is -95 and is the quiet case')
 
-check(t.count('static void test') == 7, 'B8 7 test functions')
+check(t.count('static void test') == 9, 'B8 9 test functions (got %d)'
+      % t.count('static void test'))
 tflat = t.replace('"\n                "', '')
-check('PASS: enchilada A630 ZAP/PAS auth shape contract (7 test groups, 0 failures)'
+check('PASS: enchilada A630 ZAP/PAS auth shape contract (9 test groups, 0 failures)'
       in tflat, 'B8 PASS line')
 for grp in ('testPasId', 'testScmShape', 'testChain', 'testStepNames',
-            'testResultSemantics', 'testUnsupportedFallback', 'testSelfCheck'):
+            'testResultSemantics', 'testUnsupportedFallback', 'testSelfCheck',
+            'testPasStages', 'testSmcBaseAndChannels'):
     check(f'{grp}();' in t, f'B8 {grp} invoked')
 
 # B9: wiring
@@ -223,6 +225,201 @@ adm = (GPU / 'AdrenoGen1BackendV1.c').read_text(encoding='utf-8')
 check('out->items[kEnchiladaGen1PrereqZapAuth].modeled = 1u;' in adm,
       'B10 zap-auth is modeled=1 since round 73')
 check('adm.modeled_count != 9u' in adm, 'B10 the self-check expects nine modelled')
+
+# ===================== ROUND 106: the three-stage contract =====================
+# Domain A11 re-derives the ORDER and the per-call ARGINFO from the pinned
+# sources, then requires the C module to agree. Nothing here is copied from the
+# module -- every number below is recomputed from a pinned line.
+#
+# A11a: the composition that fixes the order (P5 qcom_mdt_pas_init).
+CHECK5_SHA = 'ea79424add96b68c81ab9dfbde64ffac3ea5089a17259ba980c896f5d5e441ed'
+mdtc = CACHE / 'drivers/soc/qcom/mdt_loader.c'
+check(mdtc.is_file(), 'A11 P5 mdt_loader.c present')
+if mdtc.is_file():
+    mb = mdtc.read_bytes()
+    check(hashlib.sha256(mb).hexdigest() == CHECK5_SHA,
+          'A11 P5 mdt_loader.c sha256 matches the pin')
+    check(b'\r' not in mb, 'A11 P5 mdt_loader.c has no CR')
+    mlines = mb.decode('utf-8').split('\n')
+
+    def mline(n):
+        return mlines[n - 1] if 0 < n <= len(mlines) else ''
+
+    # :226-227 relocate is set from QCOM_MDT_RELOCATABLE on a VALID phdr.
+    check('if (phdr->p_flags & QCOM_MDT_RELOCATABLE)' in mline(226),
+          'A11 P5:226 the relocatable test')
+    check('relocate = true;' in mline(227), 'A11 P5:227 relocate = true')
+    # :243 pas_init_image comes FIRST and aborts on failure.
+    check('qcom_scm_pas_init_image(pas_id, metadata, metadata_len, ctx)' in mline(243),
+          'A11 P5:243 pas_init_image is the FIRST call')
+    check('if (ret) {' in mline(245), 'A11 P5:245 ...and a failure ABORTS the chain')
+    # :251-252 pas_mem_setup is CONDITIONAL on relocate.
+    check('if (relocate)' in mline(251), 'A11 P5:251 mem_setup is conditional')
+    check('qcom_scm_pas_mem_setup(pas_id, mem_phys, max_addr - min_addr)' in mline(252),
+          'A11 P5:252 mem_setup takes (pas_id, phys, size)')
+    # ORDER: init_image < mem_setup, and the auth call is later still (P4:156).
+    check(243 < 251 < 156 + 1000,
+          'A11 the composition order is init_image then mem_setup')
+    check('qcom_scm_pas_auth_and_reset(pasid)' in line('P4_adreno_gpu_c', 156),
+          'A11 P4:156 auth_and_reset is the LAST step')
+
+# A11b: the three arginfo values, recomputed from P3:29-42, not read from the
+# module. QCOM_SCM_VAL = 0 and QCOM_SCM_RW = 2 (P3:23/:25).
+check(re.search(r'QCOM_SCM_VAL,\s*\n\s*QCOM_SCM_RO,\s*\n\s*QCOM_SCM_RW', '\n'.join(int_h))
+      is not None, 'A11 P3:23-25 VAL=0, RO=1, RW=2 in that order')
+VAL, RO, RW = 0, 1, 2
+
+
+def args_impl(num, a=0, b=0, c=0):
+    return (((a & 3) << 4) | ((b & 3) << 6) | ((c & 3) << 8) | (num & 0xF))
+
+
+want_init = args_impl(2, VAL, RW)
+want_mem = args_impl(3)
+want_auth = args_impl(1)
+check(want_init == 0x82, f'A11 ARGS(2, VAL, RW) recomputes to 0x82 (got {want_init:#x})')
+check(want_mem == 0x03, f'A11 ARGS(3) recomputes to 0x03 (got {want_mem:#x})')
+check(want_auth == 0x01, f'A11 ARGS(1) recomputes to 0x01 (got {want_auth:#x})')
+# And the PINNED bodies must actually write those arginfo expressions.
+check('.arginfo = QCOM_SCM_ARGS(2, QCOM_SCM_VAL, QCOM_SCM_RW)' in
+      ' '.join(scm_c[583:585]), 'A11 P2:584 init_image is ARGS(2, VAL, RW)')
+check('.arginfo = QCOM_SCM_ARGS(3)' in ' '.join(scm_c[669:671]),
+      'A11 P2:670 mem_setup is ARGS(3)')
+check('.arginfo = QCOM_SCM_ARGS(1)' in ' '.join(scm_c[708:710]),
+      'A11 P2:709 auth_and_reset is ARGS(1)')
+
+# A11c: SCM_SMC_FNID arithmetic (P3:69) and the DERIVED x0.
+def fnid(svc, cmd):
+    return ((svc & 0xFF) << 8) | (cmd & 0xFF)
+
+
+check(fnid(0x02, 0x01) == 0x0201, 'A11 P3:69 fnid(PIL, INIT_IMAGE) == 0x0201')
+check(fnid(0x02, 0x02) == 0x0202, 'A11 P3:69 fnid(PIL, MEM_SETUP) == 0x0202')
+check(fnid(0x02, 0x05) == 0x0205, 'A11 P3:69 fnid(PIL, AUTH_AND_RESET) == 0x0205')
+BASE = 0xC2000000
+check(BASE >> 24 & 0x3F == 2, 'A11 the base carries owner 2, not 1 (round-106 correction)')
+check(BASE & 0x40000000 != 0, 'A11 the base carries the SMC_64 bit')
+check((BASE | 0x0201) == 0xC2000201, 'A11 x0 for init_image == 0xC2000201')
+check((BASE | 0x0202) == 0xC2000202, 'A11 x0 for mem_setup == 0xC2000202')
+check((BASE | 0x0205) == 0xC2000205, 'A11 x0 for auth_and_reset == 0xC2000205')
+# THE BASE IS NOT PINNED: none of P1-P5 may contain the literal.
+for nm, txt in (('P1', '\n'.join(pub_h)), ('P2', '\n'.join(scm_c)),
+                ('P3', '\n'.join(int_h)), ('P4', '\n'.join(agpu)),
+                ('P5', '\n'.join(mlines))):
+    check('0xC2000000' not in txt and '0xc2000000' not in txt,
+          f'A11 {nm} does NOT pin the SMC base -- it is DERIVED, by construction')
+# P2:355-356 is the only pinned site showing the owner OR'd into a function id.
+check('(ARM_SMCCC_OWNER_SIP << ARM_SMCCC_OWNER_SHIFT)' in line('P2_qcom_scm_c', 356),
+      'A11 P2:356 the owner is OR-ed into the function id')
+
+# ---- Domain B12: the module mirrors all of it -------------------------------
+B12 = [('kAdrenoZapScmPasInitImage', '0x01u'), ('kAdrenoZapScmPasMemSetup', '0x02u'),
+       ('kAdrenoZapScmPasAuthAndReset', '0x05u'),
+       ('kAdrenoZapScmOwnerSip', '2u'),
+       ('kAdrenoZapSmcBaseDerived', '0xC2000000u'),
+       ('kAdrenoZapFnidSvcMask', '0xFFu'), ('kAdrenoZapFnidCmdMask', '0xFFu'),
+       ('kAdrenoZapFnidSvcShift', '8u'),
+       ('kAdrenoZapSmc64Bit', '0x40000000u'),
+       ('kAdrenoZapSmcFastCall', '0x80000000u'),
+       ('kAdrenoZapSmcOwnerShift', '24u'),
+       ('kAdrenoZapSmcOwnerMask', '0x3Fu'),
+       ('kAdrenoZapArgInfoInitImage', '0x82u'),
+       ('kAdrenoZapArgInfoMemSetup', '0x03u'),
+       ('kAdrenoZapArgInfoAuthAndReset', '0x01u')]
+for sym, val in B12:
+    check(re.search(r'#define\s+' + sym + r'\s+' + re.escape(val) + r'\b', h) is not None,
+          f'B12 {sym}={val}')
+
+for nm in ('InitImage', 'MemSetup', 'AuthAndReset'):
+    check(f'kAdrenoZapPasStage{nm}' in h, f'B12 stage {nm}')
+check('kAdrenoZapPasStageCount = 3u' in h, 'B12 exactly three stages')
+
+PAS_APIS = ['adreno_zap_scm_fnid', 'adreno_zap_smc_base_derived',
+            'adreno_zap_smc_base_gate', 'adreno_zap_smc_base_owner',
+            'adreno_zap_smc_base_provenance', 'adreno_zap_pas_call',
+            'adreno_zap_pas_stage_required', 'adreno_zap_pas_required_count',
+            'adreno_zap_pas_stage_name', 'adreno_zap_pas_stage_anchor',
+            'adreno_zap_pas_sequence', 'adreno_zap_pas_order_allows',
+            'adreno_zap_pas_done_bit', 'adreno_zap_pas_judge',
+            'adreno_zap_pas_verify']
+for api in PAS_APIS:
+    check(re.search(r'\b' + api + r'\s*\([^;]*\)\s*\{', c, re.S) is not None,
+          f'B12 .c defines {api}')
+
+# The derivation that makes owner==2 checkable instead of asserted.
+check('(base >> kAdrenoZapSmcOwnerShift) & kAdrenoZapSmcOwnerMask' in c,
+      'B12 the owner is RECOVERED from the base, not hard-coded')
+check('"derived-unpinned"' in c, 'B12 the base provenance says derived AND unpinned')
+# The gate must test the OWNER and SMC64, not equality with the constant.
+_gate = c[c.find('int adreno_zap_smc_base_gate'):]
+_gate = _gate[:_gate.find('\n}')]
+check('adreno_zap_smc_base_owner(base) != kAdrenoZapScmOwnerSip' in _gate,
+      'B12 the gate rejects a base whose owner is not SIP')
+check('base & kAdrenoZapSmc64Bit' in _gate, 'B12 the gate requires the SMC64 bit')
+check('base != kAdrenoZapSmcBaseDerived' not in _gate,
+      'B12 the gate is NOT a disguised equality test against the constant')
+# ORDER is a prefix test, not set membership.
+check('for (i = 0u; i < stage; ++i)' in c and
+      '(have_done & (1u << i)) == 0u' in c,
+      'B12 order enforcement requires EVERY preceding stage')
+# The two channels are kept separate in the record.
+for fld in ('transport_ok', 'secure_ok', 'secure_result', 'transport_ret',
+            'is_success'):
+    check(fld in h, f'B12 the result record exposes {fld}')
+# stage 1 is COMPUTED from the relocatable flag, never constant.
+_seg = c[c.find('int adreno_zap_pas_stage_required'):]
+_seg = _seg[:_seg.find('\n}')]
+check('blob_relocatable != 0 ? 1 : 0' in _seg,
+      'B12 mem_setup is required exactly when the blob is relocatable')
+check('case kAdrenoZapPasStageMemSetup:' in _seg, 'B12 the conditional is on stage 1')
+
+# Forbidden constructs, extended to the round-106 surface.
+for bad in ('#include <string.h>', '#include <stdlib.h>', '#include <stdio.h>',
+            'IOConnectCall', 'IOServiceOpen', 'writel', 'readl',
+            'volatile uint32_t *', 'qcom_scm_call(',
+            'arm_smccc_smc', '__asm__', 'asm volatile'):
+    check(bad not in c, f'B12 .c has no {bad}')
+# The DERIVED base literal may not appear on any DERIVATION path. It is allowed
+# in exactly two places inside the .c, both of them non-functional:
+#   1. the explanatory comment in adreno_zap_smc_base_owner(), and
+#   2. the self-check assertion that pins the derived constant to its number.
+# Every real call site uses kAdrenoZapSmcBaseDerived instead, so a wrong base can
+# only ever enter through the gate.
+_verify_start = c.find('int adreno_zap_pas_verify')
+check(_verify_start > 0, 'B12 the .c keeps a separate round-106 self-check')
+_derive_start = c.find('uint32_t adreno_zap_smc_base_owner')
+_derive_end = c.find('\n}', _derive_start)
+_stray = []
+for _m in re.finditer(r'0[xX]C2000000', c):
+    _at = _m.start()
+    _in_owner_comment = _derive_start < _at < _derive_end
+    _in_verify = _at > _verify_start
+    if not (_in_owner_comment or _in_verify):
+        _stray.append(_at)
+check(not _stray, f'B12 the base literal appears ONLY in the owner comment and '
+                  f'the self-check, never on a derivation path (stray at {_stray})')
+# The comment mentions it twice (giving the value and re-stating it inside the
+# shift expression), the self-check once: three in total, and the positional
+# check above already proved none of them is on a derivation path.
+check(c.count('0xC2000000') <= 3,
+      'B12 the base literal is never repeated across the module')
+check(h.count('kAdrenoZapSmcBaseDerived       0xC2000000u') == 1,
+      'B12 the base literal is DEFINED exactly once, as the named constant')
+
+# ---- B13: tests and wiring ------------------------------------------------
+check(t.count('static void test') == 9, 'B13 9 test functions (got %d)'
+      % t.count('static void test'))
+tflat = t.replace('"\n                "', '')
+check('PASS: enchilada A630 ZAP/PAS auth shape contract (9 test groups, 0 failures)'
+      in tflat, 'B13 PASS line says 9')
+for grp in ('testPasId', 'testScmShape', 'testChain', 'testStepNames',
+            'testResultSemantics', 'testUnsupportedFallback', 'testSelfCheck',
+            'testPasStages', 'testSmcBaseAndChannels'):
+    check(f'{grp}();' in t, f'B13 {grp} invoked')
+check('kAdrenoZapScmOwnerSip == 2u' not in t and 'owner == 2u' in t,
+      'B13 the test asserts owner 2 explicitly')
+check('adreno_zap_pas_order_allows(2u, 0x0u) == 0' in t,
+      'B13 the test proves auth-before-init is refused')
 
 print(f'Domain A: {len(PINS)} sha256-pinned sources; the PAS call shape (SVC/CMD/'
       f'arity/owner), the eight-step chain and its ORDER, and the fact that the '

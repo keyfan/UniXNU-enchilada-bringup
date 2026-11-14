@@ -34,6 +34,16 @@
 //               PT_LOAD, the hash segment is the first phdr whose TYPE bits are
 //               HASH, ehdr_size = phdrs[0].p_filesz, hash_size =
 //               phdrs[hash].p_filesz; SPLIT when ehdr_size + hash_size == size.
+//       :265-291 qcom_mdt_bins_are_split(): split when ANY phdr with non-zero
+//               p_filesz has p_offset or p_offset+p_filesz BEYOND fw->size.
+//       :293-392 __qcom_mdt_load(): :323-327 relocatable test and min p_paddr;
+//               :330-342 mem_reloc = min_addr when relocate else mem_phys;
+//               :344-386 the per-segment loop this round 106 plan mirrors --
+//               :350 offset = p_paddr - mem_reloc; :351 refuse when offset < 0
+//               or offset + p_memsz > mem_size; :357 refuse p_filesz > p_memsz;
+//               :365 dst = mem_region + offset; :369/:376 non-split bounds and
+//               copy; :379 split via mdt_load_split_segment; :384-385 zero fill
+//               p_memsz - p_filesz.
 //  (P2) include/linux/soc/qcom/mdt_loader.h  2179 B
 //       12d1c1c8b4e420ec28af0cd8255c9d0d37d56df7bf04714a61cee99479b3a8be
 //       :7-9 QCOM_MDT_TYPE_MASK (7 << 24); QCOM_MDT_TYPE_HASH (2 << 24);
@@ -173,6 +183,103 @@ AdrenoMdtStatus adreno_mdt_metadata(const uint8_t *data, size_t size,
  * so a caller that conflates them can be caught by a test. */
 AdrenoMdtStatus adreno_mdt_filesz_sum(const uint8_t *data, size_t size,
                                       uint32_t *sum);
+
+/* ==========================================================================
+ * ROUND 106: the LOAD PLAN -- pure arithmetic, still loads nothing
+ * ==========================================================================
+ * Rounds 74-105 answered "how big is the region" (get_size) and "what is the
+ * metadata blob" (metadata). A loader needs one more thing: WHERE each segment
+ * goes inside that region and HOW MUCH of it is real data versus zero fill.
+ * That is what this section computes, following P1:344-386 exactly.
+ *
+ * THE ARITHMETIC (P1:344-386, verbatim structure)
+ *   :335/:341  mem_reloc = min_addr when relocatable, else mem_phys
+ *   :350       offset    = phdr->p_paddr - mem_reloc
+ *   :351       REFUSE when offset < 0 or offset + p_memsz > mem_size
+ *   :357       REFUSE when p_filesz > p_memsz
+ *   :365       dst       = mem_region + offset
+ *   :376       copy p_filesz bytes from fw->data + p_offset (non-split)
+ *   :379       else mdt_load_split_segment (split: .bNN files)
+ *   :384-385   zero fill p_memsz - p_filesz at dst + p_filesz
+ *
+ * WHY THE RELOC BASE MATTERS: :335 offsets every segment by the LOWEST valid
+ * p_paddr when the image is relocatable, so the region's segment 0 sits at
+ * offset 0 regardless of the paddr the linker chose. On the real a630_zap.mdt
+ * min_addr == 0x5000 and the single valid segment lands at offset 0.
+ *
+ * SPLIT DETECTION is P1:265-291 qcom_mdt_bins_are_split(): a blob is split when
+ * ANY phdr with a non-zero p_filesz has p_offset or p_offset+p_filesz beyond
+ * fw->size. Note that this is a DIFFERENT test from the metadata SPLIT test at
+ * P1:168 -- the two answer different questions and can disagree, which is why
+ * they are separate functions here and a test asserts they are separable.
+ *
+ * HONEST BOUNDARY: this still LOADS NOTHING. No storage access, no memcpy, no
+ * memset, no region allocation, no memremap. It returns numbers a loader would
+ * use. `adreno_mdt_ready()` stays 0 and is derived from
+ * adreno_mdt_loader_available(), which stays 0 because nothing reads a .bNN.
+ * -------------------------------------------------------------------------- */
+
+/* One entry of the plan: everything a memcpy/memset pair would need. */
+struct adreno_mdt_segment {
+    uint32_t phdr_index;    /* which program header this came from          */
+    uint32_t dst_offset;    /* offset INSIDE the region (P1:350)            */
+    uint32_t src_offset;    /* p_offset -- valid only when !is_split (P1:376)*/
+    uint32_t copy_bytes;    /* p_filesz (P1:376)                            */
+    uint32_t zero_bytes;    /* p_memsz - p_filesz, the fill (P1:385)        */
+    uint32_t split_segment; /* the bNN number to request when is_split      */
+};
+
+/* The plan for one blob. `segment_count` counts only the VALID loadable phdrs. */
+struct adreno_mdt_plan {
+    uint32_t reloc_base;    /* P1:335/:341 mem_reloc                        */
+    uint32_t region_bytes;  /* P1:76-103, the same answer as get_size()     */
+    uint32_t segment_count; /* valid PT_LOAD phdrs                          */
+    uint32_t total_copy;    /* sum of copy_bytes                            */
+    uint32_t total_zero;    /* sum of zero_bytes                            */
+    int is_split;           /* P1:265-291 qcom_mdt_bins_are_split()         */
+    int is_relocatable;     /* any valid phdr with QCOM_MDT_RELOCATABLE     */
+};
+
+/* More reasons a plan can be refused, so a caller never sees a bare failure. */
+#define kAdrenoMdtMaxSegments          8u   /* plan capacity; real blob has 1 */
+#define kAdrenoMdtPlanTooManySegments  12
+#define kAdrenoMdtPlanOutsideRegion    13   /* P1:351 offset/size check       */
+#define kAdrenoMdtPlanFileszGtMemsz    14   /* P1:357                         */
+/* P1:369 DEFENSIVE, and PROVABLY UNREACHABLE by construction: this plan runs
+ * adreno_mdt_bins_are_split() first, and that rule already sets is_split when
+ * ANY phdr with non-zero p_filesz overruns the buffer. So a valid segment that
+ * would overrun is only ever seen with is_split == 1, where the in-buffer copy
+ * branch is not taken. The refusal is retained because the upstream check
+ * exists at P1:369 and dropping it would make the mirror incomplete -- NOT
+ * because it can fire. Do not write a test that claims to trigger it. */
+#define kAdrenoMdtPlanTruncatedSrc     15
+
+/* P1:265-291 qcom_mdt_bins_are_split(). 1 = split, 0 = not. */
+AdrenoMdtStatus adreno_mdt_bins_are_split(const uint8_t *data, size_t size,
+                                          int *is_split);
+/* 1 when any VALID phdr carries QCOM_MDT_RELOCATABLE (P1:323-324). */
+AdrenoMdtStatus adreno_mdt_relocatable(const uint8_t *data, size_t size,
+                                       int *is_relocatable);
+/* The lowest p_paddr over VALID phdrs (P1:326-327) -- the reloc base for a
+ * relocatable image. This is the SAME minimum get_size() subtracts. */
+AdrenoMdtStatus adreno_mdt_min_paddr(const uint8_t *data, size_t size,
+                                     uint32_t *min_paddr);
+
+/* Build the plan. `mem_phys`/`mem_size` describe the region a caller WOULD
+ * allocate; nothing is allocated here. `out` receives the summary, and
+ * `segments`/`capacity` receive the per-segment arithmetic in phdr order.
+ * Returns kAdrenoMdtOk, or a named refusal. Refuses on EVERY rule at
+ * P1:351/:357/:369 -- the same three that make the upstream loop break. */
+AdrenoMdtStatus adreno_mdt_plan(const uint8_t *data, size_t size,
+                                uint32_t mem_phys, uint32_t mem_size,
+                                struct adreno_mdt_plan *out,
+                                struct adreno_mdt_segment *segments,
+                                uint32_t capacity);
+
+/* ROUND 106 self-check for the load plan. Returns 0 when every invariant
+ * holds, else 1; *check_count receives the number evaluated. Separate from
+ * adreno_mdt_verify() so the round-74 checks keep their original meaning. */
+int adreno_mdt_plan_verify(uint32_t *check_count);
 
 /* 1 only when a caller could load segments from storage and pass the metadata
  * to the secure world. 0 today: this is a parser, not a loader. Derived from

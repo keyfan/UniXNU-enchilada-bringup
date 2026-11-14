@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// AdrenoMdtV1 host test: 6 groups, CHECK() accumulates failures.
+// AdrenoMdtV1 host test: 8 groups, CHECK() accumulates failures.
+// Groups 1-7 are the round-74 parser. Group 8 is ROUND 106: the load plan.
 //
-// Group 8 is the important one: it parses the REAL a630_zap.mdt pulled from this
+// Group 6 is the important one: it parses the REAL a630_zap.mdt pulled from this
 // phone in round 38, not a mock. If that file is absent the group SKIPS loudly
 // (it prints SKIP and asserts nothing) rather than silently passing.
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include "AdrenoMdtV1.h"
 
 static int failures = 0;
@@ -146,7 +148,214 @@ static void testSelfCheck()
     CHECK(adreno_mdt_loader_available() == 0);
 }
 
-// ---- group 6: the REAL device blob ----
+// ---- ROUND 106 group 7: the LOAD PLAN (pure arithmetic, loads nothing) ----
+// A synthetic ELF32 with ONE valid, RELOCATABLE PT_LOAD so every rule at
+// qcom_mdt_loader.c:344-386 can be checked on its own:
+//   ph[2] p_offset 0x1000, p_paddr 0x1000, p_filesz 8, p_memsz 0x1000
+static void buildPlanBlob(uint8_t *buf, size_t size)
+{
+    std::memset(buf, 0, size);
+    buf[0] = 0x7f; buf[1] = 'E'; buf[2] = 'L'; buf[3] = 'F';
+    buf[4] = 1; buf[5] = 1;
+    buf[28] = 52; buf[42] = 32; buf[44] = 3;
+    buf[52 + 16] = 24;             // ph[0].p_filesz (the header slice)
+    buf[52 + 32 + 16] = 40;        // ph[1].p_filesz (the hash)
+    buf[52 + 32 + 27] = 0x02;      // ph[1].p_flags = HASH (0x02000000)
+    buf[52 + 64 + 0] = 1;          // ph[2].p_type = PT_LOAD
+    buf[52 + 64 + 5] = 0x10;       // ph[2].p_offset = 0x1000
+    buf[52 + 64 + 13] = 0x10;      // ph[2].p_paddr  = 0x1000
+    buf[52 + 64 + 16] = 8;         // ph[2].p_filesz = 8
+    buf[52 + 64 + 21] = 0x10;      // ph[2].p_memsz  = 0x1000
+    buf[52 + 64 + 27] = 0x08;      // ph[2] is relocatable (BIT 27)
+}
+
+static void testLoadPlan()
+{
+    uint8_t buf[52 + 3 * 32];
+    buildPlanBlob(buf, sizeof(buf));
+
+    struct adreno_mdt_plan plan;
+    struct adreno_mdt_segment seg[kAdrenoMdtMaxSegments];
+
+    // The fixture is what the rest of the group assumes -- verify it first.
+    struct adreno_mdt_phdr ph;
+    CHECK(adreno_mdt_phdr(buf, sizeof(buf), 2, &ph) == kAdrenoMdtOk);
+    CHECK(ph.p_offset == 0x1000u && ph.p_paddr == 0x1000u);
+    CHECK(ph.p_filesz == 8u && ph.p_memsz == 0x1000u);
+    CHECK(adreno_mdt_phdr_valid(&ph) == 1);
+
+    // P1:323-324 relocatable, and P1:326-327 the min paddr that becomes the base.
+    int reloc = -1;
+    CHECK(adreno_mdt_relocatable(buf, sizeof(buf), &reloc) == kAdrenoMdtOk);
+    CHECK(reloc == 1);
+    uint32_t lowest = 0;
+    CHECK(adreno_mdt_min_paddr(buf, sizeof(buf), &lowest) == kAdrenoMdtOk);
+    CHECK(lowest == 0x1000u);
+
+    // P1:265-291 qcom_mdt_bins_are_split(): ph[2]'s payload sits at 4096 in a
+    // 148-byte container, so the payload is NOT here -> SPLIT.
+    int split = -1;
+    CHECK(adreno_mdt_bins_are_split(buf, sizeof(buf), &split) == kAdrenoMdtOk);
+    CHECK(split == 1);
+
+    // THE SEPARABILITY THAT MATTERS: on these SAME bytes the METADATA split
+    // test (P1:168) says NOT split, because 24 + 40 = 64 != 148. Round 106
+    // added bins_are_split() as a separate function precisely because the two
+    // rules answer different questions.
+    uint32_t meta = 0, hseg = 99;
+    int msplit = -1;
+    CHECK(adreno_mdt_metadata(buf, sizeof(buf), &meta, &msplit, &hseg) == kAdrenoMdtOk);
+    CHECK(msplit == 0);
+    CHECK(msplit != split);
+
+    // ...and the CONVERSE: a container whose ehdr + hash fills it exactly is a
+    // metadata-split image whose payload still fits, so bins says NOT split.
+    {
+        uint8_t exact[52 + 3 * 32];
+        buildPlanBlob(exact, sizeof(exact));
+        exact[52 + 32 + 16] = 124;   // 24 + 124 == 148
+        exact[52 + 64 + 5] = 0;      // ph[2].p_offset = 0 (payload is here)
+        uint32_t emeta = 0, ehseg = 99;
+        int ems = -1, ebs = -1;
+        CHECK(adreno_mdt_metadata(exact, sizeof(exact), &emeta, &ems, &ehseg) == kAdrenoMdtOk);
+        CHECK(ems == 1);
+        CHECK(adreno_mdt_bins_are_split(exact, sizeof(exact), &ebs) == kAdrenoMdtOk);
+        CHECK(ebs == 0);
+        CHECK(ems != ebs);
+    }
+
+    // P1:335 the reloc base for a RELOCATABLE image is min paddr, so the bogus
+    // mem_phys the caller passes is IGNORED.
+    CHECK(adreno_mdt_plan(buf, sizeof(buf), 0xDEAD0000u, 0x1000u, &plan, seg,
+                          kAdrenoMdtMaxSegments) == kAdrenoMdtOk);
+    CHECK(plan.reloc_base == 0x1000u);
+    CHECK(plan.reloc_base != 0xDEAD0000u);
+    CHECK(plan.is_relocatable == 1);
+    CHECK(plan.is_split == 1);
+    CHECK(plan.segment_count == 1u);          // only ph[2] is valid
+    CHECK(seg[0].phdr_index == 2u);           // ...and it came from index 2
+
+    // P1:350 dst = p_paddr - mem_reloc = 0x1000 - 0x1000 = 0.
+    CHECK(seg[0].dst_offset == 0u);
+    CHECK(seg[0].copy_bytes == 8u);
+    // P1:384-385 zero fill = p_memsz - p_filesz = 4096 - 8 = 4088.
+    CHECK(seg[0].zero_bytes == 4088u);
+    CHECK(plan.total_copy == 8u);
+    CHECK(plan.total_zero == 4088u);
+    // copy + zero reconstructs the region exactly, and the region matches what
+    // get_size() already answered -- the plan may not invent its own size.
+    CHECK(plan.total_copy + plan.total_zero == 0x1000u);
+    uint32_t region = 0;
+    CHECK(adreno_mdt_get_size(buf, sizeof(buf), &region) == kAdrenoMdtOk);
+    CHECK(plan.region_bytes == region);
+    CHECK(plan.region_bytes == 0x1000u);
+    // A SPLIT segment has no in-buffer source offset, and the bNN a loader
+    // would request is derived from its phdr index.
+    CHECK(seg[0].src_offset == 0u);
+    CHECK(seg[0].split_segment == 2u);
+    {
+        char nm[32];
+        CHECK(adreno_mdt_segment_name("a630_zap.mdt", 12, seg[0].split_segment,
+                                      nm, sizeof(nm)) == kAdrenoMdtOk);
+        CHECK(nm[10] == '0' && nm[11] == '2');   // a630_zap.b02
+    }
+
+    // P1:351 the region-bounds rule: exactly fitting is LEGAL, one byte short is
+    // refused, and a base ABOVE the segment paddr is refused (offset < 0).
+    CHECK(adreno_mdt_plan(buf, sizeof(buf), 0x1000u, 0x1000u, &plan, seg,
+                          kAdrenoMdtMaxSegments) == kAdrenoMdtOk);
+    CHECK(adreno_mdt_plan(buf, sizeof(buf), 0x1000u, 0xFFFu, &plan, seg,
+                          kAdrenoMdtMaxSegments) == kAdrenoMdtPlanOutsideRegion);
+    // A relocatable image cannot be pushed out of bounds by mem_phys at all.
+    CHECK(adreno_mdt_plan(buf, sizeof(buf), 0x40000000u, 0x1000u, &plan, seg,
+                          kAdrenoMdtMaxSegments) == kAdrenoMdtOk);
+    CHECK(plan.reloc_base == 0x1000u && seg[0].dst_offset == 0u);
+
+    // P1:357 p_filesz > p_memsz is refused, INDEPENDENTLY of the region size.
+    {
+        uint8_t bad[52 + 3 * 32];
+        buildPlanBlob(bad, sizeof(bad));
+        bad[52 + 64 + 16] = 0x00;
+        bad[52 + 64 + 17] = 0x20;                // p_filesz = 0x2000 > memsz 0x1000
+        CHECK(adreno_mdt_plan(bad, sizeof(bad), 0x1000u, 0x2000u, &plan, seg,
+                              kAdrenoMdtMaxSegments) == kAdrenoMdtPlanFileszGtMemsz);
+        CHECK(adreno_mdt_plan(bad, sizeof(bad), 0x1000u, 0xFFFFF000u, &plan, seg,
+                              kAdrenoMdtMaxSegments) == kAdrenoMdtPlanFileszGtMemsz);
+    }
+
+    // P1:369/:376 the non-split source-bounds rule. NOTE, established here
+    // rather than assumed: given that adreno_mdt_bins_are_split() runs FIRST and
+    // sets split when ANY phdr with non-zero p_filesz overruns the buffer, a
+    // VALID segment that would overrun can never be seen with split == 0. The
+    // upstream check is therefore DEFENSIVE -- kept because P1:369 has it, and
+    // provably unreachable by construction. The assertion below pins that
+    // relationship instead of pretending the code path fires.
+    {
+        uint8_t trunc[52 + 3 * 32];
+        buildPlanBlob(trunc, sizeof(trunc));
+        // Move the payload inside the container, then declare a length that
+        // overruns it. The split rule sees the overrun and says SPLIT, so the
+        // loader's copy branch is never reached -- which is exactly why the
+        // memcpy can never read out of bounds.
+        trunc[52 + 64 + 5] = 0;                  // p_offset = 0
+        trunc[52 + 64 + 16] = 200;               // p_filesz 200 > 148 - 0
+        int tsplit = -1;
+        CHECK(adreno_mdt_bins_are_split(trunc, sizeof(trunc), &tsplit) == kAdrenoMdtOk);
+        CHECK(tsplit == 1);                      // caught by the split rule...
+        // ...so the plan reports SPLIT rather than a truncated in-file copy, and
+        // the truncation refusal stays a defensive mirror of P1:369.
+        CHECK(adreno_mdt_plan(trunc, sizeof(trunc), 0x1000u, 0x1000u, &plan, seg,
+                              kAdrenoMdtMaxSegments) == kAdrenoMdtOk);
+        CHECK(plan.is_split == 1);
+        CHECK(seg[0].src_offset == 0u);          // no in-buffer source at all
+    }
+
+    // Refusals on bad inputs and short capacity.
+    CHECK(adreno_mdt_plan(buf, sizeof(buf), 0x1000u, 0x1000u, &plan, seg, 0u) ==
+          kAdrenoMdtPlanTooManySegments);
+    CHECK(adreno_mdt_plan(buf, sizeof(buf), 0x1000u, 0x1000u, nullptr, seg,
+                          kAdrenoMdtMaxSegments) == kAdrenoMdtInvalid);
+    CHECK(adreno_mdt_plan(nullptr, 0, 0x1000u, 0x1000u, &plan, seg,
+                          kAdrenoMdtMaxSegments) == kAdrenoMdtInvalid);
+    CHECK(adreno_mdt_bins_are_split(buf, sizeof(buf), nullptr) == kAdrenoMdtInvalid);
+    CHECK(adreno_mdt_relocatable(buf, sizeof(buf), nullptr) == kAdrenoMdtInvalid);
+    CHECK(adreno_mdt_min_paddr(buf, sizeof(buf), nullptr) == kAdrenoMdtInvalid);
+
+    // P1:341 a NON-relocatable image IS offset by the caller's mem_phys, and the
+    // same bytes land in a different place -- which is why the flag must come
+    // from the phdr rather than from a default.
+    {
+        uint8_t plain[52 + 3 * 32];
+        buildPlanBlob(plain, sizeof(plain));
+        plain[52 + 64 + 27] = 0;                 // clear BIT(27)
+        plain[52 + 64 + 13] = 0x20;              // p_paddr = 0x2000
+        int preloc = -1;
+        CHECK(adreno_mdt_relocatable(plain, sizeof(plain), &preloc) == kAdrenoMdtOk);
+        CHECK(preloc == 0);
+        CHECK(adreno_mdt_plan(plain, sizeof(plain), 0x1000u, 0x2000u, &plan, seg,
+                              kAdrenoMdtMaxSegments) == kAdrenoMdtOk);
+        CHECK(plan.is_relocatable == 0);
+        CHECK(plan.reloc_base == 0x1000u);       // mem_phys, not paddr 0x2000
+        CHECK(plan.reloc_base != 0x2000u);
+        CHECK(seg[0].dst_offset == 0x1000u);     // 0x2000 - 0x1000
+        // mem_phys ABOVE paddr makes offset negative: the P1:351 refusal, and
+        // exactly the trap a signed compare would hide as a small negative.
+        CHECK(adreno_mdt_plan(plain, sizeof(plain), 0x40000000u, 0x1000u, &plan,
+                              seg, kAdrenoMdtMaxSegments) == kAdrenoMdtPlanOutsideRegion);
+    }
+
+    // A PLAN IS STILL NOT A LOADER.
+    CHECK(adreno_mdt_loader_available() == 0);
+    CHECK(adreno_mdt_ready() == 0);
+
+    // The round-106 self-check.
+    uint32_t checks = 0;
+    CHECK(adreno_mdt_plan_verify(&checks) == 0);
+    CHECK(checks >= 50u);
+    CHECK(adreno_mdt_plan_verify(nullptr) == 0);
+}
+
+// ---- group 8: the REAL device blob, now also PLANNED end to end ----
 static void testRealBlob(const char *path)
 {
     Blob b;
@@ -222,6 +431,60 @@ static void testRealBlob(const char *path)
     CHECK(name[9] == 'b' && name[10] == '0' && name[11] == '0');
     CHECK(adreno_mdt_segment_name("a630_zap.mdt", 12, 1, name, sizeof(name)) == kAdrenoMdtOk);
     CHECK(name[10] == '0' && name[11] == '1');
+
+    // ---- ROUND 106: plan the REAL blob, not a mock ----
+    // The one valid segment is ph[2]: paddr 0x5000, filesz 1968, memsz 1968, and
+    // it IS relocatable. So on this board the plan has exactly ONE row, its
+    // destination is region offset 0, and the zero fill is ZERO.
+    struct adreno_mdt_plan rplan;
+    struct adreno_mdt_segment rseg[kAdrenoMdtMaxSegments];
+    CHECK(adreno_mdt_plan(b.data, b.size, 0u, 0x1000u, &rplan, rseg,
+                          kAdrenoMdtMaxSegments) == kAdrenoMdtOk);
+    CHECK(rplan.segment_count == 1u);        // one of three phdrs is loadable
+    CHECK(rplan.is_relocatable == 1);        // ph[2] carries BIT(27)
+    // The reloc base is the REAL min paddr from the blob, not anything supplied.
+    uint32_t real_min = 0;
+    CHECK(adreno_mdt_min_paddr(b.data, b.size, &real_min) == kAdrenoMdtOk);
+    CHECK(real_min == 0x5000u);
+    CHECK(rplan.reloc_base == 0x5000u);
+    CHECK(rplan.reloc_base != 0u);           // mem_phys 0 does NOT leak in
+    CHECK(rseg[0].dst_offset == 0u);         // 0x5000 - 0x5000
+    CHECK(rseg[0].phdr_index == 2u);
+    CHECK(rseg[0].copy_bytes == 1968u);      // == p_filesz == a630_zap.b02
+    // p_memsz == p_filesz for this segment, so there is NOTHING to zero fill.
+    CHECK(rseg[0].zero_bytes == 0u);
+    CHECK(rplan.total_copy == 1968u);
+    CHECK(rplan.total_zero == 0u);
+    // The region the plan names is the SAME 4096 bytes get_size() reported.
+    CHECK(rplan.region_bytes == region);
+    CHECK(rplan.region_bytes == 0x1000u);
+    // The real blob IS split by the BINS rule (its payload is a .bNN file)...
+    CHECK(rplan.is_split == 1);
+    // ...and its bNN for the only loadable segment is b02, which is exactly the
+    // device file whose size matched p_filesz in round 38.
+    CHECK(rseg[0].split_segment == 2u);
+    CHECK(adreno_mdt_segment_name("a630_zap.mdt", 12, rseg[0].split_segment,
+                                  name, sizeof(name)) == kAdrenoMdtOk);
+    CHECK(name[10] == '0' && name[11] == '2');
+    // A region smaller than the segment's p_memsz is refused on REAL data too.
+    // NOTE the exact threshold: the segment sits at region offset 0 and spans
+    // p_memsz 1968 bytes, so 1967 is the first refused size and 1968 fits. This
+    // is deliberately NOT 0x1000: get_size() ALIGNs UP to 4K, so a region of
+    // 0xFFF is still larger than the 1968 bytes actually needed and is legal --
+    // an important distinction the plan and get_size() must not blur.
+    CHECK(adreno_mdt_plan(b.data, b.size, 0u, 1967u, &rplan, rseg,
+                          kAdrenoMdtMaxSegments) == kAdrenoMdtPlanOutsideRegion);
+    CHECK(adreno_mdt_plan(b.data, b.size, 0u, 1968u, &rplan, rseg,
+                          kAdrenoMdtMaxSegments) == kAdrenoMdtOk);
+    CHECK(adreno_mdt_plan(b.data, b.size, 0u, 0xFFFu, &rplan, rseg,
+                          kAdrenoMdtMaxSegments) == kAdrenoMdtOk);
+    // The ALIGNed region size is still what get_size() reports, and is a
+    // different number from the bytes the segments actually occupy.
+    CHECK(region == 0x1000u);
+    CHECK(region != rplan.total_copy + rplan.total_zero);
+    // Everything above is arithmetic; the loader is still absent.
+    CHECK(adreno_mdt_loader_available() == 0);
+    CHECK(adreno_mdt_ready() == 0);
 }
 
 int main(int argc, char **argv)
@@ -231,6 +494,7 @@ int main(int argc, char **argv)
     testValidityRules();
     testSegmentName();
     testSelfCheck();
+    testLoadPlan();
     // argv[1] is the path to the real blob; without it group 8 SKIPs loudly.
     testRealBlob(argc > 1 ? argv[1] : "");
     if (failures) {
@@ -239,6 +503,6 @@ int main(int argc, char **argv)
         return 1;
     }
     std::printf("PASS: enchilada A630 MDT parser contract "
-                "(6 test groups, 0 failures)\n");
+                "(8 test groups, 0 failures)\n");
     return 0;
 }

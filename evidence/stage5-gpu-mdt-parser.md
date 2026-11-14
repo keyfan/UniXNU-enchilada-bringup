@@ -127,3 +127,42 @@ the `gpu` area **STAYS `"host-verified"`**; no device run, no flash, `m39510` NO
 exercised. It does **not** unblock stage 5.
 
 Chain: round 73 closed at `085b4f1110221a34e67eb6641ee71ad0811d59e1`.
+
+---
+
+## ROUND 106 addendum (2026-11-14) -- SUPERSEDES the counts above, not the round-74 findings
+
+Everything in this record about the parser rules, the real-blob measurements and
+"a parser is not a loader" still holds verbatim. Two things above are STALE.
+
+1. **`6 test groups` -> 8.** Round 106 added `testLoadPlan` (the load plan) and
+   folded the real-blob group into a full end-to-end PLAN of the device bytes.
+   The banner now reads
+   `PASS: enchilada A630 MDT parser contract (8 test groups, 0 failures)`.
+2. **`MDT_CROSS: 113 checks` -> 196.** The verifier gained Domain A8, which
+   re-derives every rule at `mdt_loader.c:344-386` from the pinned lines and then
+   applies them INDEPENDENTLY to the real `a630_zap.mdt`, plus Domain B12/B13.
+
+WHAT ROUND 106 ADDED, exactly: `adreno_mdt_plan()` returns, per valid PT_LOAD
+segment, the destination offset inside the region (`p_paddr - mem_reloc`), the
+copy length, the zero-fill length, and the `.bNN` a split load would request --
+plus the reloc base and whether the blob is relocatable or split. On the REAL
+blob that is one segment, destination 0, copy 1968, **zero fill 0**, reloc base
+`0x5000`.
+
+TWO CORRECTIONS ESTABLISHED THIS ROUND, both recorded in the header:
+
+- The BINS split rule (`:265-291`) and the METADATA split rule (`:168`) are
+  DIFFERENT tests that can DISAGREE on the same bytes. The module exposes them
+  separately and a test asserts the disagreement in both directions.
+- The `p_offset + p_filesz > fw->size` refusal at `:369` is PROVABLY
+  UNREACHABLE once `bins_are_split()` has run, because that rule already sets
+  `is_split` on the same condition. It is retained as a faithful mirror and
+  documented as unreachable rather than pretended reachable by a test.
+
+The round-74 honest boundary is UNCHANGED: no storage read, no `memcpy`/`memset`
+in the module, no allocation, no `memremap`, no SCM, no authorisation.
+`adreno_mdt_loader_available()` is still 0, `adreno_mdt_ready()` is still derived
+from it and still 0, S6/S7 stay `present = 0` in the zap-auth chain,
+`CONFIG_XNU_NATIVE_ADRENO` still `n`, no device run, no flash. Round 106 computes
+WHERE the bytes would go; it moves none of them.

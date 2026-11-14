@@ -138,3 +138,31 @@ client GPU windows stay all-zero, and the `gpu` area STAYS `"host-verified"`. No
 device run, no flash, `m39510` NOT exercised. It does **not** unblock stage 5.
 
 Chain: round 72 closed at `4099a40649942d1dea3428bf9025a5a3b2cfc701`.
+
+---
+
+## ROUND 106 addendum (2026-11-14) -- SUPERSEDES the counts above, not the round-73 findings
+
+Everything in this record about the round-73 shape, the eight-step chain and the
+"exactly one of eight present" result still holds verbatim. Three things above
+are now STALE and are corrected here rather than edited in place, because this
+file is the frozen round-73 record.
+
+1. **`7 test groups` -> 9.** Round 106 added `testPasStages` and
+   `testSmcBaseAndChannels`. The banner now reads
+   `PASS: enchilada A630 ZAP/PAS auth shape contract (9 test groups, 0 failures)`.
+2. **`ZAP_AUTH_CROSS: 114 checks` -> 224.** The verifier gained Domain A11
+   (the three-stage ORDER re-derived from `mdt_loader.c:226-252`, the three
+   arginfo values recomputed from `qcom_scm.h:29-42`, and the SMC function-id
+   arithmetic from `:69`) and Domain B12/B13 for the new contract.
+3. **`owner` was recorded as `1` -- it is `2`.** The header line quoted above
+   said `ARM_SMCCC_OWNER_SIP = 1u` from round 73 through round 105. That was
+   WRONG. `ARM_SMCCC_OWNER_SIP` is 2, and it is now DERIVED rather than
+   asserted: `(0xC2000000 >> 24) & 0x3F == 2`, and the module recovers the owner
+   from the base in `adreno_zap_smc_base_owner()` so the verifier can prove it.
+
+The round-73 honest boundary is UNCHANGED: no SCM call, no transport, seven of
+eight preconditions absent, `adreno_zap_auth_ready()` still 0 and still derived
+from `adreno_zap_present_count()`, `CONFIG_XNU_NATIVE_ADRENO` still `n`, the
+`gpu` area still `"host-verified"`, no device run, no flash. Round 106 models the
+call SEQUENCE; it does not execute one.

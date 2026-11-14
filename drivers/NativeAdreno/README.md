@@ -160,11 +160,27 @@ the offset before reading it.
   `p_filesz` values (148/6536/1968) are exactly the device `.b00/.b01/.b02` sizes. PARSER
   ONLY: `adreno_mdt_loader_available()` is 0 and `ready()` is derived from it, so zap-auth's
   S6/S7 stay present=0 — their rules are modelled, their execution is not.
-- `tests/adreno-mdt-v1-test.cpp` — 6 test groups; group 6 parses the real blob and SKIPs
-  loudly if it is absent rather than passing silently.
+- `tests/adreno-mdt-v1-test.cpp` — 8 test groups; group 7 is the ROUND 106 load plan
+  and group 8 parses AND PLANS the real blob, SKIPping loudly if it is absent rather
+  than passing silently.
 - `scripts/verify-enchilada-mdt.py` — cross verifier: 2 sha256-pinned sources plus an
   INDEPENDENT Python reparse of the real blob confronted with the round-38 device
-  inventory (113 checks).
+  inventory (196 checks).
+- **ROUND 106 load plan** (`adreno_mdt_bins_are_split`, `adreno_mdt_relocatable`,
+  `adreno_mdt_min_paddr`, `adreno_mdt_plan`, `adreno_mdt_plan_verify`): per valid
+  PT_LOAD segment, WHERE it goes and how much is data versus zero fill —
+  `dst = p_paddr - mem_reloc` (`mdt_loader.c:350`), refuse `offset + p_memsz >
+  mem_size` (`:351`), refuse `p_filesz > p_memsz` (`:357`), zero fill
+  `p_memsz - p_filesz` (`:385`), and the `.bNN` a split load would request (`:50`).
+  `mem_reloc` is `min_addr` when the image is relocatable and `mem_phys` otherwise
+  (`:335`/`:341`). On the REAL blob: one segment, dst 0, copy 1968, **zero fill 0**,
+  reloc base `0x5000`. TWO things established this round rather than assumed: the BINS
+  split rule (`:265-291`) and the METADATA split rule (`:168`) are DIFFERENT tests that
+  can DISAGREE on the same bytes (asserted both ways); and the `:369` source-bounds
+  refusal is PROVABLY UNREACHABLE once the bins rule has run, so it is kept as a
+  faithful mirror and documented as unreachable instead of being faked by a test.
+  STILL PARSER + PLAN ONLY: no file read, no `memcpy`/`memset`, nothing allocated,
+  `loader_available()` is 0 and `ready()` derived from it is 0.
 - `AdrenoZapAuthV1.h` / `AdrenoZapAuthV1.c` — Qualcomm PAS / ZAP auth SHAPE contract
   (round 73): the exact SCM descriptor the handshake uses (`SVC_PIL 0x02`,
   `PAS_AUTH_AND_RESET 0x05`, one SIP-owned arg — and the finding that those numeric
@@ -176,12 +192,31 @@ the offset before reading it.
   is not even reachable because XNU has no such Kconfig, so that step's real content
   is the SCM transport itself. `adreno_zap_auth_ready()` is derived from the count and
   is 0.
-- `tests/adreno-zap-auth-v1-test.cpp` — 7 test groups: pasid, SCM shape, chain
+- **ROUND 106 three-stage ORDERED PAS contract** (`adreno_zap_pas_sequence`,
+  `adreno_zap_pas_call`, `adreno_zap_pas_order_allows`, `adreno_zap_pas_judge`,
+  `adreno_zap_scm_fnid`, `adreno_zap_smc_base_gate`/`_owner`/`_derived`/`_provenance`,
+  `adreno_zap_pas_verify`): the loader-consumable sequence `pas_init_image`
+  (PIL `0x01`, `ARGS(2,VAL,RW)` = `0x82`) -> `pas_mem_setup` (PIL `0x02`,
+  `ARGS(3)` = `0x03`) -> `pas_auth_and_reset` (PIL `0x05`, `ARGS(1)` = `0x01`), each
+  with its own `x0`. **Stage 1 is MANDATORY on this board**, and that is DERIVED, not
+  assumed: `mdt_loader.c:251` makes mem_setup conditional on `relocate`, which
+  `:226-227` sets from `QCOM_MDT_RELOCATABLE`, and the real `a630_zap.mdt` ph[2]
+  carries BIT(27) — so `adreno_zap_pas_stage_required(1, /*relocatable=*/1)` is 1.
+  Order is enforced as a PREFIX test, so auth-before-init is refused here rather than
+  by the secure world. `x0 = base | SCM_SMC_FNID(svc,cmd)` with
+  `SCM_SMC_FNID = ((s&0xFF)<<8)|(c&0xFF)` (`:69`). **The base `0xC2000000` is DERIVED,
+  NOT PINNED** — arm-smccc.h is not among the pinned sources, so the module labels it
+  `"derived-unpinned"` and accepts a base only through a gate that re-derives the owner
+  field and requires the SMC_64 bit. Result judgement keeps BOTH channels
+  (`transport_ret` and the secure-world `res.result[0]`) and succeeds only when both
+  are zero (`:729`). No SCM call is made.
+- `tests/adreno-zap-auth-v1-test.cpp` — 9 test groups: pasid, SCM shape, chain
   presence/reachability, step names, result semantics, the -EOPNOTSUPP quiet fallback,
-  self-check.
+  self-check, the ROUND 106 three-stage contract, and the derived SMC base with the
+  two-channel judgement.
 - `scripts/verify-enchilada-zap-auth.py` — cross verifier: 4 sha256-pinned sources
   re-derive the call shape, the public-header absence and the eight anchors in strict
-  source order (114 checks).
+  source order, plus the round-106 order, arginfo and function-id arithmetic (224 checks).
 - `scripts/verify-enchilada-cp-ring.py` — cross verifier: 3 sha256-pinned sources
   re-derive the offsets, order, payload, barrier rule and protect encoding, and
   prove the five undefined macros by exhaustive scan (139 checks).
