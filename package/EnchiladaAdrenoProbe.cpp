@@ -1322,7 +1322,70 @@ extern "C" void enchilada_adreno_poll(void) {
                         // meaningless. Starts at 0 ("no stage-0 x1 was captured",
                         // which is the correct reading when the chain never ran).
                         int s7x1Ok = 0;
+                        // ---- ROUND 140: the SHM_BRIDGE_ENABLE probe ----
+                        // The last read-only question on the PAS route: does the
+                        // secure world still expect the firmware memory to sit
+                        // behind an SHM bridge before it authenticates? Upstream
+                        // probes this with qcom_scm_shm_bridge_enable()
+                        // (qcom_scm.c:1363-1389): SVC_MP/0x1C, owner SIP,
+                        // ZERO arguments, x0 = base | 0x0C1C. The answer is
+                        // result[0] (smc a1): 0==success, 4==NOTSUPP, other==unknown.
+                        //
+                        // Two channels, kept apart exactly like p13/avail:
+                        //   av2 = is SVC_MP/0x1C KNOWN at all? (reused round-129
+                        //        is_call_available mechanism, probe_fnid=0x0C1C)
+                        //   sb  = the SHM_BRIDGE_ENABLE result[0]
+                        // av2 is SENT FIRST, because Linux gates the call on the
+                        // availability query (qcom_scm.c:1375-1377); sb without a
+                        // confident av2=1 is as ambiguous as p13 without avail.
+                        // Both run UNCONDITIONALLY (like p13), independent of
+                        // pas-exec / armed / s7why, and only need the transport
+                        // symbol (so they sit inside the same `if (s7sym)` block
+                        // that already gates the p13 probe).
+                        int s7av2 = -1;          // SVC_MP/0x1C known: 1/0/-1
+                        uint32_t s7sb = 0;       // SHM_BRIDGE_ENABLE result[0]
                         if (s7sym) {
+                            // ---- IS_CALL_AVAILABLE for SVC_MP / SHM_BRIDGE_ENABLE ----
+                            // probe_fnid = FNID(0x0C, 0x1C) = 0x0C1C. The
+                            // availability query is x0 = base | 0x0601 with
+                            // args[0] = 0x0C1C | (SIP << 24). Sent as a distinct
+                            // SMC so 'av2=1' really means 'the command exists'.
+                            struct adreno_zap_pas_call s7shmQ = {};
+                            if (adreno_zap_is_call_available_call(
+                                    s7base, 0x0C1Cu, &s7shmQ) == 0) {
+                                uint64_t q2t = 0;
+                                uint64_t q2s = 0;
+                                const int32_t q2rc =
+                                    armcpu_scm_call(s7shmQ.x0, s7shmQ.arginfo,
+                                                    s7shmQ.args0, 0u, 0u,
+                                                    &q2t, &q2s);
+                                if (q2rc == 0) {
+                                    (void)adreno_zap_is_call_available_verdict(
+                                        (int)(int32_t)(q2t & 0xFFFFFFFFu),
+                                        (uint32_t)(q2s & 0xFFFFFFFFu),
+                                        &s7av2);
+                                }
+                                // q2rc != 0: no SMC was made; av2 stays -1
+                                // (NOT 0 -- "not asked" != "absent").
+                            }
+                            // ---- then SHM_BRIDGE_ENABLE itself, sent BEFORE p13 ----
+                            // result[0] == 0 is success, == kAdrenoZapShmBridgeNotSupp
+                            // (4) is the explicit NOTSUPP, anything else unknown.
+                            struct adreno_zap_pas_call s7shmE = {};
+                            if (adreno_zap_shm_bridge_enable_call(s7base,
+                                                                  &s7shmE) == 0) {
+                                uint64_t sbt = 0;
+                                uint64_t sbs = 0;
+                                const int32_t sbrc =
+                                    armcpu_scm_call(s7shmE.x0, s7shmE.arginfo,
+                                                    s7shmE.args0, 0u, 0u,
+                                                    &sbt, &sbs);
+                                if (sbrc == 0) {
+                                    s7sb = (uint32_t)(sbs & 0xFFFFFFFFu);
+                                }
+                                // sbrc != 0: exporter refused; sb stays 0 and
+                                // av2 carries the inconclusive truth.
+                            }
                             // ---- IS_CALL_AVAILABLE for PAS_IS_SUPPORTED ----
                             // x0 = base | 0x0601, args[0] = 0x0207 | (SIP << 24).
                             struct adreno_zap_pas_call s7q = {};
@@ -1474,6 +1537,23 @@ extern "C" void enchilada_adreno_poll(void) {
                                  //           init_image x1s is 0x82, which is
                                  //           exactly what round 128 measured.
                                  "avail=%d av0=%x/%x x1s=%x "
+                                 // ROUND 140:
+                                 //   av2 = is SVC_MP/0x1C (SHM_BRIDGE_ENABLE)
+                                 //         KNOWN? 1 known / 0 absent / -1 the
+                                 //         is_call_available query itself did
+                                 //         not answer. Read FIRST: without
+                                 //         av2=1, sb is as ambiguous as p13
+                                 //         without avail.
+                                 //   sb  = SHM_BRIDGE_ENABLE result[0]:
+                                 //         av2=0      -> command absent -> the
+                                 //                       shmbridge path is
+                                 //                       unavailable -> PAS ends.
+                                 //         av2=1 sb=0 -> enable SUCCESS -> the
+                                 //                       shmbridge IS available.
+                                 //         av2=1 sb=4 -> explicit NOTSUPP.
+                                 //         av2=1 sb=<other> -> unknown; report
+                                 //                       verbatim, do not infer.
+                                 "av2=%d sb=%x "
                                  // ROUND 131:
                                  //   ct   = the SMCCC call type actually used
                                  //          for the PAS stages ("fast"/"std"),
@@ -1559,10 +1639,12 @@ extern "C" void enchilada_adreno_poll(void) {
                                  s7avail,
                                  (unsigned)s7availA0, (unsigned)s7availA1,
                                  (unsigned)s7x1s,
-                                 // ROUND 131: the call type that was actually
-                                 // sent, and whether the captured x1 matched the
-                                 // contract's pinned init_image arginfo.
-                                 s7ct, s7x1Ok);
+                                  // ROUND 140: the shmbridge two channels.
+                                  s7av2, (unsigned)s7sb,
+                                  // ROUND 131: the call type that was actually
+                                  // sent, and whether the captured x1 matched the
+                                  // contract's pinned init_image arginfo.
+                                  s7ct, s7x1Ok);
                         IOLog("enchilada-adreno: %s\n", s7Row);
                         // ROUND 126: its own buffer, not the stage-6 one.
                         setStage7Replay(s7Row);

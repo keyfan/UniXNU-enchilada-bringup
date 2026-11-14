@@ -113,6 +113,23 @@ extern "C" {
 #define kAdrenoZapScmPasAuthAndReset   0x05u /* P3:100 */
 #define kAdrenoZapScmPasShutdown       0x06u /* P3:101 */
 #define kAdrenoZapScmPasIsSupported    0x07u /* P3:102 */
+/* ---- ROUND 140: the SHM-bridge probe (SVC_MP / SHM_BRIDGE_ENABLE) -------
+ * Pinned to the same v6.12 qcom_scm.c/qcom_scm.h this tree already drives:
+ *   #define QCOM_SCM_SVC_MP           0x0c    (qcom_scm.c:112)
+ *   #define QCOM_SCM_MP_SHM_BRIDGE_ENABLE 0x1c (qcom_scm.c:119)
+ *   #define SHMBRIDGE_RESULT_NOTSUPP  4       (qcom_scm.c:115)
+ * qcom_scm_shm_bridge_enable() (qcom_scm.c:1363-1389) is a ZERO-argument
+ * QCOM_SCM_DESC CAR_ACTIVE (owner SIP), so arginfo is 0 / arg_count is 0 and
+ * only x0 = base | FNID(0x0C, 0x1C) carries anything. result[0]==0 is success,
+ * result[0]==4 is the explicit NOTSUPP; any other value is unknown. This probe
+ * is READ-ONLY and its availability is asked through the same SVC_INFO
+ * is_call_available mechanism as round 129, with probe_fnid = 0x0C1C. */
+#define kAdrenoZapScmSvcMp             0x0cu /* qcom_scm.c:112 QCOM_SCM_SVC_MP */
+#define kAdrenoZapScmMpShmBridgeEnable 0x1cu /* qcom_scm.c:119 SHM_BRIDGE_ENABLE */
+#define kAdrenoZapShmBridgeNotSupp     4u    /* qcom_scm.c:115 SHMBRIDGE_RESULT_NOTSUPP */
+/* FNID(0x0C, 0x1C) == 0x0C1C; the exact id this probe queries for availability
+ * AND sends in x0. Defined once so the two can never disagree. */
+#define kAdrenoZapShmBridgeFnid        ((kAdrenoZapScmSvcMp << 8) | kAdrenoZapScmMpShmBridgeEnable)
 /* P2:709 QCOM_SCM_ARGS(1): one argument, and P2:710 that argument is the
  * peripheral id. P2:711 the owner is the SIP SMC owner.
  *
@@ -632,6 +649,26 @@ int adreno_zap_is_call_available_call(uint32_t base, uint32_t probe_fnid,
  * Returns 0, or 1 on a NULL out. */
 int adreno_zap_is_call_available_verdict(int transport_ret,
                                          uint32_t secure_result, int *known);
+
+/* ==========================================================================
+ * ROUND 140: THE SHM_BRIDGE_ENABLE PROBE (SVC_MP / 0x1C)
+ * ==========================================================================
+ * The last PAS-route verification: whether the secure world still expects the
+ * firmware memory to be protected by an SHM bridge before it authenticates.
+ * qcom_scm_shm_bridge_enable() (qcom_scm.c:1363-1389) is the read-only,
+ * zero-argument way upstream probes this:
+ *     svc    QCOM_SCM_SVC_MP              = 0x0C   (qcom_scm.c:112)
+ *     cmd    QCOM_SCM_MP_SHM_BRIDGE_ENABLE = 0x1C  (qcom_scm.c:119)
+ *     owner  ARM_SMCCC_OWNER_SIP                  (.owner at :1370)
+ *     FNID   (0x0C << 8) | 0x1C            = 0x0C1C
+ *     x0     base | 0x0C1C
+ *     args   NONE -- arginfo == 0, arg_count == 0, args0 == 0
+ * result[0] (smc a1): 0 == success, 4 == NOTSUPP, any other == unknown.
+ * Its availability is asked with the SAME is_call_available mechanism as round
+ * 129 (probe_fnid = 0x0C1C), so `av2=1` is required before `sb=` means anything.
+ * Makes no SCM call. */
+int adreno_zap_shm_bridge_enable_call(uint32_t base,
+                                      struct adreno_zap_pas_call *out);
 
 /* THE v13 THE BRIEF ASKED FOR, WITH avail FOLDED IN. This is the function the
  * probe uses; the two-argument form above is kept for callers that already know.

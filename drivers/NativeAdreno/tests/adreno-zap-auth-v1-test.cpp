@@ -681,6 +681,37 @@ static void testPasExecute()
     CHECK(supported == -1);
     CHECK(adreno_zap_pas_supported_verdict_avail(1, 0, 1u, nullptr) == 1);
 
+    // ========== ROUND 140: the SHM_BRIDGE_ENABLE probe shape =============
+    // SVC_MP / 0x1C, owner SIP, ZERO arguments. x0 = base | 0x0C1C.
+    CHECK(kAdrenoZapScmSvcMp == 0x0cu);
+    CHECK(kAdrenoZapScmMpShmBridgeEnable == 0x1cu);
+    CHECK(kAdrenoZapShmBridgeNotSupp == 4u);
+    CHECK(kAdrenoZapShmBridgeFnid == 0x0C1Cu);   // (0x0C << 8) | 0x1C
+    struct adreno_zap_pas_call shmb;
+    CHECK(adreno_zap_shm_bridge_enable_call(base, &shmb) == 0);
+    CHECK(shmb.svc == 0x0cu);                     // SVC_MP
+    CHECK(shmb.cmd == 0x1cu);                     // SHM_BRIDGE_ENABLE
+    CHECK(shmb.owner == kAdrenoZapScmOwnerSip);   // .owner at qcom_scm.c:1370
+    CHECK(shmb.fnid == 0x0C1Cu);
+    CHECK(shmb.x0 == (base | 0x0C1Cu));
+    CHECK(shmb.x0 == 0xC2000C1Cu);                // THE shape the brief named
+    CHECK(shmb.arginfo == 0u);                    // ZERO arguments
+    CHECK(shmb.arg_count == 0u);
+    CHECK(shmb.args0 == 0u);
+    CHECK(shmb.stage >= kAdrenoZapPasStageCount); // not an ordered AUTH stage
+    CHECK(shmb.required == 0);
+    CHECK(shmb.is_metadata_call == 0);
+    CHECK(shmb.carries_size_arg == 0);
+    // Refusals: same base gate as every other call this module produces.
+    CHECK(adreno_zap_shm_bridge_enable_call(0xC1000000u, &shmb) == 1);
+    CHECK(adreno_zap_shm_bridge_enable_call(base, nullptr) == 1);
+    // The availability id is the SAME 0x0C1C the enable call sends: a caller
+    // must ask about the exact function id it will then invoke, or the gate
+    // answer and the probe would disagree by construction.
+    struct adreno_zap_pas_call shmAvail;
+    CHECK(adreno_zap_is_call_available_call(base, 0x0C1Cu, &shmAvail) == 0);
+    CHECK(shmAvail.args0 == (0x0C1Cu | (kAdrenoZapScmOwnerSip << kAdrenoZapSmcOwnerShiftForArg)));
+
     // ========== ROUND 131: the SMCCC call type (FAST vs STD) ==============
     // Every base this port has sent sets bit31 (FAST_CALL). Upstream's PAS calls
     // clear it (qcom_scm.c:306 atomic=false -> qcom_scm-smc.c:160 STD_CALL).

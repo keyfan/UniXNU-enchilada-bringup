@@ -872,6 +872,43 @@ int adreno_zap_pas_is_supported_call(uint32_t base,
 }
 
 /* ==========================================================================
+ * ROUND 140: SHM_BRIDGE_ENABLE -- the read-only shmbridge availability probe.
+ * qcom_scm_shm_bridge_enable() (qcom_scm.c:1363-1389). ZERO arguments; only x0
+ * = base | FNID(0x0C, 0x1C) carries anything. result[0]==0 is success,
+ * result[0]==4 (kAdrenoZapShmBridgeNotSupp) is the explicit NOTSUPP.
+ * ========================================================================== */
+int adreno_zap_shm_bridge_enable_call(uint32_t base,
+                                      struct adreno_zap_pas_call *out)
+{
+    if (out == 0) {
+        return 1;
+    }
+    /* The SAME base gate as every other query this module produces: refuse an x0
+     * whose owner is not SIP or that is not SMC64. A probe with a malformed base
+     * would ask a different monitor than the one upstream's enable() calls. */
+    if (adreno_zap_smc_base_gate(base) == 0) {
+        return 1;
+    }
+    out->stage = kAdrenoZapPasStageCount;    /* not an ordered AUTH stage        */
+    out->svc = kAdrenoZapScmSvcMp;           /* qcom_scm.c:112 0x0C SVC_MP       */
+    out->cmd = kAdrenoZapScmMpShmBridgeEnable; /* qcom_scm.c:119 0x1C             */
+    out->arginfo = 0u;                       /* qcom_scm.c:1367-1371 NO args     */
+    out->arg_count = 0u;                     /* arginfo & 0x0F == 0              */
+    out->owner = kAdrenoZapScmOwnerSip;      /* qcom_scm.c:1370 .owner = SIP     */
+    out->args0 = 0u;                         /* no arguments at all              */
+    out->fnid = adreno_zap_scm_fnid(out->svc, out->cmd); /* P3:69 -> 0x0C1C       */
+    out->x0 = base | out->fnid;              /* P2:355-356; owner rides in base  */
+    out->args1_kind = 0u;
+    /* Deliberately NOT a member of the three-stage AUTH chain: it neither
+     * authenticates a blob nor releases a processor. required/metadata/size all
+     * stay 0 so no caller can slot it into adreno_zap_pas_sequence(). */
+    out->required = 0;
+    out->is_metadata_call = 0;
+    out->carries_size_arg = 0;
+    return 0;
+}
+
+/* ==========================================================================
  * ROUND 129: IS_CALL_AVAILABLE, and the v13 that folds it in.
  * See the header for why the brief's svc=0x01 is wrong (that is SVC_BOOT;
  * SVC_INFO is 0x06 at P3:109, and this tree's own ArmCpu.cpp:165 already

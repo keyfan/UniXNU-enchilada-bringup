@@ -610,8 +610,15 @@ def main():
           'R129 avail is set by the decoder, not by a constant')
     _after_q = code[code.find('adreno_zap_is_call_available_verdict('):]
     _after_q = _after_q[:_after_q.find('then the PAS_IS_SUPPORTED')] if 'then the PAS_IS_SUPPORTED' in _after_q else _after_q[:400]
-    check(re.search(r'&s7avail\)', _after_q) is not None,
+    # ROUND 140: the av2 probe's verdict call (writes &s7av2) now comes BEFORE
+    # the p13 availability verdict in the file, so "the decoder writes s7avail"
+    # must be found as the specific &s7avail out-parameter wherever it sits,
+    # not assumed to be the first verdict call.
+    _avail_out = re.search(r'adreno_zap_is_call_available_verdict\(\s*[^;]*?\n\s*&s7avail\)', code)
+    check(_avail_out is not None,
           'R129 the decoder writes s7avail through its out-parameter')
+    check('&s7av2)' in code,
+          'R140 the av2 probe writes s7av2 through &s7av2')
     # No assignment of a literal into s7avail AFTER its declaration: that is the
     # "恒真" shape. The declaration `int s7avail = -1;` is the one permitted
     # initialiser and is asserted above.
@@ -631,6 +638,84 @@ def main():
           'R129 the row carries avail=, av0= and x1s=')
     check('(unsigned)s7x1s' in code,
           'R129 x1s= prints an arginfo actually sent in x1')
+
+    # ==== ROUND 140: the SHM_BRIDGE_ENABLE (av2/sb) probe =================
+    # The last read-only question on the PAS route: is SVC_MP/0x1C known, and
+    # what does SHM_BRIDGE_ENABLE answer. Two channels, both UNCONDITIONAL,
+    # both in the same `if (s7sym)` block that already gates p13.
+    # ---- 1. the availability must be ASKED about 0x0C1C, via the round-129
+    #         mechanism, and the enable call built through the contract ----
+    check('adreno_zap_is_call_available_call' in code,
+          'R140 the probe issues an IS_CALL_AVAILABLE query for shmbridge')
+    check('is_call_available_call(\n                                    s7base, 0x0C1Cu' in code or
+          'is_call_available_call(s7base, 0x0C1Cu' in code,
+          'R140 ...about 0x0C1C, the SVC_MP/0x1C function id')
+    check('adreno_zap_shm_bridge_enable_call(s7base' in code,
+          'R140 the SHM_BRIDGE_ENABLE call is built through the contract helper')
+    # x0 for enable must be base | FNID(0x0C,0x1C) == base | 0x0C1C.
+    _authc = (DEV / 'drivers/NativeAdreno/AdrenoZapAuthV1.c').read_text(encoding='utf-8', errors='replace')
+    _authh = (DEV / 'drivers/NativeAdreno/AdrenoZapAuthV1.h').read_text(encoding='utf-8', errors='replace')
+    check('#define kAdrenoZapScmSvcMp             0x0cu' in _authh,
+          'R140 SVC_MP is pinned to 0x0C (qcom_scm.c:112)')
+    check('#define kAdrenoZapScmMpShmBridgeEnable 0x1cu' in _authh,
+          'R140 SHM_BRIDGE_ENABLE is pinned to 0x1C (qcom_scm.c:119)')
+    check('#define kAdrenoZapShmBridgeNotSupp     4u' in _authh,
+          'R140 SHMBRIDGE_RESULT_NOTSUPP is pinned to 4 (qcom_scm.c:115)')
+    check('out->x0 = base | out->fnid;' in _authc and
+          'out->svc = kAdrenoZapScmSvcMp' in _authc and
+          'out->cmd = kAdrenoZapScmMpShmBridgeEnable' in _authc,
+          'R140 the enable call sends x0 = base | 0x0C1C via SVC_MP/0x1C')
+    # ZERO arguments: arginfo 0, arg_count 0, args0 0. The upstream .owner is SIP.
+    check('out->arginfo = 0u;' in _authc and 'out->arg_count = 0u;' in _authc and
+          'out->args0 = 0u;' in _authc,
+          'R140 SHM_BRIDGE_ENABLE is a ZERO-argument call (qcom_scm.c:1367-1371)')
+    check('out->owner = kAdrenoZapScmOwnerSip;' in _authc,
+          'R140 the enable call owner is SIP (qcom_scm.c:1370)')
+    # The availability id a caller asks about must equal the enable fnid.
+    check('kAdrenoZapShmBridgeFnid' in _authh,
+          'R140 the FNID is named once so availability and x0 cannot disagree')
+    # ---- 2. UNCONDITIONAL (same gate as p13 / mdt_ck): both fields declared
+    #         and BOTH fed to the row whether or not pas-exec/armed ran ----
+    check('int s7av2 = -1;' in code,
+          'R140 av2 STARTS at -1 (inconclusive), not at 0 or 1')
+    check('uint32_t s7sb = 0;' in code,
+          'R140 sb is declared')
+    check('av2=%d sb=%x' in code,
+          'R140 the row carries av2= and sb=')
+    check('s7av2, (unsigned)s7sb' in code,
+          'R140 both new fields reach snprintf')
+    # ---- 3. ORDER: av2 availability FIRST, then enable, then p13. A mutation
+    #         that swaps enable before availability, or p13 before av2, must fail.
+    _av2_at = code.find('is_call_available_call(')
+    _sb_at = code.find('adreno_zap_shm_bridge_enable_call(s7base')
+    _p13_at = code.find('adreno_zap_pas_is_supported_call(s7base, &s7sup)')
+    # the SVC_MP availability call is the FIRST is_call_available in the block
+    _av2_avail = code.find('adreno_zap_is_call_available_call(\n                                    s7base, 0x0C1Cu')
+    if _av2_avail < 0:
+        _av2_avail = code.find('adreno_zap_is_call_available_call(s7base, 0x0C1Cu')
+    check(_av2_avail > 0 and _sb_at > _av2_avail and _p13_at > _sb_at,
+          'R140 av2 availability runs BEFORE SHM_BRIDGE_ENABLE, and enable runs '
+          'BEFORE the p13 question')
+    # ---- 4. the enable verdict is COMPUTED, not assumed: s7sb is set only by a
+    #         completed transport (no literal re-assignment after declaration).
+    _after_sb_decl = code[code.find('uint32_t s7sb = 0;') + len('uint32_t s7sb = 0;'):]
+    # ROUND 140: s7sb must be COMPUTED from the transport, never a literal. Both
+    # decimal (`s7sb = 4;`) and C-`u`-suffixed (`s7sb = 4u;`) literals are
+    # mutations that fix the field to a constant and must fail. The only legal
+    # write is `s7sb = (uint32_t)(sbs & 0xFFFFFFFFu);`.
+    check(re.search(r's7sb\s*=\s*\d+\s*;', _after_sb_decl) is None and
+          re.search(r's7sb\s*=\s*\d+[uU]\s*;', _after_sb_decl) is None and
+          's7sb = (uint32_t)(sbs & 0xFFFFFFFFu);' in _after_sb_decl,
+          'R140 sb is COMPUTED from the completed transport, never a literal '
+          '(constant-zero or constant-4 mutations must fail)')
+    # ---- 5. NOT part of the PAS execute chain / not a new C unit: the probe
+    #         adds no code to the three-stage execute path. ----
+    check('adreno_zap_pas_execute(&s7tr' in code, 'R140 PAS execute path intact')
+    check('adreno_zap_shm_bridge_enable_call' not in code[code.find('adreno_zap_pas_execute(&s7tr'):],
+          'R140 the shmbridge probe is NOT inside the PAS execute chain')
+    # ---- 6. the base is the same s7base the rest of stage 7 uses ----
+    check('s7base, 0x0C1Cu' in code and 's7base' in code,
+          'R140 the probe uses the SAME s7base (respecting pas-exec call type)')
 
     # ==== ROUND 131: x1s must come from STAGE 0, not from the p13 probe ====
     # THE DEFECT (round 130 found it by reading a device row that said x1s=1):
