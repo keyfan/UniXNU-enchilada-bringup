@@ -85,6 +85,30 @@ archives = [
   "build-enchilada-msm-dsi.py",         # libEnchiladaMsmDsi.a: MDSS DSI0 CMD DMA transport + DCS packets (stage-3 layer 2; no runtime probe yet)
   "build-enchilada-gauge.py",          # libEnchiladaGauge.a: READ-ONLY bq27xxx fuel-gauge probe (enchilada-gauge=1|2, default off), force-loaded
   "build-enchilada-smmu.py",           # libEnchiladaSmmu.a: READ-ONLY appSMMU stream survey (enchilada-smmu=1, default off), force-loaded
+  # ROUND 117: generate drivers/NativeAdreno/AdrenoZapBlobV1.h BEFORE the adreno
+  # archive is built, because build-enchilada-adreno.py #includes it. The archives
+  # list runs in order (kernel.py build_archives at :188, the kernel link at :189),
+  # so this position IS the ordering guarantee.
+  #
+  # WHY THE PATH IS RELATIVE, and why that is not laziness:
+  #   * kernel.py runs every archive with cwd = the BUILD TREE (:141), so
+  #     `.cache/firmware` here means <tree>/.cache/firmware. The tree carries a
+  #     junction back to device/.cache/firmware, so the bytes a CI step writes
+  #     into the device repo are visible at this path.
+  #   * `{tree}` is NOT available here. kernel.py substitutes it only for
+  #     `component:` specs (:128-129); a plain script entry goes through
+  #     shlex.split (:132) with no substitution, so a literal `{tree}` would be
+  #     passed to the generator and fail to open.
+  #   * The explicit --firmware-dir is still REQUIRED rather than relying on the
+  #     generator's own defaults: in the tree, ROOT is <tree>, so ROOT-relative
+  #     guesses resolve under out/. Naming the path here keeps it auditable.
+  #
+  # NO BYTES (default, and every CI run that does not opt in): the directory
+  # exists but is empty, so the generator writes the ABSENT stub (present=0,
+  # blob=absent) and the kernel is byte-for-byte the pre-117 kernel. WITH BYTES
+  # (an explicit workflow_dispatch that supplies them): this same line writes a
+  # present header. The generator decides; this list never branches.
+  "generate-zap-blob.py --firmware-dir .cache/firmware",
   "build-enchilada-adreno.py",         # libEnchiladaAdreno.a: READ-ONLY GPUCC GDSC domain-state probe (enchilada-adreno=1, default off) + the 4 freestanding NativeAdreno C modules, force-loaded
 ]
 

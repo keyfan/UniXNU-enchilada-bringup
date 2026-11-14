@@ -34,6 +34,17 @@ on:
           UNIXNU_UNIQUE_CHIP_ID secret; it is never committed to the repository.
         required: false
         default: ""
+      zap_firmware_b64:
+        description: >-
+          OPT-IN A630 ZAP firmware, base64, for the two files the PAS contract needs
+          (a630_zap.mdt 6684 B then a630_zap.b02 1968 B). Leave EMPTY -- the default --
+          and the build is the ordinary no-bytes build: the generator writes an absent
+          stub, the kernel logs blob=absent, and nothing about the image changes.
+          Supplying a value embeds the real bytes in the kernel image. These are
+          somebody else's signed firmware: they are never committed, and this repository
+          has NO secrets, so they can only arrive through this input.
+        required: false
+        default: ""
       skip_payload:
         description: Build only the kernel (skips the payload and boot image)
         required: false
@@ -162,6 +173,52 @@ jobs:
         run: |
           python3 device/scripts/compose-xnu-patches.py --write --unixnu "$GITHUB_WORKSPACE"
           python3 device/scripts/compose-xnu-patches.py --unixnu "$GITHUB_WORKSPACE"
+
+      # ROUND 117, OPT-IN ONLY. When zap_firmware_b64 is empty -- the default, and
+      # every workflow_dispatch that does not deliberately set it -- this step is
+      # SKIPPED ENTIRELY: no directory is created, no file is written, and the build
+      # downstream is bit-for-bit the build it was before this step existed. The
+      # `if:` is on the step, not inside it, so a no-bytes run does not even pay for
+      # a shell.
+      #
+      # WHY AN INPUT AND NOT A SECRET: this repository has no secrets
+      # (secrets total_count = 0), so a `secrets.ZAP_FIRMWARE` reference would
+      # silently resolve to the empty string forever and the opt-in could never
+      # work. The three-stage shape below mirrors Resolve the platform seed, minus
+      # the middle stage that has nothing to read.
+      #
+      # WHERE THE BYTES GO, and why that path: board.toml's archives list runs the
+      # generator with cwd = the build tree and --firmware-dir .cache/firmware.
+      # <tree>/.cache/firmware is a junction to this repository's .cache/firmware,
+      # so writing here is what makes the bytes visible to that line. .cache/ is
+      # gitignored (:13), so nothing written here can ever be committed.
+      #
+      # THE PAYLOAD LAYOUT is fixed and length-checked: base64 of the .mdt (6684 B)
+      # immediately followed by the .b02 (1968 B), i.e. 8652 raw bytes -> 11536
+      # base64 characters. Both sizes are pinned in scripts/data/adreno-a630-
+      # device-firmware.json, and the generator verifies size+sha256 independently,
+      # so a wrong decode fails HERE with a clear message instead of much later
+      # inside a kernel build.
+      - name: Inject the opt-in ZAP firmware
+        if: ${{ inputs.zap_firmware_b64 != '' }}
+        env:
+          ZAP_FIRMWARE_B64: ${{ inputs.zap_firmware_b64 }}
+        run: |
+          set -eu
+          mkdir -p device/.cache/firmware
+          printf '%s' "$ZAP_FIRMWARE_B64" | base64 --decode > /tmp/zap.bin
+          size=$(wc -c < /tmp/zap.bin | tr -d ' ')
+          if [ "$size" -ne 8652 ]; then
+            echo "::error::zap_firmware_b64 decodes to $size bytes; expected 8652 (6684 .mdt + 1968 .b02)"
+            exit 1
+          fi
+          dd if=/tmp/zap.bin of=device/.cache/firmware/a630_zap.mdt bs=1 count=6684 status=none
+          dd if=/tmp/zap.bin of=device/.cache/firmware/a630_zap.b02 bs=1 skip=6684 count=1968 status=none
+          rm -f /tmp/zap.bin
+          # Say what landed, by hash, so the run log proves which bytes were used
+          # without ever printing them.
+          echo "zap firmware injected:"
+          shasum -a 256 device/.cache/firmware/a630_zap.mdt device/.cache/firmware/a630_zap.b02
 
       - name: Build kernel
         id: kernel

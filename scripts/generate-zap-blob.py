@@ -46,11 +46,27 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-# Same derivation check-enchilada-adreno-host.py uses for the real-blob test:
-# ROOT is UniXNU-enchilada, ROOT.parent is work/, so the extraction lives at
-# oneplus6-ios/work/tmp/a630-device-fw. It is gitignored and host-local by
-# design, which is exactly why the ABSENT branch below has to be real.
-FIRMWARE = ROOT.parent / 'tmp' / 'a630-device-fw'
+# WHERE THE BYTES COME FROM (ROUND 117).
+#
+# ROOT is the DEVICE repository when run from here, and the BUILD TREE when run
+# by scripts/unixnu/kernel.py (which copies device/scripts/ into the tree and
+# runs with cwd=tree). The previous default, ROOT.parent/'tmp'/'a630-device-fw',
+# only resolves on a developer box: in the tree ROOT.parent is out/enchilada, so
+# it pointed at out/enchilada/tmp/... and never existed. That is why round 117
+# makes the caller pass --firmware-dir explicitly from board.toml.
+#
+# The FIRST default below is the upstream convention and works in BOTH worlds
+# for one specific reason: the tree carries a `.cache/firmware` junction back to
+# device/.cache/firmware (verified live). So ROOT/'.cache'/'firmware' resolves
+# to the same real directory whether ROOT is device/ or tree/.
+#
+# The SECOND is the round-38 extraction path, kept as a local-development
+# convenience. It cannot fire in CI (OUT_DIR/tmp does not exist there), which is
+# exactly why it is safe to keep.
+FIRMWARE_CANDIDATES = (
+    ROOT / '.cache' / 'firmware',
+    ROOT.parent / 'tmp' / 'a630-device-fw',
+)
 OUT = ROOT / 'drivers' / 'NativeAdreno' / 'AdrenoZapBlobV1.h'
 
 # The two inputs, and the sizes/hashes the durable manifest already records.
@@ -184,10 +200,32 @@ def self_check(present, out_path):
     return ok, checks
 
 
+def resolve_firmware_dir(explicit):
+    """--firmware-dir wins; otherwise the first candidate that HOLDS the bytes.
+
+    Returning the first EXISTING directory (rather than the first that merely
+    exists) would be wrong: the upstream `.cache/firmware` directory exists even
+    when it is empty (CI: it always exists, because the workflow and the junction
+    create it), so "exists" would mask the local extraction one directory later.
+    Prefer a candidate that actually contains BOTH inputs; fall back to the first
+    candidate so the caller's error message names a sensible path.
+    """
+    if explicit is not None:
+        return explicit
+    for candidate in FIRMWARE_CANDIDATES:
+        if (candidate / MDT[0]).is_file() and (candidate / SEG[0]).is_file():
+            return candidate
+    return FIRMWARE_CANDIDATES[0]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--firmware-dir', type=pathlib.Path, default=FIRMWARE)
+    ap.add_argument('--firmware-dir', type=pathlib.Path, default=None,
+                    help='directory holding %s and %s; default: the first of %s '
+                         'that contains both'
+                         % (MDT[0], SEG[0],
+                            ', '.join(str(c) for c in FIRMWARE_CANDIDATES)))
     ap.add_argument('--out', type=pathlib.Path, default=OUT)
     ap.add_argument('--require-bytes', action='store_true',
                     help='fail instead of emitting an ABSENT stub (for a device build)')
@@ -198,6 +236,7 @@ def main():
         print(GITIGNORE_RULE)
         return 0
 
+    args.firmware_dir = resolve_firmware_dir(args.firmware_dir)
     mdt_path = args.firmware_dir / MDT[0]
     seg_path = args.firmware_dir / SEG[0]
     have = mdt_path.is_file() and seg_path.is_file()

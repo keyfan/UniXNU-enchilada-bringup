@@ -135,14 +135,28 @@ extern "C" {
 // was skipped and the probe failed with 7 undeclared identifiers.
 //
 // What this guard deliberately does NOT do: it does not turn the absence into a
-// non-event by generating something. The absence is a REAL build condition -- it
-// is the condition CI is in -- and the fallback exists to make that condition
-// compile HONESTLY (present=0, "blob=absent"), not to hide it. So do not "fix" a
-// future red build by running generate-zap-blob.py before CI: that manufactures
-// the file, the fallback is never exercised, and this exact class of bug becomes
-// invisible again. The regression gate in scripts/check-enchilada-adreno-probe.py
-// compiles the probe against an include dir that PROVABLY lacks the header, which
-// is what keeps this path honest.
+// non-event by generating something. In the DEFAULT build there are no firmware
+// bytes, so there is no header, and the fallback below is LIVE -- that is a REAL
+// build condition (the one CI is in), and the fallback exists to make it compile
+// HONESTLY (present=0, "blob=absent"), not to hide it.
+//
+// THE TWO BUILD MODES, both legitimate, distinguished by ONE thing -- whether the
+// bytes exist -- and NOT by whether the build is red or green:
+//
+//   DEFAULT (no bytes)  fallback branch live, blob=absent, generator not run.
+//                       scripts/check-enchilada-adreno-probe.py compiles THIS
+//                       case against an include dir that provably lacks the
+//                       header, which is what keeps the path honest.
+//   OPT-IN  (bytes)     a human dispatches the workflow and supplies the secret;
+//                       generate-zap-blob.py runs ON PURPOSE; the header exists;
+//                       this fallback is compiled out. That is expected.
+//
+// What stays forbidden is narrower than "never run the generator": it is running
+// it to turn a red DEFAULT build green. That manufactures the header, the
+// regression gate then tests the WRONG branch, and the absent-header path goes
+// back to being unbuilt and unverified everywhere -- which is how CI #247 stayed
+// invisible in the first place. A red default build is a real finding: fix the
+// code, do not feed it bytes.
 #ifndef ADRENO_ZAP_BLOB_V1_H
 // No generated header on this host: declare the absent-stub shape. Present is 0
 // so every consumer below refuses, and the log line says "blob=absent".

@@ -115,11 +115,30 @@ def main():
     # fallback's four unused static placeholders are a SECOND failure mode under
     # -Werror that a lenient syntax check would miss entirely.
     #
-    # DO NOT "fix" a future red build by running scripts/generate-zap-blob.py
-    # before CI. That would manufacture the header, this gate would test the
-    # WRONG branch, and the absent-header path would go back to being unbuilt
-    # and unverified everywhere. The absence is a real condition -- it is the
-    # condition CI is in -- and it is the thing being protected here.
+    # THE TWO BUILD MODES, and why this gate covers exactly one of them.
+    #
+    # DEFAULT build (what CI runs): there are no firmware bytes, therefore no
+    # generated header, therefore the probe's fallback branch is LIVE. That is
+    # not a degraded state to be worked around -- it is a REAL build condition,
+    # and it is the one this gate compiles against.
+    #
+    # OPT-IN byte build (a human dispatches the workflow and supplies the
+    # secret): the bytes genuinely exist, generate-zap-blob.py is invoked ON
+    # PURPOSE, and the header is present. That is the correct, intended use of
+    # the generator, not a workaround.
+    #
+    # THE DISTINGUISHING CRITERION IS WHETHER THE BYTES EXIST -- i.e. whether the
+    # build was opted in -- NOT whether the build is red or green. Running the
+    # generator to turn a red DEFAULT build green is what is forbidden: it
+    # manufactures the header, this gate then tests the WRONG branch, and the
+    # absent-header path (the fallback in package/EnchiladaAdrenoProbe.cpp) goes
+    # back to being unbuilt and unverified everywhere -- which is exactly how CI
+    # #247 stayed invisible. Running it as part of an explicit opt-in byte build
+    # is a different act with a different precondition, and is expected.
+    #
+    # So this gate must keep compiling the NO-BYTES case even now that the opt-in
+    # path exists. If a future change makes it run against a generated header, it
+    # has stopped testing the default build and must be reverted.
     iso = out / 'no-blob-include'
     iso.mkdir(parents=True, exist_ok=True)
     for stale in iso.glob('*.h'):
@@ -139,6 +158,52 @@ def main():
     check(r2.returncode == 0,
           f'R113 the probe compiles WITHOUT {blob_name} (the CI condition) '
           f'({r2.returncode}){(" :: " + _tail) if _tail else ""}')
+
+    # ---- ROUND 117: the DEFAULT build's blob contract, run for real ----
+    # The opt-in byte build (workflow_dispatch + zap_firmware_b64) is now a real
+    # path, so the thing that must not drift is its COMPLEMENT: with no bytes the
+    # generator has to emit the absent stub, and the header the build actually
+    # #includes has to say present=0. This runs the generator into a throwaway
+    # directory -- it does NOT touch drivers/NativeAdreno/AdrenoZapBlobV1.h, so
+    # checking never rewrites the tree it is checking.
+    #
+    # Both halves matter:
+    #   * present=0 / lengths 0 is what makes the kernel log blob=absent and
+    #     refuse to issue a PAS call with a zero image;
+    #   * "no full-size all-zero array" is what stops the failure being SILENT --
+    #     a 6684-byte zero array would look like a valid blob to every consumer
+    #     downstream and turn a missing input into a mysterious secure-world
+    #     rejection.
+    gen = DEV / 'scripts' / 'generate-zap-blob.py'
+    check(gen.is_file(), 'R117 the blob generator exists where the build runs it')
+    if gen.is_file():
+        empty_dir = out / 'no-bytes'
+        empty_dir.mkdir(parents=True, exist_ok=True)
+        for stale in empty_dir.glob('*'):
+            if stale.is_file():
+                stale.unlink()
+        stub_out = out / 'AdrenoZapBlobV1.absent.h'
+        r3 = subprocess.run([sys.executable, str(gen),
+                             '--firmware-dir', str(empty_dir),
+                             '--out', str(stub_out)],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        (out / 'generate-zap-blob.absent.log').write_text(r3.stdout)
+        check(r3.returncode == 0,
+              f'R117 the generator succeeds on a no-bytes dir ({r3.returncode})')
+        if stub_out.is_file():
+            stub = stub_out.read_text(encoding='utf-8')
+            check('kAdrenoZapBlobPresent 0' in stub,
+                  'R117 no bytes -> the stub declares present=0')
+            check('kAdrenoZapMdtBytes 0' in stub and 'kAdrenoZapSegBytes 0' in stub,
+                  'R117 no bytes -> both lengths are 0, not the real sizes')
+            check('adreno_zap_mdt[6684]' not in stub and 'adreno_zap_seg[1968]' not in stub,
+                  'R117 no bytes -> NO full-size array (a silent all-zero blob)')
+            check(stub.count('static const char kAdrenoZap') == 2 and
+                  ('"' + '0' * 64 + '"') in stub,
+                  'R117 no bytes -> both digests are all-zero, not plausible')
+        else:
+            check(False, 'R117 the generator produced no stub file')
+
 
     if r.returncode == 0:
         ok, detail = macho_ok(obj)
