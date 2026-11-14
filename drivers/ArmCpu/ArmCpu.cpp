@@ -7,6 +7,12 @@
 #include <IOKit/IOCPU.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOMemoryDescriptor.h>
+// ROUND 127: the writable physically-contiguous allocator behind armcpu_dma_alloc_writable.
+// IOBufferMemoryDescriptor is the same class package/EnchiladaBacklightProbe.cpp:217 and
+// drivers/NativeDwc3/Dwc3Gadget.cpp:204 use for their DMA buffers; kern/task.h supplies
+// kernel_task, the task those allocations are made in.
+#include <IOKit/IOBufferMemoryDescriptor.h>
+#include <kern/task.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSSymbol.h>
 #include <kern/clock.h>
@@ -228,6 +234,75 @@ extern "C" uint64_t armcpu_map_physical (uint64_t physical, uint64_t length)
   OSSharedPtr<IOMemoryDescriptor> d (IOMemoryDescriptor::withPhysicalAddress (physical, length, kIODirectionIn), OSNoRetain);
   IOMemoryMap *map = d ? d->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;   // kept: never released
   return map ? static_cast<uint64_t> (map->getVirtualAddress ()) : 0;
+}
+
+// ROUND 127: a WRITABLE, physically-contiguous, page-aligned buffer, and its PHYSICAL address.
+// Added for the stage-7 PAS `init_image` metadata blob. Returns the physical address (0 on
+// failure); *out_virt (optional) receives the writable kernel VA for the caller's copy.
+//
+// WHY THIS CANNOT BE armcpu_map_physical(), which is the obvious thing to reach for:
+// that function is IOMemoryDescriptor::withPhysicalAddress(...) + map(), i.e. it takes a
+// physical address the caller ALREADY HAS and gives back a mapping of it. It allocates
+// nothing, and its direction is kIODirectionIn (read-only). PAS init_image needs the
+// OPPOSITE order of operations: obtain memory first, write the metadata into it, and only
+// then learn the physical address to hand to the secure world. Different problem, so a
+// different entry point -- and armcpu_map_physical is left untouched, because it carries
+// device-proven call sites (the GPUCC/GMU/SMMU probe windows) that must not change.
+//
+// WHY IT LIVES HERE AND NOT IN THE PROBE: EnchiladaAdrenoProbe.cpp is compiled by
+// scripts/check-enchilada-adreno-probe.py against a deliberately minimal IOKit stub that
+// declares EXACTLY IOLog + snprintf + PE_parse_boot_argn (that script's :67-69) over
+// EXACTLY two headers (:65), and the script's own docstring (:12-13) says "the stub must
+// not silently widen". Using IOBufferMemoryDescriptor from the probe would therefore force
+// those two gates to be relaxed. This file already carries real IOKit headers and already
+// exports platform capabilities of exactly this shape (armcpu_map_physical above,
+// armcpu_scm_call below), so putting the allocation here lets the probe keep its minimal
+// stub and add ONE named undefined symbol instead of widening a checked boundary.
+//
+// THE ALLOCATION PATTERN IS NOT INVENTED HERE. It is the one this tree already runs:
+// package/EnchiladaBacklightProbe.cpp:217-231 and drivers/NativeDwc3/Dwc3Gadget.cpp:204-219
+// both do inTaskWithOptions(kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous |
+// kIOMemoryMapperNone, bytes, 4096) and then reject unless getPhysicalSegment(0) is
+// non-zero and 4096-aligned. IOKIT_ENABLE_SHARED_PTR is not defined by this port's build,
+// so OSPtr<T> here is a raw T*, exactly as those two call sites rely on.
+//
+// THE BUFFER IS KEPT, NEVER RELEASED -- the same convention as armcpu_map_physical's map
+// ("kept: never released"). The secure world holds this physical address across the whole
+// init_image / mem_setup / auth_and_reset sequence, so releasing it once the call returns
+// would hand TrustZone a dangling range. One allocation per boot, by design.
+//
+// ALIGNMENT IS VERIFIED, NOT ASSUMED: 4096 is passed as the alignment request and then the
+// RETURNED address is checked, because kIOMemoryPhysicallyContiguous does not by itself
+// promise page alignment. The contiguous byte count is checked to cover the whole request.
+// Every failure returns 0 and leaves *out_virt 0, so a caller can never mistake a partial
+// allocation for a usable buffer.
+//
+// 4 GiB: this function deliberately does NOT truncate or reject a high address. The return
+// is a full 64-bit physical address, and it may legitimately land above 4 GiB
+// (drivers/NativeMsmDsi/MsmDsiBrightness.h:19-22 records that question as UNCERTAIN on this
+// kernel). Whether such an address is acceptable belongs to the CONSUMER, so the decision
+// is pushed to the caller, which refuses it explicitly rather than silently dropping the
+// high half.
+extern "C" uint64_t armcpu_dma_alloc_writable (uint64_t bytes, uint64_t *out_virt)
+{
+  if (out_virt) *out_virt = 0;
+  if (bytes == 0) return 0;
+  IOBufferMemoryDescriptor *buffer = IOBufferMemoryDescriptor::inTaskWithOptions (
+      kernel_task,
+      static_cast<IOOptionBits> (kIODirectionInOut) |
+          static_cast<IOOptionBits> (kIOMemoryPhysicallyContiguous) |
+          static_cast<IOOptionBits> (kIOMemoryMapperNone),
+      static_cast<vm_size_t> (bytes), 4096);
+  // Deliberately NOT wrapped in OSSharedPtr and never released: see the note above.
+  if (!buffer) return 0;
+  void *virt = buffer->getBytesNoCopy ();
+  IOByteCount contiguous = 0;
+  const uint64_t phys = static_cast<uint64_t> (buffer->getPhysicalSegment (0, &contiguous, kIOMemoryMapperNone));
+  if (!virt || !phys) return 0;
+  if ((phys & 4095ULL) != 0) return 0;                          // not page aligned
+  if (static_cast<uint64_t> (contiguous) < bytes) return 0;     // not one contiguous run
+  if (out_virt) *out_virt = reinterpret_cast<uint64_t> (virt);
+  return phys;
 }
 
 // ROUND 110: the exported SMC entry point, so a contract-only consumer can

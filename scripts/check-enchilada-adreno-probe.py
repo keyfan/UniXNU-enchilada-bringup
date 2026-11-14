@@ -262,7 +262,24 @@ def main():
                    #   * adding a name here can never hide an arbitrary symbol:
                    #     the check is still "everything undefined must be either
                    #     known or adreno_*", so a stray libc call still fails.
-                   'armcpu_scm_call'}
+                   'armcpu_scm_call',
+                   # Round 127 stage 7: the writable physically-contiguous
+                   # allocator from the SAME ArmCpu.cpp, added for the PAS
+                   # init_image metadata buffer. It is the SAME kind of entry as
+                   # armcpu_scm_call above, and the reason it is added HERE rather
+                   # than by widening the stub is the whole point of this round:
+                   #   * the alternative was to let this shim use
+                   #     IOBufferMemoryDescriptor directly, which would have meant
+                   #     relaxing the two stub assertions above -- the boundary
+                   #     that exists so a probe cannot quietly acquire new kernel
+                   #     dependencies;
+                   #   * putting the allocation behind an export keeps the stub at
+                   #     exactly IOLog + snprintf + PE_parse_boot_argn and adds ONE
+                   #     named undefined symbol instead;
+                   #   * it resolves from libArmCpu.a at link time, exactly as
+                   #     armcpu_scm_call does, so "no unexpected undefined symbols"
+                   #     still means what it says.
+                   'armcpu_dma_alloc_writable'}
         unexpected = sorted(u for u in undefined
                             if u not in allowed and not u.startswith('adreno_') and u != 'armcpu_map_physical')
         check(not unexpected, f'shim has no unexpected undefined symbols (unexpected={unexpected})')

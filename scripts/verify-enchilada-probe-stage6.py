@@ -438,6 +438,125 @@ def main():
     check('kAdrenoZapBlobPresent ? "embedded" : "absent"' in code,
           'R120 the blob word is embedded/absent (NOT "present")')
 
+    # ==== ROUND 127: the D1 fix -- metadata goes in a REAL buffer ==========
+    # THE DEFECT (round 125's attribution): init_image's args[1] must point at a
+    # buffer containing the ELF header + hash table. Upstream never forwards the
+    # caller's address -- qcom_scm.c:602 allocates a DMA-coherent buffer, :607
+    # copies the metadata in, and :617 sends THAT buffer's physical address.
+    # Through round 126 this probe sent kAdrenoZapRegionPhys, an address the
+    # whole tree never writes to, so the secure world was asked to authenticate
+    # whatever the bootloader left behind.
+    #
+    # The fix has three independently-breakable parts, each asserted below:
+    #   1. the allocator export exists in ArmCpu.cpp with the right signature;
+    #   2. the probe calls it and copies the bytes in;
+    #   3. what reaches adreno_zap_pas_execute is the buffer's phys, not the
+    #      region address.
+    _armcpu = (DEV / 'drivers/ArmCpu/ArmCpu.cpp').read_text(encoding='utf-8', errors='replace')
+    check('extern "C" uint64_t armcpu_dma_alloc_writable (uint64_t bytes, uint64_t *out_virt)' in _armcpu,
+          'R127 ArmCpu.cpp exports armcpu_dma_alloc_writable with the declared signature')
+    check('IOBufferMemoryDescriptor::inTaskWithOptions' in _armcpu,
+          'R127 the allocator uses IOBufferMemoryDescriptor::inTaskWithOptions')
+    # PHYSICALLY CONTIGUOUS IS NOT OPTIONAL, and neither is the writable
+    # direction or the "no mapper" request. Each flag is asserted on its own:
+    # swapping kIOMemoryPhysicallyContiguous for kIOMemoryPageable leaves a
+    # perfectly plausible-looking allocation that the secure world could not use,
+    # and dropping kIODirectionInOut yields a mapping the CPU cannot write the
+    # metadata through.
+    check('kIODirectionInOut' in _armcpu,
+          'R127 the buffer is WRITABLE (kIODirectionInOut, not read-only kIODirectionIn)')
+    check('kIOMemoryPhysicallyContiguous' in _armcpu,
+          'R127 the allocation REQUESTS physically contiguous memory')
+    check('kIOMemoryMapperNone' in _armcpu,
+          'R127 the allocation asks for the no-mapper path (its phys is the real one)')
+    # The three flags must reach inTaskWithOptions as ONE options argument, not be
+    # mentioned in a comment somewhere while a lesser flag set is passed.
+    _alloc = _armcpu[_armcpu.find('armcpu_dma_alloc_writable (uint64_t bytes'):]
+    _alloc = _alloc[:_alloc.find('\n}')]
+    _opts = re.search(r'inTaskWithOptions\s*\((.*?)\);', _alloc, re.S)
+    _opts_text = _opts.group(1) if _opts else ''
+    for _flag in ('kIODirectionInOut', 'kIOMemoryPhysicallyContiguous', 'kIOMemoryMapperNone'):
+        check(_flag in _opts_text,
+              'R127 %s is inside the inTaskWithOptions ARGUMENTS' % _flag)
+    check('getPhysicalSegment (0, &contiguous, kIOMemoryMapperNone)' in _armcpu,
+          'R127 ...and reads the PHYSICAL address out via getPhysicalSegment')
+    # The alignment must be VERIFIED, not assumed: a non-page-aligned phys cannot
+    # be handed to the secure world, and trusting the allocator would hide that.
+    check('(phys & 4095ULL) != 0' in _armcpu,
+          'R127 the returned address is CHECKED for 4096 alignment, not assumed')
+    # The three device-proven exports must be untouched by this round.
+    for _keep in ('armcpu_map_physical', 'armcpu_scm_call', 'ScmResult scm4'):
+        check(_keep in _armcpu, 'R127 the pre-existing %s export still exists' % _keep)
+    check('kIODirectionInOut' in _armcpu,
+          'R127 the buffer is writable (kIODirectionInOut, not the read-only kIODirectionIn)')
+
+    # ---- the probe side: declared weak, called, copied into, and SENT ----
+    check('uint64_t armcpu_dma_alloc_writable(uint64_t bytes,' in code,
+          'R127 the probe declares the allocator')
+    check('armcpu_dma_alloc_writable(uint64_t bytes,\n'
+          '                                   uint64_t *out_virt) __attribute__((weak_import))' in code,
+          'R127 the declaration is weak_import (links fine without it)')
+    check('&armcpu_dma_alloc_writable != nullptr' in code,
+          'R127 the allocator is reached only after a weak_import null check')
+    check('armcpu_dma_alloc_writable(' in code and 's7metaPhys' in code,
+          'R127 the probe actually calls the allocator')
+    # The bytes really get copied in: a loop over the MDT length writing dst[i].
+    check('dst[i] = adreno_zap_mdt[i]' in code,
+          'R127 the metadata bytes are COPIED into the buffer (not just an address)')
+    check(re.search(r'for\s*\([^;]*;\s*\w+\s*<\s*\(uint32_t\)kAdrenoZapMdtBytes\s*;', code) is not None,
+          'R127 the copy loops over the real MDT length, not a literal')
+    # THE DECISIVE ONE: the phys actually sent is s7metaPhys, not the region.
+    check('(uint32_t)s7metaPhys' in code,
+          'R127 adreno_zap_pas_execute is handed the BUFFER phys')
+    _exec_call = code[code.find('adreno_zap_pas_execute(&s7tr'):]
+    _exec_call = _exec_call[:_exec_call.find(');')]
+    check('kAdrenoZapRegionPhys' not in _exec_call,
+          'R127 the region address is NOT what init_image receives any more '
+          '(this is the D1 regression guard)')
+    check('s7metaPhys' in _exec_call,
+          'R127 ...and the buffer phys IS what it receives')
+
+    # ---- the 4 GiB gate, and WHY it is not optional ----------------------
+    # MsmDsiBrightness.h:19-22 records that where a fresh IOBufferMemoryDescriptor
+    # lands on this kernel is UNCERTAIN. PAS args[1] is a u64, but whether TZ's
+    # translation accepts >4 GiB is unknown -- so the address is refused, not
+    # truncated. Silently dropping the high half would send a WRONG address.
+    check('(s7metaPhys >> 32) != 0' in code,
+          'R127 a metadata address above 4 GiB is DETECTED')
+    # DETECTED IS NOT ENOUGH -- it has to GOVERN. A `false && (...)` prefix keeps
+    # the substring above intact while disabling the gate, and so does hoisting
+    # the test into a variable that nothing branches on. So the condition is read
+    # from the actual `else if (...)` header: the compared expression must BE the
+    # shift test, with no get-out-of-jail operator in front of it.
+    _gate = re.search(r'\}\s*else\s+if\s*\(\s*\(?\s*s7metaPhys\s*>>\s*32\s*\)?\s*!=\s*0\s*\)\s*\{', code)
+    check(_gate is not None,
+          'R127 the 4 GiB test is the else-if CONDITION itself '
+          '(a `false &&` prefix would keep the substring and disable the gate)')
+    check('false' not in (code[_gate.start():_gate.end()] if _gate else ''),
+          'R127 ...and the gate condition contains no constant-false term')
+    check('meta-above-4gib' in code,
+          'R127 ...and REFUSED with a named reason (fail-closed, no PAS)')
+    # Truncating instead of refusing is the failure this pins: a mask or a cast to
+    # uint32_t applied to the address would look like a fix and be a bug.
+    check('(uint32_t)s7metaPhys' in code and
+          '(uint32_t)(s7metaPhys' not in code.replace('(uint32_t)s7metaPhys', ''),
+          'R127 the address is not masked/truncated on its way to the gate')
+    # The fail-closed wiring: a bad buffer must stop the chain BEFORE the call.
+    _meta_why_at = code.find('} else if (!s7metaOk) {')
+    check(_meta_why_at > 0,
+          'R127 a missing/unusable metadata buffer is its own refusal branch')
+    check(_meta_why_at < code.find('adreno_zap_pas_execute(&s7tr'),
+          'R127 that refusal runs BEFORE the PAS chain (fail-closed)')
+
+    # ---- the observable field ------------------------------------------
+    check('meta=%llx' in code, 'R127 the stage-7 row carries meta=')
+    check('(unsigned long long)s7metaPhys' in code,
+          'R127 meta= prints the live physical address')
+    # It must be printed on EVERY path (that is what makes it a measurement of
+    # where the allocator lands, not a success-only trophy).
+    check('s7metaPhys' in code[code.find('snprintf(s7Row'):],
+          'R127 meta= is inside the single unconditional snprintf')
+
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))

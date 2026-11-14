@@ -757,6 +757,105 @@ int adreno_zap_pas_judge(int transport_ret, uint32_t secure_result,
     return 0;
 }
 
+/* ==========================================================================
+ * ROUND 126: the mem_setup SPAN RULE, and the PAS_IS_SUPPORTED probe shape.
+ * Both are pure arithmetic/table work: no SCM, no MMIO, no allocation. See the
+ * header for why the span is NOT kAdrenoZapSegBytes and why the is-supported
+ * verdict lives in a1 rather than a0.
+ * ========================================================================== */
+
+int adreno_zap_pas_mem_setup_span_ok(uint32_t min_paddr, uint32_t max_paddr_end,
+                                    uint32_t bytes)
+{
+    uint32_t span;
+
+    /* P1:232 the top edge is ALIGNed to SZ_4K, so a legitimate end is always a
+     * page multiple. A non-aligned end means the caller did not use the rule. */
+    if ((max_paddr_end & (kAdrenoZapSpanPageBytes - 1u)) != 0u) {
+        return 0;
+    }
+    if ((min_paddr & (kAdrenoZapSpanPageBytes - 1u)) != 0u) {
+        return 0;
+    }
+    /* P1:101 `min_addr < max_addr ? max_addr - min_addr : -EINVAL`: an empty or
+     * inverted range is refused, never reported as a zero-length span. */
+    if (min_paddr >= max_paddr_end) {
+        return 0;
+    }
+    span = max_paddr_end - min_paddr;
+    /* The span is a difference of two page-aligned edges, so it is page-aligned
+     * too -- assert that rather than assume it. */
+    if ((span & (kAdrenoZapSpanPageBytes - 1u)) != 0u) {
+        return 0;
+    }
+    /* THE ACTUAL RULE: exactly the upstream number, or nothing. This is what
+     * refuses 1968 on this blob while accepting 0x1000. */
+    if (bytes != span) {
+        return 0;
+    }
+    return 1;
+}
+
+int adreno_zap_pas_is_supported_call(uint32_t base,
+                                     struct adreno_zap_pas_call *out)
+{
+    if (out == 0) {
+        return 1;
+    }
+    /* The SAME gate as every other stage: a caller cannot probe with an x0 whose
+     * owner is not SIP or that is not SMC64. */
+    if (adreno_zap_smc_base_gate(base) == 0) {
+        return 1;
+    }
+    out->stage = kAdrenoZapPasStageCount;  /* not one of the three ordered stages */
+    out->svc = kAdrenoZapScmSvcPil;        /* P3:97  every PAS op is in PIL      */
+    out->cmd = kAdrenoZapScmPasIsSupported; /* P3:102 0x07                       */
+    out->arginfo = kAdrenoZapArgInfoIsSupported; /* P2:782 ARGS(1) = 0x01        */
+    out->arg_count = out->arginfo & 0x0Fu; /* 1, derived not written            */
+    out->owner = kAdrenoZapScmOwnerSip;    /* P2:784                            */
+    out->args0 = kAdrenoZapPasId;          /* P2:783 args[0] = peripheral       */
+    out->fnid = adreno_zap_scm_fnid(out->svc, out->cmd); /* P3:69 -> 0x0207     */
+    out->x0 = base | out->fnid;            /* P2:355-356                        */
+    out->args1_kind = 0u;                  /* one argument only                 */
+    /* NOT part of the three-stage AUTH chain: it neither authenticates a blob
+     * nor releases a processor, so it can never be "required" for one and it
+     * carries neither metadata nor a size. Saying so here is what keeps a
+     * future caller from slotting it into adreno_zap_pas_sequence(). */
+    out->required = 0;
+    out->is_metadata_call = 0;
+    out->carries_size_arg = 0;
+    return 0;
+}
+
+int adreno_zap_pas_supported_verdict(int transport_ret, uint32_t secure_result,
+                                    int *supported)
+{
+    if (supported == 0) {
+        return 1;
+    }
+    if (transport_ret != 0) {
+        /* a0 nonzero: the SMC did not complete. NOT "unsupported". */
+        *supported = -1;
+        return 0;
+    }
+    /* P2:794 `return ret ? false : !!res.result[0]` -- the verdict is
+     * res.result[0], which P6:204 shows is smc a1. The pinned TZ response
+     * (scm_sip_interface.h:3749-3754) puts `verdict` second, confirming a1. */
+    if (secure_result == 0u) {
+        *supported = 0;
+        return 0;
+    }
+    if (secure_result == 1u) {
+        *supported = 1;
+        return 0;
+    }
+    /* A clean transport with an out-of-range verdict is an ANSWER WE DO NOT
+     * UNDERSTAND, not a "no". Folding it into 0 would manufacture a policy
+     * rejection out of a decoder gap. */
+    *supported = -1;
+    return 0;
+}
+
 int adreno_zap_pas_verify(uint32_t *check_count)
 {
     uint32_t fails = 0u;
@@ -1171,6 +1270,138 @@ int adreno_zap_pas_verify(uint32_t *check_count)
     checks += 1u;
     if (adreno_zap_pas_stage_anchor(kAdrenoZapPasStageCount)[0] != 'u') {
         fails += 1u;
+    }
+
+    /* ---- ROUND 126: the mem_setup SPAN rule (P1:229-233, P1:252) ------ */
+    /* The real a630_zap.mdt's numbers, re-derived from the 6684-byte file:
+     * only ph[2] is VALID (paddr 0x5000, memsz 1968), so the ALIGNed top edge
+     * is ALIGN(0x54E0) = 0x6000 and the span is 0x1000. These four values are
+     * pinned here so the probe cannot pass a different one. */
+    checks += 1u;
+    if (adreno_zap_pas_mem_setup_span_ok(0x5000u, 0x6000u,
+                                        kAdrenoZapSpanPageBytes) != 1) {
+        fails += 1u; /* the UPSTREAM answer for this blob */
+    }
+    checks += 1u;
+    if (adreno_zap_pas_mem_setup_span_ok(0x5000u, 0x6000u, 1968u) != 0) {
+        fails += 1u; /* THE ROUND-125 DEFECT: the segment's FILE length */
+    }
+    /* Not merely "different from 1968": anything but the span is refused. */
+    checks += 1u;
+    if (adreno_zap_pas_mem_setup_span_ok(0x5000u, 0x6000u, 0x2000u) != 0) {
+        fails += 1u; /* the DT region size is NOT the mem_setup span either */
+    }
+    checks += 1u;
+    if (adreno_zap_pas_mem_setup_span_ok(0x5000u, 0x9000u, 0x4000u) != 1) {
+        fails += 1u; /* a wider legitimate span still passes */
+    }
+    /* Refusals that must never be mistaken for a zero-length span (P1:101). */
+    checks += 1u;
+    if (adreno_zap_pas_mem_setup_span_ok(0x5000u, 0x5000u, 0u) != 0) {
+        fails += 1u; /* empty range */
+    }
+    checks += 1u;
+    if (adreno_zap_pas_mem_setup_span_ok(0x6000u, 0x5000u, 0u) != 0) {
+        fails += 1u; /* inverted range */
+    }
+    checks += 1u;
+    if (adreno_zap_pas_mem_setup_span_ok(0x5000u, 0x6001u, 0x1001u) != 0) {
+        fails += 1u; /* unaligned top edge: not the P1:232 rule */
+    }
+    checks += 1u;
+    if (adreno_zap_pas_mem_setup_span_ok(0x5001u, 0x6000u, 0xFFFu) != 0) {
+        fails += 1u; /* unaligned bottom edge */
+    }
+
+    /* ---- ROUND 126: the PAS_IS_SUPPORTED shape (P2:776-796, P3:102) ---- */
+    {
+        struct adreno_zap_pas_call sup;
+        int supported = 7;
+        if (adreno_zap_pas_is_supported_call(base, &sup) != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (sup.cmd != kAdrenoZapScmPasIsSupported) {
+            fails += 1u; /* 0x07 */
+        }
+        checks += 1u;
+        if (sup.arginfo != 0x01u) {
+            fails += 1u; /* P2:782 ARGS(1) -- ONE argument */
+        }
+        checks += 1u;
+        if (sup.arg_count != 1u) {
+            fails += 1u; /* derived from arginfo, not written */
+        }
+        checks += 1u;
+        if (sup.fnid != 0x0207u) {
+            fails += 1u; /* FNID(0x02, 0x07) */
+        }
+        checks += 1u;
+        if (sup.x0 != (base | 0x0207u)) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (sup.args0 != kAdrenoZapPasId) {
+            fails += 1u; /* args[0] = the peripheral (P2:783) */
+        }
+        /* It must NOT be usable as an ordered stage: required==0 and it is not
+         * one of the three, so a caller cannot slot it into pas_sequence(). */
+        checks += 1u;
+        if (sup.required != 0 || sup.is_metadata_call != 0 ||
+            sup.carries_size_arg != 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (sup.stage < kAdrenoZapPasStageCount) {
+            fails += 1u; /* it is NOT stage 0..2 */
+        }
+        /* The gate is the SAME one every stage uses. */
+        checks += 1u;
+        if (adreno_zap_pas_is_supported_call(0xC1000000u, &sup) == 0) {
+            fails += 1u; /* owner != SIP must be refused */
+        }
+        checks += 1u;
+        if (adreno_zap_pas_is_supported_call(base, 0) == 0) {
+            fails += 1u; /* NULL out must be refused */
+        }
+
+        /* THE VERDICT IS IN a1 -- the whole reason this decoder exists. */
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict(0, 1u, &supported) != 0 ||
+            supported != 1) {
+            fails += 1u; /* clean transport + a1==1 -> SUPPORTED */
+        }
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict(0, 0u, &supported) != 0 ||
+            supported != 0) {
+            fails += 1u; /* clean transport + a1==0 -> NOT supported */
+        }
+        /* a0 nonzero means the SMC did not complete: INCONCLUSIVE, never "no". */
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict(-1, 0u, &supported) != 0 ||
+            supported != -1) {
+            fails += 1u;
+        }
+        /* A clean transport with a nonzero a1 that is not 1 is ALSO not "no":
+         * it is an answer we do not understand. Folding it into 0 would
+         * manufacture a policy rejection out of a decoder gap. */
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict(0, 0xDEADu, &supported) != 0 ||
+            supported != -1) {
+            fails += 1u;
+        }
+        /* THE TRAP, ASSERTED DIRECTLY: judging this call on a0 alone (the
+         * pre-126 instinct) would report "unsupported" for a successful probe.
+         * Here a0==0 must NEVER yield 0 from the transport channel. */
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict(0, 1u, &supported) != 0 ||
+            supported == 0) {
+            fails += 1u;
+        }
+        checks += 1u;
+        if (adreno_zap_pas_supported_verdict(0, 1u, 0) == 0) {
+            fails += 1u; /* NULL out */
+        }
     }
 
     if (check_count != 0) {

@@ -408,6 +408,120 @@ int adreno_zap_pas_judge(int transport_ret, uint32_t secure_result,
 int adreno_zap_pas_verify(uint32_t *check_count);
 
 /* ==========================================================================
+ * ROUND 126: THE mem_setup SPAN, and WHY `kAdrenoZapSegBytes` IS NOT IT
+ * ==========================================================================
+ * THE DEFECT THIS CLOSES. Until this round the probe passed the SEGMENT'S FILE
+ * LENGTH (1968, kAdrenoZapSegBytes) as mem_setup's args[2]. Upstream computes a
+ * different number -- a REGION SPAN over the valid program headers -- and the
+ * two differ on this blob:
+ *
+ *   P1 mdt_loader.c:229-233, over VALID phdrs only (P1:21-33):
+ *       min_addr = min(p_paddr)
+ *       max_addr = ALIGN(p_paddr + p_memsz, SZ_4K)   <- per phdr, then max
+ *   P1 mdt_loader.c:252
+ *       qcom_scm_pas_mem_setup(pas_id, mem_phys, max_addr - min_addr)
+ *
+ *   a630_zap.mdt, re-derived from the real 6684-byte file:
+ *       ph[0] type=0     paddr=0x0000 memsz=0     INVALID (not PT_LOAD, memsz 0)
+ *       ph[1] type=0     paddr=0x6000 memsz=8192  INVALID (not PT_LOAD; HASH)
+ *       ph[2] type=1     paddr=0x5000 memsz=1968  VALID
+ *     -> min_addr = 0x5000
+ *     -> max_addr = ALIGN(0x5000 + 0x4E0, 0x1000) = ALIGN(0x54E0) = 0x6000
+ *     -> span     = 0x1000            (NOT 1968, which is 0x7B0)
+ *
+ * THE NUMBER ITSELF IS NOT RE-DERIVED HERE, AND THAT IS DELIBERATE.
+ * P1 mdt_loader.c:220-234 (qcom_mdt_pas_init's span loop) and P1:88-99
+ * (qcom_mdt_get_size) accumulate byte-for-byte the same min/ALIGNed-max pair --
+ * the ONLY difference is that pas_init also records `relocate`. So the span is
+ * exactly what adreno_mdt_get_size() (AdrenoMdtV1.h:163-166) already returns,
+ * and it is already host-tested against the real blob
+ * (verify-enchilada-mdt.py:173 asserts it is 0x1000). Writing a SECOND parser
+ * here would be two derivations of one number that could silently drift -- the
+ * precise failure mode this port keeps closing. THE PROBE CALLS
+ * adreno_mdt_get_size() AND THIS MODULE CHECKS THE RESULT.
+ *
+ * WHY A CHECK FUNCTION IS STILL NEEDED. "Call get_size and trust it" leaves the
+ * original mistake available: a caller can still pass the wrong number, and
+ * nothing catches it. This function makes the RULE explicit and refusable, and
+ * gives the self-check one place to pin both the right and the wrong value.
+ * -------------------------------------------------------------------------- */
+
+/* P1:229-233 / P1:252. Decide whether `bytes` is the mem_setup span for a blob
+ * whose valid phdrs span [min_paddr, max_paddr_end). `max_paddr_end` is the
+ * ALIGNed end (P1:232), i.e. the same top edge adreno_mdt_get_size() returns
+ * added back to its minimum. Returns:
+ *   1  OK         bytes == max_paddr_end - min_paddr   (the upstream answer)
+ *   0  REFUSED    anything else, INCLUDING the segment-file-length confusion:
+ *                 for this blob (0x5000, 0x6000, 1968) returns 0 while
+ *                 (0x5000, 0x6000, 0x1000) returns 1.
+ * Also refuses a non-page-aligned span, an inverted/empty range, and 32-bit
+ * overflow. Pure arithmetic: no parse, no allocation, no SCM. */
+int adreno_zap_pas_mem_setup_span_ok(uint32_t min_paddr, uint32_t max_paddr_end,
+                                    uint32_t bytes);
+
+/* The page both this module and the MDT parser align to (P1:98/:233 SZ_4K).
+ * Named here so a caller never spells 0x1000 as a literal, and asserted equal
+ * to AdrenoMdtV1's kAdrenoMdtPageBytes by the self-check. */
+#define kAdrenoZapSpanPageBytes        0x1000u
+
+/* ==========================================================================
+ * ROUND 126: the PAS_IS_SUPPORTED probe -- a READ-ONLY secure-world question
+ * ==========================================================================
+ * WHY THIS IS SEPARATE FROM THE THREE-STAGE CHAIN, AND WHY THAT MATTERS.
+ * The three-stage chain asks the secure world to DO something (authenticate an
+ * image, prepare a region, release a processor). Every one of those can fail
+ * for reasons that say nothing about whether the peripheral is even supported.
+ * PAS_IS_SUPPORTED asks only "is secure PIL implemented for this peripheral?"
+ * -- P2 qcom_scm.c:776-796 issues it with ONE argument and writes nothing
+ * anywhere. Its answer is the first fact that can DISTINGUISH "our arguments
+ * were wrong" from "this target will never accept PAS 13", and until round 125
+ * the port had no way to ask it.
+ *
+ * THE CALL SHAPE, with its two independent sources:
+ *   svc/cmd   0x02 / 0x07   P3:102 QCOM_SCM_PIL_PAS_IS_SUPPORTED
+ *   arginfo   ARGS(1) = 0x01  P2:782 -- ONE argument
+ *   args[0]   the peripheral  P2:783
+ *   x0        base | FNID(0x02, 0x07) = base | 0x0207
+ * Pinned TZ cross-check (scm_sip_interface.h:853-857): @smc_id 0x02000207,
+ * @param_id 0x00000001, and the request struct (:3736-3741) has exactly ONE
+ * field (`proc`). So the arity is confirmed by the INTERFACE, not inferred.
+ *
+ * WHERE THE VERDICT LIVES -- THE ONE THING A CALLER MUST NOT GET WRONG.
+ * The response struct (scm_sip_interface.h:3749-3754) is
+ *     tz_syscall_rsp_t common_rsp;  UINT64 verdict;
+ * and `verdict` is the SECOND field, so it arrives in **a1**, i.e. the
+ * SECURE_RESULT channel -- NOT in a0. a0 is the transport status, and 0 there
+ * means "the call was made", not "yes". Judging this call on a0 alone reports
+ * support==false for every successful probe. adreno_zap_pas_supported_verdict()
+ * exists so that confusion has exactly one place to be wrong.
+ * -------------------------------------------------------------------------- */
+
+/* P2:782-783: the ONE-argument shape of PAS_IS_SUPPORTED. The command id is
+ * NOT redefined here -- kAdrenoZapScmPasIsSupported (0x07, P3:102) already
+ * exists above, and a second name for one fact is how two values drift. */
+#define kAdrenoZapArgInfoIsSupported    0x01u /* P2:782 ARGS(1)             */
+
+/* Build the PAS_IS_SUPPORTED call record. `out` must be non-NULL. Returns 0, or
+ * 1 on a NULL out or a base that fails adreno_zap_smc_base_gate() -- the same
+ * gate as every other stage, so a caller cannot probe with a wrong x0. Sets
+ * cmd 0x07, arginfo ARGS(1), and x0 = base | 0x0207. Makes no SCM call. */
+int adreno_zap_pas_is_supported_call(uint32_t base,
+                                     struct adreno_zap_pas_call *out);
+
+/* Decode the two channels of a PAS_IS_SUPPORTED reply into ONE verdict.
+ *   1  SUPPORTED           transport_ret == 0 && secure_result == 1
+ *   0  NOT SUPPORTED       transport_ret == 0 && secure_result == 0
+ *  -1  INCONCLUSIVE        the call itself failed: transport_ret != 0 means the
+ *                          SMC did not complete, and secure_result != 0 with a
+ *                          clean transport means the secure world answered with
+ *                          an error instead of a verdict. Neither may be read as
+ *                          "false" -- that is the P2:729 trap this port exists
+ *                          to avoid.
+ * Returns 0, or 1 on a NULL out. */
+int adreno_zap_pas_supported_verdict(int transport_ret, uint32_t secure_result,
+                                    int *supported);
+
+/* ==========================================================================
  * ROUND 107: THE SCM TRANSPORT SEAM (contract layer only -- NO smc here)
  * ==========================================================================
  * WHY THIS EXISTS

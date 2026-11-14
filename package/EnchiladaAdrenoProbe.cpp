@@ -184,7 +184,6 @@ static const unsigned char adreno_zap_seg[1] ADRENO_ZAP_UNUSED = {0};
 #endif
 #include "AdrenoZapAuthV1.h"
 #include "AdrenoMdtV1.h"
-
 // Device-proven cache-inhibited kernel mapping of a physical range
 // (drivers/ArmCpu/ArmCpu.cpp:207, same use as package/EnchiladaSmmuProbe.cpp:57).
 // weak_import: if the ArmCpu archive is not linked this is NULL and we wait.
@@ -202,6 +201,27 @@ uint64_t armcpu_map_physical(uint64_t physical, uint64_t length) __attribute__((
 int32_t armcpu_scm_call(uint64_t fn, uint64_t arginfo, uint64_t a2, uint64_t a3,
                         uint64_t a4, uint64_t *transport_ret,
                         uint64_t *secure_result) __attribute__((weak_import));
+// ROUND 127: the writable physically-contiguous allocator (ArmCpu.cpp). Same
+// weak_import rule and the same must-be-inside-extern-"C" reason as the two
+// declarations above.
+//
+// WHY THE PROBE MUST CALL AN EXPORT INSTEAD OF ALLOCATING DIRECTLY. PAS
+// init_image needs a buffer whose PHYSICAL address it can hand to the secure
+// world, and it needs to WRITE the metadata into it first. armcpu_map_physical
+// cannot do this: it maps a physical address the caller already has, and it maps
+// it read-only (kIODirectionIn). The allocation therefore has to happen in a
+// translation unit that carries real IOKit, and ArmCpu.cpp is that unit -- this
+// shim is compiled by scripts/check-enchilada-adreno-probe.py against a
+// deliberately minimal IOKit stub (exactly IOLog + snprintf + PE_parse_boot_argn
+// over exactly two headers), and that boundary exists to stay narrow, not to be
+// widened the first time a probe wants a new kernel facility.
+//
+// Returns the PHYSICAL address, or 0 on any failure; *out_virt receives the
+// writable kernel virtual address for the caller's copy. The address may be
+// above 4 GiB -- the caller decides, and this caller refuses that (see the
+// 4 GiB gate at the stage-7 allocation below).
+uint64_t armcpu_dma_alloc_writable(uint64_t bytes,
+                                   uint64_t *out_virt) __attribute__((weak_import));
 }
 
 namespace {
@@ -234,6 +254,16 @@ char gPowerReplay[240];
 // than the other rows because it carries BOTH raw words and the whole tuple.
 char gId1Replay[300];
 bool gHaveId1Replay = false;
+// ROUND 126: stage 7 gets its OWN replay buffer. Through round 125 it reused
+// gId1Replay (setId1Replay(s7Row)), which was wrong twice over: the stage-6 and
+// stage-7 rows are emitted by the SAME poll, so the second one always overwrote
+// the first and only ONE of the two ever survived to the replay tick. The row
+// has also grown (p13/v13), and a 300-byte buffer that two different rows share
+// is a truncation waiting to happen. Sized from the REACHABLE worst case, not
+// from a round number: the longest possible label set plus every field at its
+// real maximum is 350 bytes (computed, not guessed), so 384 leaves margin.
+char gId1ReplayStage7[384];
+bool gHaveStage7Replay = false;
 bool gHavePowerReplay = false;
 bool gHaveIommuReplay = false;
 bool gHaveGmuReplay = false;
@@ -295,6 +325,18 @@ void setId1Replay(const char *text) {
     for (; text[i] && i + 1 < sizeof gId1Replay; ++i) gId1Replay[i] = text[i];
     gId1Replay[i] = 0;
     gHaveId1Replay = i != 0;
+}
+
+// ROUND 126: stage 7's own buffer, same no-libc copy loop and same reason the
+// others exist -- the 128 KiB msgbuf ring wraps and a one-shot row is gone
+// before it can be read back. Kept SEPARATE from setId1Replay because the two
+// rows are produced by one poll and used to overwrite each other.
+void setStage7Replay(const char *text) {
+    if (!text) return;
+    unsigned i = 0;
+    for (; text[i] && i + 1 < sizeof gId1ReplayStage7; ++i) gId1ReplayStage7[i] = text[i];
+    gId1ReplayStage7[i] = 0;
+    gHaveStage7Replay = i != 0;
 }
 
 // ---- ROUND 110: the bridge from the contract's injected transport to the ----
@@ -506,6 +548,12 @@ extern "C" void enchilada_adreno_poll(void) {
         // Round 103: the stage-6 ID0/ID1/ASID row is replayed for the same reason.
         if (gHaveId1Replay)
             IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gId1Replay, gTick, gReplayAttempt);
+        // ROUND 126: stage 7's row is replayed from its OWN buffer. Until this
+        // round it was written into gId1Replay and therefore lost to the stage-6
+        // row above -- the PAS verdict is the most expensive line in the log and
+        // it was the one guaranteed to be overwritten.
+        if (gHaveStage7Replay)
+            IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gId1ReplayStage7, gTick, gReplayAttempt);
         return;             // finished: no further MMIO access, ever
     }
     unsigned stage = 0;
@@ -972,10 +1020,137 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool armed = PE_parse_boot_argn("enchilada-pas-exec",
                                                               &pasExec, sizeof pasExec) &&
                                            pasExec == 1u;
-                        char s7Row[300];
+                        char s7Row[384];
                         struct adreno_zap_pas_region s7region = {};
                         s7region.phys = kAdrenoZapRegionPhys;
-                        s7region.bytes = kAdrenoZapSegBytes;
+                        // ROUND 126 DEFECT FIX: mem_setup's args[2] is a REGION
+                        // SPAN over the valid phdrs, NOT the segment's file
+                        // length. Through round 125 this read
+                        // `s7region.bytes = kAdrenoZapSegBytes;` (1968) while
+                        // upstream (P1:229-233, :252) sends
+                        // ALIGN(max(p_paddr+p_memsz), 4K) - min(p_paddr), which
+                        // for a630_zap.mdt is 0x1000. The value now comes from
+                        // adreno_mdt_get_size(), which is the SAME accumulation
+                        // -- P1:88-99 and P1:220-234 differ only in that pas_init
+                        // also records `relocate` -- so this is one derivation of
+                        // the number, not a second one that could drift.
+                        uint32_t s7span = 0;
+                        const bool s7spanOk =
+                            adreno_mdt_get_size(adreno_zap_mdt,
+                                                (size_t)kAdrenoZapMdtBytes,
+                                                &s7span) == kAdrenoMdtOk;
+                        // With no blob there is nothing to parse: get_size()
+                        // refuses and s7span stays 0, so the plan below carries a
+                        // zero size exactly as it did before this round. The
+                        // span RULE is then re-checked against the contract, so a
+                        // wrong number is refused here rather than discovered by
+                        // the secure world.
+                        if (s7spanOk) {
+                            uint32_t s7min = 0;
+                            if (adreno_mdt_min_paddr(adreno_zap_mdt,
+                                                     (size_t)kAdrenoZapMdtBytes,
+                                                     &s7min) != kAdrenoMdtOk ||
+                                adreno_zap_pas_mem_setup_span_ok(
+                                    s7min, s7min + s7span, s7span) == 0) {
+                                s7span = 0;   /* refuse rather than send a guess */
+                            }
+                        }
+                        s7region.bytes = s7span;
+
+                        // ================= ROUND 127: FIX D1 =================
+                        // THE DEFECT, restated once so the fix cannot drift from
+                        // its reason. Upstream qcom_scm_pas_init_image
+                        // (qcom_scm.c:575-635) does NOT forward the caller's
+                        // address to the secure world. It allocates its own
+                        // DMA-coherent buffer (:602), copies the metadata into it
+                        // (:607), and sends THAT buffer's physical address
+                        // (:617 `desc.args[1] = mdata_phys;`). Through round 126
+                        // this probe passed kAdrenoZapRegionPhys (0x8C415000) as
+                        // args[1] -- a reserved region into which nothing had ever
+                        // written ehdr+hash (the whole tree has no store to that
+                        // address; only two #defines name it). The secure world
+                        // was therefore asked to authenticate whatever the
+                        // bootloader happened to leave there.
+                        //
+                        // THE METADATA IS THE WHOLE .mdt FILE, already in the
+                        // image. adreno_mdt_metadata() would compute
+                        // ehdr_size + hash_size; for this blob that equals the
+                        // file size exactly (mdt_loader.c:168-171 takes the
+                        // "split, hash packed after the ELF header" branch), and
+                        // round 125 verified byte-for-byte that mdt[0:148]==b00
+                        // and mdt[148:6684]==b01. So the copy is the array as-is
+                        // and no ELF surgery is needed here.
+                        //
+                        // FAIL-CLOSED, THREE WAYS: no bytes -> no attempt; no
+                        // allocator symbol -> no attempt; allocation failed or
+                        // landed above 4 GiB -> no attempt. Each prints its own
+                        // reason through `meta=` and the why= field, and in every
+                        // case the PAS chain is left uncalled.
+                        uint64_t s7metaPhys = 0;
+                        uint64_t s7metaVirt = 0;
+                        const bool s7metaSym = &armcpu_dma_alloc_writable != nullptr;
+                        const char *s7metaWhy = "";
+                        if (!kAdrenoZapBlobPresent || kAdrenoZapMdtBytes == 0) {
+                            s7metaWhy = "no-bytes";
+                        } else if (!s7metaSym) {
+                            s7metaWhy = "alloc-symbol-unavailable";
+                        } else {
+                            s7metaPhys = armcpu_dma_alloc_writable(
+                                (uint64_t)kAdrenoZapMdtBytes, &s7metaVirt);
+                            if (s7metaPhys == 0 || s7metaVirt == 0) {
+                                s7metaPhys = 0;
+                                s7metaVirt = 0;
+                                s7metaWhy = "alloc-failed";
+                            } else if ((s7metaPhys >> 32) != 0) {
+                                // THE 4 GiB GATE. drivers/NativeMsmDsi/
+                                // MsmDsiBrightness.h:19-22 records that where a
+                                // fresh IOBufferMemoryDescriptor lands on this
+                                // kernel is UNCERTAIN (all kernel allocations
+                                // above 4 GiB on sheng/SM8550, versus every
+                                // SDM845 carveout below it). PAS args[1] is a
+                                // u64, but whether the secure world's address
+                                // translation accepts a >4 GiB physical address
+                                // is UNKNOWN, and this port does not spend an
+                                // unknown on a secure-world call. The address is
+                                // REFUSED, the buffer is left allocated (it is
+                                // never released by contract) and the whole
+                                // 64-bit value is logged so the next run can see
+                                // exactly where it landed.
+                                s7metaWhy = "meta-above-4gib";
+                                s7metaVirt = 0;   // do not write into it either
+                            } else {
+                                // Copy the metadata IN, byte at a time -- the
+                                // same no-libc loop idiom the replay buffers use.
+                                // The array is `unsigned char[]` and the
+                                // destination is the writable VA the allocator
+                                // returned; both are byte-granular so no
+                                // alignment assumption is made.
+                                //
+                                // NOTE the cast type: `volatile uint8_t *`, not
+                                // `volatile unsigned char *`. They are the same
+                                // type to the compiler, but
+                                // verify-enchilada-probe-stage5.py:131 pins the
+                                // set of cast targets this file is allowed to
+                                // contain, and that set already carries
+                                // `volatile uint8_t *` for the GPUCC window. Using
+                                // the existing spelling keeps that assertion
+                                // meaningful and unedited -- widening it to admit
+                                // a second name for the same type would have been
+                                // a change to a check for no gain.
+                                volatile uint8_t *dst =
+                                    reinterpret_cast<volatile uint8_t *>(
+                                        static_cast<uintptr_t>(s7metaVirt));
+                                uint32_t i = 0;
+                                for (; i < (uint32_t)kAdrenoZapMdtBytes; ++i) {
+                                    dst[i] = adreno_zap_mdt[i];
+                                }
+                                // Order the copy before the SMC that will read it
+                                // through the secure world's own mapping.
+                                __asm__ volatile("dsb sy" ::: "memory");
+                            }
+                        }
+                        const bool s7metaOk = s7metaPhys != 0 && s7metaWhy[0] == 0;
+
                         struct adreno_zap_pas_report s7rep = {};
                         const uint32_t s7base = adreno_zap_smc_base_derived();
                         struct adreno_zap_pas_call s7seq[kAdrenoZapPasStageCount] = {};
@@ -996,17 +1171,78 @@ extern "C" void enchilada_adreno_poll(void) {
                         // Otherwise the row still prints the plan and says why.
                         const bool s7sym = &armcpu_scm_call != nullptr;
                         const char *s7why = "";
+                        // ---- ROUND 126 TASK A: the PAS_IS_SUPPORTED probe ----
+                        // WHY THIS IS UNCONDITIONAL, AND WHY THAT IS SAFE.
+                        // Everything below is a READ-ONLY secure-world QUESTION:
+                        // P2:776-796 issues it with ONE argument, writes no
+                        // memory, touches no register and releases no processor.
+                        // It is the only call in this file whose worst case is
+                        // "the secure world says no". That is what lets it run on
+                        // the NOT-ARMED path too, so "is PAS 13 supported here?"
+                        // becomes answerable WITHOUT arming the three-stage chain
+                        // -- exactly the way mdt_ck/seg_ck decoupled "are the
+                        // bytes in the image?" from the execution key.
+                        //
+                        // IT IS SENT AT MOST ONCE PER BOOT. This whole block runs
+                        // once (gDone latches after it), and there is no retry
+                        // loop: a probe that answers is an answer, and a probe
+                        // that fails is also an answer. Nothing here re-sends.
+                        //
+                        // THE TWO CHANNELS ARE KEPT APART, and the verdict is a1.
+                        // p13 reports a0/a1 raw; v13 is the decoded verdict where
+                        // 1=supported, 0=not supported, -1=INCONCLUSIVE (the call
+                        // itself failed, or a1 was neither 0 nor 1). Judging this
+                        // on a0 alone would report "unsupported" for every
+                        // successful probe -- see AdrenoZapAuthV1.h's note.
+                        uint64_t s7p13a0 = 0;
+                        uint64_t s7p13a1 = 0;
+                        int s7p13v = -1;
+                        if (s7sym) {
+                            struct adreno_zap_pas_call s7sup = {};
+                            if (adreno_zap_pas_is_supported_call(s7base, &s7sup) == 0) {
+                                uint64_t p13transport = 0;
+                                uint64_t p13secure = 0;
+                                const int32_t p13rc =
+                                    armcpu_scm_call(s7sup.x0, s7sup.arginfo,
+                                                    s7sup.args0, 0u, 0u,
+                                                    &p13transport, &p13secure);
+                                if (p13rc == 0) {
+                                    s7p13a0 = p13transport;
+                                    s7p13a1 = p13secure;
+                                    (void)adreno_zap_pas_supported_verdict(
+                                        (int)(int32_t)(p13transport & 0xFFFFFFFFu),
+                                        (uint32_t)(p13secure & 0xFFFFFFFFu),
+                                        &s7p13v);
+                                }
+                                // p13rc != 0: the exporter refused, so NO SMC was
+                                // made. a0/a1 stay 0 and v13 stays -1 -- which is
+                                // the honest reading, not "unsupported".
+                            }
+                        }
                         if (!armed) {
                             s7why = "not-armed";
                         } else if (!s7sym) {
                             s7why = "transport-symbol-unavailable";
                         } else if (!s7seqOk) {
                             s7why = "plan-unresolved";
+                        } else if (!s7metaOk) {
+                            // ROUND 127: no trustworthy metadata buffer, so no PAS.
+                            // The reason string is already specific (no-bytes /
+                            // alloc-symbol-unavailable / alloc-failed /
+                            // meta-above-4gib); passing it through unchanged is
+                            // what makes the failure diagnosable from the row.
+                            s7why = s7metaWhy;
                         } else {
                             s7tr.cookie = &s7bridge;
                             s7tr.call = zapBridgeCall;
+                            // THE D1 FIX ITSELF: the third argument is now the
+                            // physical address of the buffer that actually holds
+                            // ehdr+hash, not kAdrenoZapRegionPhys. The contract
+                            // signature was already correct (AdrenoZapAuthV1.c's
+                            // adreno_zap_pas_execute takes metadata_phys and puts
+                            // it in args[1]); only the value was wrong.
                             s7st = adreno_zap_pas_execute(&s7tr, s7base,
-                                                          kAdrenoZapRegionPhys,
+                                                          (uint32_t)s7metaPhys,
                                                           &s7region, &s7rep);
                         }
                         // The row reports the two channels SEPARATELY, per
@@ -1032,7 +1268,8 @@ extern "C" void enchilada_adreno_poll(void) {
                                  "blob=%s seg=%u region=%llx+%x stages=%u seq_ok=%d "
                                  "mdt_ck=%08x seg_ck=%08x mdt_len=%u "
                                  "x0=%08x/%08x/%08x rc=%d ran=%u calls=%u "
-                                 "t0=%llx s0=%llx t1=%llx s1=%llx t2=%llx s2=%llx",
+                                 "t0=%llx s0=%llx t1=%llx s1=%llx t2=%llx s2=%llx "
+                                 "p13=%llx/%llx v13=%d t0r=%llx meta=%llx",
                                  armed ? (s7sym ? "exec" : "armed-no-symbol")
                                        : "armed-not-executed",
                                  s7why[0] ? s7why : "-",
@@ -1054,9 +1291,41 @@ extern "C" void enchilada_adreno_poll(void) {
                                  (unsigned long long)s7rep.stage[1].transport_ret,
                                  (unsigned long long)s7rep.stage[1].secure_result,
                                  (unsigned long long)s7rep.stage[2].transport_ret,
-                                 (unsigned long long)s7rep.stage[2].secure_result);
+                                 (unsigned long long)s7rep.stage[2].secure_result,
+                                 (unsigned long long)s7p13a0,
+                                 (unsigned long long)s7p13a1, s7p13v,
+                                 // ROUND 126 TASK D: the UNTRUNCATED smc a0.
+                                 //
+                                 // WHY THIS FIELD EXISTS. t0 above is NOT the
+                                 // raw secure status: zapBridgeCall returns
+                                 // `static_cast<int>(transport & 0xFFFFFFFFu)`
+                                 // (the transport seam is int32_t by contract),
+                                 // so the high half is cut THERE and then sign
+                                 // extended back for printing. That is why t0
+                                 // reads 0xffffffffffcffff6 while the secure
+                                 // world may have written 0x00000000ffcffff6 --
+                                 // the "all-ones high half" is OUR cast, not an
+                                 // observation. t0r carries the value the
+                                 // exporter actually produced, so the two can be
+                                 // compared directly: if t0r == t0 the top half
+                                 // really was sign extension of a negative int;
+                                 // if t0r has a different high half, t0 was
+                                 // hiding it. The bridge keeps the u64 already
+                                 // (ZapSmcBridge.last_transport), so this costs
+                                 // one field and changes no existing contract.
+                                 (unsigned long long)s7bridge.last_transport,
+                                 // ROUND 127: the metadata buffer's live physical
+                                 // address, printed whether or not PAS ran. This
+                                 // is the field that answers the UNCERTAIN from
+                                 // MsmDsiBrightness.h:19-22 -- where does a fresh
+                                 // IOBufferMemoryDescriptor land on this kernel?
+                                 // -- with a measurement instead of an argument.
+                                 // 0 means no buffer (no bytes, no symbol, or the
+                                 // allocator refused), and `why=` names which.
+                                 (unsigned long long)s7metaPhys);
                         IOLog("enchilada-adreno: %s\n", s7Row);
-                        setId1Replay(s7Row);
+                        // ROUND 126: its own buffer, not the stage-6 one.
+                        setStage7Replay(s7Row);
                     }
                 }
             }
