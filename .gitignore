@@ -55,3 +55,19 @@ __pycache__/
 *.key
 .env
 local.toml
+
+# The A630 firmware blobs pulled read-only from this phone's own vendor_a partition.
+# scripts/data/adreno-a630-device-firmware.json records their SIZES + HASHES + PIL
+# structure as durable text, on purpose: the proprietary BYTES are somebody else's
+# signed firmware and must never enter this repository. The extraction writes them to
+# work/tmp/a630-device-fw/, which on the current host sits OUTSIDE this worktree, so
+# nothing there is committable today; the rules below are the belt for the case where
+# someone later copies the directory in. *.mdt and *.b0N are stated explicitly because
+# neither had any rule before ROUND 107: only the .bin and .fw suffixes were covered,
+# so 5 of the 7 blobs were committable the moment they landed inside the worktree.
+# NOT covered on purpose: *.elf. The suffix is far too common among ordinary build
+# products to ignore repo-wide, and the directory rule already catches the one .elf
+# that belongs to this firmware set.
+/work/tmp/a630-device-fw/
+*.mdt
+*.b0[0-9]

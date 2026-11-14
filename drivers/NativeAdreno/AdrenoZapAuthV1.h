@@ -384,6 +384,143 @@ int adreno_zap_pas_judge(int transport_ret, uint32_t secure_result,
  * original meaning. */
 int adreno_zap_pas_verify(uint32_t *check_count);
 
+/* ==========================================================================
+ * ROUND 107: THE SCM TRANSPORT SEAM (contract layer only -- NO smc here)
+ * ==========================================================================
+ * WHY THIS EXISTS
+ * ---------------
+ * Round 106 produced an ordered three-stage contract that nobody can execute,
+ * because the only real SMC in this tree is `static ScmResult scm(...)` at
+ * drivers/ArmCpu/ArmCpu.cpp:126-137 -- a FILE-LOCAL function. It genuinely
+ * executes `smc #0` on the phone (509 device snapshots, no -99 sentinel), but
+ * being `static` it is invisible to every other translation unit, so the PAS
+ * chain cannot reach it.
+ *
+ * THE DESIGN RULE OF THIS ROUND, WHICH IS THE WHOLE POINT
+ * ------------------------------------------------------
+ * CONTRACT AND TRANSPORT ARE SEPARATED. This unit declares the SHAPE of an SCM
+ * call and the ORDERED ORCHESTRATION over it. It contains NO `smc` instruction,
+ * NO inline assembly, NO register-pinning, and NO knowledge of which privilege
+ * level the caller runs at. The actual transport is INJECTED by the caller:
+ *   - production: a thin `extern "C"` wrapper that the ArmCpu owner would add
+ *     around its existing `scm()` (see work/tmp/r107-scm-export-plan.md -- the
+ *     plan is written and reviewed separately; ArmCpu.cpp is NOT touched here);
+ *   - host test: a stub that records arguments and replays canned results.
+ *
+ * WHY SEPARATION IS LOAD-BEARING AND NOT TIDINESS: scripts/verify-ci-246-adreno.py
+ * :204-206 fails the CI run if `_qcom_scm_call` or `adreno_zap_shader_load`
+ * appears in the linked kernel image. Putting an `smc` in this unit would both
+ * break that boundary and make the module untestable on the host, since an
+ * `smc #0` cannot execute in a userspace test binary. Injection solves both at
+ * once: the module stays pure C11 with no privileged instruction, so it is
+ * fully host-testable, AND it emits no forbidden symbol.
+ *
+ * THE BOUNDARY IS MECHANICALLY CHECKED. scripts/verify-enchilada-zap-auth.py
+ * asserts that this header and the .c contain no inline-assembly primitives at
+ * all -- no assembler statement forms, no register-pinning declarations, no
+ * SMCCC macro names, and no system-register mnemonics. That list is deliberately
+ * NOT spelled out here: a boundary that names its own forbidden tokens in prose
+ * can only be enforced with exceptions, so the verifier holds the list and these
+ * files stay clean of every one of them. A future edit that "helpfully" inlines
+ * the transport fails that verifier rather than silently crossing the CI
+ * boundary.
+ *
+ * HONEST BOUNDARY: nothing here issues an SMC. `adreno_zap_pas_execute()`
+ * requires a non-NULL injected call function; with NULL it fails closed and
+ * calls nothing. No transport is exported, no ArmCpu file is modified, and the
+ * zap-auth chain's S8 stays present = 0.
+ * -------------------------------------------------------------------------- */
+
+/* The injected transport. Returns 0 when the SMC transport itself completed;
+ * nonzero is a transport failure. `out_result0` receives the secure world's
+ * result[0] (x0 after the call). The 4 arguments match ArmCpu.cpp:126-137's
+ * shape exactly (fn, info, a2, a3), so a wrapper over that existing function
+ * is a pure forwarding shim with no semantic change.
+ *
+ * CONTRACT FOR IMPLEMENTORS: must not retain the pointers, must be callable
+ * with `cookie` == NULL only if it never dereferences it, and must return
+ * nonzero rather than fabricating a success when the SMC could not be made. */
+typedef int (*adreno_zap_scm_fn)(void *cookie, uint32_t fn, uint32_t info,
+                                 uint32_t a2, uint32_t a3, uint64_t *out_result0);
+
+/* The injection point. A caller-facing struct rather than a bare function
+ * pointer so a transport can carry state (e.g. a lock, a trace buffer) without
+ * a global. Mirrors the AdrenoGmuBootV1Bus convention already used in this
+ * module family. */
+struct adreno_zap_transport {
+    void *cookie;                /* passed back verbatim; may be NULL        */
+    adreno_zap_scm_fn call;      /* NULL means "no transport wired" -> refuse */
+};
+
+/* What actually happened, per stage, so a caller can log WHICH call failed
+ * without re-deriving it from return codes. */
+struct adreno_zap_pas_stage_result {
+    uint32_t stage;              /* enum adreno_zap_pas_stage                */
+    uint32_t x0;                 /* the fn id actually handed to the transport*/
+    int called;                  /* 1 when the transport was invoked         */
+    int transport_ret;
+    uint32_t secure_result;
+    int is_success;              /* transport_ret == 0 && secure_result == 0  */
+};
+
+/* The full orchestration report. `stages_run` is the number of stages the
+ * transport was ACTUALLY called for, which is what makes "failed at stage 1"
+ * distinguishable from "never started". */
+struct adreno_zap_pas_report {
+    uint32_t stages_run;         /* 0..3 -- how many were attempted           */
+    uint32_t first_failure;      /* stage index, or Count when all succeeded  */
+    int all_succeeded;           /* 1 only when all THREE succeeded           */
+    uint32_t have_done;          /* the prefix bitset actually achieved        */
+    struct adreno_zap_pas_stage_result stage[kAdrenoZapPasStageCount];
+};
+
+/* Status codes. Each names the rule that stopped the run. */
+typedef enum {
+    kAdrenoZapExecOk = 0,           /* all three stages succeeded            */
+    kAdrenoZapExecNoTransport = 1,  /* transport or its call fn is NULL      */
+    kAdrenoZapExecBadBase = 2,      /* base failed adreno_zap_smc_base_gate  */
+    kAdrenoZapExecNoRegion = 3,     /* mem_setup stage has no region         */
+    kAdrenoZapExecStageFailed = 4,  /* a stage's transport/secure result != 0*/
+    kAdrenoZapExecNullOut = 5       /* out/report pointer was NULL           */
+} AdrenoZapExecStatus;
+
+/* 1 when the transport is usable (non-NULL struct AND non-NULL call), else 0.
+ * Provided so a caller can distinguish "not wired" from "wired and failing"
+ * BEFORE starting a run. */
+int adreno_zap_transport_ready(const struct adreno_zap_transport *t);
+
+/* EXECUTE the three-stage PAS chain through an injected transport.
+ *
+ * This is the orchestration the title of round 107 refers to:
+ *   stage 0  init_image       fn = base | 0x0201, arg1 = metadata phys
+ *   stage 1  mem_setup        fn = base | 0x0202, arg1 = region phys, a2 = size
+ *   stage 2  auth_and_reset   fn = base | 0x0205, arg1 = 0
+ *
+ * FAIL-CLOSED, and this is the property the tests pin: the FIRST failing stage
+ * STOPS the chain. No later stage is attempted, so a rejected metadata image
+ * can never be followed by a mem_setup or an auth call. A stage fails when the
+ * transport returns nonzero OR the secure world's result[0] is nonzero --
+ * both channels are required to be zero (P2:729).
+ *
+ * `metadata_phys` is stage 0's argument (the secure-world-readable physical
+ * address of the PAS metadata blob); `region` supplies stage 1's. Neither is
+ * dereferenced -- they are addresses the secure world is told about, not
+ * buffers this function touches.
+ *
+ * Returns an AdrenoZapExecStatus. `out` receives the per-stage report and is
+ * written on EVERY return path that gets past the NULL check, so a caller can
+ * always see how far the chain got. Makes no SMC itself: every hardware effect
+ * belongs to the injected transport. */
+AdrenoZapExecStatus adreno_zap_pas_execute(const struct adreno_zap_transport *t,
+                                           uint32_t base, uint32_t metadata_phys,
+                                           const struct adreno_zap_pas_region *region,
+                                           struct adreno_zap_pas_report *out);
+
+/* ROUND 107 self-check for the transport seam and the orchestration. Returns 0
+ * when every invariant holds, else 1; *check_count receives the number
+ * evaluated. Uses an internal stub transport -- no SMC is issued. */
+int adreno_zap_transport_verify(uint32_t *check_count);
+
 #ifdef __cplusplus
 }
 #endif

@@ -210,13 +210,37 @@ the offset before reading it.
   field and requires the SMC_64 bit. Result judgement keeps BOTH channels
   (`transport_ret` and the secure-world `res.result[0]`) and succeeds only when both
   are zero (`:729`). No SCM call is made.
-- `tests/adreno-zap-auth-v1-test.cpp` — 9 test groups: pasid, SCM shape, chain
+- **ROUND 107 SCM transport seam** (`adreno_zap_transport_ready`,
+  `adreno_zap_pas_execute`, `adreno_zap_transport_verify`): CONTRACT AND TRANSPORT
+  ARE SEPARATED. The only real SMC in this tree is `static ScmResult scm(...)` at
+  `drivers/ArmCpu/ArmCpu.cpp:126-137` — file-local, so no other unit can reach it
+  even though it genuinely runs on the phone. This module therefore declares the
+  call SHAPE as an injected function pointer
+  (`int (*)(void *cookie, uint32_t fn, uint32_t info, uint32_t a2, uint32_t a3,
+  uint64_t *out_result0)`, matching `scm()`'s 4-argument form exactly) and
+  contains **NO SMC instruction and NO inline assembly**. That is load-bearing,
+  not tidiness: it keeps the module host-testable (an `smc #0` cannot run in a
+  userspace test binary) AND keeps it inside `verify-ci-246-adreno.py:204-206`'s
+  forbidden-symbol boundary. `adreno_zap_pas_execute()` runs init_image ->
+  mem_setup -> auth_and_reset through that pointer, assembling x0 = base|fnid
+  with the peripheral in **x1** (`args[0]`, P2:710), and **fail-closes on the
+  first failing stage** — so a rejected metadata image is never followed by a
+  mem_setup or an auth call. A NULL transport is a REFUSAL
+  (`kAdrenoZapExecNoTransport`), never a silent "0 stages = success". The base
+  gate and the region gate fire BEFORE any call. No transport is exported yet;
+  the minimal `ArmCpu.cpp` change that would provide one is specified in
+  `work/tmp/r107-scm-export-plan.md` and deliberately NOT applied.
+- `tests/adreno-zap-auth-v1-test.cpp` — 11 test groups: pasid, SCM shape, chain
   presence/reachability, step names, result semantics, the -EOPNOTSUPP quiet fallback,
-  self-check, the ROUND 106 three-stage contract, and the derived SMC base with the
-  two-channel judgement.
+  self-check, the ROUND 106 three-stage contract, the derived SMC base with the
+  two-channel judgement, and the ROUND 107 transport seam plus its fail-closed
+  orchestration (a stub SCM covers all-three-succeed and fail-at-each-stage, on
+  BOTH channels, asserting the call count stops at the failing stage).
 - `scripts/verify-enchilada-zap-auth.py` — cross verifier: 4 sha256-pinned sources
   re-derive the call shape, the public-header absence and the eight anchors in strict
-  source order, plus the round-106 order, arginfo and function-id arithmetic (224 checks).
+  source order, plus the round-106 order, arginfo and function-id arithmetic and the
+  round-107 no-assembly boundary (281 checks). That boundary is proven live: injecting
+  a real `smc #0` into the module makes the verifier FAIL on 5 assertions.
 - `scripts/verify-enchilada-cp-ring.py` — cross verifier: 3 sha256-pinned sources
   re-derive the offsets, order, payload, barrier rule and protect encoding, and
   prove the five undefined macros by exhaustive scan (139 checks).

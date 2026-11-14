@@ -197,14 +197,15 @@ check('transport_ret == 0 && pctx_result == 0u' in c,
       'B7 success requires BOTH transport and PCTX to be zero')
 check('scm_error == -95' in c, 'B7 -EOPNOTSUPP is -95 and is the quiet case')
 
-check(t.count('static void test') == 9, 'B8 9 test functions (got %d)'
+check(t.count('static void test') == 11, 'B8 11 test functions (got %d)'
       % t.count('static void test'))
 tflat = t.replace('"\n                "', '')
-check('PASS: enchilada A630 ZAP/PAS auth shape contract (9 test groups, 0 failures)'
+check('PASS: enchilada A630 ZAP/PAS auth shape contract (11 test groups, 0 failures)'
       in tflat, 'B8 PASS line')
 for grp in ('testPasId', 'testScmShape', 'testChain', 'testStepNames',
             'testResultSemantics', 'testUnsupportedFallback', 'testSelfCheck',
-            'testPasStages', 'testSmcBaseAndChannels'):
+            'testPasStages', 'testSmcBaseAndChannels', 'testTransportSeam',
+            'testPasExecute'):
     check(f'{grp}();' in t, f'B8 {grp} invoked')
 
 # B9: wiring
@@ -407,19 +408,107 @@ check(h.count('kAdrenoZapSmcBaseDerived       0xC2000000u') == 1,
       'B12 the base literal is DEFINED exactly once, as the named constant')
 
 # ---- B13: tests and wiring ------------------------------------------------
-check(t.count('static void test') == 9, 'B13 9 test functions (got %d)'
+check(t.count('static void test') == 11, 'B13 11 test functions (got %d)'
       % t.count('static void test'))
 tflat = t.replace('"\n                "', '')
-check('PASS: enchilada A630 ZAP/PAS auth shape contract (9 test groups, 0 failures)'
-      in tflat, 'B13 PASS line says 9')
+check('PASS: enchilada A630 ZAP/PAS auth shape contract (11 test groups, 0 failures)'
+      in tflat, 'B13 PASS line says 11')
 for grp in ('testPasId', 'testScmShape', 'testChain', 'testStepNames',
             'testResultSemantics', 'testUnsupportedFallback', 'testSelfCheck',
-            'testPasStages', 'testSmcBaseAndChannels'):
+            'testPasStages', 'testSmcBaseAndChannels', 'testTransportSeam',
+            'testPasExecute'):
     check(f'{grp}();' in t, f'B13 {grp} invoked')
 check('kAdrenoZapScmOwnerSip == 2u' not in t and 'owner == 2u' in t,
       'B13 the test asserts owner 2 explicitly')
 check('adreno_zap_pas_order_allows(2u, 0x0u) == 0' in t,
       'B13 the test proves auth-before-init is refused')
+
+# ================= ROUND 107: the SCM transport seam =========================
+# The load-bearing property of round 107 is NEGATIVE: the contract layer must
+# contain NO privileged instruction. That is what keeps it host-testable AND
+# inside verify-ci-246-adreno.py:204-206's forbidden-symbol boundary. It is
+# asserted mechanically here so a future "helpfully inline the transport" edit
+# fails this verifier instead of silently crossing the boundary.
+
+# B14a: the seam exists and is an INJECTION POINT, not an implementation.
+check('typedef int (*adreno_zap_scm_fn)' in h,
+      'B14 the transport is a function POINTER type (injection, not inlining)')
+check('struct adreno_zap_transport {' in h, 'B14 the injection point is a struct')
+check('adreno_zap_scm_fn call;' in h, 'B14 the struct carries the call fn')
+for api in ('adreno_zap_transport_ready', 'adreno_zap_pas_execute',
+            'adreno_zap_transport_verify'):
+    check(re.search(r'\b' + api + r'\s*\([^;]*\)\s*\{', c, re.S) is not None,
+          f'B14 .c defines {api}')
+# The transport must be INJECTED, never obtained by calling a hard-coded symbol.
+check('t->call(' in c, 'B14 the executor goes through the injected pointer')
+check('armcpu_scm_call(' not in c,
+      'B14 the .c does NOT call the (proposed) ArmCpu export directly')
+
+# B14b: NO privileged instruction anywhere in the contract layer.
+# `smc` as a whole word, not as a substring of an identifier -- "smcAvailable" or
+# "armcpu_scm" would be false positives, and both appear in the PROSE here.
+SMC_FORBIDDEN = ['__asm__', 'asm volatile', 'asm(', '__asm', 'arm_smccc',
+                 'mrs ', 'msr ', 'svc #', 'hvc #']
+for bad in SMC_FORBIDDEN:
+    check(bad not in c, f'B14 .c contains no inline assembly primitive {bad!r}')
+    check(bad not in h, f'B14 .h contains no inline assembly primitive {bad!r}')
+# A real `smc` instruction would look like `smc #0` or `smc 0` in code. Prose
+# mentions "smc" (this file explains the seam), so pin the INSTRUCTION forms.
+for form in ('smc #0', 'smc #1', 'smc 0'):
+    check(form not in c, f'B14 .c contains no `{form}` instruction')
+check('register uint64_t x0' not in c,
+      'B14 .c pins no SMC argument registers (that is the transport\'s job)')
+
+# B14c: the orchestration is ORDERED and FAIL-CLOSED.
+check('for (i = 0u; i < kAdrenoZapPasStageCount; ++i)' in c,
+      'B14 the chain iterates the three stages in order')
+ex = c[c.find('AdrenoZapExecStatus adreno_zap_pas_execute'):]
+ex = ex[:ex.find('/* ---- the ROUND 107 stub transport')]
+check('if (verdict.is_success == 0)' in ex, 'B14 a failing stage is detected')
+check('return kAdrenoZapExecStageFailed;' in ex, 'B14 ...and ABORTS the chain')
+# The abort must PRECEDE the credit, i.e. a failed stage is never marked done.
+check(ex.find('return kAdrenoZapExecStageFailed;') <
+      ex.find('out->have_done |= adreno_zap_pas_done_bit(i);'),
+      'B14 the abort precedes the stage credit (a failed stage is never done)')
+for gate in ('kAdrenoZapExecNoTransport', 'kAdrenoZapExecBadBase',
+             'kAdrenoZapExecNoRegion'):
+    check(gate in ex, f'B14 the executor refuses early on {gate}')
+# The early gates must run BEFORE the loop that issues calls.
+check(ex.find('kAdrenoZapExecNoTransport') < ex.find('t->call('),
+      'B14 the no-transport refusal precedes any transport call')
+check(ex.find('kAdrenoZapExecBadBase') < ex.find('t->call('),
+      'B14 the base gate precedes any transport call')
+check(ex.find('kAdrenoZapExecNoRegion') < ex.find('t->call('),
+      'B14 the region gate precedes any transport call (no partial chain)')
+
+# B14d: argument assembly -- peripheral in x1, function id in x0.
+check('arg_info = kAdrenoZapPasId;' in ex,
+      'B14 args[0] is the peripheral id on EVERY stage (P2:710)')
+check('arg_a2 = metadata_phys;' in ex,
+      'B14 init_image passes the metadata physical address')
+check('arg_a2 = region->phys;' in ex and 'arg_a3 = region->bytes;' in ex,
+      'B14 mem_setup passes the region address AND size')
+check('plan.x0, arg_info, arg_a2, arg_a3' in ex,
+      'B14 x0 is the function id and the peripheral travels in x1, not x0')
+
+# B14e: the two channels stay separate in the report.
+for fld in ('transport_ret', 'secure_result', 'is_success', 'called'):
+    check(fld in h, f'B14 the per-stage record exposes {fld}')
+check('adreno_zap_pas_judge(transport_ret, (uint32_t)result0, &verdict)' in ex,
+      'B14 the judgement goes through the round-106 two-channel rule')
+
+# B14f: nothing was executed for real, and the boundary prose says so.
+check('NO `smc` INSTRUCTION AND NO INLINE ASSEMBLY' in h or
+      'NO `smc` here' in h or 'NO smc here' in h.replace('`', ''),
+      'B14 the header states the no-assembly boundary')
+check('CONTRACT AND TRANSPORT ARE SEPARATED' in h,
+      'B14 the header names the separation as the design rule')
+
+# B14g: no new C unit, no ArmCpu edit, no CI-verifier edit by this round.
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 30,
+      'B14 STILL 30 C archive units (round 107 added none)')
+check('armcpu_scm_call' not in c and 'armcpu_scm_call' not in h,
+      'B14 the contract layer names no ArmCpu symbol (ArmCpu.cpp is untouched)')
 
 print(f'Domain A: {len(PINS)} sha256-pinned sources; the PAS call shape (SVC/CMD/'
       f'arity/owner), the eight-step chain and its ORDER, and the fact that the '

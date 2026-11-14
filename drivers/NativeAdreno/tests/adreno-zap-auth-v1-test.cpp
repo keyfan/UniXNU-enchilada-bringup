@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// AdrenoZapAuthV1 host test: 9 groups, CHECK() accumulates failures.
+// AdrenoZapAuthV1 host test: 11 groups, CHECK() accumulates failures.
 // Groups 1-7 are the round-73 shape. Groups 8-9 are ROUND 106: the three-stage
-// ordered PAS contract and the derived SMC base.
+// ordered PAS contract and the derived SMC base. Groups 10-11 are ROUND 107:
+// the injected SCM transport seam and the fail-closed orchestration over it.
 #include <cstdint>
 #include <cstdio>
 #include "AdrenoZapAuthV1.h"
@@ -340,6 +341,189 @@ static void testSmcBaseAndChannels()
     CHECK(adreno_zap_pas_verify(nullptr) == 0);
 }
 
+// ================= ROUND 107: the injected SCM transport seam =================
+//
+// A recording + scripted stub. It stands in for the production transport (a thin
+// extern "C" wrapper the ArmCpu owner would add -- see
+// work/tmp/r107-scm-export-plan.md). The real one is NOT linked here and NOT
+// exported yet, which is exactly why the contract layer takes it by injection.
+struct StubScm {
+    uint32_t calls = 0;
+    uint32_t x0[4] = {0, 0, 0, 0};
+    uint32_t x1[4] = {0, 0, 0, 0};
+    uint32_t x2[4] = {0, 0, 0, 0};
+    uint32_t x3[4] = {0, 0, 0, 0};
+    // fail_at == which call index fails; 4 or more means "never fail".
+    uint32_t fail_at = 4;
+    bool fail_transport = false;   // fail on the transport channel
+    uint64_t fail_secure = 0;      // value put in result[0] when the secure world rejects
+};
+
+static int stubScm(void *cookie, uint32_t fn, uint32_t info, uint32_t a2,
+                   uint32_t a3, uint64_t *out)
+{
+    StubScm *s = static_cast<StubScm *>(cookie);
+    if (s == nullptr || out == nullptr) return -1;
+    if (s->calls < 4u) {
+        s->x0[s->calls] = fn;
+        s->x1[s->calls] = info;
+        s->x2[s->calls] = a2;
+        s->x3[s->calls] = a3;
+    }
+    if (s->calls == s->fail_at) {
+        ++s->calls;
+        if (s->fail_transport) { *out = 0; return -13; }   // -EACCES
+        *out = s->fail_secure;                             // transport OK, TZ rejects
+        return 0;
+    }
+    ++s->calls;
+    *out = 0;
+    return 0;
+}
+
+static void testTransportSeam()
+{
+    // The seam WIRES nothing by itself: no function pointer is a refusal, and
+    // "not wired" must be distinguishable from "wired and failing".
+    struct adreno_zap_transport t;
+    t.cookie = nullptr;
+    t.call = nullptr;
+    CHECK(adreno_zap_transport_ready(nullptr) == 0);
+    CHECK(adreno_zap_transport_ready(&t) == 0);
+    t.call = stubScm;
+    CHECK(adreno_zap_transport_ready(&t) == 1);
+
+    // THE PRODUCTION STATE TODAY: no export exists, so a NULL transport must
+    // fail closed and call NOTHING -- never be read as "0 stages = success".
+    struct adreno_zap_pas_region region;
+    region.phys = 0x40000000u;
+    region.bytes = 0x1000u;
+    struct adreno_zap_pas_report rep;
+    t.call = nullptr;
+    CHECK(adreno_zap_pas_execute(&t, kAdrenoZapSmcBaseDerived, 0x1000u, &region,
+                                &rep) == kAdrenoZapExecNoTransport);
+    CHECK(rep.stages_run == 0u);
+    CHECK(rep.all_succeeded == 0);
+    CHECK(adreno_zap_pas_execute(nullptr, kAdrenoZapSmcBaseDerived, 0x1000u,
+                                 &region, &rep) == kAdrenoZapExecNoTransport);
+
+    // The three refusal gates must fire BEFORE any call reaches the transport.
+    StubScm s;
+    t.cookie = &s;
+    t.call = stubScm;
+    CHECK(adreno_zap_pas_execute(&t, 0xC1000000u, 0x1000u, &region, &rep) ==
+          kAdrenoZapExecBadBase);   // owner 1 is NOT ARM_SMCCC_OWNER_SIP
+    CHECK(s.calls == 0u);
+    CHECK(adreno_zap_pas_execute(&t, kAdrenoZapSmcBaseDerived, 0x1000u, nullptr,
+                                 &rep) == kAdrenoZapExecNoRegion);
+    CHECK(s.calls == 0u);          // refusing up front means init_image never ran
+    CHECK(adreno_zap_pas_execute(&t, kAdrenoZapSmcBaseDerived, 0x1000u, &region,
+                                 nullptr) == kAdrenoZapExecNullOut);
+
+    // A missing transport is not a "success with zero stages" either.
+    CHECK(adreno_zap_pas_execute(nullptr, kAdrenoZapSmcBaseDerived, 0x1000u,
+                                 &region, nullptr) == kAdrenoZapExecNullOut);
+}
+
+static void testPasExecute()
+{
+    struct adreno_zap_pas_region region;
+    region.phys = 0x40000000u;
+    region.bytes = 0x1000u;
+    struct adreno_zap_pas_report rep;
+    struct adreno_zap_transport t;
+    const uint32_t base = kAdrenoZapSmcBaseDerived;
+    StubScm s;
+    t.cookie = &s;
+    t.call = stubScm;
+
+    // ---- ALL THREE SUCCEED ----
+    CHECK(adreno_zap_pas_execute(&t, base, 0x1000u, &region, &rep) ==
+          kAdrenoZapExecOk);
+    CHECK(s.calls == 3u);          // exactly one SMC per stage, no extra probes
+    CHECK(rep.stages_run == 3u);
+    CHECK(rep.all_succeeded == 1);
+    CHECK(rep.first_failure == kAdrenoZapPasStageCount);   // sentinel: none
+    CHECK(rep.have_done == 0x7u);
+
+    // ---- PARAMETER ASSEMBLY, pinned at the transport boundary ----
+    // x0 is the FUNCTION ID (base | SCM_SMC_FNID); the PERIPHERAL goes in x1.
+    // A wrapper that swapped them would still pass a naive stub, so every
+    // argument of every call is checked here.
+    CHECK(s.x0[0] == 0xC2000201u);            // init_image      (PIL 0x01)
+    CHECK(s.x0[1] == 0xC2000202u);            // mem_setup       (PIL 0x02)
+    CHECK(s.x0[2] == 0xC2000205u);            // auth_and_reset  (PIL 0x05)
+    CHECK(s.x0[0] == (base | 0x0201u));
+    CHECK(s.x0[1] == (base | 0x0202u));
+    CHECK(s.x0[2] == (base | 0x0205u));
+    // args[0] == GPU_PAS_ID 13 on EVERY stage (P2:710).
+    CHECK(s.x1[0] == 13u && s.x1[1] == 13u && s.x1[2] == 13u);
+    CHECK(s.x1[0] == kAdrenoZapPasId);
+    // x2/x3 differ per stage, and that difference IS the contract:
+    CHECK(s.x2[0] == 0x1000u && s.x3[0] == 0u);          // init:  metadata PHYS
+    CHECK(s.x2[1] == 0x40000000u && s.x3[1] == 0x1000u); // mem:   phys + SIZE
+    CHECK(s.x2[2] == 0u && s.x3[2] == 0u);               // auth:  peripheral only
+    // The per-stage report records what was ACTUALLY sent, not what was planned.
+    for (uint32_t i = 0; i < 3u; ++i) {
+        CHECK(rep.stage[i].stage == i);
+        CHECK(rep.stage[i].called == 1);
+        CHECK(rep.stage[i].is_success == 1);
+        CHECK(rep.stage[i].x0 == s.x0[i]);
+    }
+
+    // ---- FAIL CLOSED, one stage at a time ----
+    // For each stage: fail it and prove the chain STOPPED there. The assertion
+    // that matters is "s.calls == fail_stage + 1" -- no later call happened.
+    for (uint32_t fail_stage = 0; fail_stage < 3u; ++fail_stage) {
+        // (a) transport-channel failure
+        s = StubScm();
+        s.fail_at = fail_stage;
+        s.fail_transport = true;
+        CHECK(adreno_zap_pas_execute(&t, base, 0x1000u, &region, &rep) ==
+              kAdrenoZapExecStageFailed);
+        CHECK(s.calls == fail_stage + 1u);   // stopped AT the failing stage
+        CHECK(rep.first_failure == fail_stage);
+        CHECK(rep.stages_run == fail_stage + 1u);
+        CHECK(rep.all_succeeded == 0);
+        for (uint32_t j = fail_stage + 1u; j < 3u; ++j) {
+            CHECK(rep.stage[j].called == 0);   // NOTHING after the failure
+        }
+
+        // (b) transport clean, secure world rejects: SAME stop, and the report
+        // must say the SECURE channel failed -- the P2:729 trap made concrete.
+        s = StubScm();
+        s.fail_at = fail_stage;
+        s.fail_transport = false;
+        s.fail_secure = 0x2Au;
+        CHECK(adreno_zap_pas_execute(&t, base, 0x1000u, &region, &rep) ==
+              kAdrenoZapExecStageFailed);
+        CHECK(s.calls == fail_stage + 1u);
+        CHECK(rep.stage[fail_stage].transport_ret == 0);   // transport DID succeed
+        CHECK(rep.stage[fail_stage].secure_result == 0x2Au); // TZ rejected
+        CHECK(rep.stage[fail_stage].is_success == 0);        // so: FAILURE
+        CHECK(rep.all_succeeded == 0);
+        CHECK(rep.first_failure == fail_stage);
+    }
+
+    // Stage 0 failing means the two later stages were NEVER attempted -- the
+    // specific guarantee that a rejected metadata image cannot be followed by a
+    // mem_setup or an auth call.
+    s = StubScm();
+    s.fail_at = 0u;
+    s.fail_secure = 1u;
+    CHECK(adreno_zap_pas_execute(&t, base, 0x1000u, &region, &rep) ==
+          kAdrenoZapExecStageFailed);
+    CHECK(s.calls == 1u);
+    CHECK(rep.stage[1].called == 0 && rep.stage[2].called == 0);
+    CHECK(rep.have_done == 0u);    // not even stage 0 was credited
+
+    // ---- the round-107 self-check ----
+    uint32_t checks = 0;
+    CHECK(adreno_zap_transport_verify(&checks) == 0);
+    CHECK(checks >= 60u);
+    CHECK(adreno_zap_transport_verify(nullptr) == 0);
+}
+
 int main()
 {
     testPasId();
@@ -351,12 +535,14 @@ int main()
     testSelfCheck();
     testPasStages();
     testSmcBaseAndChannels();
+    testTransportSeam();
+    testPasExecute();
     if (failures) {
         std::printf("FAIL: enchilada A630 ZAP/PAS auth shape contract "
                     "(%d failures)\n", failures);
         return 1;
     }
     std::printf("PASS: enchilada A630 ZAP/PAS auth shape contract "
-                "(9 test groups, 0 failures)\n");
+                "(11 test groups, 0 failures)\n");
     return 0;
 }
