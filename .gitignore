@@ -79,3 +79,14 @@ local.toml
 /work/tmp/a630-device-fw/
 *.mdt
 *.b0[0-9]
+
+# The generated firmware-bytes header (ROUND 109). scripts/generate-zap-blob.py reads
+# the local device extraction and emits this file as a C array; its own header comment
+# says "DO NOT COMMIT ... is gitignored on purpose", and until ROUND 109 that claim was
+# FALSE - no rule covered it, so a regenerate followed by an unqualified `git add -A`
+# would have pushed OEM-signed firmware into a public history that cannot be rewritten.
+# The file that sits on disk today is the ABSENT stub (present=0, zero proprietary
+# bytes), so it is safe either way; this rule is what keeps it that way. The durable
+# record stays scripts/data/adreno-a630-device-firmware.json (sizes + hashes, no bytes).
+/drivers/NativeAdreno/AdrenoZapBlobV1.h
+*.bak

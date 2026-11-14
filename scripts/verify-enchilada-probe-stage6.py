@@ -243,6 +243,42 @@ def main():
           'does NOT unblock stage 5' in asid_h,
           'the header STILL states that this does NOT unblock stage 5 / render')
 
+    # ---- ROUND 109: stage 7 is a PLAN behind a TWO-KEY interlock ----
+    # These assertions exist because stage 7 is the only code in this tree that
+    # could ever make a secure-world call. They pin three properties:
+    #   1. the boot-arg mask is UNCHANGED (1..6) -- stage 7 is reached INSIDE the
+    #      stage-6 run, so widening the mask was never needed and the four stage
+    #      verifiers keep their original assertions;
+    #   2. the second key `enchilada-pas-exec` is REQUIRED before any execute;
+    #   3. the transport handed to the executor is NULL, so even the armed path
+    #      cannot make a call -- the ArmCpu export still does not exist.
+    check('enchilada-pas-exec' in code,
+          'R109 stage 7 requires the SECOND key enchilada-pas-exec')
+    check('armed ? "plan" : "armed-not-executed"' in code,
+          'R109 the row distinguishes plan from armed-not-executed')
+    check('struct adreno_zap_transport s7tr = {}' in code,
+          'R109 the transport is a zero-initialised (NULL) struct')
+    _armed_at = code.find('if (armed)')
+    _exec_at = code.find('adreno_zap_pas_execute(&s7tr')
+    check(_armed_at > 0 and _exec_at > _armed_at,
+          'R109 adreno_zap_pas_execute is reachable ONLY behind `if (armed)`')
+    check('kAdrenoZapExecNoTransport' in code,
+          'R109 the unarmed/refused path is the named NoTransport status')
+    check('(stage < 1u || stage > 6u)' in code,
+          'R109 the boot-arg mask is STILL 1..6 (stage 7 did not widen it)')
+    check('__has_include' in code,
+          'R109 the generated blob header is __has_include-guarded')
+    check('#define kAdrenoZapBlobPresent 0' in code,
+          'R109 the no-header fallback declares present=0, not a fake image')
+    # verify-ci-246 scans the LINKED IMAGE, so these literals must not appear in
+    # the source at all -- a comment is enough to trip it (round 109 proved that).
+    for _bad in ('stage6=exec', 'stage3=exec', '_qcom_scm_call',
+                 'adreno_zap_shader_load'):
+        check(_bad not in code,
+              'R109 the probe source never spells the CI-246 literal #%d'
+              % ('stage6=exec', 'stage3=exec', '_qcom_scm_call',
+                 'adreno_zap_shader_load').index(_bad))
+
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
