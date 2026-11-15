@@ -771,6 +771,56 @@ def main():
     check('s7sbB1 = bbs;' in code and 's7sbB2 = bb2;' in code,
           'R144 group-B values are COMPUTED from the group-B reply, not literals')
 
+    # ==== ROUND 146: SHM_BRIDGE_DELETE handle-validation probe =============
+    # The DELETE probe validates 0x8587EB18 (the handle R145 saw twice) by
+    # sending a one-arg DELETE and reading a0/a1/a2. a0==0 => real handle.
+    # ---- 1. the DELETE call is built through the contract with ARGS(1) ----
+    check('adreno_zap_shm_bridge_delete_probe' in code,
+          'R146 the DELETE probe is built through the contract helper')
+    check('adreno_zap_shm_bridge_delete_judge' in code,
+          'R146 the DELETE reply is judged through the contract judge')
+    check('kAdrenoZapShmBridgeObservedHandle' in code,
+          'R146 the DELETE probe uses the observed 0x8587EB18 handle')
+    _authc = (DEV / 'drivers/NativeAdreno/AdrenoZapAuthV1.c').read_text(encoding='utf-8', errors='replace')
+    _authh = (DEV / 'drivers/NativeAdreno/AdrenoZapAuthV1.h').read_text(encoding='utf-8', errors='replace')
+    check('#define kAdrenoZapScmMpShmBridgeDelete 0x1du' in _authh,
+          'R146 SHM_BRIDGE_DELETE is pinned to 0x1D (qcom_scm.c:120)')
+    check('#define kAdrenoZapArgInfoShmBridgeDelete 0x01u' in _authh,
+          'R146 DELETE is ARGS(1) (qcom_scm.c:1426)')
+    check('out->handle = handle;' in _authc and 'uint64_t handle' in _authh,
+          'R146 the DELETE call carries the handle in args[0]')
+    # ---- 2. read a0/a1/a2 and report unconditionally ----
+    check('sbd=%llx/%llx/%llx v=%d' in code,
+          'R146 the row carries sbd= (a0/a1/a2) and v=')
+    check('s7sbd0' in code and 's7sbd1' in code and 's7sbd2' in code and 's7sbdv' in code,
+          'R146 the DELETE values reach snprintf')
+    # the verdict must be COMPUTED, never a forced constant
+    check('&s7sbdv' in code,
+          'R146 the DELETE verdict is set by the judge, not a constant')
+    _after_dv = code[code.find('int s7sbdv = -1;') + len('int s7sbdv = -1;'):]
+    check(re.search(r's7sbdv\s*=\s*-?\d+\s*;', _after_dv) is None,
+          'R146 sbdv is not RE-assigned a literal after its declaration')
+    # the handle passed to DELETE must be the observed one, NOT 0 (a handle of 0
+    # would delete nothing and prove nothing)
+    check('kAdrenoZapShmBridgeObservedHandle' in code and
+          's7shmD.handle' in code,
+          'R146 the DELETE sends the observed handle through the call record')
+    # ---- 3. the judge POLARITY is pinned, so a reversed judge fails ----
+    # a0 == 0 (transport clean) MUST mean VALID (real handle); a parameter
+    # rejection MUST mean INVALID. Read the judge body to prove the mapping, not
+    # just that both *valid lines exist. A mutation that swaps 0/<->1 passes any
+    # "both constant assignments present" check and must be caught here.
+    _djudge = _authc[_authc.find('int adreno_zap_shm_bridge_delete_judge('):]
+    _djudge = _djudge[:_djudge.find('\n}\n')] if '\n}\n' in _djudge else _djudge[:1200]
+    _a0branch = _djudge[_djudge.find('if (transport_error == 0) {'):]
+    _a0branch = _a0branch[:_a0branch.find('\n    }')] if '\n    }' in _a0branch else _a0branch
+    check('*valid = 1;' in _a0branch,
+          'R146 the a0==0 branch means VALID (real handle), not invalid')
+    _rej = _djudge[_djudge.find('0xFFFFFFFFFFFFFFFEULL'):]
+    _rej = _rej[:_rej.find('\n    }')] if '\n    }' in _rej else _rej[:600]
+    check('*valid = 0;' in _rej,
+          'R146 a parameter rejection means INVALID (not a real handle)')
+
     # ==== ROUND 131: x1s must come from STAGE 0, not from the p13 probe ====
     # THE DEFECT (round 130 found it by reading a device row that said x1s=1):
     # the assignment was `s7x1s = (uint64_t)s7sup.arginfo;` -- s7sup is the

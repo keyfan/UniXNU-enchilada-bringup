@@ -1389,6 +1389,19 @@ extern "C" void enchilada_adreno_poll(void) {
                         uint64_t s7sbB1 = 0;
                         uint64_t s7sbB2 = 0;
                         int s7sbr = -1;   // written-down verdict, 0..3 (see header)
+                        // ROUND 146: SHM_BRIDGE_DELETE probe. R145 returned the
+                        // SAME handle 0x8587EB18 from two garbage CREATEs, which
+                        // is ambiguous (a real bridge mints a fresh handle or
+                        // fails). DELETE settles it AND frees a possible leak:
+                        //   sbd0 = DELETE transport a0 (0 => handle accepted)
+                        //   sbd1 = DELETE secure a1      (secondary, unjudged)
+                        //   sbd2 = DELETE a2             (secondary, unjudged)
+                        //   sbdv = DELETE verdict: 1 valid handle, 0 invalid,
+                        //          -1 inconclusive.
+                        uint64_t s7sbd0 = 0;
+                        uint64_t s7sbd1 = 0;
+                        uint64_t s7sbd2 = 0;
+                        int s7sbdv = -1;
                         if (s7sym) {
                             // ---- IS_CALL_AVAILABLE for SVC_MP / SHM_BRIDGE_ENABLE ----
                             // probe_fnid = FNID(0x0C, 0x1C) = 0x0C1C. The
@@ -1479,6 +1492,32 @@ extern "C" void enchilada_adreno_poll(void) {
                                     if (bbr == 0) {
                                         s7sbB1 = bbs;
                                         s7sbB2 = bb2;
+                                    }
+                                }
+                            }
+                            // ---- then SHM_BRIDGE_DELETE with the observed handle ----
+                            // One arg (0x8587EB18) through armcpu_scm_call5_r, so
+                            // we read a0/a1/a2. a0==0 => the handle is real and
+                            // the bridge was freed; a parameter rejection => the
+                            // sbr=2 create reading was a misread.
+                            {
+                                struct adreno_zap_shm_bridge_delete s7shmD = {};
+                                if (adreno_zap_shm_bridge_delete_probe(
+                                        s7base, kAdrenoZapShmBridgeObservedHandle,
+                                        &s7shmD) == 0) {
+                                    uint64_t d0 = 0, d1 = 0, d2 = 0;
+                                    const int32_t sbdrc =
+                                        armcpu_scm_call5_r(s7shmD.x0, s7shmD.arginfo,
+                                                           s7shmD.handle,
+                                                           0u, 0u, 0u,
+                                                           &d0, &d1, &d2);
+                                    if (sbdrc == 0) {
+                                        s7sbd0 = d0;
+                                        s7sbd1 = d1;
+                                        s7sbd2 = d2;
+                                        (void)adreno_zap_shm_bridge_delete_judge(
+                                            (int64_t)(int32_t)(d0 & 0xFFFFFFFFu),
+                                            &s7sbdv);
                                     }
                                 }
                             }
@@ -1664,6 +1703,12 @@ extern "C" void enchilada_adreno_poll(void) {
                                  //         ("suspicious success")
                                  //     3 = a0==0,a1==0 -> clean success
                                  "sb2=%llx sbB=%llx/%llx "
+                                 // ROUND 146:
+                                 //   sbd = SHM_BRIDGE_DELETE(0x8587EB18) a0/a1/a2.
+                                 //   sbdv= DELETE verdict: 1 valid handle (a0==0),
+                                 //          0 invalid (parameter rejected),
+                                 //         -1 inconclusive.
+                                 "sbd=%llx/%llx/%llx v=%d "
                                  // ROUND 131:
                                  //   ct   = the SMCCC call type actually used
                                  //          for the PAS stages ("fast"/"std"),
@@ -1758,6 +1803,10 @@ extern "C" void enchilada_adreno_poll(void) {
                                   (unsigned long long)s7sb2,
                                   (unsigned long long)s7sbB1,
                                   (unsigned long long)s7sbB2,
+                                  // ROUND 146: DELETE handle validation.
+                                  (unsigned long long)s7sbd0,
+                                  (unsigned long long)s7sbd1,
+                                  (unsigned long long)s7sbd2, s7sbdv,
                                   // ROUND 131: the call type that was actually
                                   // sent, and whether the captured x1 matched the
                                   // contract's pinned init_image arginfo.

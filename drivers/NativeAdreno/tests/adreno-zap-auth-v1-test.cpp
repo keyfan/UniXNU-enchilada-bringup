@@ -784,6 +784,50 @@ static void testPasExecute()
     CHECK(adreno_zap_shm_bridge_create_judge((int64_t)0xFFCFFFBBLL, 0, 0, &rc) == 0);
     CHECK(rc == 0);
 
+    // ========== ROUND 146: SHM_BRIDGE_DELETE probe =========================
+    CHECK(kAdrenoZapScmMpShmBridgeDelete == 0x1du);
+    CHECK(kAdrenoZapShmBridgeDeleteFnid == 0x0C1Du);   // (0x0C << 8) | 0x1D
+    CHECK(kAdrenoZapArgInfoShmBridgeDelete == 0x01u);  // ARGS(1)
+    CHECK(kAdrenoZapShmBridgeObservedHandle == 0x8587EB18ULL);
+    struct adreno_zap_shm_bridge_delete deld;
+    CHECK(adreno_zap_shm_bridge_delete_probe(base, 0x8587EB18ULL, &deld) == 0);
+    CHECK(deld.svc == 0x0Cu);
+    CHECK(deld.cmd == 0x1Du);
+    CHECK(deld.owner == kAdrenoZapScmOwnerSip);
+    CHECK(deld.fnid == 0x0C1Du);
+    CHECK(deld.x0 == (base | 0x0C1Du));
+    CHECK(deld.x0 == 0xC2000C1Du);                     // THE shape the brief named
+    CHECK(deld.arginfo == 0x01u);
+    CHECK(deld.arg_count == 1u);
+    CHECK(deld.handle == 0x8587EB18ULL);               // args[0] = x2
+    CHECK(deld.required == 0 && deld.is_metadata_call == 0 && deld.carries_size_arg == 0);
+    // Refusals: same base gate as every other call this module produces.
+    CHECK(adreno_zap_shm_bridge_delete_probe(0xC1000000u, 0x8587EB18ULL, &deld) == 1);
+    CHECK(adreno_zap_shm_bridge_delete_probe(base, 0x8587EB18ULL, nullptr) == 1);
+    // ---- the written-down judge ----
+    // a0 == 0 -> 1 (handle accepted -> real bridge handle)
+    int dv = 7;
+    CHECK(adreno_zap_shm_bridge_delete_judge(0, &dv) == 0);
+    CHECK(dv == 1);
+    // parameter-style rejection -> 0 (invalid handle)
+    CHECK(adreno_zap_shm_bridge_delete_judge((int64_t)-2, &dv) == 0);
+    CHECK(dv == 0);
+    CHECK(adreno_zap_shm_bridge_delete_judge((int64_t)0xFFCFFFBBLL, &dv) == 0);
+    CHECK(dv == 0);
+    CHECK(adreno_zap_shm_bridge_delete_judge((int64_t)-4, &dv) == 0);
+    CHECK(dv == 0);
+    CHECK(adreno_zap_shm_bridge_delete_judge((int64_t)-19, &dv) == 0);
+    CHECK(dv == 0);
+    // wrapper refused -> -1 inconclusive
+    CHECK(adreno_zap_shm_bridge_delete_judge((int64_t)-16, &dv) == 0);
+    CHECK(dv == -1);
+    CHECK(adreno_zap_shm_bridge_delete_judge((int64_t)-22, &dv) == 0);
+    CHECK(dv == -1);
+    // unknown code -> -1
+    CHECK(adreno_zap_shm_bridge_delete_judge((int64_t)0xDEADBEEFLL, &dv) == 0);
+    CHECK(dv == -1);
+    CHECK(adreno_zap_shm_bridge_delete_judge(0, nullptr) == 1);
+
     // ========== ROUND 131: the SMCCC call type (FAST vs STD) ==============
     // Every base this port has sent sets bit31 (FAST_CALL). Upstream's PAS calls
     // clear it (qcom_scm.c:306 atomic=false -> qcom_scm-smc.c:160 STD_CALL).

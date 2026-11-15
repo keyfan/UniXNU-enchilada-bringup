@@ -994,6 +994,61 @@ int adreno_zap_shm_bridge_create_judge(int64_t transport_error,
     return 0;
 }
 
+int adreno_zap_shm_bridge_delete_probe(uint32_t base, uint64_t handle,
+                                       struct adreno_zap_shm_bridge_delete *out)
+{
+    if (out == 0) {
+        return 1;
+    }
+    if (adreno_zap_smc_base_gate(base) == 0) {
+        return 1;
+    }
+    out->svc = kAdrenoZapScmSvcMp;          /* qcom_scm.c:112 0x0C SVC_MP       */
+    out->cmd = kAdrenoZapScmMpShmBridgeDelete; /* qcom_scm.c:120 0x1D             */
+    out->owner = kAdrenoZapScmOwnerSip;     /* qcom_scm.c:1423 .owner = SIP     */
+    out->fnid = adreno_zap_scm_fnid(out->svc, out->cmd); /* -> 0x0C1D           */
+    out->x0 = base | out->fnid;             /* P2:355-356                        */
+    out->arginfo = kAdrenoZapArgInfoShmBridgeDelete; /* ARGS(1) = 0x1            */
+    out->arg_count = out->arginfo & 0x0Fu;  /* 1, derived                        */
+    out->handle = handle;                   /* args[0] = x2                     */
+    out->required = 0;
+    out->is_metadata_call = 0;
+    out->carries_size_arg = 0;
+    return 0;
+}
+
+int adreno_zap_shm_bridge_delete_judge(int64_t transport_error, int *valid)
+{
+    if (valid == 0) {
+        return 1;
+    }
+    /* The wrapper refusing (no SMC made): nothing learned. INCONCLUSIVE. */
+    if (transport_error == -16 || transport_error == -22) {
+        *valid = -1;
+        return 0;
+    }
+    /* qcom_scm.c:1429 returns only the transport ret, so a0 is the delete
+     * verdict. a0 == 0 => the handle was accepted = a real bridge handle. */
+    if (transport_error == 0) {
+        *valid = 1;
+        return 0;
+    }
+    /* A parameter-style rejection (EINVAL / EOPNOTSUPP family or the secure
+     * 0xFFCFFFxx code) means 0x8587EB18 is NOT a valid handle. */
+    if (transport_error == (int64_t)0xFFFFFFFFFFFFFFFEULL ||   /* -EINVAL_ARG */
+        transport_error == (int64_t)0xFFFFFFFFFFFFFFFDULL ||   /* -EINVAL_ADDR */
+        transport_error == (int64_t)0xFFFFFFFFFFFFFFFCULL ||   /* -EOPNOTSUPP */
+        transport_error == (int64_t)0xFFFFFFFFFFFFFFFFULL ||   /* -ERROR */
+        transport_error == -19 ||                              /* -ENODEV */
+        ((uint64_t)transport_error & 0xFFFF0000ULL) == 0xFFCF0000ULL) {
+        *valid = 0;
+        return 0;
+    }
+    /* Unknown transport code: report verbatim, no inference. */
+    *valid = -1;
+    return 0;
+}
+
 /* ==========================================================================
  * ROUND 129: IS_CALL_AVAILABLE, and the v13 that folds it in.
  * See the header for why the brief's svc=0x01 is wrong (that is SVC_BOOT;

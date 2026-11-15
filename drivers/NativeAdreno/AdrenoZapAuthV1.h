@@ -154,6 +154,25 @@ extern "C" {
 /* QCOM_SCM_ARGS(4, VAL, VAL, VAL, VAL): 4 args, all VAL (type 0). Encoded
  * against qcom_scm.h:29-40: count 4 + (0<<4)|(0<<6)|(0<<8)|(0<<10) == 0x4. */
 #define kAdrenoZapArgInfoShmBridgeCreate 0x04u
+/* ---- ROUND 146: SHM_BRIDGE_DELETE probe (SVC_MP/0x1D) --------------------
+ * qcom_scm_shm_bridge_delete() (qcom_scm.c:1419-1431) is the clean-up call:
+ * ONE argument (the bridge handle) mapped to x2, arginfo = QCOM_SCM_ARGS(1) =
+ * 0x1. It returns ONLY the transport ret (qcom_scm.c:1429 `return
+ * qcom_scm_call(...)`) -- it does NOT inspect res.result[0] (unlike create),
+ * so its a1/a2 are secondary channels, not a judged verdict.
+ * R145 returned the SAME handle 0x8587EB18 from TWO garbage CREATEs; this is
+ * ambiguous (a real bridge should mint a fresh handle each time, or fail). The
+ * DELETE probe distinguishes: a0==0 means the handle was accepted (a real
+ * bridge), a parameter-style rejection means 0x8587EB18 is NOT a valid handle.
+ * svc=0x0C, cmd=0x1D -> fnid = FNID(0x0C, 0x1D) = 0x0C1D. */
+#define kAdrenoZapScmMpShmBridgeDelete 0x1du /* qcom_scm.c:120 SHM_BRIDGE_DELETE */
+#define kAdrenoZapShmBridgeDeleteFnid  ((kAdrenoZapScmSvcMp << 8) | kAdrenoZapScmMpShmBridgeDelete)
+/* QCOM_SCM_ARGS(1) = 0x1 (qcom_scm.h:29-40, one VAL argument). */
+#define kAdrenoZapArgInfoShmBridgeDelete 0x01u
+/* The handle R145 observed from BOTH garbage CREATEs (device-measured). It is
+ * the DELETE probe's input: if DELETE accepts it (a0==0) it is a real bridge
+ * handle; if rejected it is a fixed system/diagnostic value. */
+#define kAdrenoZapShmBridgeObservedHandle 0x8587EB18ULL
 /* Common error codes (qcom_scm.h:150-158) as UNSIGNED words, exactly what the
  * transport a0 / secure result reads. -2 = EINVAL_ARG, -3 = EINVAL_ADDR,
  * -4 = EOPNOTSUPP, -1 = generic ERROR. A parameter-error family (-2/-3/-1)
@@ -767,6 +786,50 @@ int adreno_zap_shm_bridge_create_probe(uint32_t base,
 int adreno_zap_shm_bridge_create_judge(int64_t transport_error,
                                        uint64_t secure_result,
                                        uint64_t handle_a2, int *reachable);
+
+/* ==========================================================================
+ * ROUND 146: SHM_BRIDGE_DELETE probe (SVC_MP / 0x1D) -- validate the handle.
+ * ==========================================================================
+ * R145 returned the SAME handle 0x8587EB18 from two garbage CREATEs. That is
+ * ambiguous: a real bridge should mint a fresh handle per successful create (or
+ * fail), so a repeated identical value is more consistent with a fixed
+ * system/diagnostic cookie than with a live bridge. The DELETE probe settles it:
+ * if DELETE accepts the handle (transport a0 == 0) then 0x8587EB18 IS a valid
+ * bridge handle and the mechanism works; if DELETE rejects it with a
+ * parameter-style error then it is NOT a real handle and the sbr=2 reading was
+ * a misread. A successful DELETE also frees the bridge we may have leaked. */
+struct adreno_zap_shm_bridge_delete {
+    uint32_t svc;        /* QCOM_SCM_SVC_MP = 0x0C                  (qcom_scm.c:112) */
+    uint32_t cmd;        /* QCOM_SCM_MP_SHM_BRIDGE_DELETE = 0x1D    (qcom_scm.c:120) */
+    uint32_t owner;      /* ARM_SMCCC_OWNER_SIP                     (.owner at :1423) */
+    uint32_t fnid;       /* FNID(0x0C, 0x1D) = 0x0C1D                               */
+    uint32_t x0;         /* base | 0x0C1D                                          */
+    uint32_t arginfo;    /* ARGS(1) = 0x1                            (qcom_scm.h:29-40) */
+    uint32_t arg_count;  /* 1                                                       */
+    uint64_t handle;     /* args[0] = x2, the bridge handle                          */
+    int required;        /* 0: probe, not a PAS step                                  */
+    int is_metadata_call;/* 0                                                        */
+    int carries_size_arg;/* 0                                                        */
+};
+
+/* Build the SHM_BRIDGE_DELETE probe call record for the given handle. `out`
+ * non-NULL. svc=0x0C, cmd=0x1D, owner=SIP, arginfo=ARGS(1)=0x1, x0 =
+ * base | FNID(0x0C,0x1D) = base | 0x0C1D, args[0] = handle. Makes no SCM call.
+ * Returns 0, or 1 on a NULL out or a base that fails adreno_zap_smc_base_gate(). */
+int adreno_zap_shm_bridge_delete_probe(uint32_t base, uint64_t handle,
+                                       struct adreno_zap_shm_bridge_delete *out);
+
+/* Decide the DELETE reply (ROUND 146 WRITTEN-DOWN table). delete returns ONLY
+ * the transport ret in the normal flow (qcom_scm.c:1429), so a0 is the verdict:
+ *   1  VALID_HANDLE   transport a0 == 0: DELETE accepted the handle -> 0x8587EB18
+ *                     IS a real bridge handle; mechanism works; worth continuing.
+ *   0  INVALID_HANDLE a0 is a parameter-style rejection (EINVAL/-EOPNOTSUPP or the
+ *                     secure 0xFFCFFFxx family): 0x8587EB18 is NOT a valid handle
+ *                     and the sbr=2 create reading was a misread; route is done.
+ *  -1  INCONCLUSIVE   transport refused (-16/-22 wrapper) or unknown a0.
+ * secure_result (a1) and a2_out are reported for cross-reference even though the
+ * upstream delete path does not judge them. Returns 0, or 1 on a NULL out. */
+int adreno_zap_shm_bridge_delete_judge(int64_t transport_error, int *valid);
 
 /* THE v13 THE BRIEF ASKED FOR, WITH avail FOLDED IN. This is the function the
  * probe uses; the two-argument form above is kept for callers that already know.
