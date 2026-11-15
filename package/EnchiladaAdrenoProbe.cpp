@@ -210,6 +210,15 @@ int32_t armcpu_scm_call(uint64_t fn, uint64_t arginfo, uint64_t a2, uint64_t a3,
 int32_t armcpu_scm_call5(uint64_t fn, uint64_t arginfo, uint64_t a2, uint64_t a3,
                          uint64_t a4, uint64_t a5, uint64_t *transport_ret,
                          uint64_t *secure_result) __attribute__((weak_import));
+// ROUND 144: the five-argument SMC entry point that ALSO returns the SECOND
+// result register (a2) as a separate output. Same shape as armcpu_scm_call5
+// plus an a2_out capture (the bridge HANDLE for SHM_BRIDGE_CREATE, which
+// upstream stores in res.result[1] <- smc a2, qcom_scm-smc.c:205). Only the
+// SHM_BRIDGE_CREATE reachability probe uses it; all other call sites unchanged.
+int32_t armcpu_scm_call5_r(uint64_t fn, uint64_t arginfo, uint64_t a2, uint64_t a3,
+                           uint64_t a4, uint64_t a5, uint64_t *transport_ret,
+                           uint64_t *secure_result,
+                           uint64_t *a2_out) __attribute__((weak_import));
 // ROUND 127: the writable physically-contiguous allocator (ArmCpu.cpp). Same
 // weak_import rule and the same must-be-inside-extern-"C" reason as the two
 // declarations above.
@@ -1367,7 +1376,19 @@ extern "C" void enchilada_adreno_poll(void) {
                         //          0 not-allowed, -1 inconclusive.
                         uint64_t s7sbcr = 0;
                         uint64_t s7sbc0 = 0;
-                        int s7sbr = -1;
+                        // ROUND 144: the CREATE reply's SECOND result register
+                        // (smc a2) -- the bridge HANDLE upstream stores in
+                        // res.result[1] (qcom_scm.c:1412-1413). Zero means no
+                        // handle; non-zero is a "suspicious success" signal.
+                        uint64_t s7sb2 = 0;
+                        // ROUND 144: group B of the CREATE property test. Group A
+                        // (all 0xFFFFFFFF) already measured a1=0x57; group B uses
+                        // all zeros to see whether 0x57 CHANGES with the args. If
+                        // it stays 0x57 -> command-level status; if it moves ->
+                        // the args were parsed. sbB = group-B a1/a2.
+                        uint64_t s7sbB1 = 0;
+                        uint64_t s7sbB2 = 0;
+                        int s7sbr = -1;   // written-down verdict, 0..3 (see header)
                         if (s7sym) {
                             // ---- IS_CALL_AVAILABLE for SVC_MP / SHM_BRIDGE_ENABLE ----
                             // probe_fnid = FNID(0x0C, 0x1C) = 0x0C1C. The
@@ -1410,34 +1431,56 @@ extern "C" void enchilada_adreno_poll(void) {
                                 // sbrc != 0: exporter refused; sb stays 0 and
                                 // av2 carries the inconclusive truth.
                             }
-                            // ---- then SHM_BRIDGE_CREATE (4 garbage args) ----
-                            // The reachability probe: svc=0x0C/0x1E, arginfo
-                            // ARGS(4,VAL,VAL,VAL,VAL)=0x4, four all-bits-one
-                            // args through the NEW armcpu_scm_call5 (its 4th
-                            // value args lands in x5 -- the one register
-                            // armcpu_scm_call pins to 0). Read the reply with
-                            // the contract's written-down judge.
-                            struct adreno_zap_shm_bridge_create s7shmC = {};
-                            if (adreno_zap_shm_bridge_create_probe(s7base,
-                                                                   &s7shmC) == 0) {
-                                uint64_t sbct = 0;
-                                uint64_t sbcs = 0;
-                                const int32_t sbcr =
-                                    armcpu_scm_call5(s7shmC.x0, s7shmC.arginfo,
-                                                     s7shmC.garbage[0],
-                                                     s7shmC.garbage[1],
-                                                     s7shmC.garbage[2],
-                                                     s7shmC.garbage[3],
-                                                     &sbct, &sbcs);
-                                if (sbcr == 0) {
-                                    s7sbcr = sbct;
-                                    s7sbc0 = sbcs;
-                                    (void)adreno_zap_shm_bridge_create_judge(
-                                        (int64_t)(int32_t)(sbct & 0xFFFFFFFFu),
-                                        sbcs, &s7sbr);
+                            // ---- then SHM_BRIDGE_CREATE (two arg sets, reading the a2 handle) ----
+                            // GROUP A (all 0xFFFFFFFF): the R143 value that
+                            // returned a1=0x57. GROUP B (all 0x0): a property
+                            // test -- if 0x57 is invariant across the two sets it
+                            // is a command-level status; if it moves the args were
+                            // parsed. Each set goes out through armcpu_scm_call5_r
+                            // so the a2 handle is captured (qcom_scm.c:1412-1413).
+                            {
+                                struct adreno_zap_shm_bridge_create s7shmC = {};
+                                if (adreno_zap_shm_bridge_create_probe(s7base,
+                                                                       &s7shmC) == 0) {
+                                    uint64_t sbct = 0, sbcs = 0, sbc2 = 0;
+                                    const int32_t sbcr =
+                                        armcpu_scm_call5_r(s7shmC.x0, s7shmC.arginfo,
+                                                           s7shmC.garbage[0],
+                                                           s7shmC.garbage[1],
+                                                           s7shmC.garbage[2],
+                                                           s7shmC.garbage[3],
+                                                           &sbct, &sbcs, &sbc2);
+                                    if (sbcr == 0) {
+                                        s7sbcr = sbct;
+                                        s7sbc0 = sbcs;
+                                        s7sb2 = sbc2;
+                                        (void)adreno_zap_shm_bridge_create_judge(
+                                            (int64_t)(int32_t)(sbct & 0xFFFFFFFFu),
+                                            sbcs, sbc2, &s7sbr);
+                                    }
                                 }
-                                // sbcr != 0: exporter refused; sbcr/sbc0 stay 0,
-                                // sbr stays -1 (inconclusive, "not asked").
+                            }
+                            {
+                                // GROUP B: all-zero arguments, the property-test
+                                // half. Built through the same _args entry point so
+                                // the JUNIOR set cannot accidentally reuse group A.
+                                const uint32_t zero[4] = { 0u, 0u, 0u, 0u };
+                                struct adreno_zap_shm_bridge_create s7shmB = {};
+                                if (adreno_zap_shm_bridge_create_probe_args(
+                                        s7base, zero, &s7shmB) == 0) {
+                                    uint64_t bbt = 0, bbs = 0, bb2 = 0;
+                                    const int32_t bbr =
+                                        armcpu_scm_call5_r(s7shmB.x0, s7shmB.arginfo,
+                                                           s7shmB.garbage[0],
+                                                           s7shmB.garbage[1],
+                                                           s7shmB.garbage[2],
+                                                           s7shmB.garbage[3],
+                                                           &bbt, &bbs, &bb2);
+                                    if (bbr == 0) {
+                                        s7sbB1 = bbs;
+                                        s7sbB2 = bb2;
+                                    }
+                                }
                             }
                             // ---- IS_CALL_AVAILABLE for PAS_IS_SUPPORTED ----
                             // x0 = base | 0x0601, args[0] = 0x0207 | (SIP << 24).
@@ -1609,17 +1652,18 @@ extern "C" void enchilada_adreno_poll(void) {
                                  "av2=%d sb=%x "
                                  // ROUND 142: the SHM_BRIDGE_CREATE reachability
                                  // probe (SVC_MP/0x1E, 4 garbage args):
-                                 //   sbcr = the create call's transport a0
-                                 //   sbc0 = the create call's secure result[0]
-                                 //   sbr  = written-down verdict, from the
-                                 //          contract judge (qcom_scm.h:150-158):
-                                 //          1 = reachable (args rejected with a
-                                 //              parameter error) -> worth
-                                 //              learning the arg layout
-                                 //          0 = NOT allowed (EOPNOTSUPP/ENODEV)
-                                 //              -> shmbridge route CLOSED
-                                 //         -1 = inconclusive (report verbatim)
                                  "sbcr=%llx sbc0=%llx sbr=%d "
+                                 // ROUND 144:
+                                 //   sb2 = the CREATE a2 handle (res.result[1])
+                                 //   sbB = group-B (all-zero args) secure a1/a2
+                                 //   sbr value domain (ROUND 144 revision):
+                                 //     0 = transport a0 != 0, not reachable
+                                 //     1 = a0==0,a1!=0,a2==0 -> args rejected,
+                                 //         command reachable
+                                 //     2 = a0==0,a1!=0,a2!=0 -> status + handle
+                                 //         ("suspicious success")
+                                 //     3 = a0==0,a1==0 -> clean success
+                                 "sb2=%llx sbB=%llx/%llx "
                                  // ROUND 131:
                                  //   ct   = the SMCCC call type actually used
                                  //          for the PAS stages ("fast"/"std"),
@@ -1710,6 +1754,10 @@ extern "C" void enchilada_adreno_poll(void) {
                                   // ROUND 142: the SHM_BRIDGE_CREATE reachability.
                                   (unsigned long long)s7sbcr,
                                   (unsigned long long)s7sbc0, s7sbr,
+                                  // ROUND 144: a2 handle + group-B property test.
+                                  (unsigned long long)s7sb2,
+                                  (unsigned long long)s7sbB1,
+                                  (unsigned long long)s7sbB2,
                                   // ROUND 131: the call type that was actually
                                   // sent, and whether the captured x1 matched the
                                   // contract's pinned init_image arginfo.

@@ -712,7 +712,7 @@ static void testPasExecute()
     CHECK(adreno_zap_is_call_available_call(base, 0x0C1Cu, &shmAvail) == 0);
     CHECK(shmAvail.args0 == (0x0C1Cu | (kAdrenoZapScmOwnerSip << kAdrenoZapSmcOwnerShiftForArg)));
 
-    // ========== ROUND 142: SHM_BRIDGE_CREATE reachability probe ==========
+    // ========== ROUND 142/144: SHM_BRIDGE_CREATE reachability probe ==========
     CHECK(kAdrenoZapScmMpShmBridgeCreate == 0x1eu);
     CHECK(kAdrenoZapShmBridgeCreateFnid == 0x0C1Eu);   // (0x0C << 8) | 0x1E
     CHECK(kAdrenoZapArgInfoShmBridgeCreate == 0x04u);  // ARGS(4,VAL,VAL,VAL,VAL)
@@ -726,8 +726,7 @@ static void testPasExecute()
     CHECK(cr.x0 == 0xC2000C1Eu);                       // THE shape the brief named
     CHECK(cr.arginfo == 0x04u);
     CHECK(cr.arg_count == 4u);
-    // The FOUR garbage args are all-bits-one, and each is distinct so a
-    // truncated register map cannot hide a dropped argument.
+    // Group A (all-ones): the wrapper fills all four args with 0xFFFFFFFF.
     CHECK(cr.garbage[0] == 0xFFFFFFFFu);
     CHECK(cr.garbage[1] == 0xFFFFFFFFu);
     CHECK(cr.garbage[2] == 0xFFFFFFFFu);
@@ -736,35 +735,54 @@ static void testPasExecute()
     // Refusals: same base gate as every other call this module produces.
     CHECK(adreno_zap_shm_bridge_create_probe(0xC1000000u, &cr) == 1);
     CHECK(adreno_zap_shm_bridge_create_probe(base, nullptr) == 1);
-    // ---- the written-down judge ----
-    // NOT-ALLOWED: -4 EOPNOTSUPP (qcom_scm.h:153) -> 0
+    // ---- ROUND 144: the _args form takes caller-supplied args (group B) ----
+    const uint32_t zero[4] = { 0u, 0u, 0u, 0u };
+    struct adreno_zap_shm_bridge_create crb;
+    CHECK(adreno_zap_shm_bridge_create_probe_args(base, zero, &crb) == 0);
+    CHECK(crb.garbage[0] == 0u && crb.garbage[1] == 0u &&
+          crb.garbage[2] == 0u && crb.garbage[3] == 0u);
+    CHECK(crb.svc == 0x0Cu && crb.cmd == 0x1Eu && crb.x0 == (base | 0x0C1Eu));
+    // A caller that reuses group A by accident passes the same four words.
+    const uint32_t ones[4] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
+    struct adreno_zap_shm_bridge_create crcp;
+    CHECK(adreno_zap_shm_bridge_create_probe_args(base, ones, &crcp) == 0);
+    CHECK(crcp.garbage[0] == 0xFFFFFFFFu && crcp.garbage[1] == 0xFFFFFFFFu &&
+          crcp.garbage[2] == 0xFFFFFFFFu && crcp.garbage[3] == 0xFFFFFFFFu);
+    CHECK(adreno_zap_shm_bridge_create_probe_args(base, nullptr, &cr) == 1);
+    // ---- the written-down judge (ROUND 144: a0/a1/a2 table) ----
+    // transport a0 != 0  -> 0  (NOT reachable, transport-level reject)
     int rc = 7;
-    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-4, 0, &rc) == 0);
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-4, 0, 0, &rc) == 0);
     CHECK(rc == 0);
-    // NOT-ALLOWED: -19 ENODEV -> 0
-    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-19, 0, &rc) == 0);
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-19, 0, 0, &rc) == 0);
     CHECK(rc == 0);
-    // REACHABLE: -2 EINVAL_ARG / -3 EINVAL_ADDR / -1 ERROR -> 1
-    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-2, 0, &rc) == 0);
-    CHECK(rc == 1);
-    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-3, 0, &rc) == 0);
-    CHECK(rc == 1);
-    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-1, 0, &rc) == 0);
-    CHECK(rc == 1);
-    // REACHABLE: the R141 0xFFCFFFBB family
-    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)0xFFCFFFBBLL, 0, &rc) == 0);
-    CHECK(rc == 1);
-    // INCONCLUSIVE: transport refusal (-16 EBUSY / -22 EINVAL), a clean 0/0, or
-    // an unknown code -> -1
-    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-16, 0, &rc) == 0);
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-1, 0, 0, &rc) == 0);
+    CHECK(rc == 0);   // any non-zero a0 -> 0, even -1
+    // -16 / -22 are the WRAPPER's refusals (EBUSY/EINVAL), not a real secure a0:
+    // no SMC was made, so nothing is learned -> -1 (inconclusive), consistent
+    // with the guard at the top of the judge.
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-16, 0, 0, &rc) == 0);
+    CHECK(rc == -1);   // wrapper refused -> inconclusive, NOT "not reachable"
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-22, 0, 0, &rc) == 0);
     CHECK(rc == -1);
-    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)-22, 0, &rc) == 0);
-    CHECK(rc == -1);
-    CHECK(adreno_zap_shm_bridge_create_judge(0, 0ULL, &rc) == 0);
-    CHECK(rc == -1);
-    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)0xDEADBEEFLL, 0, &rc) == 0);
-    CHECK(rc == -1);
-    CHECK(adreno_zap_shm_bridge_create_judge(0, 0, nullptr) == 1);
+    // a0 == 0 && a1 == 0  -> 3 (clean success, handle may be anything)
+    CHECK(adreno_zap_shm_bridge_create_judge(0, 0ULL, 0, &rc) == 0);
+    CHECK(rc == 3);
+    CHECK(adreno_zap_shm_bridge_create_judge(0, 0ULL, 0x1234ULL, &rc) == 0);
+    CHECK(rc == 3);
+    // a0 == 0 && a1 != 0 && a2 (handle) != 0  -> 2 (status + handle)
+    CHECK(adreno_zap_shm_bridge_create_judge(0, 0x57ULL, 0x1234ULL, &rc) == 0);
+    CHECK(rc == 2);
+    // a0 == 0 && a1 != 0 && a2 == 0  -> 1 (args rejected, command reachable)
+    CHECK(adreno_zap_shm_bridge_create_judge(0, 0x57ULL, 0, &rc) == 0);
+    CHECK(rc == 1);   // THE R143 case: a0==0,a1=0x57 -> judged by a2
+    CHECK(adreno_zap_shm_bridge_create_judge(0, 0x57ULL, 0, nullptr) == 1);
+    // ---- the 0xFFCFFFxx parameter-rejection family is transport != 0 -> 0
+    //      (ROUND 144 says transport a0 != 0 is NOT reachable, so a PAS-style
+    //       a0=0xFFCFFFBB is judged 0, NOT 1 as ROUND 142 did. The judge now
+    //       keys on the a1/a2 channel for a clean transport instead.) ----
+    CHECK(adreno_zap_shm_bridge_create_judge((int64_t)0xFFCFFFBBLL, 0, 0, &rc) == 0);
+    CHECK(rc == 0);
 
     // ========== ROUND 131: the SMCCC call type (FAST vs STD) ==============
     // Every base this port has sent sets bit31 (FAST_CALL). Upstream's PAS calls

@@ -717,6 +717,60 @@ def main():
     check('s7base, 0x0C1Cu' in code and 's7base' in code,
           'R140 the probe uses the SAME s7base (respecting pas-exec call type)')
 
+    # ==== ROUND 142/144: the SHM_BRIDGE_CREATE reachability probe ==========
+    # Two arg sets (A all-ones, B all-zero) are sent, each reading a0/a1/a2; the
+    # a2 handle channel and group-B numbers are reported unconditionally.
+    # ---- 1. the CREATE call is built through the contract and is 4-arg ----
+    check('adreno_zap_shm_bridge_create_probe' in code,
+          'R142 the CREATE reachability call is built through the contract')
+    check('adreno_zap_shm_bridge_create_probe_args' in code,
+          'R144 the CREATE probe takes a caller-supplied argument set (group B)')
+    check('adreno_zap_shm_bridge_create_judge(' in code,
+          'R142 the CREATE reply is judged through the contract judge')
+    # ---- 2. the a2 handle channel is READ (armcpu_scm_call5_r) ----
+    check('armcpu_scm_call5_r' in code,
+          'R144 the CREATE probe uses the a2-returning export')
+    check('&a2_out' not in code and 'a2_out' in code or '&sbc2' in code or '&bb2' in code,
+          'R144 the probe passes an a2 output pointer')
+    # the contract captures a2 as a struct field in the result of the create probe target
+    _authc = (DEV / 'drivers/NativeAdreno/AdrenoZapAuthV1.c').read_text(encoding='utf-8', errors='replace')
+    _authh = (DEV / 'drivers/NativeAdreno/AdrenoZapAuthV1.h').read_text(encoding='utf-8', errors='replace')
+    check('uint64_t handle_a2' in _authh,
+          'R144 the judge takes the a2 handle as an explicit argument')
+    check('*reachable = 3;' in _authc and '*reachable = 2;' in _authc and
+          '*reachable = 1;' in _authc and '*reachable = 0;' in _authc,
+          'R144 the judge implements the 0/1/2/3 table')
+    # The R143 case a0==0,a1==0x57 must be decided BY the a2 handle.
+    check("secure_result == 0ULL)" in _authc and "handle_a2 != 0ULL)" in _authc,
+          'R144 the judge keys on a1==0 then a2==0 (the written-down order)')
+    # ---- 3. two arg sets are SENT (group A and group B) ----
+    check('const uint32_t zero[4] = { 0u, 0u, 0u, 0u };' in code,
+          'R144 group B (all-zero) is built as a DISTINCT argument set')
+    check('adreno_zap_shm_bridge_create_probe_args(' in code and
+          'zero, &s7shmB' in code,
+          'R144 group B is sent through the _args form, not reusing group A')
+    # ---- 4. new fields are reported unconditionally ----
+    check('sb2=%llx' in code and 'sbB=%llx/%llx' in code,
+          'R144 the row carries sb2= and sbB=')
+    check('s7sb2' in code and 's7sbB1' in code and 's7sbB2' in code,
+          'R144 the a2 handle and group-B values reach snprintf')
+    check('s7sbr' in code,
+          'R144 sbr remains in the row')
+    # s7sb2 (the a2 handle) must be COMPUTED from the captured a2, never a
+    # literal. `s7sb2 = 0;` (or `= 0u;`) would force the handle channel to zero
+    # and make every CREATE verdict judge a2==0 -> sbr=1, hiding the "suspicious
+    # success" signal. Only `s7sb2 = sbc2;` is legal (sbc2 is the a2 the export
+    # captured).
+    check('s7sb2 = sbc2;' in code,
+          'R144 sb2 is COMPUTED from the captured a2 handle, not a literal')
+    _after_sb2 = code[code.find('uint64_t s7sb2 = 0;') + len('uint64_t s7sb2 = 0;'):]
+    check(re.search(r's7sb2\s*=\s*0\w*\s*;', _after_sb2) is None,
+          'R144 sb2 is never forced to a literal zero after its declaration')
+    # Group B values must also be captured from the group-B transport, not a
+    # literal: sbB1/sbB2 come from bbs/bb2.
+    check('s7sbB1 = bbs;' in code and 's7sbB2 = bb2;' in code,
+          'R144 group-B values are COMPUTED from the group-B reply, not literals')
+
     # ==== ROUND 131: x1s must come from STAGE 0, not from the p13 probe ====
     # THE DEFECT (round 130 found it by reading a device row that said x1s=1):
     # the assignment was `s7x1s = (uint64_t)s7sup.arginfo;` -- s7sup is the

@@ -731,34 +731,42 @@ struct adreno_zap_shm_bridge_create {
     int carries_size_arg;/* 0                                                        */
 };
 
-/* Build the SHM_BRIDGE_CREATE reachability-probe call record. `out` non-NULL.
- * Sends svc=0x0C, cmd=0x1E, owner=SIP, arginfo=ARGS(4,VAL,VAL,VAL,VAL)=0x4,
- * x0 = base | FNID(0x0C,0x1E) = base | 0x0C1E, and all FOUR garbage arguments
- * set to all-bits-one (0xFFFFFFFFFFFFFFFF). Makes no SCM call. Returns 0, or 1
- * on a NULL out or a base that fails adreno_zap_smc_base_gate(). */
+/* Build the SHM_BRIDGE_CREATE reachability-probe call record with a GIVEN arg
+ * set. `out` non-NULL. Sends svc=0x0C, cmd=0x1E, owner=SIP, arginfo=
+ * ARGS(4,VAL,VAL,VAL,VAL)=0x4, x0 = base | FNID(0x0C,0x1E) = base | 0x0C1E, and
+ * the caller-supplied four arguments. Makes no SCM call. Returns 0, or 1 on a
+ * NULL out or a base that fails adreno_zap_smc_base_gate(). */
+int adreno_zap_shm_bridge_create_probe_args(uint32_t base,
+                                            const uint32_t args[4],
+                                            struct adreno_zap_shm_bridge_create *out);
+
+/* Build the SHM_BRIDGE_CREATE reachability-probe call record. Same as the _args
+ * form, with the four arguments all set to all-bits-one (0xFFFFFFFF) -- the
+ * R143 group-A value that returned 0x57. Kept as a wrapper so an existing caller
+ * does not spell the garbage array inline. Makes no SCM call. */
 int adreno_zap_shm_bridge_create_probe(uint32_t base,
                                        struct adreno_zap_shm_bridge_create *out);
 
 /* Decide REACHABILITY from a 4-garbage-arg SHM_BRIDGE_CREATE reply. This is the
- * WRITTEN-DOWN binary discrimination, judged ONLY from the pinned error table
- * (qcom_scm.h:150-158) plus the secure-world 0xFFCFFFxx family R141 observed.
+ * WRITTEN-DOWN binary discrimination (ROUND 144 revision), decided ONLY from the
+ * pinned error table (qcom_scm.h:150-158) plus the a2 HANDLE channel:
  *   transport_error = smc a0 (the secure status; 0 == transport completed)
- *   secure_result   = smc a1 (res.result[0])
+ *   secure_result   = smc a1 (res.result[0], the status)
+ *   handle_a2       = smc a2 (res.result[1], the bridge HANDLE for CREATE)
  * Output *reachable:
- *   1  REACHABLE     the command exists and is callable, but the arguments were
- *                    rejected: EINVAL_ARG (-2), EINVAL_ADDR (-3), the generic
- *                    ERROR (-1), OR the secure 0xFFCFFFxxxx family (a parameter-
- *                    style error, not a "not supported"). Worth learning the
- *                    real layout.
- *   0  NOT_ALLOWED   the command is not permitted: EOPNOTSUPP (-4) or ENODEV
- *                    (-19, the -ENODEV the brief names). Stop, do not study args.
- *  -1  INCONCLUSIVE  everything else: transport refused (wrapper -16/-EINVAL),
- *                    a clean 0/0 success (which for a garbage call would be
- *                    remarkable and must be reported verbatim, not judged), or
- *                    an unknown code.
+ *   0  NOT_REACHABLE  transport a0 != 0: rejected at the transport layer, so the
+ *                     command is not callable.
+ *   1  REACHABLE_SREJ a0 == 0 && a1 != 0 && a2 == 0: clean transport, a status
+ *                     code, NO handle -> the command ran and REJECTED the args.
+ *                     Worth learning the real layout.
+ *   2  SUSPECT_OK     a0 == 0 && a1 != 0 && a2 != 0: a status code AND a non-zero
+ *                     handle -> possibly a successful bridge with a side channel
+ *                     in a1; report verbatim, verify before trusting.
+ *   3  OK             a0 == 0 && a1 == 0: clean success, handle in a2 if any.
  * Returns 0, or 1 on a NULL out. */
 int adreno_zap_shm_bridge_create_judge(int64_t transport_error,
-                                       uint64_t secure_result, int *reachable);
+                                       uint64_t secure_result,
+                                       uint64_t handle_a2, int *reachable);
 
 /* THE v13 THE BRIEF ASKED FOR, WITH avail FOLDED IN. This is the function the
  * probe uses; the two-argument form above is kept for callers that already know.

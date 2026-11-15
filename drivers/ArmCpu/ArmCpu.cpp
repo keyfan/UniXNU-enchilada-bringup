@@ -128,7 +128,13 @@ extern "C" { volatile uint32_t armcpu_wdog[6] = { 0, 0, 0, 0, 0, 0 }; volatile u
 // (0xC2000110, fallback secure write 0xC2000502); TCSR is read back with 0xC2000501. Sources: enchilada-soc-reset-freeze-research.md.
 // armcpu_scm[]: avail(SDI) avail(dload) avail(io write) sdi-rc tcsr-before dload-rc write-rc tcsr-after
 extern "C" { volatile int64_t armcpu_scm[8] = { -99, -99, -99, -99, -99, -99, -99, -99 }; }
-struct ScmResult { uint64_t a0, a1; };
+// ROUND 144: ScmResult gains a2. Upstream maps res.result[1] <- smc_res.a2 as a
+// SECOND result channel (qcom_scm-smc.c:205); qcom_scm_shm_bridge_create stores
+// its handle there (qcom_scm.c:1412-1413 `*handle = res.result[1]`). The existing
+// a0/a1 consumers are untouched: aggregate initialisation `{x0, x1}` is updated
+// to `{x0, x1, x2}` inside scm5, and every call site that reads .a0 / .a1 keeps
+// working because those field names are unchanged.
+struct ScmResult { uint64_t a0, a1, a2; };
 // ROUND 110: the SCM `smc #0`, factored so a caller that must pass a 5th
 // register can reach it. `scm4` carries x4 as a PARAMETER; the original
 // 4-argument `scm` below still pins x4 = 0 exactly as it always did, so all
@@ -162,7 +168,10 @@ static ScmResult scm5 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uin
   register uint64_t x5 __asm__ ("x5") = a5;
   __asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3), "+r" (x4), "+r" (x5)
                     :: "memory", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
-  return { x0, x1 };
+  // ROUND 144: return x2 as the handle channel. x2 is declared "+r" above so the
+  // secure world may write it; every other call site that only read a0/a1 is
+  // unaffected (aggregate now carries a third word, field names unchanged).
+  return { x0, x1, x2 };
 }
 static ScmResult scm4 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4)
 {
@@ -395,6 +404,31 @@ extern "C" int32_t armcpu_scm_call5 (uint64_t fn, uint64_t arginfo, uint64_t a2,
   __atomic_store_n (&armcpu_scm_busy, 0, __ATOMIC_RELEASE);
   if (transport_ret) *transport_ret = r.a0;
   if (secure_result) *secure_result = r.a1;
+  return 0;
+}
+
+// ROUND 144: the FIVE-argument SCM entry point that ALSO returns the SECOND
+// result register (a2). Same shape as armcpu_scm_call5, plus an a2_out capture.
+// Upstream qcom_scm_shm_bridge_create returns `res.result[1]` (which maps to
+// smc a2, qcom_scm-smc.c:205) as its bridge HANDLE, so a reachability probe has
+// to see a2 to tell "status rejected, no handle" (a2==0) apart from "status
+// + suspicious handle" (a2!=0). armcpu_scm_call / armcpu_scm_call5 are untouched.
+// Returns 0 when the SMC was made (outputs valid), -EBUSY/-EINVAL when refused
+// (all three outputs left untouched).
+extern "C" int32_t armcpu_scm_call5_r (uint64_t fn, uint64_t arginfo, uint64_t a2,
+                                       uint64_t a3, uint64_t a4, uint64_t a5,
+                                       uint64_t *transport_ret, uint64_t *secure_result,
+                                       uint64_t *a2_out)
+{
+  ScmResult r;
+  if (__atomic_exchange_n (&armcpu_scm_busy, 1, __ATOMIC_ACQ_REL) != 0) {
+    return -16;   /* -EBUSY: no SMC made, outputs untouched */
+  }
+  r = scm5 (fn, arginfo, a2, a3, a4, a5);
+  __atomic_store_n (&armcpu_scm_busy, 0, __ATOMIC_RELEASE);
+  if (transport_ret) *transport_ret = r.a0;
+  if (secure_result) *secure_result = r.a1;
+  if (a2_out) *a2_out = r.a2;
   return 0;
 }
 

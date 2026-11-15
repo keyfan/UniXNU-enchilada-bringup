@@ -273,6 +273,13 @@ def main():
                    # unchanged. It does not relax the stub boundary (still two
                    # headers, IOLog + snprintf + PE_parse_boot_argn).
                    'armcpu_scm_call5',
+                   # Round 144: the five-argument SMC entry point that ALSO returns
+                   # the a2 handle channel (armcpu_scm_call5_r). Same kind of
+                   # export as armcpu_scm_call5 above, added so the SHM_BRIDGE_CREATE
+                   # property test can read the bridge handle in smc a2. Only the
+                   # CREATE reachability probe references it; stub boundary (two
+                   # headers, IOLog + snprintf + PE_parse_boot_argn) unchanged.
+                   'armcpu_scm_call5_r',
                    # Round 127 stage 7: the writable physically-contiguous
                    # allocator from the SAME ArmCpu.cpp, added for the PAS
                    # init_image metadata buffer. It is the SAME kind of entry as
