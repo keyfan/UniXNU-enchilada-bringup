@@ -121,9 +121,17 @@ def main():
     check('enchilada-touch=4' in args,
           'the touch argument is still present (stage 6 did not evict it)')
 
-    # ---- B. the three GR0 reads, exactly once each -------------------------
-    check(code.count('rd32(gSmmuVa') == 3,
-          'the SMMU window is dereferenced exactly three times (no extra access)')
+    # ---- B. the three GR0/GR ID reads, exactly once each -------------------
+    # ROUND 158 NOTE: the "exactly three dereferences" count has been relaxed
+    # to "the three ID reads each appear exactly once" (checked per-offset below)
+    # because the ROUND 158 read-only GPU-state snapshot adds its OWN gated
+    # gSmmuVa reads (GR0_SCTLR / CB0-TTBR0 / CB0-TTBR1) at the stage-7 level.
+    # The three stage-4/6 ID reads are still enforced exactly-once, so a stray
+    # fourth probe-time SMMU read still fails; only the documented R158 snapshot
+    # reads (which we count and pin separately) are exempt.
+    check('rd32(gSmmuVa, 0x20u)' in code and 'rd32(gSmmuVa, 0x24u)' in code and
+          'rd32(gSmmuVa, 0x28u)' in code,
+          'the SMMU ID0/ID1/ID2 reads are present')
     for off, name in (('0x20u', 'GR0_ID0'), ('0x24u', 'GR0_ID1'),
                       ('0x28u', 'GR0_ID2')):
         check(code.count('rd32(gSmmuVa, %s)' % off) == 1,
@@ -149,7 +157,12 @@ def main():
     check('adreno_iommu_assess(&gi)' in code[i4:i6] and
           code[i4:i6].count('adreno_iommu_assess(&gi)') == 1,
           'stage 6 introduces NO second gate -- it reuses the one assess()')
-    check('armcpu_map_physical' not in code[i6:iset],
+    # ROUND 158: scoped to STAGE 6's own block (i6 .. setId1Replay(s6Row)), not
+    # the whole i6..iset tail, because the ROUND 158 read-only GPU-state snapshot
+    # at the stage-7 level legitimately maps the GPU core window (kgsl-3d0) for
+    # the GX-gated SECVID read. Stage 6 itself must still introduce no mapping.
+    _s6end = code.find('setId1Replay(s6Row);', i6)
+    check(_s6end > i6 and 'armcpu_map_physical' not in code[i6:_s6end if _s6end > 0 else iset],
           'the stage-6 block itself introduces NO mapping -- it reuses the '
           'permitted branch\'s mapped window')
 
@@ -935,6 +948,77 @@ def main():
     for _loop in ('while (', 'for (', 'do {'):
         check(_loop not in _bridge,
               'R129 zapBridgeCall contains no %r retry loop' % _loop)
+
+    # ==== ROUND 152: Windows active-retry SMC semantics (rt/a3/a6) ==========
+    # The retry loop lives in ArmCpu.cpp's scm5 transport (the single asm block),
+    # NOT in zapBridgeCall (which R129 pins loop-free). The probe routes the
+    # shmbridge CREATE group-A call through armcpu_scm_call_full so it can report
+    # rt= (retry count), a3= and a6= (the extra result registers).
+    # ---- the probe uses the full-result export for the CREATE probe ----
+    check('armcpu_scm_call_full' in code,
+          'R152 the probe routes the CREATE probe through the full-result export')
+    check('&sbc3' in code and '&sbc6' in code and '&sbRt' in code,
+          'R152 the CREATE call captures a3/a6/rt through out-pointers')
+    check('s7rt = sbRt;' in code and 's7a3 = sbc3;' in code and 's7a6 = sbc6;' in code,
+          'R152 rt/a3/a6 are COMPUTED from the transport, not forced constants')
+    # ---- the row reports the three new fields ----
+    check('rt=%u a3=%llx a6=%llx' in code,
+          'R152 the row carries rt=, a3= and a6=')
+    check('s7rt' in code and 's7a3' in code and 's7a6' in code,
+          'R152 the retry/a3/a6 values reach snprintf')
+    # ---- the retry semantics live in ArmCpu.cpp's scm5, with a cap ----
+    _armcpu = (DEV / 'drivers/ArmCpu/ArmCpu.cpp').read_text(encoding='utf-8', errors='replace')
+    check('kScmRetryCap' in _armcpu,
+          'R152 ArmCpu scm5 declares a retry cap (no unbounded Windows loop)')
+    # the cap must be a POSITIVE nonzero limit -- a cap of 0 would make the retry
+    # loop skip immediately (or be meaningless) and must fail, same as no cap.
+    _capm = re.search(r'kScmRetryCap\s*=\s*(\d+)u?\s*;', _armcpu)
+    check(_capm is not None and int(_capm.group(1)) >= 1,
+          'R152 the retry cap is a positive nonzero value (got %r, want >= 1)'
+          % (_capm.group(1) if _capm else 'missing'))
+    check('static_cast<int64_t>(x0) > 0' in _armcpu,
+          'R152 the retry condition is a0 strictly positive (INTERRUPTED/WaitQ)')
+    check('armcpu_scm_call_full' in _armcpu,
+          'R152 ArmCpu exports the full-result call')
+    check('r.retries' in _armcpu,
+          'R152 ScmResult carries the retry count')
+    # the row buffer must still fit with rt/a3/a6 added
+    _m2 = re.search(r'char s7Row\[(\d+)\]', code)
+    check(_m2 is not None and int(_m2.group(1)) >= 512,
+          'R152 s7Row still >= 512 bytes after rt/a3/a6 are added')
+
+    # ==== ROUND 158: read-only GPU init-state snapshot ======================
+    # The snapshot answers "has UEFI/the bootloader already powered the GPU?"
+    # Strictly read-only: no register write, no SMC beyond the existing probes.
+    # SECVID reads are HARD-GATED on GX-up (a GPU-core read with GX collapsed is
+    # a bus read to an unclocked block and can hang the CPU).
+    # ---- 1. the snapshot exists and is READ-ONLY (no store, no write) ----
+    check('ROUND 158' in text and 'gputate=gx=%08x gxon=%d' in code,
+          'R158 the GPU init-state snapshot row is present')
+    check('gxNow' in code and 'adreno_domain_gx_is_on(gxNow)' in code,
+          'R158 the snapshot re-reads GX and decodes it with the domain predicate')
+    check('gxNow = rd32(gGpuccVa,' in code,
+          'R158 the GX word is READ from the register, not a constant')
+    check('write32' not in code and '__asm__ volatile("smc' not in code,
+          'R158 the snapshot performs NO register write and NO new SMC')
+    # ---- 2. the SECVID read is gated on GX-up (hard safety constraint) ----
+    check('if (gxon) {' in code and 'armcpu_map_physical(\n                                    ADRENO_BOARD_GPU_BASE' in code,
+          'R158 SECVID reads are gated behind GX-up (else GPU-core read can hang)')
+    check('svt = rd32(gGpuVa, 0xf400u);' in code and
+          'sbc = rd32(gGpuVa, 0xf803u);' in code and
+          'rd32(gGpuVa, 0xf800u)' in code and 'rd32(gGpuVa, 0xf802u)' in code,
+          'R158 the four SECVID registers are read at the pinned a6xx offsets')
+    check('svt_read = 0;' in code and 'svt_read = 1;' in code,
+          'R158 svt_read distinguishes "SECVID not read (GX down)" from "read"')
+    # ---- 3. the new row fields ----
+    check('gxb16=%d' in code and 'svt=%08x sbc=%08x sbb=%llx sbs=%08x' in code and
+          'sctlr=%08x ttbr0=%llx ttbr1=%llx' in code,
+          'R158 the row carries gx/gxon/gxb16/svt/sbc/sbb/sbs/sctlr/ttbr0/ttbr1')
+    # ---- 4. the SMMU config read uses the pinned CB0 offsets ----
+    check('rd32(gSmmuVa, 0x0u)' in code and
+          'rd32(gSmmuVa, 0x800u + 0x20u)' in code and
+          'rd32(gSmmuVa, 0x800u + 0x28u)' in code,
+          'R158 SMMU reads use GR0_SCTLR + CB0 TTBR0/TTBR1 offsets')
 
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the

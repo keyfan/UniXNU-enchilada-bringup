@@ -128,13 +128,20 @@ extern "C" { volatile uint32_t armcpu_wdog[6] = { 0, 0, 0, 0, 0, 0 }; volatile u
 // (0xC2000110, fallback secure write 0xC2000502); TCSR is read back with 0xC2000501. Sources: enchilada-soc-reset-freeze-research.md.
 // armcpu_scm[]: avail(SDI) avail(dload) avail(io write) sdi-rc tcsr-before dload-rc write-rc tcsr-after
 extern "C" { volatile int64_t armcpu_scm[8] = { -99, -99, -99, -99, -99, -99, -99, -99 }; }
-// ROUND 144: ScmResult gains a2. Upstream maps res.result[1] <- smc_res.a2 as a
-// SECOND result channel (qcom_scm-smc.c:205); qcom_scm_shm_bridge_create stores
-// its handle there (qcom_scm.c:1412-1413 `*handle = res.result[1]`). The existing
-// a0/a1 consumers are untouched: aggregate initialisation `{x0, x1}` is updated
-// to `{x0, x1, x2}` inside scm5, and every call site that reads .a0 / .a1 keeps
-// working because those field names are unchanged.
-struct ScmResult { uint64_t a0, a1, a2; };
+// ROUND 152: cumulative SMC retries and how often the retry cap was hit, so an
+// infinite/interrupted secure world is visible as a count instead of a hang.
+// armcpu_scm_retries totals re-issues; armcpu_scm_retries_capped counts calls
+// that exhausted the cap (their a0 stayed positive when the loop left).
+extern "C" { volatile uint64_t armcpu_scm_retries = 0; }
+extern "C" { volatile uint64_t armcpu_scm_retries_capped = 0; }
+// ROUND 152: ScmResult gains a3/a6 and a retry counter. Windows' qcscm850.sys
+// TZT_ASM reads x1/x2/x3/x6 as results (the disassembled str/stp writes w1/w2/w3
+// and w6), so the secure world can return five channels, not just a0/a1/a2.
+// a0 stays the transport status; a1/a2/a3/a6 are result registers. `retries`
+// records how many times the SMC was re-issued because a0 was a positive
+// (INTERRUPTED/WaitQ) code -- needed so `rt=` can be reported.
+// The existing a0/a1/a2 consumers are untouched (field names unchanged).
+struct ScmResult { uint64_t a0, a1, a2, a3, a6; unsigned retries; };
 // ROUND 110: the SCM `smc #0`, factored so a caller that must pass a 5th
 // register can reach it. `scm4` carries x4 as a PARAMETER; the original
 // 4-argument `scm` below still pins x4 = 0 exactly as it always did, so all
@@ -160,18 +167,50 @@ struct ScmResult { uint64_t a0, a1, a2; };
 // sends x5 = 0 exactly as before. Byte-for-byte identical, mechanically.
 static ScmResult scm5 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5)
 {
+  // ROUND 152: the Windows active-retry semantics. qcscm850.sys TZT_ASM loops
+  // `smc; cmp w0,#0; b.gt` -- while a0 is a POSITIVE code (QCOM_SCM_INTERRUPTED=1
+  // or WAITQ_SLEEP=2 it re-issues the SMC). Our previous code stopped on the
+  // first a0, so R143/R145 saw t0=0xFFFFFFFFFFFFFFFD (a transport a0 that was
+  // sign-extended from a positive W register) and quit. With the loop we keep
+  // issuing until a0 is 0 (done) or negative (a real error), up to a hard cap so
+  // a genuinely wedged secure world cannot hang the boot. Each retry is separated
+  // by an isb + a short portable delay loop; *retries reflects how many re-issues
+  // happened and is reported as rt= in the stage-7 row.
   register uint64_t x0 __asm__ ("x0") = fn;
   register uint64_t x1 __asm__ ("x1") = info;
   register uint64_t x2 __asm__ ("x2") = a2;
   register uint64_t x3 __asm__ ("x3") = a3;
   register uint64_t x4 __asm__ ("x4") = a4;
   register uint64_t x5 __asm__ ("x5") = a5;
-  __asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3), "+r" (x4), "+r" (x5)
-                    :: "memory", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
-  // ROUND 144: return x2 as the handle channel. x2 is declared "+r" above so the
-  // secure world may write it; every other call site that only read a0/a1 is
-  // unaffected (aggregate now carries a third word, field names unchanged).
-  return { x0, x1, x2 };
+  register uint64_t x6 __asm__ ("x6") = 0;
+  const unsigned kScmRetryCap = 100;   // SIMPLE SMC, but never unbounded
+  unsigned retries = 0;
+  uint64_t l0 = 0, l1 = 0, l2 = 0, l3 = 0, l6 = 0;
+  for (;;) {
+    __asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3), "+r" (x4), "+r" (x5), "+r" (x6)
+                      :: "memory", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
+    l0 = x0; l1 = x1; l2 = x2; l3 = x3; l6 = x6;
+    // Windows: retry only while a0 is strictly positive (INTERRUPTED / WaitQ).
+    // 0 (done) or negative (real error / EOPNOTSUPP / ...) ends the loop.
+    if (!(static_cast<int64_t>(x0) > 0)) {
+      break;
+    }
+    if (retries >= kScmRetryCap) {
+      // exhausted: report the last positive a0 so the caller can say so; bump
+      // the global capped counter so an interrupted loop is visible as a value.
+      __atomic_add_fetch (&armcpu_scm_retries_capped, 1, __ATOMIC_RELAXED);
+      break;
+    }
+    retries += 1;
+    __atomic_add_fetch (&armcpu_scm_retries, 1, __ATOMIC_RELAXED);
+    // short backoff between re-issues; pure execution, no register state touched
+    __asm__ volatile ("isb" ::: "memory");
+    unsigned _dt = 16;
+    while (_dt--) { __asm__ volatile ("nop"); }
+  }
+  ScmResult r;
+  r.a0 = l0; r.a1 = l1; r.a2 = l2; r.a3 = l3; r.a6 = l6; r.retries = retries;
+  return r;
 }
 static ScmResult scm4 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4)
 {
@@ -429,6 +468,34 @@ extern "C" int32_t armcpu_scm_call5_r (uint64_t fn, uint64_t arginfo, uint64_t a
   if (transport_ret) *transport_ret = r.a0;
   if (secure_result) *secure_result = r.a1;
   if (a2_out) *a2_out = r.a2;
+  return 0;
+}
+
+// ROUND 152: the FULL-result SCM entry point, for a caller that wants every
+// channel the Windows TZT_ASM reads (x1/x2/x3/x6) plus the retry count. Same
+// busy guard and the same retry loop as the other exports (they all go through
+// scm5). a3_out/a6_out receive the corresponding smc result registers (0 if the
+// secure world left them untouched); retries_out receives how many re-issues the
+// retry loop performed (0 = first attempt already returned <= 0, i.e. done).
+// Returns 0 when the SMC was made, -EBUSY/-EINVAL when refused (outputs untouched).
+extern "C" int32_t armcpu_scm_call_full (uint64_t fn, uint64_t arginfo, uint64_t a2,
+                                         uint64_t a3, uint64_t a4, uint64_t a5,
+                                         uint64_t *transport_ret, uint64_t *secure_result,
+                                         uint64_t *a2_out, uint64_t *a3_out,
+                                         uint64_t *a6_out, unsigned *retries_out)
+{
+  ScmResult r;
+  if (__atomic_exchange_n (&armcpu_scm_busy, 1, __ATOMIC_ACQ_REL) != 0) {
+    return -16;   /* -EBUSY: no SMC made, outputs untouched */
+  }
+  r = scm5 (fn, arginfo, a2, a3, a4, a5);
+  __atomic_store_n (&armcpu_scm_busy, 0, __ATOMIC_RELEASE);
+  if (transport_ret) *transport_ret = r.a0;
+  if (secure_result) *secure_result = r.a1;
+  if (a2_out) *a2_out = r.a2;
+  if (a3_out) *a3_out = r.a3;
+  if (a6_out) *a6_out = r.a6;
+  if (retries_out) *retries_out = r.retries;
   return 0;
 }
 

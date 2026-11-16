@@ -136,8 +136,15 @@ def main():
           'GR0_ID0 is read once, at byte 0x20 (stage 6, coherent_walk)')
     check('rd32(gSmmuVa, 0x24u)' in code,
           'GR0_ID1 is read once, at byte 0x24 (stage 6, NUMCB/NUMS2CB)')
-    check(code.count('rd32(gSmmuVa') == 3,
-          'the SMMU window is dereferenced exactly three times: ID2 once + ID0 once + ID1 once')
+    # ROUND 158: the ID reads stay exactly-once each (checked below); the total
+    # count is relaxed because the ROUND 158 read-only GPU-state snapshot adds
+    # gated gSmmuVa reads (GR0_SCTLR @0x0 + CB0 TTBR0/TTBR1) at the stage-7
+    # level. Each SMMU ID read must still appear exactly once.
+    for _o in ('0x20u', '0x24u', '0x28u'):
+        check(code.count('rd32(gSmmuVa, %s)' % _o) == 1,
+              'SMMU read at byte %s appears exactly once (no duplicate ID read)' % _o)
+    check('0x800u + 0x20u' in code and '0x800u + 0x28u' in code,
+          'R158 the CB0 TTBR0/TTBR1 reads are the documented gated snapshot')
     check('dsb sy' in code,
           'a full barrier follows the register read')
     check('adreno_iommu_id2_decode(id2, &d)' in code,

@@ -280,6 +280,11 @@ def main():
                    # CREATE reachability probe references it; stub boundary (two
                    # headers, IOLog + snprintf + PE_parse_boot_argn) unchanged.
                    'armcpu_scm_call5_r',
+                   # Round 152: the FULL-result SMC entry point (returns x1/x2/x3/x6
+                   # plus the retry count). Same kind of export as armcpu_scm_call5_r
+                   # above; the shmbridge CREATE group-A probe routes through it so
+                   # the row can report rt=/a3=/a6=. Stub boundary unchanged.
+                   'armcpu_scm_call_full',
                    # Round 127 stage 7: the writable physically-contiguous
                    # allocator from the SAME ArmCpu.cpp, added for the PAS
                    # init_image metadata buffer. It is the SAME kind of entry as

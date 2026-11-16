@@ -219,6 +219,16 @@ int32_t armcpu_scm_call5_r(uint64_t fn, uint64_t arginfo, uint64_t a2, uint64_t 
                            uint64_t a4, uint64_t a5, uint64_t *transport_ret,
                            uint64_t *secure_result,
                            uint64_t *a2_out) __attribute__((weak_import));
+// ROUND 152: the FULL-result SMC entry point (ArmCpu.cpp), returning every
+// channel the Windows qcscm850.sys TZT_ASM reads (x1/x2/x3/x6) plus how many
+// times the retry loop re-issued the SMC (positive-a0 retry semantics). Same
+// weak_import/export rule as the other armcpu_scm_call* exports. Only the
+// shmbridge CREATE path uses it, to surface rt=/a3=/a6= in the device row.
+int32_t armcpu_scm_call_full(uint64_t fn, uint64_t arginfo, uint64_t a2,
+                             uint64_t a3, uint64_t a4, uint64_t a5,
+                             uint64_t *transport_ret, uint64_t *secure_result,
+                             uint64_t *a2_out, uint64_t *a3_out,
+                             uint64_t *a6_out, unsigned *retries_out) __attribute__((weak_import));
 // ROUND 127: the writable physically-contiguous allocator (ArmCpu.cpp). Same
 // weak_import rule and the same must-be-inside-extern-"C" reason as the two
 // declarations above.
@@ -246,6 +256,7 @@ namespace {
 uintptr_t gGpuccVa = 0;
 uintptr_t gGmuVa = 0;      // round-48 stage 2: mapped ONLY when CX is up
 uintptr_t gSmmuVa = 0;     // round-94 stage 4: kgsl SMMU window, ONLY when CX is up
+uintptr_t gGpuVa = 0;      // round 158: kgsl-3d0 GPU core window, ONLY when GX is up
 unsigned gAttempts = 0;
 bool gDone = false;
 bool gNotArmed = false;
@@ -289,6 +300,9 @@ bool gHaveId1Replay = false;
 // verify-enchilada-probe-stage6.py rather than by this comment.
 char gId1ReplayStage7[512];
 bool gHaveStage7Replay = false;
+// ROUND 158: the read-only GPU init-state snapshot row, same replay discipline.
+char gGpuStateReplay[340];
+bool gHaveGpuStateReplay = false;
 bool gHavePowerReplay = false;
 bool gHaveIommuReplay = false;
 bool gHaveGmuReplay = false;
@@ -362,6 +376,15 @@ void setStage7Replay(const char *text) {
     for (; text[i] && i + 1 < sizeof gId1ReplayStage7; ++i) gId1ReplayStage7[i] = text[i];
     gId1ReplayStage7[i] = 0;
     gHaveStage7Replay = i != 0;
+}
+
+// ROUND 158: the read-only GPU init-state snapshot replay, same no-libc loop.
+void setGpuStateReplay(const char *text) {
+    if (!text) return;
+    unsigned i = 0;
+    for (; text[i] && i + 1 < sizeof gGpuStateReplay; ++i) gGpuStateReplay[i] = text[i];
+    gGpuStateReplay[i] = 0;
+    gHaveGpuStateReplay = i != 0;
 }
 
 // ---- ROUND 110: the bridge from the contract's injected transport to the ----
@@ -598,6 +621,9 @@ extern "C" void enchilada_adreno_poll(void) {
         // it was the one guaranteed to be overwritten.
         if (gHaveStage7Replay)
             IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gId1ReplayStage7, gTick, gReplayAttempt);
+        // ROUND 158: the read-only GPU init-state snapshot is replayed too.
+        if (gHaveGpuStateReplay)
+            IOLog("enchilada-adreno: %s (replay t=%u attempt=%u)\n", gGpuStateReplay, gTick, gReplayAttempt);
         return;             // finished: no further MMIO access, ever
     }
     unsigned stage = 0;
@@ -1032,6 +1058,84 @@ extern "C" void enchilada_adreno_poll(void) {
                          IOLog("enchilada-adreno: %s\n", s6Row);
                          setId1Replay(s6Row);
                      }
+                    // ---- ROUND 158: read-only GPU init-state snapshot -------
+                    // CORE QUESTION: has UEFI/the bootloader already powered and
+                    // configured the GPU, so XNU can take it over instead of doing
+                    // its own PAS? The Windows UEFI (which drives this GPU on an
+                    // unlocked phone) loads zap in firmware, not in the SCM driver
+                    // (0 PAS/PIL calls observed), so the XNU boot may find a live
+                    // GPU.
+                    //
+                    // STRICTLY READ-ONLY. Every read below is a volatile uint32_t
+                    // load through an already-approved window; there is no write
+                    // of any kind. SECVID is gated on GX-up, per the probe's own
+                    // rule (:9-10): a read into the GPU core block while GX is
+                    // collapsed is a bus read to an unclocked block that can hang
+                    // the CPU, so those registers are ONLY touched when
+                    // adreno_domain_gx_is_on() says GX is powered.
+                    //
+                    // Read only after CX is up (this branch is the stage>=4
+                    // permitted block, which already re-read CX and mapped SMMU).
+                    {
+                        // Re-read GX from the always-on GPUCC status reg (safe).
+                        const uint32_t gxNow = rd32(gGpuccVa, static_cast<uint32_t>(
+                            ADRENO_DOMAIN_GX_STATUS - ADRENO_DOMAIN_GPUCC_BASE));
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const int gxon = adreno_domain_gx_is_on(gxNow);
+                        const int gxb16 = (gxNow & (1u << ADRENO_DOMAIN_GX_ON_BIT)) != 0u;
+
+                        uint32_t svt = 0;      // RBBM_SECVID_TRUST_CNTL
+                        uint32_t sbc = 0;      // RBBM_SECVID_TSB_CNTL
+                        uint64_t sbb = 0;      // RBBM_SECVID_TSB_TRUSTED_BASE
+                        uint32_t sbs = 0;      // RBBM_SECVID_TSB_TRUSTED_SIZE
+                        int svt_read = 0;      // 1 when SECVID was actually read
+
+                        // SECVID only when GX is up. Map the GPU core window
+                        // (kgsl-3d0 0x05000000, 0x40000) on demand, gated on GX.
+                        if (gxon) {
+                            if (!gGpuVa && &armcpu_map_physical) {
+                                const uint64_t va = armcpu_map_physical(
+                                    ADRENO_BOARD_GPU_BASE, ADRENO_BOARD_GPU_SIZE);
+                                if (va) gGpuVa = static_cast<uintptr_t>(va);
+                            }
+                            if (gGpuVa) {
+                                // a6xx.xml RBBM_SECVID_* offsets (:2640-2643).
+                                svt = rd32(gGpuVa, 0xf400u);
+                                sbc = rd32(gGpuVa, 0xf803u);
+                                const uint32_t lo = rd32(gGpuVa, 0xf800u);
+                                const uint32_t hi = rd32(gGpuVa, 0xf804u);
+                                sbs = rd32(gGpuVa, 0xf802u);
+                                __asm__ volatile("dsb sy" ::: "memory");
+                                sbb = (static_cast<uint64_t>(hi) << 32) | lo;
+                                svt_read = 1;
+                            }
+                        }
+
+                        // SMMU config: GR0_SCTLR (offset 0x0, the global enable),
+                        // and context-bank 0 TTBR0/TTBR1 (CB0 base 0x800 + the
+                        // pinned kAdrenoSmmuCbTtbr0=0x20 / kAdrenoSmmuCbTtbr1=0x28).
+                        // A non-zero TTBR means somebody already installed a
+                        // page table. gSmmuVa was mapped at stage 4 (CX up).
+                        uint32_t sctlr = gSmmuVa ? rd32(gSmmuVa, 0x0u) : 0u;
+                        uint64_t ttbr0 = 0, ttbr1 = 0;
+                        if (gSmmuVa) {
+                            ttbr0 = rd32(gSmmuVa, 0x800u + 0x20u);
+                            ttbr1 = rd32(gSmmuVa, 0x800u + 0x28u);
+                            __asm__ volatile("dsb sy" ::: "memory");
+                        }
+
+                        char gpuStateRow[340];
+                        snprintf(gpuStateRow, sizeof gpuStateRow,
+                                 "gputate=gx=%08x gxon=%d gxb16=%d svt_read=%d "
+                                 "svt=%08x sbc=%08x sbb=%llx sbs=%08x "
+                                 "sctlr=%08x ttbr0=%llx ttbr1=%llx",
+                                 gxNow, gxon, gxb16, svt_read,
+                                 svt, sbc, (unsigned long long)sbb, sbs,
+                                 sctlr, (unsigned long long)ttbr0,
+                                 (unsigned long long)ttbr1);
+                        IOLog("enchilada-adreno: %s\n", gpuStateRow);
+                        setGpuStateReplay(gpuStateRow);
+                    }
                     // ---- ROUND 109 stage 7: the PAS three-stage PLAN ----
                     // WHY THIS IS NESTED INSIDE `stage >= 6` AND NOT `stage == 7`:
                     // four verifiers (probe-stage3/4/5/6) assert the boot-arg mask
@@ -1376,6 +1480,15 @@ extern "C" void enchilada_adreno_poll(void) {
                         //          0 not-allowed, -1 inconclusive.
                         uint64_t s7sbcr = 0;
                         uint64_t s7sbc0 = 0;
+                        // ROUND 152: the CREATE group-A reply's extra result
+                        // registers and the transport retry count (Windows
+                        // active-retry semantics). a3/a6 come from the scm5
+                        // loop's "+r" x3/x6 channels; rt is how many times the
+                        // SMC was re-issued because a0 was positive (INTERRUPTED
+                        // / WaitQ) before it completed.
+                        uint64_t s7a3 = 0;
+                        uint64_t s7a6 = 0;
+                        unsigned s7rt = 0;
                         // ROUND 144: the CREATE reply's SECOND result register
                         // (smc a2) -- the bridge HANDLE upstream stores in
                         // res.result[1] (qcom_scm.c:1412-1413). Zero means no
@@ -1455,18 +1568,23 @@ extern "C" void enchilada_adreno_poll(void) {
                                 struct adreno_zap_shm_bridge_create s7shmC = {};
                                 if (adreno_zap_shm_bridge_create_probe(s7base,
                                                                        &s7shmC) == 0) {
-                                    uint64_t sbct = 0, sbcs = 0, sbc2 = 0;
+                                    uint64_t sbct = 0, sbcs = 0, sbc2 = 0, sbc3 = 0, sbc6 = 0;
+                                    unsigned sbRt = 0;
                                     const int32_t sbcr =
-                                        armcpu_scm_call5_r(s7shmC.x0, s7shmC.arginfo,
-                                                           s7shmC.garbage[0],
-                                                           s7shmC.garbage[1],
-                                                           s7shmC.garbage[2],
-                                                           s7shmC.garbage[3],
-                                                           &sbct, &sbcs, &sbc2);
+                                        armcpu_scm_call_full(s7shmC.x0, s7shmC.arginfo,
+                                                             s7shmC.garbage[0],
+                                                             s7shmC.garbage[1],
+                                                             s7shmC.garbage[2],
+                                                             s7shmC.garbage[3],
+                                                             &sbct, &sbcs, &sbc2,
+                                                             &sbc3, &sbc6, &sbRt);
                                     if (sbcr == 0) {
                                         s7sbcr = sbct;
                                         s7sbc0 = sbcs;
                                         s7sb2 = sbc2;
+                                        s7a3 = sbc3;
+                                        s7a6 = sbc6;
+                                        s7rt = sbRt;
                                         (void)adreno_zap_shm_bridge_create_judge(
                                             (int64_t)(int32_t)(sbct & 0xFFFFFFFFu),
                                             sbcs, sbc2, &s7sbr);
@@ -1709,6 +1827,14 @@ extern "C" void enchilada_adreno_poll(void) {
                                  //          0 invalid (parameter rejected),
                                  //         -1 inconclusive.
                                  "sbd=%llx/%llx/%llx v=%d "
+                                 // ROUND 152:
+                                 //   rt = the SMC retry count (positive-a0
+                                 //        INTERRUPTED/WaitQ semantics); 0 = the
+                                 //        first SMC already completed (a0 <= 0).
+                                 //   a3/a6 = extra result registers the Windows
+                                 //        TZT_ASM reads (x3/x6); reported for the
+                                 //        shmbridge CREATE group-A probe.
+                                 "rt=%u a3=%llx a6=%llx "
                                  // ROUND 131:
                                  //   ct   = the SMCCC call type actually used
                                  //          for the PAS stages ("fast"/"std"),
@@ -1807,6 +1933,10 @@ extern "C" void enchilada_adreno_poll(void) {
                                   (unsigned long long)s7sbd0,
                                   (unsigned long long)s7sbd1,
                                   (unsigned long long)s7sbd2, s7sbdv,
+                                  // ROUND 152: retry count + extra result regs.
+                                  s7rt,
+                                  (unsigned long long)s7a3,
+                                  (unsigned long long)s7a6,
                                   // ROUND 131: the call type that was actually
                                   // sent, and whether the captured x1 matched the
                                   // contract's pinned init_image arginfo.
