@@ -134,6 +134,21 @@ extern "C" { volatile int64_t armcpu_scm[8] = { -99, -99, -99, -99, -99, -99, -9
 // that exhausted the cap (their a0 stayed positive when the loop left).
 extern "C" { volatile uint64_t armcpu_scm_retries = 0; }
 extern "C" { volatile uint64_t armcpu_scm_retries_capped = 0; }
+// ROUND 161: how many times scm5 may re-issue one SMC. DEFAULT 0 = NEVER.
+// WHY IT DEFAULTS TO ZERO (this is a device result, not a preference): R159 and
+// R160 both booted a kernel carrying the positive-a0 retry loop and BOTH left the
+// boot log untouched (same window sha256 2f513143..., boot_id 935335677 as R147),
+// i.e. the kernel never reached the log writer at ~31 s. A control run in R160
+// flashed the pre-R152 payload (ci258, no retry loop at all) with the identical
+// boot image and procedure and it logged immediately (boot_id 629517746,
+// window sha256 96f0d655...). So the delta that kills the boot is inside the SCM
+// retry path, not the payload handoff. Re-issuing a call whose a0 is a positive
+// code is therefore NOT safe on this firmware for the calls we make: upstream
+// qcom_scm-smc.c and Windows' TZT_ASM both retry, but they retry calls made after
+// the secure world is up, while our first calls happen during ArmCpu::start.
+// The switch stays because it is the correct place to re-enable the semantics one
+// call site at a time, once a call is shown to tolerate a re-issue.
+extern "C" { volatile unsigned armcpu_scm_retry_cap = 0; }
 // ROUND 152: ScmResult gains a3/a6 and a retry counter. Windows' qcscm850.sys
 // TZT_ASM reads x1/x2/x3/x6 as results (the disassembled str/stp writes w1/w2/w3
 // and w6), so the secure world can return five channels, not just a0/a1/a2.
@@ -175,7 +190,14 @@ static ScmResult scm5 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uin
   // to a hard cap so a genuinely wedged secure world cannot hang the boot. Each
   // retry is separated by an isb + a short portable delay loop; *retries reflects
   // how many re-issues happened and is reported as rt= in the stage-7 row.
-  const unsigned kScmRetryCap = 100;   // SIMPLE SMC, but never unbounded
+  //
+  // ROUND 161: THE CAP IS NOW A RUNTIME SWITCH THAT DEFAULTS TO 0 (no re-issue).
+  // R160 proved on the device that the loop itself is what stops the boot before
+  // the log writer (see the armcpu_scm_retry_cap declaration above for the exact
+  // three readings). With cap = 0 the loop still exists, still records the a0 it
+  // got, still reports rt=0, and the register list stays reloaded every iteration
+  // (R160's fix is kept: a re-issue must send the same call if it is ever enabled).
+  const unsigned cap = __atomic_load_n (&armcpu_scm_retry_cap, __ATOMIC_RELAXED);
   unsigned retries = 0;
   uint64_t l0 = 0, l1 = 0, l2 = 0, l3 = 0, l6 = 0;
   for (;;) {
@@ -194,9 +216,9 @@ static ScmResult scm5 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uin
     if (!(static_cast<int64_t>(x0) > 0)) {
       break;
     }
-    if (retries >= kScmRetryCap) {
-      // exhausted: report the last positive a0 so the caller can say so; bump
-      // the global capped counter so an interrupted loop is visible as a value.
+    if (retries >= cap) {
+      // no re-issue left (cap 0 = the default): report the positive a0 as-is and
+      // bump the global capped counter so a would-be retry is visible as a value.
       __atomic_add_fetch (&armcpu_scm_retries_capped, 1, __ATOMIC_RELAXED);
       break;
     }

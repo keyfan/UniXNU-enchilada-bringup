@@ -968,16 +968,34 @@ def main():
           'R152 the retry/a3/a6 values reach snprintf')
     # ---- the retry semantics live in ArmCpu.cpp's scm5, with a cap ----
     _armcpu = (DEV / 'drivers/ArmCpu/ArmCpu.cpp').read_text(encoding='utf-8', errors='replace')
-    check('kScmRetryCap' in _armcpu,
-          'R152 ArmCpu scm5 declares a retry cap (no unbounded Windows loop)')
-    # the cap must be a POSITIVE nonzero limit -- a cap of 0 would make the retry
-    # loop skip immediately (or be meaningless) and must fail, same as no cap.
-    _capm = re.search(r'kScmRetryCap\s*=\s*(\d+)u?\s*;', _armcpu)
-    check(_capm is not None and int(_capm.group(1)) >= 1,
-          'R152 the retry cap is a positive nonzero value (got %r, want >= 1)'
-          % (_capm.group(1) if _capm else 'missing'))
+    # ROUND 161 changed the contract: R160 proved on the device that the re-issue
+    # path itself stops the boot before the log writer (two silent boots with the
+    # loop, one logging control run without it), so the cap is now a RUNTIME
+    # switch whose DECLARED DEFAULT is 0 = never re-issue. The loop and the
+    # per-iteration register reload must still be there -- re-enabling the switch
+    # must send the same call, not the previous reply.
+    check('armcpu_scm_retry_cap' in _armcpu,
+          'R161 ArmCpu scm5 reads a runtime retry cap (no compile-time unbounded loop)')
+    _capdef = re.search(r'volatile unsigned armcpu_scm_retry_cap\s*=\s*(\d+)u?\s*;', _armcpu)
+    check(_capdef is not None and int(_capdef.group(1)) == 0,
+          'R161 the retry cap DEFAULTS to 0 = no re-issue (got %r, want == 0)'
+          % (_capdef.group(1) if _capdef else 'missing'))
+    check('const unsigned cap = __atomic_load_n (&armcpu_scm_retry_cap' in _armcpu,
+          'R161 scm5 loads the cap atomically per call')
+    check('retries >= cap' in _armcpu,
+          'R161 the loop bound is the runtime cap, not a literal')
     check('static_cast<int64_t>(x0) > 0' in _armcpu,
           'R152 the retry condition is a0 strictly positive (INTERRUPTED/WaitQ)')
+    # R160's fix must survive R161: every register the SMC writes is re-initialised
+    # INSIDE the loop, so a re-issue (if the cap is ever raised) sends the same call.
+    _loopstart = _armcpu.find('for (;;) {')
+    _loopend = _armcpu.find('ScmResult r;', _loopstart)
+    check(_loopstart > 0 and _loopend > _loopstart,
+          'R160 the retry loop body is delimited in scm5')
+    _body = _armcpu[_loopstart:_loopend] if _loopstart > 0 and _loopend > _loopstart else ''
+    for _reg in ('x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6'):
+        check('register uint64_t %s __asm__ ("%s")' % (_reg, _reg) in _body,
+              'R160 %s is re-initialised inside the retry loop, not outside it' % _reg)
     check('armcpu_scm_call_full' in _armcpu,
           'R152 ArmCpu exports the full-result call')
     check('r.retries' in _armcpu,
