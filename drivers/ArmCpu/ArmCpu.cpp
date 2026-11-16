@@ -170,23 +170,23 @@ static ScmResult scm5 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uin
   // ROUND 152: the Windows active-retry semantics. qcscm850.sys TZT_ASM loops
   // `smc; cmp w0,#0; b.gt` -- while a0 is a POSITIVE code (QCOM_SCM_INTERRUPTED=1
   // or WAITQ_SLEEP=2 it re-issues the SMC). Our previous code stopped on the
-  // first a0, so R143/R145 saw t0=0xFFFFFFFFFFFFFFFD (a transport a0 that was
+  // first a0, so R143/R145 saw t0=0xFFFFFFFFFFCFFFBB (a transport a0 that was
   // sign-extended from a positive W register) and quit. With the loop we keep
   // issuing until a0 is 0 (done) or negative (a real error), up to a hard cap so
   // a genuinely wedged secure world cannot hang the boot. Each retry is separated
   // by an isb + a short portable delay loop; *retries reflects how many re-issues
   // happened and is reported as rt= in the stage-7 row.
-  register uint64_t x0 __asm__ ("x0") = fn;
-  register uint64_t x1 __asm__ ("x1") = info;
-  register uint64_t x2 __asm__ ("x2") = a2;
-  register uint64_t x3 __asm__ ("x3") = a3;
-  register uint64_t x4 __asm__ ("x4") = a4;
-  register uint64_t x5 __asm__ ("x5") = a5;
-  register uint64_t x6 __asm__ ("x6") = 0;
   const unsigned kScmRetryCap = 100;   // SIMPLE SMC, but never unbounded
   unsigned retries = 0;
   uint64_t l0 = 0, l1 = 0, l2 = 0, l3 = 0, l6 = 0;
   for (;;) {
+    register uint64_t x0 __asm__ ("x0") = fn;
+    register uint64_t x1 __asm__ ("x1") = info;
+    register uint64_t x2 __asm__ ("x2") = a2;
+    register uint64_t x3 __asm__ ("x3") = a3;
+    register uint64_t x4 __asm__ ("x4") = a4;
+    register uint64_t x5 __asm__ ("x5") = a5;
+    register uint64_t x6 __asm__ ("x6") = 0;
     __asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3), "+r" (x4), "+r" (x5), "+r" (x6)
                       :: "memory", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
     l0 = x0; l1 = x1; l2 = x2; l3 = x3; l6 = x6;
