@@ -498,7 +498,9 @@ def main():
     check('(phys & 4095ULL) != 0' in _armcpu,
           'R127 the returned address is CHECKED for 4096 alignment, not assumed')
     # The three device-proven exports must be untouched by this round.
-    for _keep in ('armcpu_map_physical', 'armcpu_scm_call', 'ScmResult scm4'):
+    # R162: `scm4` now returns the three-channel ScmTriple (the pre-R152 shape the
+    # early path is pinned to); the export names themselves are unchanged.
+    for _keep in ('armcpu_map_physical', 'armcpu_scm_call', 'ScmTriple scm4'):
         check(_keep in _armcpu, 'R127 the pre-existing %s export still exists' % _keep)
     check('kIODirectionInOut' in _armcpu,
           'R127 the buffer is writable (kIODirectionInOut, not the read-only kIODirectionIn)')
@@ -966,36 +968,70 @@ def main():
           'R152 the row carries rt=, a3= and a6=')
     check('s7rt' in code and 's7a3' in code and 's7a6' in code,
           'R152 the retry/a3/a6 values reach snprintf')
-    # ---- the retry semantics live in ArmCpu.cpp's scm5, with a cap ----
+    # ---- the retry semantics live in scm5Retry, and ONLY there -------------
     _armcpu = (DEV / 'drivers/ArmCpu/ArmCpu.cpp').read_text(encoding='utf-8', errors='replace')
-    # ROUND 161 changed the contract: R160 proved on the device that the re-issue
-    # path itself stops the boot before the log writer (two silent boots with the
-    # loop, one logging control run without it), so the cap is now a RUNTIME
-    # switch whose DECLARED DEFAULT is 0 = never re-issue. The loop and the
-    # per-iteration register reload must still be there -- re-enabling the switch
-    # must send the same call, not the previous reply.
-    check('armcpu_scm_retry_cap' in _armcpu,
-          'R161 ArmCpu scm5 reads a runtime retry cap (no compile-time unbounded loop)')
+    _armcpu_code = strip_comments(_armcpu)
+    # ROUND 162 changed the contract. R160's control run (pre-R152 payload, no loop)
+    # logged at t=30.72 s while R159/R160/R161 (loop present, cap declared 0 in R161)
+    # all left the boot log untouched, so "the loop ran" is NOT the killer. The three
+    # remaining deltas on the early path were mov x6,#0, the capped counter, and the
+    # cap read -- and the cap read is the suspect, because armcpu_scm_retry_cap is a
+    # zero-initialised global (__DATA __common): its 0 exists only after the loader
+    # zero-fills __DATA beyond its filesize, which nothing on this platform proves for
+    # the time ArmCpu::start runs. So the early transport is back to the ci258 shape
+    # (plain single smc, no cap, no counters, no BSS) and the loop moved into
+    # scm5Retry, reachable only through armcpu_scm_call_full.
+    check('static ScmTriple scm5 (' in _armcpu_code,
+          'R162 the early transport returns the three-channel ScmTriple')
+    check('static ScmResult scm5Retry (' in _armcpu_code,
+          'R162 the retry transport is a SEPARATE function (scm5Retry)')
+    check('static ScmTriple scm4 (' in _armcpu_code,
+          'R162 scm4 is a thin ScmTriple wrapper over scm5')
+    # THE point of the round: the early path must not read the cap, loop, or count.
+    _early = section(_armcpu_code, 'static ScmTriple scm5 (', 'static ScmResult scm5Retry (')
+    check(_early != '', 'R162 scm5 is delimited in ArmCpu.cpp')
+    for _forbidden in ('armcpu_scm_retry_cap', 'for (', 'while (', '__atomic',
+                       'armcpu_scm_retries', 'smc5Retry'):
+        check(_forbidden not in _early,
+              'R162 the early transport scm5 contains no %r' % _forbidden)
+    check(_early.count('smc #0') == 1,
+          'R162 scm5 issues exactly ONE smc (got %d)' % _early.count('smc #0'))
+    # x6 must be a CLOBBER on the early path, not an operand: pinning it to 0 was one
+    # of the three deltas against the ci258 build that did log.
+    _early_asm = section(_early, '__asm__ volatile ("smc #0"', ';')
+    check('"+r" (x6)' not in _early_asm, 'R162 the early smc does not make x6 an output operand')
+    check('"x6"' in _early_asm, 'R162 x6 stays in the early smc clobber list')
+    # The retry machinery must survive intact where it is reachable.
+    _retry = section(_armcpu_code, 'static ScmResult scm5Retry (', 'static ScmTriple scm4 (')
+    check(_retry != '', 'R162 scm5Retry is delimited in ArmCpu.cpp')
+    check('const unsigned cap = __atomic_load_n (&armcpu_scm_retry_cap' in _retry,
+          'R161 scm5Retry loads the runtime cap atomically')
+    check('retries >= cap' in _retry,
+          'R161 the retry bound is the runtime cap, not a literal')
+    check('static_cast<int64_t>(x0) > 0' in _retry,
+          'R152 the retry condition is a0 strictly positive (INTERRUPTED/WaitQ)')
     _capdef = re.search(r'volatile unsigned armcpu_scm_retry_cap\s*=\s*(\d+)u?\s*;', _armcpu)
     check(_capdef is not None and int(_capdef.group(1)) == 0,
           'R161 the retry cap DEFAULTS to 0 = no re-issue (got %r, want == 0)'
           % (_capdef.group(1) if _capdef else 'missing'))
-    check('const unsigned cap = __atomic_load_n (&armcpu_scm_retry_cap' in _armcpu,
-          'R161 scm5 loads the cap atomically per call')
-    check('retries >= cap' in _armcpu,
-          'R161 the loop bound is the runtime cap, not a literal')
-    check('static_cast<int64_t>(x0) > 0' in _armcpu,
-          'R152 the retry condition is a0 strictly positive (INTERRUPTED/WaitQ)')
-    # R160's fix must survive R161: every register the SMC writes is re-initialised
-    # INSIDE the loop, so a re-issue (if the cap is ever raised) sends the same call.
-    _loopstart = _armcpu.find('for (;;) {')
-    _loopend = _armcpu.find('ScmResult r;', _loopstart)
+    # R160's fix must survive: every register the SMC writes is re-initialised INSIDE
+    # the loop, so a re-issue (if the cap is ever raised) sends the same call.
+    _loopstart = _retry.find('for (;;) {')
+    _loopend = _retry.find('ScmResult r;', _loopstart)
     check(_loopstart > 0 and _loopend > _loopstart,
-          'R160 the retry loop body is delimited in scm5')
-    _body = _armcpu[_loopstart:_loopend] if _loopstart > 0 and _loopend > _loopstart else ''
+          'R160 the retry loop body is delimited in scm5Retry')
+    _body = _retry[_loopstart:_loopend] if _loopstart > 0 and _loopend > _loopstart else ''
     for _reg in ('x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6'):
         check('register uint64_t %s __asm__ ("%s")' % (_reg, _reg) in _body,
               'R160 %s is re-initialised inside the retry loop, not outside it' % _reg)
+    # ONE caller, and it is the late export: no early code may reach the loop.
+    check(_armcpu_code.count('scm5Retry (') == 2,
+          'R162 scm5Retry has exactly one caller besides its definition (got %d mentions)'
+          % _armcpu_code.count('scm5Retry ('))
+    _full = section(_armcpu_code, 'armcpu_scm_call_full (uint64_t fn',
+                    'extern "C" void armcpu_wdog_sample')
+    check('r = scm5Retry (fn, arginfo, a2, a3, a4, a5);' in _full,
+          'R162 armcpu_scm_call_full is the scm5Retry caller')
     check('armcpu_scm_call_full' in _armcpu,
           'R152 ArmCpu exports the full-result call')
     check('r.retries' in _armcpu,

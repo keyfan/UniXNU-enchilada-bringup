@@ -88,7 +88,7 @@ def main():
         ('armcpu SCM comment', DEV / 'drivers' / 'ArmCpu' / 'ArmCpu.cpp',
          'Qualcomm SCM over SMC (SMCCC SIP', True),
         ('armcpu scm fn', DEV / 'drivers' / 'ArmCpu' / 'ArmCpu.cpp',
-         'static ScmResult scm (uint64_t fn', True),
+         'static ScmTriple scm (uint64_t fn', True),
         ('armcpu crashdump fn', DEV / 'drivers' / 'ArmCpu' / 'ArmCpu.cpp',
          'static void scmDisableCrashdump (void)', True),
         ('armcpu_scm sentinel', DEV / 'drivers' / 'ArmCpu' / 'ArmCpu.cpp',

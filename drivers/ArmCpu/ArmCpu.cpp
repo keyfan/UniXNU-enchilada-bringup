@@ -157,6 +157,12 @@ extern "C" { volatile unsigned armcpu_scm_retry_cap = 0; }
 // (INTERRUPTED/WaitQ) code -- needed so `rt=` can be reported.
 // The existing a0/a1/a2 consumers are untouched (field names unchanged).
 struct ScmResult { uint64_t a0, a1, a2, a3, a6; unsigned retries; };
+// ROUND 162: the PRE-R152 result type, restored for the early transport. It has
+// exactly the three channels the device-proven path ever consumed (a0 transport
+// status, a1 secure result[0], a2 second result) and no retry counter, so no
+// caller of scm/scm4/scm5 can depend on a re-issue that never happened.
+// ScmResult above stays, but only scm5Retry (late stage-7 path) produces it.
+struct ScmTriple { uint64_t a0, a1, a2; };
 // ROUND 110: the SCM `smc #0`, factored so a caller that must pass a 5th
 // register can reach it. `scm4` carries x4 as a PARAMETER; the original
 // 4-argument `scm` below still pins x4 = 0 exactly as it always did, so all
@@ -180,23 +186,62 @@ struct ScmResult { uint64_t a0, a1, a2, a3, a6; unsigned retries; };
 // pins a5 = 0, so every existing call site -- including all EIGHT
 // scmDisableCrashdump / armcpu_scm[] calls, the only device-proven SCM path --
 // sends x5 = 0 exactly as before. Byte-for-byte identical, mechanically.
-static ScmResult scm5 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5)
+// ROUND 162: THE EARLY TRANSPORT IS BACK TO THE PRE-R152 SHAPE, ON PURPOSE.
+//
+// The device evidence first, because this reversal is not a preference:
+//   R159 (4a786a39, retry loop, unbounded)  -> boot log untouched
+//   R160 (f11438d2 + db8264e5, loop reloads the inputs) -> boot log untouched
+//   R160 control (ci258 payload, no loop at all) -> logged at t=30.72 s
+//   R161 (99e3df33, cap declared 0 = no re-issue) -> boot log untouched
+// The R161 run is what forces this round: if "the loop ran" were the killer,
+// cap = 0 would have restored the boot. It did not -- the window was byte-identical
+// to the control's (sha256 96f0d655..., boot_id 629517746), i.e. zero new bytes.
+//
+// A per-instruction comparison of ArmCpu::start against the ci258 kernel then
+// left exactly three deltas on the early path: (a) `mov x6,#0` before each smc,
+// (b) the capped-counter atomic on the positive-a0 path, and (c) reading
+// armcpu_scm_retry_cap. (c) is the dangerous one: it is a ZERO-INITIALISED global,
+// so it lands in __DATA,__common (BSS) and has NO bytes in the file. Its 0 exists
+// only after something zero-fills __DATA's vmsize beyond its filesize. The
+// device-proven early path (ci258) touched no BSS at all: its SCM calls were
+// stack-only. If the fill has not happened when ArmCpu::start runs -- and nothing
+// on this platform proves it has -- the cap reads garbage, the loop re-issues on
+// a positive a0, and the secure world can hold the core: no log, 32 s watchdog,
+// back to TWRP. That matches every reading we have.
+//
+// So this function is the plain single-smc transport again: six registers, no
+// loop, no cap, no counters, no BSS read, and a three-channel result. The retry
+// machinery lives in scm5Retry below, whose ONLY caller is armcpu_scm_call_full
+// (the stage-7 shmbridge probe, which runs after the log writer is up).
+// Deliberately accepted consequence: early calls report the raw a0 and never
+// re-issue. Re-issue semantics remain available where they were actually wanted.
+static ScmTriple scm5 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5)
 {
-  // ROUND 152: the Windows active-retry semantics. qcscm850.sys TZT_ASM loops
-  // `smc; cmp w0,#0; b.gt` -- while a0 is a POSITIVE code (QCOM_SCM_INTERRUPTED=1
-  // or WAITQ_SLEEP=2 it re-issues the SMC). Our previous code stopped on the
-  // first a0 and quit; R141/R147 read t0=0xFFFFFFFFFFCFFFBB there. With the loop
-  // we keep issuing until a0 is 0 (done) or strictly negative (a real error), up
-  // to a hard cap so a genuinely wedged secure world cannot hang the boot. Each
-  // retry is separated by an isb + a short portable delay loop; *retries reflects
-  // how many re-issues happened and is reported as rt= in the stage-7 row.
-  //
-  // ROUND 161: THE CAP IS NOW A RUNTIME SWITCH THAT DEFAULTS TO 0 (no re-issue).
-  // R160 proved on the device that the loop itself is what stops the boot before
-  // the log writer (see the armcpu_scm_retry_cap declaration above for the exact
-  // three readings). With cap = 0 the loop still exists, still records the a0 it
-  // got, still reports rt=0, and the register list stays reloaded every iteration
-  // (R160's fix is kept: a re-issue must send the same call if it is ever enabled).
+  register uint64_t x0 __asm__ ("x0") = fn;
+  register uint64_t x1 __asm__ ("x1") = info;
+  register uint64_t x2 __asm__ ("x2") = a2;
+  register uint64_t x3 __asm__ ("x3") = a3;
+  register uint64_t x4 __asm__ ("x4") = a4;
+  register uint64_t x5 __asm__ ("x5") = a5;
+  // x6 is a CLOBBER, not an operand: exactly as the ci258 build had it. The
+  // secure world does not read x6 for these fnids (their arginfo declares one or
+  // two arguments), and pinning it to 0 was one of the three deltas above.
+  __asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3), "+r" (x4), "+r" (x5)
+                    :: "memory", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
+  ScmTriple r;
+  r.a0 = x0; r.a1 = x1; r.a2 = x2;
+  return r;
+}
+// ROUND 152/160/161/162: the retry transport, kept OUT of the early path.
+// Windows qcscm850.sys TZT_ASM loops `smc; cmp w0,#0; b.gt`, i.e. re-issues while
+// a0 is a POSITIVE code (QCOM_SCM_INTERRUPTED=1, WAITQ_SLEEP=2), and the pinned
+// qcom_scm-smc.c does the same. R160's fix is kept: every register is reloaded
+// inside the loop, so a re-issue sends the SAME call rather than the previous
+// reply (the pre-R160 code left x0..x6 outside the loop, which re-sent a0 as the
+// fnid). R161 made the cap a runtime value declared 0; R162 keeps both, but only
+// reachable through armcpu_scm_call_full, i.e. after the boot has a log writer.
+static ScmResult scm5Retry (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5)
+{
   const unsigned cap = __atomic_load_n (&armcpu_scm_retry_cap, __ATOMIC_RELAXED);
   unsigned retries = 0;
   uint64_t l0 = 0, l1 = 0, l2 = 0, l3 = 0, l6 = 0;
@@ -233,17 +278,17 @@ static ScmResult scm5 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uin
   r.a0 = l0; r.a1 = l1; r.a2 = l2; r.a3 = l3; r.a6 = l6; r.retries = retries;
   return r;
 }
-static ScmResult scm4 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4)
+static ScmTriple scm4 (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3, uint64_t a4)
 {
   return scm5 (fn, info, a2, a3, a4, 0);   // a5 = 0, exactly as this function always pinned x5
 }
-static ScmResult scm (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3)
+static ScmTriple scm (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3)
 {
   return scm4 (fn, info, a2, a3, 0);   // x4 = 0, exactly as this function always pinned it
 }
 static int64_t scmAvailable (uint32_t fn)
 {
-  ScmResult r = scm (0xC2000601, 0x1, fn, 0);   // QCOM_SCM_INFO_IS_CALL_AVAIL: a1 = 1 when available
+  ScmTriple r = scm (0xC2000601, 0x1, fn, 0);   // QCOM_SCM_INFO_IS_CALL_AVAIL: a1 = 1 when available
   return r.a0 ? -static_cast<int64_t> (r.a0 & 0xff) - 100 : static_cast<int64_t> (r.a1);
 }
 static void scmDisableCrashdump (void)
@@ -252,14 +297,14 @@ static void scmDisableCrashdump (void)
   armcpu_scm[1] = scmAvailable (0xC2000110);
   armcpu_scm[2] = scmAvailable (0xC2000502);
   armcpu_scm[3] = static_cast<int64_t> (scm (0xC2000109, 0x2, 1, 0).a0);                    // SDI off after a watchdog reset
-  ScmResult before = scm (0xC2000501, 0x1, 0x01FD3000, 0);
+  ScmTriple before = scm (0xC2000501, 0x1, 0x01FD3000, 0);
   armcpu_scm[4] = before.a0 ? -1 : static_cast<int64_t> (before.a1);
   armcpu_scm[5] = static_cast<int64_t> (scm (0xC2000110, 0x2, 0, 0).a0);                    // download mode off
-  ScmResult again = scm (0xC2000501, 0x1, 0x01FD3000, 0);
+  ScmTriple again = scm (0xC2000501, 0x1, 0x01FD3000, 0);
   if (!again.a0 && (again.a1 & 0x10)) {
     armcpu_scm[6] = static_cast<int64_t> (scm (0xC2000502, 0x2, 0x01FD3000, again.a1 & ~0x10ULL).a0);   // secure write fallback
   }
-  ScmResult after = scm (0xC2000501, 0x1, 0x01FD3000, 0);
+  ScmTriple after = scm (0xC2000501, 0x1, 0x01FD3000, 0);
   armcpu_scm[7] = after.a0 ? -1 : static_cast<int64_t> (after.a1);
 }
 static OSSharedPtr<IOMemoryMap> gWdogMap;
@@ -431,7 +476,7 @@ extern "C" int32_t armcpu_scm_call (uint64_t fn, uint64_t arginfo, uint64_t a2,
                                     uint64_t a3, uint64_t a4,
                                     uint64_t *transport_ret, uint64_t *secure_result)
 {
-  ScmResult r;
+  ScmTriple r;
   // Non-blocking. A caller that cannot tolerate a refusal is a caller that
   // needs a real lock, and that decision belongs with whoever wires the device
   // run -- not with this shim.
@@ -456,7 +501,7 @@ extern "C" int32_t armcpu_scm_call5 (uint64_t fn, uint64_t arginfo, uint64_t a2,
                                      uint64_t a3, uint64_t a4, uint64_t a5,
                                      uint64_t *transport_ret, uint64_t *secure_result)
 {
-  ScmResult r;
+  ScmTriple r;
   if (__atomic_exchange_n (&armcpu_scm_busy, 1, __ATOMIC_ACQ_REL) != 0) {
     return -16;   /* -EBUSY: no SMC made, outputs untouched */
   }
@@ -480,7 +525,7 @@ extern "C" int32_t armcpu_scm_call5_r (uint64_t fn, uint64_t arginfo, uint64_t a
                                        uint64_t *transport_ret, uint64_t *secure_result,
                                        uint64_t *a2_out)
 {
-  ScmResult r;
+  ScmTriple r;
   if (__atomic_exchange_n (&armcpu_scm_busy, 1, __ATOMIC_ACQ_REL) != 0) {
     return -16;   /* -EBUSY: no SMC made, outputs untouched */
   }
@@ -493,9 +538,13 @@ extern "C" int32_t armcpu_scm_call5_r (uint64_t fn, uint64_t arginfo, uint64_t a
 }
 
 // ROUND 152: the FULL-result SCM entry point, for a caller that wants every
-// channel the Windows TZT_ASM reads (x1/x2/x3/x6) plus the retry count. Same
-// busy guard and the same retry loop as the other exports (they all go through
-// scm5). a3_out/a6_out receive the corresponding smc result registers (0 if the
+// channel the Windows TZT_ASM reads (x1/x2/x3/x6) plus the retry count.
+// ROUND 162: this is the ONLY caller of scm5Retry -- everything else in this file
+// (and therefore the whole early ArmCpu::start SCM sequence) goes through the
+// plain scm5. That is the point of the split: the re-issue semantics stay
+// reachable for the stage-7 shmbridge probe, which runs after the log writer,
+// and are unreachable before it.
+// a3_out/a6_out receive the corresponding smc result registers (0 if the
 // secure world left them untouched); retries_out receives how many re-issues the
 // retry loop performed (0 = first attempt already returned <= 0, i.e. done).
 // Returns 0 when the SMC was made, -EBUSY/-EINVAL when refused (outputs untouched).
@@ -509,7 +558,7 @@ extern "C" int32_t armcpu_scm_call_full (uint64_t fn, uint64_t arginfo, uint64_t
   if (__atomic_exchange_n (&armcpu_scm_busy, 1, __ATOMIC_ACQ_REL) != 0) {
     return -16;   /* -EBUSY: no SMC made, outputs untouched */
   }
-  r = scm5 (fn, arginfo, a2, a3, a4, a5);
+  r = scm5Retry (fn, arginfo, a2, a3, a4, a5);
   __atomic_store_n (&armcpu_scm_busy, 0, __ATOMIC_RELEASE);
   if (transport_ret) *transport_ret = r.a0;
   if (secure_result) *secure_result = r.a1;
