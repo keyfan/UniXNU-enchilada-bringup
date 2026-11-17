@@ -117,15 +117,29 @@ def main():
     # --- G. no direct store anywhere in the probe -------------------------
     # Stage 5 writes, but ONLY through the window adapter's callbacks. A direct
     # store here would bypass the bounds that make the window safe.
+    #
+    # ROUND 167 is the ONE deliberate exception and it is pinned, not waved
+    # through: exactly one register store exists, to CM3_BOOT_CONFIG, armed by
+    # `enchilada-pas-exec=6` and gated on the CM3_SYSRESET read-back. Everything
+    # outside that block stays store-free, so the callback rule still holds.
     store_re = re.compile(r'(?<![\w\)\]\*])\*\s*[A-Za-z_]\w*(?:\[[^\]]*\])?\s*=(?!=)')
+    _rw167 = (code.split('bootKey == 6u', 1)[1].split('gmuboot=pre', 1)[0]
+              if 'bootKey == 6u' in code else '')
+    _outside = code.replace(_rw167, '') if _rw167 else code
     hits = []
-    for m in store_re.finditer(code):
-        pre = code[max(0, m.start() - 40):m.start()]
+    for m in store_re.finditer(_outside):
+        pre = _outside[max(0, m.start() - 40):m.start()]
         if re.search(r'(?:const\s+)?[A-Za-z_][\w:<>]*\s+$', pre):
             continue
         hits.append(m.group(0))
-    check(not hits, 'no direct store through any pointer; writes go via callbacks (hits=%r)'
-          % hits[:3])
+    check(not hits, 'no direct store through any pointer outside R167; writes go '
+          'via callbacks (hits=%r)' % hits[:3])
+    check(_rw167 != '' and
+          _rw167.count('= ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;') == 1 and
+          '*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE' in _rw167 and
+          'if (held)' in _rw167,
+          'R167 the one permitted store writes CM3_BOOT_CONFIG=0x02 behind the '
+          'CM3_SYSRESET read-back')
     # And the only cast targets are still the two volatile ones.
     casts = set(re.findall(r'reinterpret_cast<([^>]*)>', code))
     check(casts <= {'volatile uint32_t *', 'volatile uint8_t *'},

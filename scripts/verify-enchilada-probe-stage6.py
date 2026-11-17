@@ -1151,6 +1151,41 @@ def main():
     check('char cm3Row[224]' in code and 'char pdcRow[184]' in code,
           'R166 both new rows have declared, sufficient bounds')
 
+    # ==== ROUND 167 (slice 1b): the FIRST register write ====================
+    # Rounds 158..166 were read-only, and the checks above prove the read blocks
+    # still are. This round is the first that changes device state, so its
+    # boundary is ASSERTED rather than described: exactly one store exists, its
+    # target is CM3_BOOT_CONFIG, its value is the pinned 0x02, and the two words
+    # that would actually start the CM3 (CM3_SYSRESET, the ITCM doorbell) are
+    # never written. A later round that starts the firmware must delete this
+    # check on purpose and say so -- it may not slip through.
+    check('ROUND 167' in text and 'gmuboot=pre=%08x reset=%08x held=%d' in code,
+          'R167 the one-word GMU boot-config row is present')
+    check('armcpu_map_physical_rw' in code,
+          'R167 the write path uses the dedicated WRITABLE mapping entry point '
+          '(not a direction flag added to the read-only one)')
+    _rw = (code.split('bootKey == 6u', 1)[1].split('gmuboot=pre', 1)[0]
+           if 'bootKey == 6u' in code else '')
+    check(_rw != '',
+          'R167 the block is armed by its own key value (enchilada-pas-exec=6), '
+          'so the read-only values 3..5 keep their evidence')
+    check('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE' in _rw,
+          'R167 the single store writes the pinned a6xx_gmu.xml value 0x02')
+    check('ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG * 4u' in _rw,
+          'R167 the store targets CM3_BOOT_CONFIG at its pinned word offset')
+    check('ADRENO_GMU_BOOT_V1_CM3_SYSRESET * 4u' in _rw and
+          'CM3_SYSRESET = ' not in code and 'CM3_ITCM_START = ' not in code,
+          'R167 CM3_SYSRESET is READ as the gate but never written and the ITCM '
+          'doorbell is never written: the CM3 is not started by this round')
+    check('if (held)' in _rw,
+          'R167 the write is gated on that reset read-back, so a CM3 that is '
+          'already out of reset is reported and not written')
+    check('ADRENO_BOARD_GMU_BASE' in _rw and 'ADRENO_BOARD_GMU_SIZE' in _rw,
+          'R167 the writable window is the DTB-pinned GMU range, not a guess')
+    check('stage >= 7u' not in code,
+          'R167 still no new stage value: the boot-arg mask stays exactly 1..6')
+
+
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the
     # old 384, so the buffer grew to 512. A truncating snprintf would silently

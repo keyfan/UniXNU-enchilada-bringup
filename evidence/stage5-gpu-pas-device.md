@@ -1054,3 +1054,80 @@ PDC 窗口可读且 **PDC 已经是启用状态**（`pdcen=1`，序列内存里�
    （`AdrenoMetalSeamV1.h` 明说 `gmem_base` 留空），所以第 2 步之前必须先找到可信来源。
 3. 风险前置说明：`gfx_rail_on` 要写 `vdd`（phandle 0x2a9）；若 TZ 拥有该 regulator，
    第一笔写会 abort —— 但那时日志窗口已经打开，会留下窗口而不是零字节。
+
+## 十九、ROUND 167（切片 1b）：第一笔寄存器写 —— `CM3_BOOT_CONFIG=0x02` 写入并读回成功
+
+**一句话**：XNU 侧第一次对 GPU 域寄存器完成「点名申请可写映射 → 写 → 读回」的闭环。
+`CM3_BOOT_CONFIG` 由 **0** 写成 **`0x2`**，读回 `ok=1`；同一次读数里 `CM3_SYSRESET`
+的 bit0 是 **1**（CM3 核心仍被按在复位里），固件仍未启动（`fwinit=0`）。
+这与本切片划定的边界完全一致：**只写这一个字节，不写复位脉冲、不载固件、不碰 PDC。**
+
+### 19.1 为什么必须新增一个可写映射入口
+
+- `drivers/ArmCpu/ArmCpu.cpp` 里唯一的物理映射入口 `armcpu_map_physical()` 用
+  `IOMemoryDescriptor::withPhysicalAddress(physical, length, **kIODirectionIn**)`，
+  且四个已在真机上验证过的调用点（GMU、GPUCC、SMMU、GPU）全部建立在「只读」这个前提上。
+- 直接给旧函数加方向参数，等于让四个已验证的只读调用点随时可能被一个手误改成可写。
+  因此新增并列入口 `armcpu_map_physical_rw()`：`kIODirectionInOut`、同样
+  `kIOMapAnywhere | kIOMapInhibitCache`、同样「kept: never released」。
+- 提供这个入口本身不改变设备状态 —— 映射只是地址翻译；写什么、什么时候写，
+  是调用者的责任，而本切片把这份责任限制在一行上（`19.2`）。
+- probe 侧以 `__attribute__((weak_import))` 点名声明这个符号；`ld` 能解析，
+  且 host 静态检查里它出现在「未定义符号」集合中正是「写走的是点名申请的可写窗口」
+  的证据，故把 `armcpu_map_physical_rw` 与其修饰名加入允许集合，而不是 stub 掉。
+
+### 19.2 为什么「只写这一个字」是安全的
+
+上游 `a6xx_gmu.c` 的冷启动顺序（本仓库 `drivers/NativeAdreno/AdrenoGmuBootV1.c` 同构）
+把 `CM3_BOOT_CONFIG = 0x02` 放在 **pre-start 配置**阶段：它只告诉 CM3「从哪里取固件」，
+本身不启动任何东西。真正让固件跑起来的是随后
+`a6xx_gmu_start()` 写 `CM3_SYSRESET = 1 → PWR_COL_CP_RESP = 0 → CM3_SYSRESET = 0`
+的那次**复位脉冲**，再 poll `CM3_FW_INIT_RESULT`。
+
+所以本切片刻意不做四件事：不写 `CM3_SYSRESET`、不写 `CM3_ITCM_START`（固件门铃）、
+不搬运固件、不碰 PDC。并加了一道读回门禁：**只有** `CM3_SYSRESET` 的 bit0 为 1
+（核心被按在复位里、不可能已经在跑）时才执行那次写；否则只报告、不写。
+
+### 19.3 判决（DEVICE-VERIFIED，一次上机）
+
+- 构建：#274 / run `44021103936`（分支 `r167-cm3-bootcfg`，commit
+  `c5ce4aa1f84a61fbe80f3c2ed24739e8377c0e43`），kernel sha256
+  `c7e28475c1fa838f674bb0ab13780d0004d1867e393a9f89b062b35f2e6dc8ac`，
+  CI payload sha256 `29b8ecfd7ed1c2c51c6bf37be3d052af3bbbe16af260bb0616dbb06691a0ce62`。
+- 上机镜像是本地等长改 key 的副本（`enchilada-pas-exec=2` → `=6`），sha256
+  `ae4f8e2efec30faaabc1cd9fe96f00816468e263662b1f05e45f3e1cecf4f4b2`；
+  刷写回读的 `system_b` 头 8 MiB 是
+  `da9ecce765736d1b04998f0c4eb973c29e4ab217d79e5023daa38a5f5f026249`（与 payload 头一致）。
+- 窗口 sha256 `b3820911664af2ea855a36975c6c9dabbc6cc348ccaa5cd715e2e4e95623ef9d`，
+  **boot_id=584581111（本轮新写）**，msg_bytes=28904，slots_written=7，
+  uptime_s=3，write_errors=0。
+- 新行（逐字）：
+
+  `gmuboot=pre=00000000 reset=00000001 held=1 post=00000002 fwinit=00000000 wrote=1 ok=1`
+
+- 同窗口 `stage7=armed-not-executed why=not-armed armed=0 exec_key=6 sym=1 … rc=1 ran=0 calls=0`
+  ⇒ `=6` 只武装新块，**没有**重跑 R129/R131 的 PAS SMC 路径。
+- `gmucm3=` 与 `gmupdc=` 在这份窗口里各 0 次，是**设计使然**（`=6` 与 3..5 是互斥的值），
+  不是块消失；`gmuboot=map-failed` 0 次。
+
+### 19.4 解读
+
+- `pre=0`：写之前该寄存器确实是 0，与 R166 的只读读数一致 —— 两层证据互相对上。
+- `reset=0x1`：`CM3_SYSRESET` bit0 置位，说明 CM3 核心被按在复位里。这既解释了
+  「为什么此时写 pre-start 配置是安全的」，也再次证明 GMU 从未启动过。
+- `post=0x2` 且 `ok=1`：写入被寄存器块接收，并且**读回校验通过**；
+  `wrote=1` 表示真的执行了那次 store（没有被门禁跳过）。
+- `fwinit=0`：固件仍未报告 init —— 符合预期，因为本切片没有触发复位脉冲。
+- 工程意义：`armcpu_map_physical_rw` 在真机可用，GPU 域寄存器块从此既能读也能写；
+  这是后续「GMEM 固件搬运 + `CM3_SYSRESET` 脉冲」的前置能力。
+
+### 19.5 诚实边界与下一步
+
+- 本轮只证明「一个 32 位字写进去并读回」；没有证明 CM3 会按这个值去取固件
+  （那需要固件真的在 GMEM 里、以及复位脉冲）。
+- 真正的冷启动还缺两块：**GMEM 的物理基址**（本仓库 `gmem_base` 故意留空，
+  只有 `gmem_bytes = 0x00100000`，不得猜）与固件搬运路径（`a630_gmu.bin` 32,768 B
+  已在 `work/tmp/a630-device-fw/`，sha256
+  `b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f`）。
+- 顺序上仍是：先落 GMEM 基址的可信来源 → 再谈搬运 → 最后才碰复位脉冲；
+  每一步都要能先用只读手段验证前提。

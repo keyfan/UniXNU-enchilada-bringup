@@ -177,17 +177,33 @@ def main():
     # Match only the unambiguous form: `*<simple-name> =` on one line, where the
     # name is not preceded by an operator that makes it a multiplication.
     store_re = re.compile(r'(?<![\w\)\]\*])\*\s*[A-Za-z_]\w*(?:\[[^\]]*\])?\s*=(?!=)')
+    # ROUND 167 is the ONE deliberate exception, and it is pinned here rather
+    # than waved through: the probe now performs exactly one register store, to
+    # CM3_BOOT_CONFIG, under `enchilada-pas-exec=6`, gated on the CM3_SYSRESET
+    # read-back. Everything OUTSIDE that block must still contain no store at
+    # all -- so this narrows the old absolute claim instead of dropping it.
+    _rw167 = (code.split('bootKey == 6u', 1)[1].split('gmuboot=pre', 1)[0]
+              if 'bootKey == 6u' in code else '')
+    _outside = code.replace(_rw167, '') if _rw167 else code
     hits = []
-    for m in store_re.finditer(code):
+    for m in store_re.finditer(_outside):
         # A DECLARATION also matches (`const char *verdict = ...`). Exclude it by
         # looking at what precedes the star: a declaration has a type word before
         # it on the same statement, a dereference-store does not.
-        pre = code[max(0, m.start() - 40):m.start()]
+        pre = _outside[max(0, m.start() - 40):m.start()]
         if re.search(r'(?:const\s+)?[A-Za-z_][\w:<>]*\s+$', pre):
             continue
         hits.append(m.group(0))
     check(not hits,
-          'no store through any pointer (the probe is READ-ONLY); hits=%r' % hits[:3])
+          'no store through any pointer outside R167 (the probe is READ-ONLY); hits=%r'
+          % hits[:3])
+    check(_rw167 != '' and
+          _rw167.count('= ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;') == 1 and
+          '*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE' in _rw167 and
+          'ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG * 4u' in _rw167 and
+          'if (held)' in _rw167,
+          'R167 the one permitted store writes CM3_BOOT_CONFIG=0x02 and is gated '
+          'on the CM3_SYSRESET read-back')
 
     raw = PACKAGE.read_bytes()
     check(b'\r' not in raw, 'the probe file is pure LF (CR count 0)')

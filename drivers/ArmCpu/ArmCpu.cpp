@@ -362,6 +362,32 @@ extern "C" uint64_t armcpu_map_physical (uint64_t physical, uint64_t length)
   return map ? static_cast<uint64_t> (map->getVirtualAddress ()) : 0;
 }
 
+// ROUND 167: the WRITABLE sibling of armcpu_map_physical, for the one class of caller that
+// must modify a register window it does not own the memory of.
+//
+// WHY THIS IS A SECOND ENTRY POINT AND NOT A FLAG ON THE FIRST: every device-proven call site of
+// armcpu_map_physical (the GPUCC / GMU / SMMU probe windows) is READ-ONLY, and `kIODirectionIn`
+// is what makes that guarantee structural rather than a convention. Adding a direction argument
+// would put every existing caller one typo away from a writable mapping. A separate symbol keeps
+// the read-only mapping read-only and makes a writable window an explicit, greppable act.
+//
+// WHY IT IS SAFE TO OFFER AT ALL: the mapping itself allocates nothing and changes no state -- it
+// is withPhysicalAddress(...) + map(kIOMapAnywhere | kIOMapInhibitCache), exactly as above, with
+// kIODirectionInOut instead of kIODirectionIn. What the CALLER writes, and whether the block it
+// writes into is clocked, remains entirely the caller's problem. Cache-inhibited is deliberate:
+// these are device registers, so no cache maintenance is needed or wanted.
+//
+// KEPT, NEVER RELEASED -- the same convention as armcpu_map_physical ("kept: never released"),
+// and for the same reason: the mapping must outlive any single poll iteration. One mapping per
+// window per boot, by design.
+extern "C" uint64_t armcpu_map_physical_rw (uint64_t physical, uint64_t length)
+{
+  if (physical == 0 || length == 0) return 0;
+  OSSharedPtr<IOMemoryDescriptor> d (IOMemoryDescriptor::withPhysicalAddress (physical, length, kIODirectionInOut), OSNoRetain);
+  IOMemoryMap *map = d ? d->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;   // kept: never released
+  return map ? static_cast<uint64_t> (map->getVirtualAddress ()) : 0;
+}
+
 // ROUND 127: a WRITABLE, physically-contiguous, page-aligned buffer, and its PHYSICAL address.
 // Added for the stage-7 PAS `init_image` metadata blob. Returns the physical address (0 on
 // failure); *out_virt (optional) receives the writable kernel VA for the caller's copy.

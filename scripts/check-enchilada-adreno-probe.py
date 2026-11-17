@@ -233,6 +233,13 @@ def main():
         # SAME archive; Execute() is deliberately NOT called.
         allowed = {'IOLog', 'PE_parse_boot_argn', 'snprintf', '__stack_chk_fail', '__stack_chk_guard',
                    'AdrenoGmuBootV1BootState', '_Z19armcpu_map_physicalyy',
+                   # Round 167: the WRITABLE sibling of that hook. It is a kernel
+                   # entry point the shim calls but does not define, exactly like
+                   # the read-only one above -- and it must appear here rather
+                   # than be stubbed away, because its presence is the evidence
+                   # that the one-word write goes through a mapping that was
+                   # asked for by name instead of through the read-only window.
+                   'armcpu_map_physical_rw', '_Z22armcpu_map_physical_rwyy',
                    'AdrenoPowerUpV1BoardGmuClockCount', 'AdrenoPowerUpV1BoardGpuClockCount',
                    'AdrenoPowerUpV1BoardIsA740Family', 'AdrenoPowerUpV1InputsValid',
                    'AdrenoPowerUpV1CountsAreDistinct', 'AdrenoPowerUpV1PlanSize',

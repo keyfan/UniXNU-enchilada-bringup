@@ -192,6 +192,10 @@ static const unsigned char adreno_zap_seg[1] ADRENO_ZAP_UNUSED = {0};
 // in libArmCpu.a — EnchiladaSmmuProbe.cpp keeps its declaration inside
 // extern "C" for exactly this reason).
 uint64_t armcpu_map_physical(uint64_t physical, uint64_t length) __attribute__((weak_import));
+// ROUND 167: the WRITABLE sibling (ArmCpu.cpp, same file, same weak_import rule).
+// It exists as a separate symbol precisely so the read-only mapping above keeps its
+// kIODirectionIn guarantee; a window that is written to must name this one instead.
+uint64_t armcpu_map_physical_rw(uint64_t physical, uint64_t length) __attribute__((weak_import));
 // ROUND 110: the exported SMC entry point (ArmCpu.cpp). Same weak_import rule
 // and the same must-be-inside-extern-"C" reason as the line above: without it
 // the C++ compiler mangles the name and ld cannot match _armcpu_scm_call.
@@ -1307,6 +1311,92 @@ extern "C" void enchilada_adreno_poll(void) {
                                 }
                                 IOLog("enchilada-adreno: %s\n", pdcRow);
                             }
+                        }
+                    }
+                    // ---- ROUND 167 (slice 1b): THE FIRST REGISTER WRITE ----
+                    // WHY THIS IS A THIRD KEY VALUE AND NOT PART OF 3..5: those values
+                    // exist to READ, and their evidence stays comparable to R165/R166
+                    // only as long as they still write nothing. This value changes
+                    // device state, so it gets its own number (`enchilada-pas-exec=6`)
+                    // and its own block: one boot at =6 exercises exactly one new
+                    // effect.
+                    //
+                    // WHY A WRITABLE MAPPING IS NEEDED AT ALL: armcpu_map_physical()
+                    // is kIODirectionIn and stays that way -- it carries four
+                    // device-proven read-only call sites. ROUND 167 adds its writable
+                    // sibling armcpu_map_physical_rw() in ArmCpu.cpp, deliberately as
+                    // a separate symbol so a writable window must be asked for.
+                    //
+                    // WHY THIS EXACT WORD, AND ONLY ONE: R166 read CM3_BOOT_CONFIG as
+                    // 0x00000000 where a6xx_gmu_start() writes 0x2, so this word is
+                    // both the smallest write with an upstream authority and the one
+                    // with a read-back check (`ok=`, post == 0x02).
+                    //
+                    // WHY IT CANNOT START THE FIRMWARE: in a6xx_gmu.c the boot config
+                    // word is written in the pre-start configuration
+                    // (gmu->mmio + 0x5001, a6xx_gmu_start() then pulses
+                    // CM3_SYSRESET). Writing the word alone leaves the CM3 where it
+                    // already is; the start happens only when the reset pulse is
+                    // released. This block never writes CM3_SYSRESET, never writes
+                    // CM3_ITCM_START, never loads a firmware byte, and never touches
+                    // the PDC window -- each of those is a separate slice with its own
+                    // evidence.
+                    //
+                    // WHY IT IS GATED ON THE RESET READ-BACK: if CM3_SYSRESET does not
+                    // read as asserted, the CM3 may already be running, and then this
+                    // word is live state rather than a held latch. In that case the
+                    // block reads and reports and DOES NOT WRITE (`held=0 wrote=0`).
+                    {
+                        unsigned bootKey = 0;
+                        const bool bootArmed =
+                            PE_parse_boot_argn("enchilada-pas-exec", &bootKey,
+                                               sizeof bootKey) && bootKey == 6u;
+                        if (bootArmed) {
+                            static uintptr_t sGmuRwVa = 0;
+                            if (!sGmuRwVa && &armcpu_map_physical_rw) {
+                                const uint64_t rva = armcpu_map_physical_rw(
+                                    ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
+                                if (rva) sGmuRwVa = static_cast<uintptr_t>(rva);
+                            }
+                            char bootRow[200];
+                            if (!sGmuRwVa) {
+                                snprintf(bootRow, sizeof bootRow,
+                                         "gmuboot=map-failed");
+                            } else {
+                                const uint32_t pre = rd32(sGmuRwVa,
+                                    ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG * 4u);
+                                const uint32_t reset = rd32(sGmuRwVa,
+                                    ADRENO_GMU_BOOT_V1_CM3_SYSRESET * 4u);
+                                __asm__ volatile("dsb sy" ::: "memory");
+                                const bool held = (reset & 1u) != 0u;
+                                if (held) {
+                                    // The one store this round performs. The target is
+                                    // reached through the writable mapping above, so
+                                    // this is the only path by which the probe can
+                                    // change a device register at all.
+                                    volatile uint32_t *cfg =
+                                        reinterpret_cast<volatile uint32_t *>(
+                                            sGmuRwVa +
+                                            ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG * 4u);
+                                    *cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
+                                    __asm__ volatile("dsb sy" ::: "memory");
+                                }
+                                const uint32_t post = rd32(sGmuRwVa,
+                                    ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG * 4u);
+                                const uint32_t fwInit = rd32(sGmuRwVa,
+                                    ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                __asm__ volatile("dsb sy" ::: "memory");
+                                snprintf(bootRow, sizeof bootRow,
+                                         "gmuboot=pre=%08x reset=%08x held=%d "
+                                         "post=%08x fwinit=%08x wrote=%d ok=%d",
+                                         pre, reset, held ? 1 : 0, post, fwInit,
+                                         held ? 1 : 0,
+                                         post ==
+                                                 ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE
+                                             ? 1
+                                             : 0);
+                            }
+                            IOLog("enchilada-adreno: %s\n", bootRow);
                         }
                     }
                     // ---- ROUND 109 stage 7: the PAS three-stage PLAN ----
