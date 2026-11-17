@@ -200,9 +200,17 @@ def main():
     check('return adreno_asid_init(b, numcb, nums2cb);' in asid_c,
           'init_from_id1 DELEGATES to init (one place for the S2>NUMCB refusal)')
     # The probe must not re-derive any ID1 field locally.
+    # R173's SMMU dump decodes the S2CR TYPE field at its pinned shift. That is
+    # GR0 0xC00 + (n<<3), not an ID1 field, so that block is lifted out of the
+    # slice this guard inspects rather than loosening the guard itself.
+    _id1view = code[i6:iset]
+    _m172 = _id1view.find('if (fwKey >= 13u && fwKey <= 14u) {')
+    if _m172 >= 0:
+        _cut172 = re.split(r'\n {36}\}\n', _id1view[_m172:], 1)
+        _id1view = _id1view[:_m172] + (_cut172[1] if len(_cut172) > 1 else '')
     for forbidden in ('>> 8', '>> 16', '>> 24', '0x00ff0000u', '0x000000ffu',
                       '0x000000ffu /*', 'GENMASK(23, 16)'):
-        check(forbidden not in code[i6:iset],
+        check(forbidden not in _id1view,
               'stage 6 does NOT re-derive an ID1 field (%r)' % forbidden)
     check('0x20u' in code and '0x24u' in code and '0x28u' in code,
           'the three offsets are literal GR0 bytes, not computed field positions')
@@ -1199,8 +1207,9 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 11u' in _fw,
-          'R168 it is armed by its own key values (7 and 8); 3..6 keep their evidence')
+    check('fwKey >= 7u && fwKey <= 18u' in _fw,
+          'R168 it is armed by its own key values (7 and 8, and 15 for the R175 HFI '
+          'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
           'R168 the ABSENT stub is refused explicitly instead of writing four bytes')
     check('const bool held = (preReset & 1u) != 0u;' in _fw and 'if (!held)' in _fw,
@@ -1248,13 +1257,97 @@ def main():
               'ADRENO_GMU_BOOT_V1_PWR_COL_SPTPRAC_HYST',
               'ADRENO_GMU_BOOT_V1_RPMH_CTRL',
               'ADRENO_GMU_BOOT_V1_AHB_FENCE_RANGE_0',
-              'ADRENO_GMU_BOOT_V1_HFI_SFR_ADDR'])),
-          'R168+R170+R171 the register write set is exactly the named words (%r)'
+              'ADRENO_GMU_BOOT_V1_HFI_SFR_ADDR',
+              # ROUND 175: the HFI queue table. R168 refused these three words
+              # because it assumed they needed an IOVA from a GMU IOMMU backend
+              # this kernel does not have. R174 answered that question on the
+              # device instead: sCR0 = 0x00200626 (SMMUEN bit0 = 0, CLIENTPD
+              # bit1 = 1), i.e. the kgsl SMMU is DISABLED and GMU traffic is
+              # already untranslated, so a PHYSICAL address is what the table
+              # wants. Same for CP_MSG.
+              'ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR',
+              'ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO',
+              'ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG',
+              'ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT'])),
+          'R168+R170+R171+R175 the register write set is exactly the named words (%r)'
           % sorted(set(_stores)))
-    for _absent in ('HFI_QTBL_ADDR', 'HFI_QTBL_INFO', 'PWR_COL_CP_MSG'):
-        check('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _absent not in _fw,
-              'R168 %s is NOT written: it needs a GMU IOMMU address this kernel '
-              'does not have' % _absent)
+    # ==== ROUND 175 (slice 4): the HFI queue table, at a PHYSICAL address ====
+    # R168 asserted these three words were NOT written, because it believed they
+    # needed an IOVA from a GMU IOMMU backend this kernel does not have. R174
+    # settled that on the device: sCR0 = 0x00200626 has SMMUEN (bit0) clear, so
+    # the kgsl SMMU is disabled and GMU traffic is untranslated. The contract is
+    # therefore inverted below, and the inversion is what these checks pin: the
+    # address must be an ALLOCATION's physical address, bounds-checked to 32 bits,
+    # reached through a window that is the writable one, and the whole table must
+    # come from the host-verified legacy geometry rather than from local literals.
+    check(code.count('if (fwKey >= 15u) {') == 1 and
+          code.count('if (fwKey >= 16u') == 1 and
+          code.count('if (fwKey >= 17u') == 1 and
+          code.count('if (fwKey >= 18u) {') == 1,
+          'R176 the HFI ladder is four keys: 15 allocate, 16 +map and fill, '
+          '17 +the three QTBL registers, 18 +HFI_CTRL_INIT and the poll')
+    check('gmuhfi=alloc pa=%08x' in code and 'gmuhfi=table win=%08x' in code and
+          'gmuhfi=qtbl addr=%08x' in code and 'gmuhfi=pa=%08x' in code,
+          'R176 every ladder stage prints its own row, so a surviving run says '
+          'which steps actually happened')
+    check(code.index('if (fwKey >= 15u) {') <
+          code.index('gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;') <
+          code.index('if (fwKey >= 18u) {'),
+          'R176 the table is built before the pulse and hfi_start runs after it, '
+          'as upstream orders a6xx_gmu_fw_start() and a6xx_gmu_hfi_start()')
+    check('ADRENO_HFI_V1_TABLE_SIZE_BYTES' in code and
+          'ADRENO_HFI_V1_QHDR0_OFFSET_WORDS' in code and
+          'ADRENO_HFI_V1_QHDR_SIZE_WORDS' in code and
+          'ADRENO_HFI_V1_QUEUE_HEADER_WORDS' in code and
+          'ADRENO_HFI_V1_QUEUE_WORDS' in code,
+          'R175 the table geometry comes from AdrenoHfiV1.h, the host-verified '
+          'legacy model, not from local numbers')
+    check('ADRENO_HFI_V1_QUEUE_TYPE(qid)' in code and
+          'ADRENO_HFI_V1_CMD_QUEUE_ID' in code and
+          'ADRENO_HFI_V1_RESP_QUEUE_ID' in code,
+          'R175 the two queue types are derived, so the legacy response id (4) '
+          'cannot silently become the modern one (1)')
+    _h1 = (code.split('if (fwKey >= 15u) {', 1)[1]
+           .split('gmuW[ADRENO_GMU_BOOT_V1_CM3_CFG]', 1)[0]
+           if 'if (fwKey >= 15u) {' in code else '')
+    check('armcpu_dma_alloc_writable(kHfiBytes, &hfiVirt)' in _h1,
+          'R175 the table lives in an ALLOCATED physically contiguous buffer, not '
+          'at a hard-coded address')
+    check('hfiPa <= 0xffffffffull' in _h1,
+          'R175 an allocation above 4 GiB is refused, because QTBL_ADDR is a '
+          '32-bit register and truncation would point the CM3 at memory it does '
+          'not own')
+    check('armcpu_map_physical_rw(sHfiPa, kHfiBytes)' in _h1,
+          'R175 the table is written through the WRITABLE window (the R167 '
+          'direction), not through the read-only probe mapping')
+    check('kHfiBytes =' in code and
+          'ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES' in code,
+          'R175 the allocation covers the table region plus exactly one log page')
+    check('gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] =' in _h1 and
+          'static_cast<uint32_t>(sHfiPa)' in _h1,
+          'R175 QTBL_ADDR is the allocation physical address itself (SSMU disabled, '
+          'so physical IS the address the CM3 uses)')
+    check('gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;' in _h1,
+          'R175 QTBL_INFO is 1, as a6xx_gmu_fw_start() writes it')
+    check('gmuW[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] =' in _h1 and
+          'sHfiPa + ADRENO_HFI_V1_SHARED_BYTES' in _h1,
+          'R175 CP_MSG points at the log page that follows the two rings, with '
+          'log_pages = 1 so the OR term is the address')
+    check('gmuhfi=alloc-failed' in _h1,
+          'R175 a refused allocation has its own diagnostic instead of silently '
+          'writing a null table address')
+    _h2 = (code.split('if (fwKey >= 18u) {', 1)[1]
+           if 'if (fwKey >= 18u) {' in code else '')
+    check('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;' in _h2 and
+          'hfiPolls < 400000u' in _h2,
+          'R175 hfi_start is HFI_CTRL_INIT=1 plus a BOUNDED status poll, so a '
+          'firmware that never answers cannot hang the boot')
+    check('hfiWi = hfiTbl[' in _h2 and 'hfiRi = hfiTbl[' in _h2 and
+          'if (sHfiWin) {' in _h2,
+          'R175 the two queue indices are READ back (response write index, '
+          'command read index) instead of being assumed zero')
+    check('char hfiRow[288]' in code and 'gmuhfi=pa=%08x' in code,
+          'R175 the new row has a declared, sufficient bound')
     check('postSig <= 0x20010004u' in _k8 and '0xbabefaceu' in _k8 and
           '0x1ffu' in _k8 and '0x100u' in _k8,
           'R168 the expected FW_INIT_RESULT is SELECTED from the just-loaded DTCM '
@@ -1307,11 +1400,11 @@ def main():
     # source in this repository.
     check('gmuoob=pre_intr=%08x pre_slumber=%08x ' in code,
           'R170 the OOB handshake row is present')
-    check('if (fwKey >= 10u) {' in code,
+    check('if (fwKey >= 10u && fwKey <= 14u) {' in code,
           'R170 the handshake is armed by its own key value')
-    _oob = (code.split('if (fwKey >= 10u) {', 1)[1]
+    _oob = (code.split('if (fwKey >= 10u && fwKey <= 14u) {', 1)[1]
                 .split('IOLog("enchilada-adreno: %s\\n", oobRow);', 1)[0]
-            if 'if (fwKey >= 10u) {' in code else '')
+            if 'if (fwKey >= 10u && fwKey <= 14u) {' in code else '')
     check(_oob != '', 'R170 the handshake body is delimited')
     _oobst = re.findall(r'gmuW\[(ADRENO_GMU_BOOT_V1_\w+)\]\s*=[^=]', _oob)
     check(sorted(set(_oobst)) == sorted(set([
@@ -1396,7 +1489,58 @@ def main():
     check('stage >= 7u' not in code,
           'R171 still no new stage value: the boot-arg mask stays exactly 1..6')
 
-
+    # ==== ROUND 173 (slice 3, step 4, second attempt): what do SID 4/5 do? ====
+    # ROUND 172 asked the same question with an ungated dump and killed the boot:
+    # the window came back byte-identical, while a control run of the same CI
+    # kernel at key 11 wrote a full window.  Three reads had no evidence behind
+    # them -- GR1 taken as 1 << PageShift (0x1000) when Linux puts it at 0x4000
+    # and thus landing in reserved space, S2CR stepped by 4 instead of 8, and a
+    # context bank read for both SIDs without comparing it with ID1.NUMCB (the
+    # stage-6 row measures 5, so CB5 at 0xD000 is unimplemented).  R173 reads
+    # only GR0 words the stage-6 row already reads and gates every bank read.
+    check('if (fwKey >= 13u && fwKey <= 14u) {' in code, 'R173 the gated SMMU dump is armed by key 13')
+    check('smmu3=ctrl=%08x smr0=%08x smr1=%08x' in code,
+          'R174 the SMR row is present')
+    check('if (fwKey >= 14u) {' in code,
+          'R174 the S2CR group is a separate, higher key so one boot can tell '
+          'which group is walled off')
+    check('smmu4=s2cr0=%08x s2cr4=%08x s2cr5=%08x ' in code,
+          'R174 the S2CR row is present')
+    check('smmu3=map-missing' in code,
+          'R174 a missing window is reported instead of dereferenced')
+    # comments are already stripped, so the body ends at the first line that is
+    # exactly the block's own closing brace (inner braces are deeper).
+    _s2 = (re.split(r'\n {36}\}\n', code.split('if (fwKey >= 13u && fwKey <= 14u) {', 1)[1], 1)[0]
+           if 'if (fwKey >= 13u && fwKey <= 14u) {' in code else '')
+    check(_s2 != '', 'R173 the dump body is delimited')
+    check(re.search(r'volatile const uint32_t \*smPtr', _s2) is not None,
+          'R173 the window is reached through a const-qualified pointer')
+    check('gSmmuVa' in _s2 and 'armcpu_map_physical' not in _s2,
+          'R173 it reuses the existing read-only mapping, no second aperture')
+    check(re.search(r'(?<!uint32_t )\*\s*smPtr\s*=[^=]', _s2) is None and
+          re.search(r'smPtr\s*\[[^\]]*\]\s*=[^=]', _s2) is None,
+          'R173 nothing is stored through the SMMU pointer')
+    check(re.search(r'\bgmuW\s*\[', _s2) is None,
+          'R173 the dump does not touch the GMU window at all')
+    check('0x800u >> 2' in _s2 and '0x804u >> 2' in _s2,
+          'R174 SMR(0)/SMR(1) are read at their pinned GR0 bytes 0x800/0x804')
+    check('0x0c00u >> 2' in _s2 and '0x0c20u >> 2' in _s2 and
+          '0x0c28u >> 2' in _s2,
+          'R174 S2CR(0)/S2CR(4)/S2CR(5) are read at 0xC00/0xC20/0xC28, the '
+          'locations Linux arm-smmu defines (0xC00 + n*8)')
+    check('smPtr[0x00u]' in _s2,
+          'R174 sCR0 is read at GR0 byte 0x0, the one GR0 word R164 proved '
+          'readable')
+    check('(smS2c4 >> 16) & 0x3u' in _s2 and '(smS2c5 >> 16) & 0x3u' in _s2,
+          'R174 the S2CR type is decoded at the pinned shift 16')
+    check('sm4Row[224]' in _s2 and 'sm3Row[224]' in _s2,
+          'R174 both new rows have declared, sufficient bounds')
+    check('smId1' not in _s2 and 'smShift' not in _s2,
+          'R174 no ID1 decode is attempted any more: the offsets are literals')
+    check('smGr1' not in code and 'smmucb=' not in code,
+          'R174 no GR1 address is formed at all, so the reserved range is unreachable')
+    check('stage >= 7u' not in code,
+          'R173 still no new stage value: the boot-arg mask stays exactly 1..6')
 
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the

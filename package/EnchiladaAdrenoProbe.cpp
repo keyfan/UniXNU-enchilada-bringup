@@ -90,6 +90,7 @@ extern "C" {
 #include "AdrenoPowerGate.h"
 #include "AdrenoBoardInputs.h"
 #include "AdrenoGmuBootV1.h"
+#include "AdrenoHfiV1.h"   // round 175: legacy HFI v1 queue geometry (host-verified)
 #include "AdrenoPowerUpV1.h"   // round 51: ordered genpd + clock power-up MODEL (pure Plan)
 // Round 94 stage 4: the SMMU ID2 probe CONTRACT (round 86). It decodes the ID2
 // word into ias/ipa/pa, and -- the load-bearing part -- refuses the read unless
@@ -1443,9 +1444,16 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 11u);
+                            (fwKey >= 7u && fwKey <= 18u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
+                            // ROUND 175: the HFI shared region and the uncached window over it.
+                            // The table plus one 4 KiB ring per queue is one physically
+                            // contiguous allocation, exactly as a6xx_hfi_init() allocates it.
+                            static const uint64_t kHfiBytes =
+                                ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES;
+                            static uint64_t sHfiPa = 0;
+                            static uintptr_t sHfiWin = 0;
                             if (!sGmuFwVa && &armcpu_map_physical_rw) {
                                 const uint64_t fva = armcpu_map_physical_rw(
                                     ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
@@ -1566,7 +1574,124 @@ extern "C" void enchilada_adreno_poll(void) {
                                         gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;
                                         gmuW[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;
                                         gmuW[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] =
-                                            ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
+                                                ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
+                                        // ROUND 175: the HFI queue table, written between
+                                        // CM3_BOOT_CONFIG and CM3_CFG because that is where
+                                        // a6xx_gmu_fw_start() puts HFI_QTBL_ADDR/TBL_INFO. Without it
+                                        // the CM3 has no response queue to speak through, which is one
+                                        // candidate for the bit-23 fault R170/R171 kept seeing.
+                                        if (fwKey >= 15u) {
+                                            // ROUND 176: R175 armed this whole path under one key and
+                                            // the boot died before the log writer opened, so the path is
+                                            // now split into four keys that each stop one step short:
+                                            //   15 allocate   16 +map and fill   17 +the three QTBL
+                                            //   registers   18 +HFI_CTRL_INIT and the status poll.
+                                            // The first key that survives names the fatal step as the one
+                                            // the next key adds. Nothing is inferred from a silent window.
+                                            if (sHfiPa == 0u && sHfiWin == 0u) {
+                                                uint64_t hfiVirt = 0;
+                                                const uint64_t hfiPa =
+                                                    armcpu_dma_alloc_writable(kHfiBytes, &hfiVirt);
+                                                // QTBL_ADDR is a 32-bit register: a buffer above 4 GiB
+                                                // is refused here rather than silently truncated.
+                                                if (hfiPa != 0u && hfiPa <= 0xffffffffull) {
+                                                    sHfiPa = hfiPa;
+                                                    char allocRow[200];
+                                                    snprintf(allocRow, sizeof allocRow,
+                                                             "gmuhfi=alloc pa=%08x virt=%08x ok=1",
+                                                             static_cast<uint32_t>(hfiPa),
+                                                             static_cast<uint32_t>(hfiVirt));
+                                                    IOLog("enchilada-adreno: %s\n", allocRow);
+                                                }
+                                            }
+                                            if (fwKey >= 16u && sHfiPa != 0u && sHfiWin == 0u) {
+                                                const uint64_t hfiWin =
+                                                    armcpu_map_physical_rw(sHfiPa, kHfiBytes);
+                                                if (hfiWin != 0u) {
+                                                    volatile uint32_t *const hfiTbl =
+                                                        reinterpret_cast<volatile uint32_t *>(
+                                                            static_cast<uintptr_t>(hfiWin));
+                                                    // The window is uncached, so the CM3 sees the
+                                                    // table without any cache maintenance.
+                                                    for (unsigned i = 0; i < kHfiBytes / 4u; ++i) {
+                                                        hfiTbl[i] = 0u;
+                                                    }
+                                                    hfiTbl[0] = 0u;                                  /* version */
+                                                    hfiTbl[1] = ADRENO_HFI_V1_TABLE_SIZE_BYTES;      /* size    */
+                                                    hfiTbl[2] = ADRENO_HFI_V1_QHDR0_OFFSET_WORDS;    /* qhdr0   */
+                                                    hfiTbl[3] = ADRENO_HFI_V1_QHDR_SIZE_WORDS;       /* qhdr sz */
+                                                    hfiTbl[4] = ADRENO_HFI_V1_QUEUE_COUNT;           /* queues  */
+                                                    hfiTbl[5] = ADRENO_HFI_V1_QUEUE_COUNT;           /* active  */
+                                                    for (unsigned q = 0;
+                                                         q < ADRENO_HFI_V1_QUEUE_COUNT; ++q) {
+                                                        volatile uint32_t *const hfiQh =
+                                                            hfiTbl + ADRENO_HFI_V1_QHDR0_OFFSET_WORDS +
+                                                            q * ADRENO_HFI_V1_QUEUE_HEADER_WORDS;
+                                                        const uint32_t qid =
+                                                            (q == 0u) ? ADRENO_HFI_V1_CMD_QUEUE_ID
+                                                                      : ADRENO_HFI_V1_RESP_QUEUE_ID;
+                                                        hfiQh[0] = 1u;                          /* status */
+                                                        hfiQh[1] = static_cast<uint32_t>(
+                                                            sHfiPa +
+                                                            (q + 1u) * ADRENO_HFI_V1_PAGE_BYTES);
+                                                        hfiQh[2] = ADRENO_HFI_V1_QUEUE_TYPE(qid);
+                                                        hfiQh[3] = ADRENO_HFI_V1_QUEUE_WORDS;
+                                                        hfiQh[4] = 0u;                          /* msg_size */
+                                                        hfiQh[5] = 0u;                          /* dropped  */
+                                                        hfiQh[6] = 1u;                          /* rx wm    */
+                                                        hfiQh[7] = 1u;                          /* tx wm    */
+                                                        hfiQh[8] = 1u;                          /* rx req   */
+                                                        hfiQh[9] = 0u;                          /* tx req   */
+                                                        hfiQh[10] = 0u;                         /* read idx */
+                                                        hfiQh[11] = 0u;                         /* write idx */
+                                                    }
+                                                    __asm__ volatile("dsb sy" ::: "memory");
+                                                    const uint32_t tbl0 = hfiTbl[0];
+                                                    const uint32_t tbl1 = hfiTbl[1];
+                                                    const uint32_t tblQ = hfiTbl[
+                                                        ADRENO_HFI_V1_QHDR0_OFFSET_WORDS];
+                                                    sHfiWin = static_cast<uintptr_t>(hfiWin);
+                                                    char tblRow[232];
+                                                    snprintf(tblRow, sizeof tblRow,
+                                                             "gmuhfi=table win=%08x t0=%08x t1=%08x "
+                                                             "qh0=%08x rb_pa=%08x ok=%d",
+                                                             static_cast<uint32_t>(hfiWin), tbl0,
+                                                             tbl1, tblQ,
+                                                             static_cast<uint32_t>(sHfiPa),
+                                                             (tbl1 == ADRENO_HFI_V1_TABLE_SIZE_BYTES &&
+                                                              tblQ == 1u)
+                                                                 ? 1
+                                                                 : 0);
+                                                    IOLog("enchilada-adreno: %s\n", tblRow);
+                                                }
+                                            }
+                                            if (fwKey >= 17u && sHfiWin != 0u) {
+                                                gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] =
+                                                    static_cast<uint32_t>(sHfiPa);
+                                                gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                                                // CP_MSG = log_iova | (log_pages - 1); one page,
+                                                // so the OR is the address itself.
+                                                gmuW[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] =
+                                                    static_cast<uint32_t>(
+                                                        sHfiPa + ADRENO_HFI_V1_SHARED_BYTES);
+                                                __asm__ volatile("dsb sy" ::: "memory");
+                                                char qtblRow[208];
+                                                snprintf(qtblRow, sizeof qtblRow,
+                                                         "gmuhfi=qtbl addr=%08x info=%08x "
+                                                         "cpmsg=%08x rb=%08x",
+                                                         rd32(sGmuFwVa,
+                                                              ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+                                                         rd32(sGmuFwVa,
+                                                              ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+                                                         rd32(sGmuFwVa,
+                                                              ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG * 4u),
+                                                         static_cast<uint32_t>(sHfiPa));
+                                                IOLog("enchilada-adreno: %s\n", qtblRow);
+                                            }
+                                            if (sHfiPa == 0u) {
+                                                IOLog("enchilada-adreno: gmuhfi=alloc-failed\n");
+                                            }
+                                        }
                                         gmuW[ADRENO_GMU_BOOT_V1_CM3_CFG] =
                                             ADRENO_GMU_BOOT_V1_CM3_CFG_VALUE;
                                         __asm__ volatile("dsb sy" ::: "memory");
@@ -1614,6 +1739,61 @@ extern "C" void enchilada_adreno_poll(void) {
                                                  hfiStat, postReset,
                                                  ((final & mask) == expect) ? 1 : 0);
                                         IOLog("enchilada-adreno: %s\n", boot2Row);
+                                        if (fwKey >= 18u) {
+                                            // ROUND 175: a6xx_gmu_hfi_start(), run right after the pulse.
+                                            // Upstream order is gmu_start -> gfx_rail_on -> sptrac ->
+                                            // hfi_start; the two rail steps need arc votes this board does
+                                            // not publish (R170's note), so HFI is started directly. The
+                                            // question is narrow: with a real queue table in place, does
+                                            // HFI_CTRL_STATUS come up instead of the CM3 faulting?
+                                            const uint32_t hfiPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            if (sHfiWin) {
+                                                gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            }
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t hfiNow = 0u;
+                                            unsigned hfiPolls = 0u;
+                                            for (; hfiPolls < 400000u; ++hfiPolls) {
+                                                hfiNow = rd32(
+                                                    sGmuFwVa,
+                                                    ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                if ((hfiNow & 1u) == 1u) break;
+                                            }
+                                            const uint32_t hfiQtbl = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u);
+                                            const uint32_t hfiIntr = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            const uint32_t hfiInit = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            uint32_t hfiWi = 0u;
+                                            uint32_t hfiRi = 0u;
+                                            if (sHfiWin) {
+                                                volatile const uint32_t *const hfiTbl =
+                                                    reinterpret_cast<volatile const uint32_t *>(
+                                                        sHfiWin);
+                                                // Response queue (index 1) write index: the firmware's own
+                                                // progress. Command queue (index 0) read index: whether it
+                                                // has consumed anything the host queued.
+                                                hfiWi = hfiTbl[ADRENO_HFI_V1_QHDR0_OFFSET_WORDS +
+                                                          ADRENO_HFI_V1_QUEUE_HEADER_WORDS + 11u];
+                                                hfiRi = hfiTbl[ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + 10u];
+                                            }
+                                            char hfiRow[288];
+                                            snprintf(hfiRow, sizeof hfiRow,
+                                                     "gmuhfi=pa=%08x qtbl=%08x pre=%08x "
+                                                     "stat=%08x intr=%08x fwinit=%08x "
+                                                     "wi1=%08x ri0=%08x polls=%u ok=%d",
+                                                     static_cast<uint32_t>(sHfiPa), hfiQtbl,
+                                                     hfiPre, hfiNow, hfiIntr, hfiInit,
+                                                     hfiWi, hfiRi, hfiPolls,
+                                                     ((sHfiWin != 0u) && ((hfiNow & 1u) == 1u)) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", hfiRow);
+                                        }
                                     }
                                     if (fwKey >= 11u) {
                                         // ROUND 171 read-back: did the pre-start words latch,
@@ -1702,7 +1882,7 @@ extern "C" void enchilada_adreno_poll(void) {
                                                  (liveInit == liveExpect) ? 1 : 0);
                                         IOLog("enchilada-adreno: %s\n", liveRow);
                                     }
-                                    if (fwKey >= 10u) {
+                                    if (fwKey >= 10u && fwKey <= 14u) {
                                         // ROUND 170: the OOB boot-slumber handshake -- the first
                                         // host-side step of gfx_rail_on. Upstream order is
                                         // a6xx_gmu_gfx_rail_on(): BOOT_SLUMBER_OPTION = 0, then the two
@@ -1757,6 +1937,52 @@ extern "C" void enchilada_adreno_poll(void) {
                                                  preIntr, preSlumber, oobAcked, oobPolls, postIntr,
                                                  postSlumber, oobInit, gxGdscr, oobAcked);
                                         IOLog("enchilada-adreno: %s\n", oobRow);
+                                    }
+
+                                    // ---- ROUND 174: which GR0 group is walled off? ---------------------
+                                    // ROUND 173 asked for S2CR(0..5) and killed the boot: the window came
+                                    // back byte-identical at key 13 while a control run of the same kernel
+                                    // at key 12 wrote a full one, so the dump itself was the fault.  Its
+                                    // only two memory accesses were ID1 at 0x24 (the stage-6 row already
+                                    // reads that word, so it is not the fault) and six S2CR words at
+                                    // 0xC00 + 8*i.  A stride or gating mistake cannot abort by itself if
+                                    // the register exists, so the open question is whether the S2CR group
+                                    // is readable at all.  This round splits the dump: key 13 reads sCR0
+                                    // (byte 0x0, the one GR0 word R164 proved) plus SMR(0)/SMR(1) at
+                                    // 0x800/0x804; key 14 adds S2CR(0)/(4)/(5) at 0xC00/0xC20/0xC28.  If
+                                    // key 13 survives and key 14 dies, the S2CR group is walled off and no
+                                    // stride or gating will ever read it.
+                                    if (fwKey >= 13u && fwKey <= 14u) {
+                                        if (gSmmuVa == 0) {
+                                            IOLog("enchilada-adreno: smmu3=map-missing\n");
+                                        } else {
+                                            volatile const uint32_t *smPtr =
+                                                reinterpret_cast<volatile const uint32_t *>(gSmmuVa);
+                                            const uint32_t smCtrl = smPtr[0x00u];
+                                            const uint32_t smSmr0 = smPtr[0x800u >> 2];
+                                            const uint32_t smSmr1 = smPtr[0x804u >> 2];
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            char sm3Row[224];
+                                            snprintf(sm3Row, sizeof sm3Row,
+                                                     "smmu3=ctrl=%08x smr0=%08x smr1=%08x",
+                                                     smCtrl, smSmr0, smSmr1);
+                                            IOLog("enchilada-adreno: %s\n", sm3Row);
+                                            if (fwKey >= 14u) {
+                                                const uint32_t smS2c0 = smPtr[0x0c00u >> 2];
+                                                const uint32_t smS2c4 = smPtr[0x0c20u >> 2];
+                                                const uint32_t smS2c5 = smPtr[0x0c28u >> 2];
+                                                __asm__ volatile("dsb sy" ::: "memory");
+                                                char sm4Row[224];
+                                                snprintf(sm4Row, sizeof sm4Row,
+                                                         "smmu4=s2cr0=%08x s2cr4=%08x s2cr5=%08x type4=%u bank4=%u type5=%u bank5=%u",
+                                                         smS2c0, smS2c4, smS2c5,
+                                                         static_cast<unsigned>((smS2c4 >> 16) & 0x3u),
+                                                         static_cast<unsigned>(smS2c4 & 0xffu),
+                                                         static_cast<unsigned>((smS2c5 >> 16) & 0x3u),
+                                                         static_cast<unsigned>(smS2c5 & 0xffu));
+                                                IOLog("enchilada-adreno: %s\n", sm4Row);
+                                            }
+                                        }
                                     }
                                 }
                             }

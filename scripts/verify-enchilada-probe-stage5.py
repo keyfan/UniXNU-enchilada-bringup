@@ -132,7 +132,7 @@ def main():
     _outside = code.replace(_rw167, '') if _rw167 else code
     _outside = re.sub(r'gmuW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey >= 7u && fwKey <= 11u' in code and
+          'fwKey >= 7u && fwKey <= 18u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
     _k8 = (code.split('if (fwKey >= 8u) {', 1)[1]
@@ -164,10 +164,13 @@ def main():
           'if (held)' in _rw167,
           'R167 the one permitted store writes CM3_BOOT_CONFIG=0x02 behind the '
           'CM3_SYSRESET read-back')
-    # And the only cast targets are still the two volatile ones.
+    # And the only cast targets are still the volatile window types. R172 adds a
+    # const-qualified read-only one (the kgsl SMMU dump): same window discipline,
+    # but it CANNOT be stored through, which is why it carries const.
     casts = set(re.findall(r'reinterpret_cast<([^>]*)>', code))
-    check(casts <= {'volatile uint32_t *', 'volatile uint8_t *'},
-          'the only pointer casts are the two volatile window types (got %r)' % sorted(casts))
+    check(casts <= {'volatile uint32_t *', 'volatile uint8_t *',
+                    'volatile const uint32_t *'},
+          'the only pointer casts are the volatile window types (got %r)' % sorted(casts))
 
     # --- H. write32 appears only as a struct field, never as a call -------
     # AdrenoPowerUpBackendV1Mmio carries a write32 member; the probe must not
