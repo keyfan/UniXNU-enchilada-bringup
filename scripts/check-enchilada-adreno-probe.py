@@ -327,9 +327,10 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 8,
-              'R168 the pointer writes are exactly the ITCM loop plus the seven '
-              'pre-start/pulse words')
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 20,
+              'R168+R170+R171 the pointer writes are exactly the ITCM loop, the '
+              'pulse words, the three handshake words and the nine pre-start '
+              'configuration words')
         check('volatile uint32_t *const gmuW' in text,
               'R168 every one of those writes goes through a volatile mapping')
 

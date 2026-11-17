@@ -1331,3 +1331,139 @@ HFI 启动；而固件本身已经由我们装进去并在跑。
 所以下一步先做**不含 vote 写的握手**：只写 `BOOT_SLUMBER_OPTION=0` 与门铃，看固件 ack 不 ack。
 ack 了说明这一级不需要投票就能过；不 ack 就如实记「固件没回应」，再去解决 vote 表。
 不猜数值，也不把「没 ack」解释成「固件坏了」。
+
+## 二十二、ROUND 170（切片 3 第二步）：门铃响了，固件报了 FAULT
+
+### 22.1 这一轮问的问题
+
+ROUND 169 的证据是：固件在跑（`fwinit=babeface` latch、`reset=0`），但 `slumber=0`、`intr=0`、
+`hfistat=0`。三种解释并存：固件没听见门铃、固件听见了但拒绝、或者固件根本没走到等门铃的地方。
+ROUND 170 的写法就是上游 `a6xx_gmu_set_oob()`：`BOOT_SLUMBER_OPTION=0` → `HOST2GMU_INTR_SET = 1 << 22`
+→ 有界轮询 `GMU2HOST_INTR_INFO` 的 bit 30 → 无论是否 ack 都写 `GMU2HOST_INTR_CLR = 1 << 30`。
+
+刻意**不写** `GX_VOTE_IDX`/`MX_VOTE_IDX`：上游在门铃之前把它们写进固件（取自 `gx_arc_votes[]`），
+而那张表不在 `enchilada.dts` 里。猜一个数值等于静默替一个电源轨选电压，本轮只问
+「不投票，固件答不答」。
+
+### 22.2 判决（DEVICE-VERIFIED，一次启动）
+
+构建 CI **#277** / run `44040327037`（分支 `r170-gmu-oob`，commit
+`9331193fb019ee903e7d9bda7630047bee1ad590`），payload `6b6bb2e9…`；本地改 key 得
+`5ae5e9d4…`（`=2` 是 1377 字节、`=10` 是 1378 字节，故不能用等长工具，改用 `r170_rekey.py`）。
+
+上机：readback `4a51767d…` == payload 头；窗口 33,554,432 B sha256
+`49ef31d4a16e35d1e378bf1edebc74a36a2775e16118f3e68a77f7d2a682fc7d`、**boot_id 584967165**、
+msg_bytes 29483、`write_errors=0`。四行里的末行是判决行：
+
+```
+gmuoob=pre_intr=00000000 pre_slumber=00000000 ack=0 polls=400000 post_intr=00800000
+       post_slumber=00000000 fwinit=babeface gdscr=00222001 ok=0
+```
+
+### 22.3 `0x00800000` 不是「另一个静默」，是 FAULT
+
+`.cache/adreno-a630-pdc-headers/a6xx_gmu_acrn_kernel.h` 里这张表把话说死了：
+
+| 宏 | 值 |
+|---|---|
+| `REG_A6XX_GMU_GMU2HOST_INTR_INFO` | `0x00005192` |
+| `A6XX_GMU_GMU2HOST_INTR_INFO_MSGQ` | `0x00000001` |
+| **`A6XX_GMU_GMU2HOST_INTR_INFO_CM3_FAULT`** | **`0x00800000`** |
+
+所以 `post_intr=00800000` 的含义是：**CM3 固件在主机敲门前后报了 fault**。这不是「没听见」，
+也不是「听见了但拒绝」，是固件自己认为出错了。它与 ROUND 168 的 `final=babeface` 并列成立：
+固件确实执行到了写哨兵那一步，然后 fault。
+
+### 22.4 诚实边界
+
+- 一次开机，`polls=400000` 是循环次数不是时间；超时后我没有重试、没有写 `CM3_SYSRESET` 复位重来。
+- `pre_intr=0` 说明敲门**之前** INTR_INFO 是干净的；fault 是在这之后才被读到的，但我**不能**据此
+  断言「fault 由门铃触发」——中间没有第二采样点，只能说「敲门之后读到 fault」。
+- 没有写 vote、没有写 power_config、没有写 QTBL/CP_MSG，故这一轮**没有**排除「缺配置导致 fault」。
+
+## 二十三、ROUND 171（切片 3 第三步）：预启动配置补齐了，FAULT 依旧
+
+### 23.1 这一轮问的问题
+
+ROUND 170 之后，最省事的假设是「fault 是因为我们漏了上游在脉冲之前的那批配置」。上游
+`a6xx_gmu_fw_start()` 的 cold 分支在 `a6xx_gmu_start()` 之前确实写了九样东西：`GENERAL_7=1`、
+`CM3_FW_INIT_RESULT=0`、`CM3_BOOT_CONFIG=0x02`、`HFI_QTBL_ADDR`、`HFI_QTBL_INFO`、
+`AHB_FENCE_RANGE_0`、`CM3_CFG=0x4052`、`HFI_SFR_ADDR=chipid`、`PWR_COL_CP_MSG`，外加
+`a6xx_gmu_power_config()` 那一批（`SYS_BUS_CONFIG`/`ICACHE_CONFIG`/`DCACHE_CONFIG`/
+`PWR_COL_INTER_FRAME_CTRL`，SPTP idle 还要 `PWR_COL_SPTPRAC_HYST` 与两个 rmw）。
+
+R171 把**能写的都写了**（九笔中缺 IOVA 的三笔留白）并读回；写序照上游，写在同一映射里。
+
+### 23.2 写了什么
+
+| 寄存器 | 值 | 依据 |
+|---|---|---|
+| `SYS_BUS_CONFIG` | 1 | `a6xx_gmu_power_config` |
+| `ICACHE_CONFIG` | 1 | 同上 |
+| `DCACHE_CONFIG` | 1 | 同上 |
+| `PWR_COL_INTER_FRAME_CTRL` | `0x09c40400` | 同上（`PWR_COL_IFPC_CTRL`） |
+| `PWR_COL_SPTPRAC_HYST` | `0x000a1680` | 同上（`PWR_COL_HYST`） |
+| `PWR_COL_INTER_FRAME_CTRL` | `|= 0x5` | `gmu_rmw(..., 0, IFPC_ENABLE\|SPTPRAC_POWER_CONTROL_ENABLE)` |
+| `RPMH_CTRL` | `|= 0xF11` | `gmu_rmw(..., 0, RPMH_INTERFACE\|...\|GFX_VOTE)` |
+| `AHB_FENCE_RANGE_0` | `0x802800A0` | `BIT(31) \| FIELD_PREP(30,18,0xa) \| FIELD_PREP(17,0,0xa0)` |
+| `HFI_SFR_ADDR` | `0x06030100` | `AdrenoGmuBootV1Chipid(0x06030001)` |
+
+`gmu_rmw(reg, mask, val)` 写的是 `(read & ~mask) | val`，mask=0 时 `~mask` 全 1，所以这两个 rmw
+等价于「把这些位置位」——不是清位。这一点我在实现前专门核过，因为理解反了会把
+`RPMH_CTRL` 写成 0。
+
+仍**不写**：`HFI_QTBL_ADDR`/`HFI_QTBL_INFO`/`PWR_COL_CP_MSG`（要 IOVA）、`GX_VOTE_IDX`/`MX_VOTE_IDX`
+（要 arc vote 表）。
+
+### 23.3 判决（DEVICE-VERIFIED，一次启动）
+
+构建 CI **#278** / run `44052273910`（分支 `r171-gmu-cfg`，commit
+`d32c8606d2237bee84943ab2ff089bbc9d7ef26a`，tree `8f270b44…`）：kernel `a5dbc2ee…`
+（126,181,376 B）、payload `ddbc9088…`；本地改 key（1377→1378 字节）得 `de30de64…`。
+
+静态门（`work/tmp/r171_static.py`）：六行格式串全在、6 个禁用符与 `stage6=exec`/`stage3=exec` 全 0、
+32 KiB 固件以原始字节在 kernel 与 payload 里、`gmufw=absent` 缺席（死代码消除的正面证据）。
+
+上机：readback `aa1c0860…` == payload 头；窗口 33,554,432 B sha256
+`b851d91bbe932bc417f7db310a4f5c81dbc3a5966384cf63459889fbad8ecfd7`、**boot_id 584226737**、
+msg_bytes 29606、`write_errors=0`。
+
+```
+gmucfg=ifc=09c40405 rpmh=00000f11 fence=802800a0 sfr=06030100 intr=00000000 fault=0 ok=1
+```
+
+九笔全部落盘并读回：`ifc=09c40405`（含 rmw 的 `|=0x5`）、`rpmh=00000f11`（vote 位置起）、
+`fence=802800a0`（与公式逐位相符）、`sfr=06030100`（massage 后的 chip id）、`intr=0`、`fault=0`。
+
+然后脉冲照旧成功（`gmuboot2 … final=babeface polls=40`），存活转储照旧
+（`gmulive=intr=00000000 … fwinit=babeface`），而门铃之后：
+
+```
+gmuoob=pre_intr=00000000 pre_slumber=00000000 ack=0 polls=400000 post_intr=00800000
+       post_slumber=00000000 fwinit=babeface gdscr=00222001 ok=0
+```
+
+`post_intr` 又是 `0x00800000`：**补齐预启动配置没有阻止 CM3 fault。**
+
+### 23.4 这一轮证明了什么、没证明什么
+
+证明：
+1. 那九笔写进 GMU 窗口后能被读回，且读回值与上游公式逐位相符 —— 孔径是**可写的真内存**，
+   不是只读影子寄存器。
+2. 写这些配置本身**不会**让 CM3 fault：`gmucfg` 行读到 `fault=0`，`intr=0`。
+3. 因此 fault 与「缺预启动配置」无关。
+
+没证明：fault 的确切触发点。`gmucfg` 的采样在 29.711 s、`gmuoob` 在 30.248 s，中间我写了
+`BOOT_SLUMBER_OPTION` 与 `HOST2GMU_INTR_SET`；fault 出现在这两笔之后的采样里，但中间没有
+第二次采样，无法区分「写这两笔触发的」与「固件自己在那 0.5 s 里出错的」。
+
+### 23.5 下一道门
+
+上游在门铃之前还有三笔我写不了：`HFI_QTBL_ADDR = hfi.iova`、`HFI_QTBL_INFO = 1`、
+`PWR_COL_CP_MSG = log.iova | (log_pages - 1)`。这三笔都需要 **GMU 自己的地址空间**（队列表与日志
+缓冲的 IOVA），而本仓库没有 GMU IOMMU 后端。CM3 收到 `MSGQ` 中断后要去读队列表；表地址为 0
+时它读到的不是队列，fault 是合理后果。
+
+所以下一步不是继续敲门铃，而是先**只读**弄清 GMU 侧地址空间现状：GMU 有没有独立 SMMU、
+上电时它是 bypass 还是有页表、`0x506a000` 窗口里那些与 IOMMU 相关的字是什么值。在拿到
+「IOVA 可以用物理地址」或「必须先建页表」的结论之前，再敲一次门铃只会重复同一个 fault。

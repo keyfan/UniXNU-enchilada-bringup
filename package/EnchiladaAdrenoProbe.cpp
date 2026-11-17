@@ -1443,7 +1443,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 9u);
+                            (fwKey >= 7u && fwKey <= 11u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             if (!sGmuFwVa && &armcpu_map_physical_rw) {
@@ -1511,6 +1511,56 @@ extern "C" void enchilada_adreno_poll(void) {
                                                  : 0);
                                     IOLog("enchilada-adreno: %s\n", loadRow);
                                     if (fwKey >= 8u) {
+                                        // ROUND 171: a6xx_gmu_power_config() plus the
+                                        // AHB fence range and the GMU chip id, i.e. the
+                                        // rest of what a6xx_gmu_fw_start() writes between
+                                        // CM3_CFG and a6xx_gmu_start(). R170 showed the CM3
+                                        // raising bit 23 (GMU2HOST_INTR_INFO_CM3_FAULT)
+                                        // instead of answering the boot-slumber doorbell,
+                                        // and the only pre-start words missing at that
+                                        // point were exactly these.
+                                        //
+                                        // The two read-modify-writes follow msm semantics:
+                                        // gmu_rmw(reg, mask, val) is write((read & ~mask) |
+                                        // val), and upstream passes mask 0 with an OR value,
+                                        // so these bits are SET, not cleared.
+                                        if (fwKey >= 11u) {
+                                            const uint32_t fenceVal =
+                                                (1u << 31) |
+                                                (ADRENO_GMU_BOOT_V1_FENCE_UPPER << 18) |
+                                                ADRENO_GMU_BOOT_V1_FENCE_LOWER;
+                                            // a6xx_gmu_fw_start() chip id massage (a630 has no
+                                            // gmu_chipid override in the catalog): upper 16b
+                                            // verbatim, minor and patchid packed into four
+                                            // bits each.
+                                            // a6xx_gmu_fw_start() chip id massage for
+                                            // this board: AdrenoGmuBootV1Chipid(0x06030001)
+                                            // = 0x06030000 (upper 16b verbatim)
+                                            // | 0x0000 (minor, chip id bits 8..11)
+                                            // | 0x0100 (patchid, chip id bits 0..3)
+                                            // = 0x06030100. Spelled as the already-massaged
+                                            // value: the probe is barred from re-deriving
+                                            // ID-field shifts (stage-4 verifier), and the
+                                            // verifier recomputes this constant from
+                                            // ADRENO_BOARD_CHIPID to keep it honest.
+                                            const uint32_t chipIdVal = 0x06030100u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_SYS_BUS_CONFIG] = 1u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_ICACHE_CONFIG] = 1u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_DCACHE_CONFIG] = 1u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_PWR_COL_INTER_FRAME_CTRL] =
+                                                ADRENO_GMU_BOOT_V1_PWR_COL_IFPC_CTRL;
+                                            gmuW[ADRENO_GMU_BOOT_V1_PWR_COL_SPTPRAC_HYST] =
+                                                ADRENO_GMU_BOOT_V1_PWR_COL_HYST;
+                                            gmuW[ADRENO_GMU_BOOT_V1_PWR_COL_INTER_FRAME_CTRL] =
+                                                gmuW[ADRENO_GMU_BOOT_V1_PWR_COL_INTER_FRAME_CTRL] |
+                                                0x00000005u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_RPMH_CTRL] =
+                                                gmuW[ADRENO_GMU_BOOT_V1_RPMH_CTRL] |
+                                                ADRENO_GMU_BOOT_V1_RPMH_VOTE_BITS;
+                                            gmuW[ADRENO_GMU_BOOT_V1_AHB_FENCE_RANGE_0] = fenceVal;
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_SFR_ADDR] = chipIdVal;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                        }
                                         // Pre-start writes in upstream order
                                         // (a6xx_gmu_fw_start, cold branch).
                                         gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;
@@ -1565,6 +1615,42 @@ extern "C" void enchilada_adreno_poll(void) {
                                                  ((final & mask) == expect) ? 1 : 0);
                                         IOLog("enchilada-adreno: %s\n", boot2Row);
                                     }
+                                    if (fwKey >= 11u) {
+                                        // ROUND 171 read-back: did the pre-start words latch,
+                                        // and -- the question that matters -- does the CM3
+                                        // still raise GMU2HOST_INTR_INFO_CM3_FAULT (bit 23)
+                                        // now that its bus config, fence range and chip id
+                                        // are written before the pulse instead of after?
+                                        const uint32_t cfgIfc = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_PWR_COL_INTER_FRAME_CTRL * 4u);
+                                        const uint32_t cfgRpmh = rd32(
+                                            sGmuFwVa, ADRENO_GMU_BOOT_V1_RPMH_CTRL * 4u);
+                                        const uint32_t cfgFence = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_AHB_FENCE_RANGE_0 * 4u);
+                                        const uint32_t cfgSfr = rd32(
+                                            sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_SFR_ADDR * 4u);
+                                        const uint32_t cfgIntr = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                        const uint32_t cm3FaultBit = 0x00800000u;
+                                        char cfgRow[264];
+                                        snprintf(cfgRow, sizeof cfgRow,
+                                                 "gmucfg=ifc=%08x rpmh=%08x "
+                                                 "fence=%08x sfr=%08x intr=%08x "
+                                                 "fault=%d ok=%d",
+                                                 cfgIfc, cfgRpmh, cfgFence, cfgSfr,
+                                                 cfgIntr,
+                                                 (cfgIntr & cm3FaultBit) ? 1 : 0,
+                                                 (cfgIfc == 0x09c40405u &&
+                                                  (cfgRpmh & ADRENO_GMU_BOOT_V1_RPMH_VOTE_BITS) ==
+                                                      ADRENO_GMU_BOOT_V1_RPMH_VOTE_BITS &&
+                                                  (cfgIntr & cm3FaultBit) == 0u)
+                                                     ? 1
+                                                     : 0);
+                                        IOLog("enchilada-adreno: %s\n", cfgRow);
+                                    }
                                     if (fwKey >= 9u) {
                                         // ROUND 169: read-only liveness dump. Every
                                         // address below was already read on this device
@@ -1615,6 +1701,62 @@ extern "C" void enchilada_adreno_poll(void) {
                                                  mxVote, liveInit, liveReset,
                                                  (liveInit == liveExpect) ? 1 : 0);
                                         IOLog("enchilada-adreno: %s\n", liveRow);
+                                    }
+                                    if (fwKey >= 10u) {
+                                        // ROUND 170: the OOB boot-slumber handshake -- the first
+                                        // host-side step of gfx_rail_on. Upstream order is
+                                        // a6xx_gmu_gfx_rail_on(): BOOT_SLUMBER_OPTION = 0, then the two
+                                        // arc votes, then a6xx_gmu_set_oob(GMU_OOB_BOOT_SLUMBER) which
+                                        // sets bit 22, polls GMU2HOST_INTR_INFO bit 30 and clears bit 30.
+                                        //
+                                        // THE TWO VOTES ARE DELIBERATELY NOT WRITTEN. Their value comes
+                                        // from gx_arc_votes[nr_gpu_freqs - 1], which is derived from the
+                                        // RPMh arc configuration, not from the device tree: enchilada.dts
+                                        // has no opp-hz, arc-level or gpu_opp property at all. Writing a
+                                        // guessed index would silently ask for a rail voltage nothing here
+                                        // can justify, so this round only asks whether the firmware answers
+                                        // the doorbell without them.
+                                        const uint32_t preIntr = rd32(
+                                            sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                        const uint32_t preSlumber = rd32(
+                                            sGmuFwVa, ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION * 4u);
+                                        gmuW[ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION] = 0u;
+                                        gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] =
+                                            1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET;
+                                        __asm__ volatile("dsb sy" ::: "memory");
+                                        unsigned oobPolls = 0u;
+                                        uint32_t oobInfo = 0u;
+                                        for (; oobPolls < 400000u; ++oobPolls) {
+                                            oobInfo = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            if ((oobInfo & (1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK))
+                                                != 0u) {
+                                                break;
+                                            }
+                                        }
+                                        const int oobAcked =
+                                            ((oobInfo & (1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK))
+                                             != 0u) ? 1 : 0;
+                                        // Upstream clears the ack bit even when the poll timed out.
+                                        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] =
+                                            1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_CLEAR;
+                                        __asm__ volatile("dsb sy" ::: "memory");
+                                        const uint32_t postIntr = rd32(
+                                            sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                        const uint32_t postSlumber = rd32(
+                                            sGmuFwVa, ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION * 4u);
+                                        const uint32_t oobInit = rd32(
+                                            sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                        const uint32_t gxGdscr = rd32(
+                                            sGmuFwVa, ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                        char oobRow[296];
+                                        snprintf(oobRow, sizeof oobRow,
+                                                 "gmuoob=pre_intr=%08x pre_slumber=%08x "
+                                                 "ack=%d polls=%u post_intr=%08x post_slumber=%08x "
+                                                 "fwinit=%08x gdscr=%08x ok=%d",
+                                                 preIntr, preSlumber, oobAcked, oobPolls, postIntr,
+                                                 postSlumber, oobInit, gxGdscr, oobAcked);
+                                        IOLog("enchilada-adreno: %s\n", oobRow);
                                     }
                                 }
                             }

@@ -1199,7 +1199,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 9u' in _fw,
+    check('fwKey >= 7u && fwKey <= 11u' in _fw,
           'R168 it is armed by its own key values (7 and 8); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
           'R168 the ABSENT stub is refused explicitly instead of writing four bytes')
@@ -1237,10 +1237,21 @@ def main():
               'ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG',
               'ADRENO_GMU_BOOT_V1_CM3_CFG',
               'ADRENO_GMU_BOOT_V1_CM3_SYSRESET',
-              'ADRENO_GMU_BOOT_V1_PWR_COL_CP_RESP'])),
-          'R168 the register write set is exactly the six named words (%r)' % sorted(set(_stores)))
-    for _absent in ('HFI_QTBL_ADDR', 'HFI_QTBL_INFO', 'PWR_COL_CP_MSG',
-                    'AHB_FENCE_RANGE_0', 'HFI_SFR_ADDR'):
+              'ADRENO_GMU_BOOT_V1_PWR_COL_CP_RESP',
+              'ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION',
+              'ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET',
+              'ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR',
+              'ADRENO_GMU_BOOT_V1_SYS_BUS_CONFIG',
+              'ADRENO_GMU_BOOT_V1_ICACHE_CONFIG',
+              'ADRENO_GMU_BOOT_V1_DCACHE_CONFIG',
+              'ADRENO_GMU_BOOT_V1_PWR_COL_INTER_FRAME_CTRL',
+              'ADRENO_GMU_BOOT_V1_PWR_COL_SPTPRAC_HYST',
+              'ADRENO_GMU_BOOT_V1_RPMH_CTRL',
+              'ADRENO_GMU_BOOT_V1_AHB_FENCE_RANGE_0',
+              'ADRENO_GMU_BOOT_V1_HFI_SFR_ADDR'])),
+          'R168+R170+R171 the register write set is exactly the named words (%r)'
+          % sorted(set(_stores)))
+    for _absent in ('HFI_QTBL_ADDR', 'HFI_QTBL_INFO', 'PWR_COL_CP_MSG'):
         check('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _absent not in _fw,
               'R168 %s is NOT written: it needs a GMU IOMMU address this kernel '
               'does not have' % _absent)
@@ -1288,6 +1299,102 @@ def main():
     check('char liveRow[248]' in code, 'R169 the row has a declared, sufficient bound')
     check('stage >= 7u' not in code,
           'R169 still no new stage value: the boot-arg mask stays exactly 1..6')
+
+    # ==== ROUND 170 (slice 3, step 2): the OOB boot-slumber handshake ========
+    # The first host-side step of gfx_rail_on. Its contract has three parts: the
+    # doorbell bit, the ack bit, the bounded wait, and -- the one that matters most
+    # for safety -- the two arc votes are NOT written, because their value has no
+    # source in this repository.
+    check('gmuoob=pre_intr=%08x pre_slumber=%08x ' in code,
+          'R170 the OOB handshake row is present')
+    check('if (fwKey >= 10u) {' in code,
+          'R170 the handshake is armed by its own key value')
+    _oob = (code.split('if (fwKey >= 10u) {', 1)[1]
+                .split('IOLog("enchilada-adreno: %s\\n", oobRow);', 1)[0]
+            if 'if (fwKey >= 10u) {' in code else '')
+    check(_oob != '', 'R170 the handshake body is delimited')
+    _oobst = re.findall(r'gmuW\[(ADRENO_GMU_BOOT_V1_\w+)\]\s*=[^=]', _oob)
+    check(sorted(set(_oobst)) == sorted(set([
+              'ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION',
+              'ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET',
+              'ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR'])),
+          'R170 it writes exactly the slumber option, the doorbell and the clear (%r)'
+          % sorted(set(_oobst)))
+    for _vote in ('GX_VOTE_IDX', 'MX_VOTE_IDX'):
+        check('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _vote not in code,
+              'R170 %s is NOT written: gx_arc_votes has no source here, and a '
+              'guessed index would pick a rail voltage' % _vote)
+    check('1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET' in _oob,
+          'R170 the doorbell uses the pinned set bit (22), not a literal')
+    check('1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK' in _oob,
+          'R170 the wait watches the pinned ack bit (30)')
+    check('1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_CLEAR' in _oob,
+          'R170 the ack is cleared with the pinned clear bit (30)')
+    check('oobPolls < 400000u' in _oob,
+          'R170 the wait is bounded, so a firmware that never answers cannot hang '
+          'the boot')
+    check('char oobRow[296]' in code, 'R170 the row has a declared, sufficient bound')
+    check('stage >= 7u' not in code,
+          'R170 still no new stage value: the boot-arg mask stays exactly 1..6')
+
+
+    # ==== ROUND 171 (slice 3, step 3): pre-start power/bus configuration =====
+    # R170 answered with GMU2HOST_INTR_INFO bit 23 == CM3_FAULT instead of the
+    # boot-slumber ack, so this round writes the words a6xx_gmu_fw_start() puts
+    # down between CM3_CFG and a6xx_gmu_start(). The contract is narrow: only
+    # words whose value comes from a pinned constant or from the board chip id.
+    check('gmucfg=ifc=%08x rpmh=%08x ' in code,
+          'R171 the read-back row is present')
+    check(code.count('if (fwKey >= 11u) {') == 2,
+          'R171 the writes and the read-back are both armed by key 11')
+    _cfg = (code.split('if (fwKey >= 11u) {', 1)[1]
+                .split('gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;', 1)[0]
+            if 'if (fwKey >= 11u) {' in code else '')
+    check(_cfg != '', 'R171 the configuration body is delimited')
+    _cfgst = re.findall(r'gmuW\[(ADRENO_GMU_BOOT_V1_\w+)\]\s*=[^=]', _cfg)
+    check(sorted(set(_cfgst)) == sorted(set([
+              'ADRENO_GMU_BOOT_V1_SYS_BUS_CONFIG',
+              'ADRENO_GMU_BOOT_V1_ICACHE_CONFIG',
+              'ADRENO_GMU_BOOT_V1_DCACHE_CONFIG',
+              'ADRENO_GMU_BOOT_V1_PWR_COL_INTER_FRAME_CTRL',
+              'ADRENO_GMU_BOOT_V1_PWR_COL_SPTPRAC_HYST',
+              'ADRENO_GMU_BOOT_V1_RPMH_CTRL',
+              'ADRENO_GMU_BOOT_V1_AHB_FENCE_RANGE_0',
+              'ADRENO_GMU_BOOT_V1_HFI_SFR_ADDR'])),
+          'R171 the pre-start block writes exactly those eight words (%r)'
+          % sorted(set(_cfgst)))
+    check('ADRENO_GMU_BOOT_V1_PWR_COL_IFPC_CTRL' in _cfg and
+          'ADRENO_GMU_BOOT_V1_PWR_COL_HYST' in _cfg,
+          'R171 the two PWR_COL values are the pinned ones, not literals')
+    _cfgflat = re.sub(r'\s+', ' ', _cfg)
+    check('| 0x00000005u' in _cfgflat and
+          '= gmuW[ADRENO_GMU_BOOT_V1_PWR_COL_INTER_FRAME_CTRL] |' in _cfgflat and
+          '= gmuW[ADRENO_GMU_BOOT_V1_RPMH_CTRL] |' in _cfgflat,
+          'R171 the two read-modify-writes OR their bits in (msm mask=0 semantics)')
+    check('ADRENO_GMU_BOOT_V1_RPMH_VOTE_BITS' in _cfg,
+          'R171 the RPMh vote bits are the pinned mask')
+    check('ADRENO_GMU_BOOT_V1_FENCE_UPPER' in _cfg and
+          'ADRENO_GMU_BOOT_V1_FENCE_LOWER' in _cfg,
+          'R171 the AHB fence value is composed from the pinned upper/lower pair')
+    _boardh = (DEV / 'drivers' / 'NativeAdreno' / 'AdrenoBoardInputs.h').read_text(
+        encoding='utf-8')
+    _mchip = re.search(r'#define\s+ADRENO_BOARD_CHIPID\s+0x([0-9a-fA-F]+)u', _boardh)
+    check(_mchip is not None, 'R171 the board chip id is readable in the header')
+    if _mchip:
+        _cid = int(_mchip.group(1), 16)
+        _want = ((_cid & 0xffff0000) | ((_cid << 4) & 0xf000) | ((_cid << 8) & 0x0f00))
+        check('const uint32_t chipIdVal = 0x%08xu;' % _want in _cfg,
+              'R171 the GMU chip id equals AdrenoGmuBootV1Chipid(0x%08x) = 0x%08x'
+              % (_cid, _want))
+    check('cm3FaultBit = 0x00800000u' in code and
+          'gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO]' not in code,
+          'R171 the CM3 fault bit is a read-side mask, never a write')
+    check('char cfgRow[264]' in code, 'R171 the row has a declared, sufficient bound')
+    for _vote in ('GX_VOTE_IDX', 'MX_VOTE_IDX'):
+        check('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _vote not in code,
+              'R171 %s is still NOT written: no arc-vote source exists here' % _vote)
+    check('stage >= 7u' not in code,
+          'R171 still no new stage value: the boot-arg mask stays exactly 1..6')
 
 
 
