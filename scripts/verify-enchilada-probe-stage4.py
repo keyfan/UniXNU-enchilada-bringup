@@ -184,7 +184,25 @@ def main():
     # all -- so this narrows the old absolute claim instead of dropping it.
     _rw167 = (code.split('bootKey == 6u', 1)[1].split('gmuboot=pre', 1)[0]
               if 'bootKey == 6u' in code else '')
+    # ROUND 168 is the SECOND pinned exception: the ITCM bulk load and, under key 8
+    # only, the pre-start writes and the reset pulse. The no-store rule is NOT
+    # weakened: every `gmuW[...] = ...` statement is removed from the scan below,
+    # and the block is then asserted POSITIVELY to hold exactly the pinned writes.
     _outside = code.replace(_rw167, '') if _rw167 else code
+    _outside = re.sub(r'gmuW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
+    check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
+          'fwKey == 7u || fwKey == 8u' in code and
+          re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
+          'R168 the ITCM load is a second pinned write exception (key 7/8)')
+    _k8 = (code.split('if (fwKey == 8u) {', 1)[1]
+           if 'if (fwKey == 8u) {' in code else '')
+    check(_k8 != '' and
+          code.count('gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;') == 1 and
+          code.count('gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;') == 1 and
+          'gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;' in _k8 and
+          'gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;' in _k8,
+          'R168 the reset pulse exists exactly once and only inside the key-8 '
+          'sub-block')
     hits = []
     for m in store_re.finditer(_outside):
         # A DECLARATION also matches (`const char *verdict = ...`). Exclude it by

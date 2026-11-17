@@ -89,4 +89,10 @@ local.toml
 # bytes), so it is safe either way; this rule is what keeps it that way. The durable
 # record stays scripts/data/adreno-a630-device-firmware.json (sizes + hashes, no bytes).
 /drivers/NativeAdreno/AdrenoZapBlobV1.h
+
+# The GMU firmware header (ROUND 168), same rule and same reason as the ZAP header above:
+# scripts/generate-gmu-blob.py emits the A630 GMU image (32768 B of OEM-signed firmware) as
+# 8192 dwords for the CM3 ITCM bulk load. The durable record is the size+hash entry in
+# scripts/data/adreno-a630-device-firmware.json; the bytes stay out of the repository.
+/drivers/NativeAdreno/AdrenoGmuBlobV1.h
 *.bak

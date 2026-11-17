@@ -109,6 +109,10 @@ archives = [
   # (an explicit workflow_dispatch that supplies them): this same line writes a
   # present header. The generator decides; this list never branches.
   "generate-zap-blob.py --firmware-dir .cache/firmware",
+  # ROUND 168: same ordering rule for the GMU firmware header (AdrenoGmuBlobV1.h).
+  # It is a SEPARATE step rather than an argument to the line above because the two
+  # blobs have independent provenance pins and independent ABSENT behaviour.
+  "generate-gmu-blob.py --firmware-dir .cache/firmware",
   "build-enchilada-adreno.py",         # libEnchiladaAdreno.a: READ-ONLY GPUCC GDSC domain-state probe (enchilada-adreno=1, default off) + the 4 freestanding NativeAdreno C modules, force-loaded
 ]
 

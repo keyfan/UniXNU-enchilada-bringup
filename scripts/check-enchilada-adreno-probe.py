@@ -317,10 +317,21 @@ def main():
         check(casts and all('volatile' in c for c in casts),
               f'every pointer cast in the shim is volatile ({sorted(set(casts))})')
         check('= *reinterpret_cast' in text or 'return *reinterpret_cast' in text,
-              'the only dereference is a read, not a store')
-        # A store through the mapping would look like `*reinterpret_cast<...>(...) = value`.
-        store = __import__('re').search(r'\*\s*reinterpret_cast\s*<[^>]*>\s*\([^;]*\)\s*=[^=]', text)
-        check(store is None, f'shim contains no store through a pointer (found: {store.group(0) if store else None})')
+              'the read helper still dereferences through the volatile cast')
+        # R167/R168 made this shim a WRITER by design (ROUND 167: one config word;
+        # ROUND 168: the ITCM image plus the pre-start/pulse words under key 8), so
+        # the old absolute claim "no store through a pointer" is now FALSE and is
+        # replaced -- not deleted -- by the same pinned boundary the stage
+        # verifiers assert: name the exact write set, and require every one of the
+        # stores to go through a volatile mapping.
+        _re = __import__('re')
+        check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
+              'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 8,
+              'R168 the pointer writes are exactly the ITCM loop plus the seven '
+              'pre-start/pulse words')
+        check('volatile uint32_t *const gmuW' in text,
+              'R168 every one of those writes goes through a volatile mapping')
 
     print(f'\n{checks - len(failures)}/{checks} checks passed')
     if failures:

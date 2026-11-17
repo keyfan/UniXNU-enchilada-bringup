@@ -184,6 +184,22 @@ static const unsigned char adreno_zap_seg[1] ADRENO_ZAP_UNUSED = {0};
 #endif
 #include "AdrenoZapAuthV1.h"
 #include "AdrenoMdtV1.h"
+// ROUND 168: the GMU firmware image, under the same build-artifact rule as the ZAP
+// header above: scripts/generate-gmu-blob.py emits a gitignored header from the
+// local device extraction, and when the bytes are missing the generator writes an
+// ABSENT stub (present=0, words=0) instead of a plausible all-zero 32 KiB image.
+// The fallback array carries __attribute__((unused)) for the same -Wunused-const-
+// variable reason documented for the ZAP fallback: a declaration written inline in
+// this .cpp gets no suppression, and both builders compile with -Werror.
+#if __has_include("AdrenoGmuBlobV1.h")
+#  include "AdrenoGmuBlobV1.h"
+#else
+#  define kAdrenoGmuBlobPresent 0
+#  define kAdrenoGmuImageWords 0
+#  define kAdrenoGmuItcmWord 0x0C00u
+#  define kAdrenoGmuDtcmWord 0x1C00u
+static const unsigned int adreno_gmu_image[1] __attribute__((unused)) = {0};
+#endif
 // Device-proven cache-inhibited kernel mapping of a physical range
 // (drivers/ArmCpu/ArmCpu.cpp:207, same use as package/EnchiladaSmmuProbe.cpp:57).
 // weak_import: if the ArmCpu archive is not linked this is NULL and we wait.
@@ -1397,6 +1413,157 @@ extern "C" void enchilada_adreno_poll(void) {
                                              : 0);
                             }
                             IOLog("enchilada-adreno: %s\n", bootRow);
+                        }
+                    }
+                    // ---- ROUND 168: the GMU image, first into ITCM -----------
+                    // WHY A WHOLE NEW KEY, AND WHY TWO OF THEM:
+                    //   * `= 6` (ROUND 167) is the "one word" round and its verifier
+                    //     budget is exactly one store. Widening it would weaken an
+                    //     already-shipped device-verified contract.
+                    //   * `= 7` does the ITCM bulk load and nothing else: no control
+                    //     register is written, so the only thing it can perturb is the
+                    //     CM3 memory itself, and it is gated on SYSRESET bit0 so it can
+                    //     only run while the CM3 is still held in reset.
+                    //   * `= 8` is `= 7` plus the pre-start writes and the reset pulse
+                    //     (the first time this kernel can make the GMU *execute*). It is
+                    //     a separate value so a `= 7` witness survives even if the pulse
+                    //     turns out to hang the boot.
+                    // WHAT IS DELIBERATELY ABSENT FROM `= 8`: the three HFI/IOVA writes
+                    // (QTBL_ADDR, QTBL_INFO, PWR_COL_CP_MSG), AHB_FENCE_RANGE_0,
+                    // HFI_SFR_ADDR and the six power_config writes. The first three need
+                    // GMU IOMMU addresses this repository has no backend for; the rest
+                    // are held back until the image load and the pulse are separately
+                    // witnessed. So `= 8` is NOT a complete cold start, and its row says
+                    // so by reporting hfistat and the poll result rather than a verdict.
+                    {
+                        unsigned fwKey = 0;
+                        const bool fwArmed =
+                            PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
+                                               sizeof fwKey) &&
+                            (fwKey == 7u || fwKey == 8u);
+                        if (fwArmed) {
+                            static uintptr_t sGmuFwVa = 0;
+                            if (!sGmuFwVa && &armcpu_map_physical_rw) {
+                                const uint64_t fva = armcpu_map_physical_rw(
+                                    ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
+                                if (fva) sGmuFwVa = static_cast<uintptr_t>(fva);
+                            }
+                            if (!sGmuFwVa) {
+                                IOLog("enchilada-adreno: gmufw=map-failed\n");
+                            } else if (!kAdrenoGmuBlobPresent ||
+                                       kAdrenoGmuImageWords == 0u) {
+                                IOLog("enchilada-adreno: gmufw=absent words=0\n");
+                            } else {
+                                // ONE pointer, used for every store this round makes:
+                                // word offsets index it exactly like the register file,
+                                // so the whole write set is visible in one place.
+                                volatile uint32_t *const gmuW =
+                                    reinterpret_cast<volatile uint32_t *>(sGmuFwVa);
+                                const uint32_t preReset = rd32(
+                                    sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_SYSRESET * 4u);
+                                const uint32_t preInit = rd32(
+                                    sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                const uint32_t preSig = rd32(
+                                    sGmuFwVa, (kAdrenoGmuDtcmWord + 0xff8u) * 4u);
+                                const bool held = (preReset & 1u) != 0u;
+                                if (!held) {
+                                    IOLog("enchilada-adreno: gmufw=not-held "
+                                          "reset=%08x\n", preReset);
+                                } else {
+                                    for (unsigned wi = 0; wi < kAdrenoGmuImageWords;
+                                         ++wi) {
+                                        gmuW[kAdrenoGmuItcmWord + wi] =
+                                            adreno_gmu_image[wi];
+                                        if ((wi & 0xffu) == 0xffu) {
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                        }
+                                    }
+                                    __asm__ volatile("dsb sy" ::: "memory");
+                                    const uint32_t rb0 = gmuW[kAdrenoGmuItcmWord];
+                                    const uint32_t rb1 = gmuW[kAdrenoGmuItcmWord + 1u];
+                                    const uint32_t rbMid =
+                                        gmuW[kAdrenoGmuItcmWord + 0x1000u];
+                                    const uint32_t rbLast = gmuW[
+                                        kAdrenoGmuItcmWord + kAdrenoGmuImageWords - 1u];
+                                    const uint32_t postSig = rd32(
+                                        sGmuFwVa, (kAdrenoGmuDtcmWord + 0xff8u) * 4u);
+                                    char loadRow[264];
+                                    snprintf(loadRow, sizeof loadRow,
+                                             "gmufw=load words=%u pre_reset=%08x "
+                                             "pre_init=%08x pre_sig=%08x "
+                                             "post_sig=%08x img0=%08x img1=%08x "
+                                             "imgend=%08x rb0=%08x rb1=%08x "
+                                             "rbm=%08x rbend=%08x ok=%d",
+                                             kAdrenoGmuImageWords, preReset,
+                                             preInit, preSig, postSig,
+                                             adreno_gmu_image[0],
+                                             adreno_gmu_image[1],
+                                             adreno_gmu_image[kAdrenoGmuImageWords - 1u],
+                                             rb0, rb1, rbMid, rbLast,
+                                             (rb0 == adreno_gmu_image[0] &&
+                                              rb1 == adreno_gmu_image[1] &&
+                                              rbLast ==
+                                                  adreno_gmu_image[kAdrenoGmuImageWords - 1u])
+                                                 ? 1
+                                                 : 0);
+                                    IOLog("enchilada-adreno: %s\n", loadRow);
+                                    if (fwKey == 8u) {
+                                        // Pre-start writes in upstream order
+                                        // (a6xx_gmu_fw_start, cold branch).
+                                        gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;
+                                        gmuW[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;
+                                        gmuW[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] =
+                                            ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
+                                        gmuW[ADRENO_GMU_BOOT_V1_CM3_CFG] =
+                                            ADRENO_GMU_BOOT_V1_CM3_CFG_VALUE;
+                                        __asm__ volatile("dsb sy" ::: "memory");
+                                        // The pulse itself: hold, clear the log wptr, release.
+                                        gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;
+                                        gmuW[ADRENO_GMU_BOOT_V1_PWR_COL_CP_RESP] = 0u;
+                                        gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;
+                                        __asm__ volatile("dsb sy" ::: "memory");
+                                        // The expected sentinel is NOT a constant here:
+                                        // a6xx_gmu_start() reads DTCM word 0xff8 and
+                                        // compares against 0x20010004 to pick between an
+                                        // exact 0xbabeface and a 0x1ff-masked 0x100. That
+                                        // word is the last one the image just wrote, so
+                                        // this reproduces the selection from the loaded
+                                        // image rather than hard-coding either branch.
+                                        uint32_t mask = 0u;
+                                        uint32_t expect = 0u;
+                                        if (postSig <= 0x20010004u) {
+                                            mask = 0xffffffffu;
+                                            expect = 0xbabefaceu;
+                                        } else {
+                                            mask = 0x1ffu;
+                                            expect = 0x100u;
+                                        }
+                                        uint32_t final = 0u;
+                                        unsigned polls = 0u;
+                                        for (; polls < 400000u; ++polls) {
+                                            final = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            if ((final & mask) == expect) break;
+                                        }
+                                        const uint32_t hfiStat = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                        const uint32_t postReset = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_CM3_SYSRESET * 4u);
+                                        char boot2Row[248];
+                                        snprintf(boot2Row, sizeof boot2Row,
+                                                 "gmuboot2=sig=%08x mask=%08x "
+                                                 "expect=%08x final=%08x polls=%u "
+                                                 "hfistat=%08x reset=%08x ok=%d",
+                                                 postSig, mask, expect, final, polls,
+                                                 hfiStat, postReset,
+                                                 ((final & mask) == expect) ? 1 : 0);
+                                        IOLog("enchilada-adreno: %s\n", boot2Row);
+                                    }
+                                }
+                            }
                         }
                     }
                     // ---- ROUND 109 stage 7: the PAS three-stage PLAN ----

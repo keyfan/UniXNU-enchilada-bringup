@@ -1174,9 +1174,10 @@ def main():
     check('ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG * 4u' in _rw,
           'R167 the store targets CM3_BOOT_CONFIG at its pinned word offset')
     check('ADRENO_GMU_BOOT_V1_CM3_SYSRESET * 4u' in _rw and
-          'CM3_SYSRESET = ' not in code and 'CM3_ITCM_START = ' not in code,
+          'CM3_SYSRESET = ' not in _rw and 'CM3_ITCM_START = ' not in _rw,
           'R167 CM3_SYSRESET is READ as the gate but never written and the ITCM '
-          'doorbell is never written: the CM3 is not started by this round')
+          'doorbell is never written: R167 itself does not start the CM3 '
+          '(ROUND 168 starts it, under its own key, and is asserted below)')
     check('if (held)' in _rw,
           'R167 the write is gated on that reset read-back, so a CM3 that is '
           'already out of reset is reported and not written')
@@ -1184,6 +1185,77 @@ def main():
           'R167 the writable window is the DTB-pinned GMU range, not a guess')
     check('stage >= 7u' not in code,
           'R167 still no new stage value: the boot-arg mask stays exactly 1..6')
+
+    # ==== ROUND 168 (slice 2): the GMU image, first into ITCM ===============
+    # This round adds the FIRST bulk write and the FIRST reset pulse, so its two
+    # boundaries are asserted: (a) the load runs only while the CM3 is still held
+    # in reset, and (b) the pulse, the pre-start writes and the sentinel poll live
+    # ONLY inside the key-8 sub-block, so key 7 stays a load witness that cannot
+    # start anything.
+    check('ROUND 168' in text and 'gmufw=load words=%u' in code,
+          'R168 the ITCM bulk-load row is present')
+    _fw = (re.sub(r'//[^\n]*', '',
+                  text.split('// ---- ROUND 168:', 1)[1]
+                      .split('// ---- ROUND 109 stage 7:', 1)[0])
+           if '// ---- ROUND 168:' in text else '')
+    check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
+    check('fwKey == 7u || fwKey == 8u' in _fw,
+          'R168 it is armed by its own key values (7 and 8); 3..6 keep their evidence')
+    check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
+          'R168 the ABSENT stub is refused explicitly instead of writing four bytes')
+    check('const bool held = (preReset & 1u) != 0u;' in _fw and 'if (!held)' in _fw,
+          'R168 the load is gated on CM3_SYSRESET bit0, so a running CM3 is never '
+          'overwritten')
+    check(re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', _fw),
+          'R168 the image goes to consecutive word offsets from ITCM_START, the '
+          'shape a6xx_gmu_fw_load() uses for the legacy blob')
+    _rb = ('rb0', 'rb1', 'rbMid', 'rbLast')
+    check(all(n in _fw for n in _rb) and
+          'rb0 == adreno_gmu_image[0]' in _fw and
+          'rbLast ==' in _fw,
+          'R168 the load is READ BACK (head, second, mid, last) instead of assumed')
+    check('if (fwKey == 8u) {' in _fw,
+          'R168 the pulse is confined to the key-8 sub-block')
+    _k8 = (_fw.split('if (fwKey == 8u) {', 1)[1] if 'if (fwKey == 8u) {' in _fw else '')
+    _pulse = tuple(['gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;',
+                    'gmuW[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;',
+                    'gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;',
+                    'gmuW[ADRENO_GMU_BOOT_V1_PWR_COL_CP_RESP] = 0u;',
+                    'gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;'])
+    check(all(s in _k8 for s in _pulse),
+          'R168 the pulse is the upstream order (hold, clear log wptr, release) and '
+          'lives only under key 8')
+    check('gmuW[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] =' in _k8 and
+          'ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE' in _k8 and
+          'gmuW[ADRENO_GMU_BOOT_V1_CM3_CFG] =' in _k8 and
+          'ADRENO_GMU_BOOT_V1_CM3_CFG_VALUE' in _k8,
+          'R168 the pre-start config writes the pinned 0x02 / 0x4052 values')
+    _stores = re.findall(r'gmuW\[(ADRENO_GMU_BOOT_V1_\w+)\]\s*=[^=]', _fw)
+    check(sorted(set(_stores)) == sorted(set([
+              'ADRENO_GMU_BOOT_V1_GENERAL_7',
+              'ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT',
+              'ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG',
+              'ADRENO_GMU_BOOT_V1_CM3_CFG',
+              'ADRENO_GMU_BOOT_V1_CM3_SYSRESET',
+              'ADRENO_GMU_BOOT_V1_PWR_COL_CP_RESP'])),
+          'R168 the register write set is exactly the six named words (%r)' % sorted(set(_stores)))
+    for _absent in ('HFI_QTBL_ADDR', 'HFI_QTBL_INFO', 'PWR_COL_CP_MSG',
+                    'AHB_FENCE_RANGE_0', 'HFI_SFR_ADDR'):
+        check('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _absent not in _fw,
+              'R168 %s is NOT written: it needs a GMU IOMMU address this kernel '
+              'does not have' % _absent)
+    check('postSig <= 0x20010004u' in _k8 and '0xbabefaceu' in _k8 and
+          '0x1ffu' in _k8 and '0x100u' in _k8,
+          'R168 the expected FW_INIT_RESULT is SELECTED from the just-loaded DTCM '
+          'word 0xff8, exactly as a6xx_gmu_start() does, not hard-coded')
+    check('polls < 400000u' in _k8,
+          'R168 the poll is bounded, so a firmware that never boots cannot hang '
+          'the boot')
+    check('char loadRow[264]' in code and 'char boot2Row[248]' in code,
+          'R168 both new rows have declared, sufficient bounds')
+    check('stage >= 7u' not in code,
+          'R168 still no new stage value: the boot-arg mask stays exactly 1..6')
+
 
 
     # ---- the row must FIT its buffer ----
