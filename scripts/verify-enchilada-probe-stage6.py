@@ -1207,8 +1207,8 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 18u' in _fw,
-          'R168 it is armed by its own key values (7 and 8, and 15 for the R175 HFI '
+    check('fwKey >= 7u && fwKey <= 21u' in _fw,
+          'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
           'R168 the ABSENT stub is refused explicitly instead of writing four bytes')
@@ -1338,10 +1338,24 @@ def main():
           'writing a null table address')
     _h2 = (code.split('if (fwKey >= 18u) {', 1)[1]
            if 'if (fwKey >= 18u) {' in code else '')
-    check('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;' in _h2 and
-          'hfiPolls < 400000u' in _h2,
-          'R175 hfi_start is HFI_CTRL_INIT=1 plus a BOUNDED status poll, so a '
-          'firmware that never answers cannot hang the boot')
+    check('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;' in _h2,
+          'R175 hfi_start stores HFI_CTRL_INIT exactly once')
+    check('hfiPolls < 1000u' in _h2 and 'hfiPolls < 400000u' not in _h2,
+          'R177 the status poll is bounded at 1000, so the first few reads are '
+          'what the run measures')
+    check(_h2.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1,
+          'R177 the doorbell is still exactly one store, whatever the key')
+    _i18 = _h2.find('if (fwKey == 18u) {')
+    _i19 = _h2.find('if (fwKey >= 19u) {')
+    _i20 = _h2.find('if (fwKey >= 20u) {')
+    _i21 = _h2.find('if (fwKey >= 21u) {')
+    check(0 <= _i18 < _i19 < _i20 < _i21,
+          'R177 the doorbell is cut into four ascending keys: store, read back, '
+          'one status read, bounded poll')
+    check('gmuhfi2=write pre=%08x' in _h2 and 'gmuhfi2=rb pre=%08x' in _h2 and
+          'gmuhfi3=stat pre=%08x' in _h2,
+          'R177 keys 18, 19 and 20 each print their own row, so a surviving run '
+          'says exactly how far the doorbell got')
     check('hfiWi = hfiTbl[' in _h2 and 'hfiRi = hfiTbl[' in _h2 and
           'if (sHfiWin) {' in _h2,
           'R175 the two queue indices are READ back (response write index, '

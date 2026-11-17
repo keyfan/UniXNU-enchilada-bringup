@@ -1444,7 +1444,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 18u);
+                            (fwKey >= 7u && fwKey <= 21u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             // ROUND 175: the HFI shared region and the uncached window over it.
@@ -1740,12 +1740,11 @@ extern "C" void enchilada_adreno_poll(void) {
                                                  ((final & mask) == expect) ? 1 : 0);
                                         IOLog("enchilada-adreno: %s\n", boot2Row);
                                         if (fwKey >= 18u) {
-                                            // ROUND 175: a6xx_gmu_hfi_start(), run right after the pulse.
-                                            // Upstream order is gmu_start -> gfx_rail_on -> sptrac ->
-                                            // hfi_start; the two rail steps need arc votes this board does
-                                            // not publish (R170's note), so HFI is started directly. The
-                                            // question is narrow: with a real queue table in place, does
-                                            // HFI_CTRL_STATUS come up instead of the CM3 faulting?
+                                            // ROUND 177: R176 showed that alloc, map, table fill
+                                            // and the three QTBL registers are all safe, and that the
+                                            // doorbell itself kills the kernel.  The doorbell is now
+                                            // cut into single actions: write (18), write + read back
+                                            // (19), + one status read (20), + bounded poll (21).
                                             const uint32_t hfiPre = rd32(
                                                 sGmuFwVa,
                                                 ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
@@ -1753,46 +1752,87 @@ extern "C" void enchilada_adreno_poll(void) {
                                                 gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
                                             }
                                             __asm__ volatile("dsb sy" ::: "memory");
-                                            uint32_t hfiNow = 0u;
-                                            unsigned hfiPolls = 0u;
-                                            for (; hfiPolls < 400000u; ++hfiPolls) {
-                                                hfiNow = rd32(
+                                            if (fwKey == 18u) {
+                                                // Nothing is read back: the question is whether the
+                                                // store alone is fatal.
+                                                char writeRow[176];
+                                                snprintf(writeRow, sizeof writeRow,
+                                                         "gmuhfi2=write pre=%08x ok=%d",
+                                                         hfiPre, (sHfiWin != 0u) ? 1 : 0);
+                                                IOLog("enchilada-adreno: %s\n", writeRow);
+                                            }
+                                            if (fwKey >= 19u) {
+                                                // Does the just-written word read back, or does the
+                                                // register become unreadable once armed?
+                                                const uint32_t hfiRb = rd32(
                                                     sGmuFwVa,
-                                                    ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
-                                                if ((hfiNow & 1u) == 1u) break;
+                                                    ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT * 4u);
+                                                if (fwKey == 19u) {
+                                                    char rbRow[176];
+                                                    snprintf(rbRow, sizeof rbRow,
+                                                             "gmuhfi2=rb pre=%08x rb=%08x",
+                                                             hfiPre, hfiRb);
+                                                    IOLog("enchilada-adreno: %s\n", rbRow);
+                                                }
+                                                if (fwKey >= 20u) {
+                                                    // One status read.  If 19 survives and this dies,
+                                                    // HFI_CTRL_STATUS is the register to avoid.
+                                                    const uint32_t hfiStat1 = rd32(
+                                                        sGmuFwVa,
+                                                        ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                    if (fwKey == 20u) {
+                                                        char statRow[176];
+                                                        snprintf(statRow, sizeof statRow,
+                                                                 "gmuhfi3=stat pre=%08x rb=%08x "
+                                                                 "stat=%08x",
+                                                                 hfiPre, hfiRb, hfiStat1);
+                                                        IOLog("enchilada-adreno: %s\n", statRow);
+                                                    }
+                                                    if (fwKey >= 21u) {
+                                                        uint32_t hfiNow = hfiStat1;
+                                                        unsigned hfiPolls = 0u;
+                                                        for (; hfiPolls < 1000u; ++hfiPolls) {
+                                                            hfiNow = rd32(
+                                                                sGmuFwVa,
+                                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                            if ((hfiNow & 1u) == 1u) break;
+                                                        }
+                                                        const uint32_t hfiQtbl = rd32(
+                                                            sGmuFwVa,
+                                                            ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u);
+                                                        const uint32_t hfiIntr = rd32(
+                                                            sGmuFwVa,
+                                                            ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                                        const uint32_t hfiInit = rd32(
+                                                            sGmuFwVa,
+                                                            ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                                        uint32_t hfiWi = 0u;
+                                                        uint32_t hfiRi = 0u;
+                                                        if (sHfiWin) {
+                                                            volatile const uint32_t *hfiTbl =
+                                                                reinterpret_cast<volatile const uint32_t *>(
+                                                                    sHfiWin);
+                                                            // Response queue (index 1) write index is
+                                                            // the firmware's own progress; command
+                                                            // queue (index 0) read index says whether
+                                                            // anything the host queued was consumed.
+                                                            hfiWi = hfiTbl[ADRENO_HFI_V1_QHDR0_OFFSET_WORDS +
+                                                                           ADRENO_HFI_V1_QUEUE_HEADER_WORDS + 11u];
+                                                            hfiRi = hfiTbl[ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + 10u];
+                                                        }
+                                                        char hfiRow[288];
+                                                        snprintf(hfiRow, sizeof hfiRow,
+                                                                 "gmuhfi=pa=%08x qtbl=%08x pre=%08x "
+                                                                 "stat=%08x intr=%08x fwinit=%08x "
+                                                                 "wi1=%08x ri0=%08x polls=%u ok=%d",
+                                                                 static_cast<uint32_t>(sHfiPa), hfiQtbl,
+                                                                 hfiPre, hfiNow, hfiIntr, hfiInit,
+                                                                 hfiWi, hfiRi, hfiPolls,
+                                                                 ((sHfiWin != 0u) && ((hfiNow & 1u) == 1u)) ? 1 : 0);
+                                                        IOLog("enchilada-adreno: %s\n", hfiRow);
+                                                    }
+                                                }
                                             }
-                                            const uint32_t hfiQtbl = rd32(
-                                                sGmuFwVa,
-                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u);
-                                            const uint32_t hfiIntr = rd32(
-                                                sGmuFwVa,
-                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
-                                            const uint32_t hfiInit = rd32(
-                                                sGmuFwVa,
-                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
-                                            uint32_t hfiWi = 0u;
-                                            uint32_t hfiRi = 0u;
-                                            if (sHfiWin) {
-                                                volatile const uint32_t *const hfiTbl =
-                                                    reinterpret_cast<volatile const uint32_t *>(
-                                                        sHfiWin);
-                                                // Response queue (index 1) write index: the firmware's own
-                                                // progress. Command queue (index 0) read index: whether it
-                                                // has consumed anything the host queued.
-                                                hfiWi = hfiTbl[ADRENO_HFI_V1_QHDR0_OFFSET_WORDS +
-                                                          ADRENO_HFI_V1_QUEUE_HEADER_WORDS + 11u];
-                                                hfiRi = hfiTbl[ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + 10u];
-                                            }
-                                            char hfiRow[288];
-                                            snprintf(hfiRow, sizeof hfiRow,
-                                                     "gmuhfi=pa=%08x qtbl=%08x pre=%08x "
-                                                     "stat=%08x intr=%08x fwinit=%08x "
-                                                     "wi1=%08x ri0=%08x polls=%u ok=%d",
-                                                     static_cast<uint32_t>(sHfiPa), hfiQtbl,
-                                                     hfiPre, hfiNow, hfiIntr, hfiInit,
-                                                     hfiWi, hfiRi, hfiPolls,
-                                                     ((sHfiWin != 0u) && ((hfiNow & 1u) == 1u)) ? 1 : 0);
-                                            IOLog("enchilada-adreno: %s\n", hfiRow);
                                         }
                                     }
                                     if (fwKey >= 11u) {
