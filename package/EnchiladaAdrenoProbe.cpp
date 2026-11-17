@@ -1444,7 +1444,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 21u);
+                            (fwKey >= 7u && fwKey <= 23u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             // ROUND 175: the HFI shared region and the uncached window over it.
@@ -1586,6 +1586,9 @@ extern "C" void enchilada_adreno_poll(void) {
                                             // now split into four keys that each stop one step short:
                                             //   15 allocate   16 +map and fill   17 +the three QTBL
                                             //   registers   18 +HFI_CTRL_INIT and the status poll.
+                                            //   ROUND 178 re-gates 18..21 and adds 22 (BOOT_SLUMBER
+                                            //   handshake shape, no vote, then HFI_CTRL_INIT and one
+                                            //   status read) plus 23 (+ bounded status poll).
                                             // The first key that survives names the fatal step as the one
                                             // the next key adds. Nothing is inferred from a silent window.
                                             if (sHfiPa == 0u && sHfiWin == 0u) {
@@ -1739,7 +1742,7 @@ extern "C" void enchilada_adreno_poll(void) {
                                                  hfiStat, postReset,
                                                  ((final & mask) == expect) ? 1 : 0);
                                         IOLog("enchilada-adreno: %s\n", boot2Row);
-                                        if (fwKey >= 18u) {
+                                        if (fwKey >= 18u && fwKey <= 21u) {
                                             // ROUND 177: R176 showed that alloc, map, table fill
                                             // and the three QTBL registers are all safe, and that the
                                             // doorbell itself kills the kernel.  The doorbell is now
@@ -1832,6 +1835,80 @@ extern "C" void enchilada_adreno_poll(void) {
                                                         IOLog("enchilada-adreno: %s\n", hfiRow);
                                                     }
                                                 }
+                                            }
+                                        }
+                                        if (fwKey >= 22u) {
+                                            // ROUND 178: R177 showed that the bare store of
+                                            // HFI_CTRL_INIT kills the kernel before the log writer opens.
+                                            // Upstream a6xx_gmu_fw_start() never writes that register right
+                                            // after the pulse: it first runs a6xx_gmu_gfx_rail_on(), which
+                                            // drops BOOT_SLUMBER_OPTION, votes on the GX and MX rails, and
+                                            // completes the BOOT_SLUMBER out-of-band handshake, and only
+                                            // then (via a6xx_gmu_hfi_start) writes HFI_CTRL_INIT.  This key
+                                            // reproduces that handshake SHAPE but still leaves both vote
+                                            // registers alone: the vote is an index into the RPMh
+                                            // command-db arc table (cmd_db_read_aux_data("gfx.lvl")) and
+                                            // enchilada.dts carries no opp-hz/opp-level at all, so any
+                                            // value written here would be a guess at a rail corner.
+                                            const uint32_t railPre = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            gmuW[ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION] = 0u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] =
+                                                1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t railNow = 0u;
+                                            unsigned railPolls = 0u;
+                                            for (; railPolls < 400000u; ++railPolls) {
+                                                railNow = rd32(
+                                                    sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                                if ((railNow & (1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK)) != 0u) {
+                                                    break;
+                                                }
+                                            }
+                                            const unsigned railAck =
+                                                ((railNow & (1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK)) != 0u)
+                                                    ? 1u : 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] =
+                                                1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_CLEAR;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            const uint32_t railPost = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            const uint32_t railSlumber = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION * 4u);
+                                            const uint32_t railHfiPre = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            if (sHfiWin) {
+                                                gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            }
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            const uint32_t railHfi1 = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            if (fwKey == 22u) {
+                                                char railRow[264];
+                                                snprintf(railRow, sizeof railRow,
+                                                         "gmurail=pre=%08x ack=%u polls=%u post=%08x "
+                                                         "slumber=%08x hfipre=%08x hfi=%08x ok=%d",
+                                                         railPre, railAck, railPolls, railPost, railSlumber,
+                                                         railHfiPre, railHfi1,
+                                                         ((sHfiWin != 0u) && ((railHfi1 & 1u) == 1u)) ? 1 : 0);
+                                                IOLog("enchilada-adreno: %s\n", railRow);
+                                            }
+                                            if (fwKey >= 23u) {
+                                                uint32_t railPoll = railHfi1;
+                                                unsigned railCount = 0u;
+                                                for (; railCount < 1000u; ++railCount) {
+                                                    railPoll = rd32(
+                                                        sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                    if ((railPoll & 1u) == 1u) break;
+                                                }
+                                                char rail2Row[264];
+                                                snprintf(rail2Row, sizeof rail2Row,
+                                                         "gmurail2=pre=%08x ack=%u post=%08x hfipre=%08x "
+                                                         "hfi=%08x polls=%u ok=%d",
+                                                         railPre, railAck, railPost, railHfiPre, railPoll, railCount,
+                                                         ((sHfiWin != 0u) && ((railPoll & 1u) == 1u)) ? 1 : 0);
+                                                IOLog("enchilada-adreno: %s\n", rail2Row);
                                             }
                                         }
                                     }

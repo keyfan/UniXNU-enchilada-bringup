@@ -1207,7 +1207,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 21u' in _fw,
+    check('fwKey >= 7u && fwKey <= 23u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1283,16 +1283,21 @@ def main():
     check(code.count('if (fwKey >= 15u) {') == 1 and
           code.count('if (fwKey >= 16u') == 1 and
           code.count('if (fwKey >= 17u') == 1 and
-          code.count('if (fwKey >= 18u) {') == 1,
-          'R176 the HFI ladder is four keys: 15 allocate, 16 +map and fill, '
-          '17 +the three QTBL registers, 18 +HFI_CTRL_INIT and the poll')
+          code.count('if (fwKey >= 18u && fwKey <= 21u) {') == 1 and
+          code.count('if (fwKey >= 22u) {') == 1 and
+          code.count('if (fwKey >= 23u) {') == 1,
+          'R176+R178 the HFI ladder is 15 allocate, 16 +map and fill, 17 +the '
+          'three QTBL registers, then the doorbell keys 18..21 (re-gated so the '
+          'rail-on keys 22/23 cannot fall through them) and 22/23 for the '
+          'BOOT_SLUMBER handshake and the status poll')
     check('gmuhfi=alloc pa=%08x' in code and 'gmuhfi=table win=%08x' in code and
           'gmuhfi=qtbl addr=%08x' in code and 'gmuhfi=pa=%08x' in code,
           'R176 every ladder stage prints its own row, so a surviving run says '
           'which steps actually happened')
     check(code.index('if (fwKey >= 15u) {') <
           code.index('gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;') <
-          code.index('if (fwKey >= 18u) {'),
+          code.index('if (fwKey >= 18u && fwKey <= 21u) {') <
+          code.index('if (fwKey >= 22u) {'),
           'R176 the table is built before the pulse and hfi_start runs after it, '
           'as upstream orders a6xx_gmu_fw_start() and a6xx_gmu_hfi_start()')
     check('ADRENO_HFI_V1_TABLE_SIZE_BYTES' in code and
@@ -1336,8 +1341,9 @@ def main():
     check('gmuhfi=alloc-failed' in _h1,
           'R175 a refused allocation has its own diagnostic instead of silently '
           'writing a null table address')
-    _h2 = (code.split('if (fwKey >= 18u) {', 1)[1]
-           if 'if (fwKey >= 18u) {' in code else '')
+    _h2 = (code.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[1]
+           .split('if (fwKey >= 22u) {', 1)[0]
+           if 'if (fwKey >= 18u && fwKey <= 21u) {' in code else '')
     check('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;' in _h2,
           'R175 hfi_start stores HFI_CTRL_INIT exactly once')
     check('hfiPolls < 1000u' in _h2 and 'hfiPolls < 400000u' not in _h2,
@@ -1362,6 +1368,36 @@ def main():
           'command read index) instead of being assumed zero')
     check('char hfiRow[288]' in code and 'gmuhfi=pa=%08x' in code,
           'R175 the new row has a declared, sufficient bound')
+    _rail = (code.split('if (fwKey >= 22u) {', 1)[1]
+             .split('if (fwKey >= 11u) {', 1)[0]
+             if 'if (fwKey >= 22u) {' in code else '')
+    check('char railRow[264]' in _rail and 'char rail2Row[264]' in _rail,
+          'R178 both rail-on rows declare their own bounded buffers')
+    check('gmuW[ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION] = 0u;' in _rail,
+          'R178 the rail-on shape drops BOOT_SLUMBER_OPTION first, in exactly the '
+          'order a6xx_gmu_gfx_rail_on() uses')
+    check('gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] =' in _rail and
+          '1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET' in _rail and
+          '1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_CLEAR' in _rail,
+          'R178 the BOOT_SLUMBER doorbell is set and cleared through the OOB bit '
+          'definitions, not through local numbers')
+    check('ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK)) != 0u' in _rail and
+          'railPolls < 400000u' in _rail,
+          'R178 the ack wait is bounded, so a silent CM3 cannot spin the boot')
+    check('ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]' not in _rail and
+          'ADRENO_GMU_BOOT_V1_MX_VOTE_IDX]' not in _rail,
+          'R178 the two rail votes are DELIBERATELY not written: the vote is an '
+          'RPMh command-db arc index and enchilada.dts has no opp-hz/arc-level')
+    check('gmurail=pre=%08x' in _rail and 'gmurail2=pre=%08x' in _rail,
+          'R178 keys 22 and 23 each print their own row')
+    check(_rail.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1,
+          'R178 the doorbell is written once in the rail-on path too, and only '
+          'after the handshake')
+    _i22 = _rail.find('if (fwKey == 22u) {')
+    _i23 = _rail.find('if (fwKey >= 23u) {')
+    check(0 <= _i22 < _i23,
+          'R178 key 23 is a strict extension of key 22, so one surviving run '
+          'separates the handshake from the status poll')
     check('postSig <= 0x20010004u' in _k8 and '0xbabefaceu' in _k8 and
           '0x1ffu' in _k8 and '0x100u' in _k8,
           'R168 the expected FW_INIT_RESULT is SELECTED from the just-loaded DTCM '

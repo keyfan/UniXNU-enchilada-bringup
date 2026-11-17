@@ -327,12 +327,15 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 24,
-              'R168+R170+R171+R175 the pointer writes are exactly the ITCM loop, '
-              'the pulse words, the three handshake words, the nine pre-start '
-              'configuration words and the four HFI words (QTBL_ADDR, QTBL_INFO, '
-              'CP_MSG, CTRL_INIT); the 18 table/ring stores go through hfiTbl/'
-              'hfiQh into the allocated buffer, not through this mapping')
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 28,
+              'R168+R170+R171+R175+R178 the pointer writes are exactly the ITCM '
+              'loop, the pulse words, the three handshake words, the nine '
+              'pre-start configuration words, the four HFI words (QTBL_ADDR, '
+              'QTBL_INFO, CP_MSG, CTRL_INIT) and the four rail-on words of keys '
+              '22/23 (BOOT_SLUMBER_OPTION, HOST2GMU_INTR_SET, GMU2HOST_INTR_CLR '
+              'and the second, handshake-gated doorbell); the 18 table/ring '
+              'stores go through hfiTbl/hfiQh into the allocated buffer, not '
+              'through this mapping, and neither vote register is ever written')
         check('volatile uint32_t *const gmuW' in text,
               'R168 every one of those writes goes through a volatile mapping')
 
