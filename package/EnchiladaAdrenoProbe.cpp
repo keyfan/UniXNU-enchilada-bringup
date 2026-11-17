@@ -1428,6 +1428,9 @@ extern "C" void enchilada_adreno_poll(void) {
                     //     (the first time this kernel can make the GMU *execute*). It is
                     //     a separate value so a `= 7` witness survives even if the pulse
                     //     turns out to hang the boot.
+                    //   * `= 9` (ROUND 169) is `= 8` plus a read-only dump of the GMU
+                    //     status words, to see what the running firmware is waiting on.
+                    //     It writes nothing beyond what `= 8` already writes.
                     // WHAT IS DELIBERATELY ABSENT FROM `= 8`: the three HFI/IOVA writes
                     // (QTBL_ADDR, QTBL_INFO, PWR_COL_CP_MSG), AHB_FENCE_RANGE_0,
                     // HFI_SFR_ADDR and the six power_config writes. The first three need
@@ -1440,7 +1443,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey == 7u || fwKey == 8u);
+                            (fwKey >= 7u && fwKey <= 9u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             if (!sGmuFwVa && &armcpu_map_physical_rw) {
@@ -1507,7 +1510,7 @@ extern "C" void enchilada_adreno_poll(void) {
                                                  ? 1
                                                  : 0);
                                     IOLog("enchilada-adreno: %s\n", loadRow);
-                                    if (fwKey == 8u) {
+                                    if (fwKey >= 8u) {
                                         // Pre-start writes in upstream order
                                         // (a6xx_gmu_fw_start, cold branch).
                                         gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;
@@ -1561,6 +1564,57 @@ extern "C" void enchilada_adreno_poll(void) {
                                                  hfiStat, postReset,
                                                  ((final & mask) == expect) ? 1 : 0);
                                         IOLog("enchilada-adreno: %s\n", boot2Row);
+                                    }
+                                    if (fwKey >= 9u) {
+                                        // ROUND 169: read-only liveness dump. Every
+                                        // address below was already read on this device
+                                        // in an earlier round -- 0x5192 inside ROUND
+                                        // 165's GMU window, 0x23f8..0x23fa via ROUND
+                                        // 166's gmucm3 row, and the two CM3 words in
+                                        // ROUND 167/168 -- so this adds no new aperture.
+                                        // It only asks what the firmware that just
+                                        // answered FW_INIT_RESULT is doing now: whether it
+                                        // sits in its pre-HFI wait loop (intr==0,
+                                        // slumber==0) or has already taken a boot-slumber
+                                        // vote, and whether FW_INIT_RESULT stays latched
+                                        // across the dump instead of decaying.
+                                        const uint32_t intr = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                        const uint32_t liveHfi = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                        const uint32_t slumber = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION * 4u);
+                                        const uint32_t gxVote = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_GX_VOTE_IDX * 4u);
+                                        const uint32_t mxVote = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_MX_VOTE_IDX * 4u);
+                                        // Same sentinel selection the pulse used, re-derived here because
+                                        // that block's locals are out of scope: a6xx_gmu_start() picks
+                                        // 0xbabeface or 0x1ff/0x100 from DTCM word 0xff8, so this dump must
+                                        // not compare against a constant either.
+                                        const uint32_t liveExpect =
+                                            (postSig <= 0x20010004u) ? 0xbabefaceu : 0x100u;
+                                        const uint32_t liveInit = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                        const uint32_t liveReset = rd32(
+                                            sGmuFwVa,
+                                            ADRENO_GMU_BOOT_V1_CM3_SYSRESET * 4u);
+                                        char liveRow[248];
+                                        snprintf(liveRow, sizeof liveRow,
+                                                 "gmulive=intr=%08x hfistat=%08x "
+                                                 "slumber=%08x gxvote=%08x "
+                                                 "mxvote=%08x fwinit=%08x "
+                                                 "reset=%08x ok=%d",
+                                                 intr, liveHfi, slumber, gxVote,
+                                                 mxVote, liveInit, liveReset,
+                                                 (liveInit == liveExpect) ? 1 : 0);
+                                        IOLog("enchilada-adreno: %s\n", liveRow);
                                     }
                                 }
                             }

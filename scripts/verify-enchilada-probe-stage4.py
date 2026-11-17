@@ -191,11 +191,11 @@ def main():
     _outside = code.replace(_rw167, '') if _rw167 else code
     _outside = re.sub(r'gmuW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey == 7u || fwKey == 8u' in code and
+          'fwKey >= 7u && fwKey <= 9u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
-    _k8 = (code.split('if (fwKey == 8u) {', 1)[1]
-           if 'if (fwKey == 8u) {' in code else '')
+    _k8 = (code.split('if (fwKey >= 8u) {', 1)[1]
+           if 'if (fwKey >= 8u) {' in code else '')
     check(_k8 != '' and
           code.count('gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;') == 1 and
           code.count('gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;') == 1 and
@@ -203,6 +203,12 @@ def main():
           'gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;' in _k8,
           'R168 the reset pulse exists exactly once and only inside the key-8 '
           'sub-block')
+    _live = (code.split('if (fwKey >= 9u) {', 1)[1].split('IOLog("enchilada-adreno: %s\\n", liveRow);', 1)[0]
+             if 'if (fwKey >= 9u) {' in code else '')
+    check(_live != '' and 'gmulive=intr=%08x hfistat=%08x ' in code and
+          not re.search(r'gmuW\[[^\]]*\]\s*=[^=]', _live),
+          'R169 the key-9 liveness dump is READ-ONLY: it adds no store to the '
+          'pinned write set above')
     hits = []
     for m in store_re.finditer(_outside):
         # A DECLARATION also matches (`const char *verdict = ...`). Exclude it by

@@ -1199,7 +1199,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey == 7u || fwKey == 8u' in _fw,
+    check('fwKey >= 7u && fwKey <= 9u' in _fw,
           'R168 it is armed by its own key values (7 and 8); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
           'R168 the ABSENT stub is refused explicitly instead of writing four bytes')
@@ -1214,9 +1214,9 @@ def main():
           'rb0 == adreno_gmu_image[0]' in _fw and
           'rbLast ==' in _fw,
           'R168 the load is READ BACK (head, second, mid, last) instead of assumed')
-    check('if (fwKey == 8u) {' in _fw,
+    check('if (fwKey >= 8u) {' in _fw,
           'R168 the pulse is confined to the key-8 sub-block')
-    _k8 = (_fw.split('if (fwKey == 8u) {', 1)[1] if 'if (fwKey == 8u) {' in _fw else '')
+    _k8 = (_fw.split('if (fwKey >= 8u) {', 1)[1] if 'if (fwKey >= 8u) {' in _fw else '')
     _pulse = tuple(['gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;',
                     'gmuW[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;',
                     'gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;',
@@ -1255,6 +1255,39 @@ def main():
           'R168 both new rows have declared, sufficient bounds')
     check('stage >= 7u' not in code,
           'R168 still no new stage value: the boot-arg mask stays exactly 1..6')
+
+    # ==== ROUND 169 (slice 3, step 1): read-only liveness dump ==============
+    # The firmware answered FW_INIT_RESULT in ROUND 168, so the next question is
+    # what it is waiting on. This sub-block only READS status words that earlier
+    # rounds already read on this device, so its contract is narrow: no store, no
+    # new mapping, and the same sentinel comparison the pulse used.
+    check('gmulive=intr=%08x hfistat=%08x ' in code,
+          'R169 the liveness row is present')
+    check('if (fwKey >= 9u) {' in code,
+          'R169 the dump is armed by its own key value and sits after the pulse')
+    _live = (code.split('if (fwKey >= 9u) {', 1)[1].split('IOLog("enchilada-adreno: %s\\n", liveRow);', 1)[0]
+             if 'if (fwKey >= 9u) {' in code else '')
+    check(_live != '', 'R169 the dump body is delimited')
+    check(not re.search(r'gmuW\[[^\]]*\]\s*=[^=]', _live),
+          'R169 the dump contains NO store through the writable mapping')
+    check('armcpu_map_physical' not in _live,
+          'R169 the dump opens no new aperture: it reuses the GMU mapping only')
+    for _word in ('ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO',
+                  'ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS',
+                  'ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION',
+                  'ADRENO_GMU_BOOT_V1_GX_VOTE_IDX',
+                  'ADRENO_GMU_BOOT_V1_MX_VOTE_IDX',
+                  'ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT',
+                  'ADRENO_GMU_BOOT_V1_CM3_SYSRESET'):
+        check(_word in _live, 'R169 the dump reads %s' % _word)
+    check('const uint32_t liveExpect =' in _live and
+          '(postSig <= 0x20010004u) ? 0xbabefaceu : 0x100u' in _live and
+          '(liveInit == liveExpect) ? 1 : 0' in _live,
+          'R169 the ok field re-derives the same sentinel the pulse selected, so '
+          'the dump cannot claim liveness on a different comparison')
+    check('char liveRow[248]' in code, 'R169 the row has a declared, sufficient bound')
+    check('stage >= 7u' not in code,
+          'R169 still no new stage value: the boot-arg mask stays exactly 1..6')
 
 
 
