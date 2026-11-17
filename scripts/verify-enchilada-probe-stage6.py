@@ -1084,6 +1084,35 @@ def main():
           'ttbr0=%llx' not in code,
           'R164 the fatal GR1/CB0-offset reads stay removed (device-verified)')
 
+    # ==== ROUND 165 (slice 0): read-only GMU window probe ==================
+    # R164 left two measured facts: the CPU path stops at CX, and GX is never
+    # raised by the CPU (gpu_gx_gdsc.power_on is gdsc_gx_do_nothing_enable), so
+    # on A630 the GX rail belongs to the GMU firmware.  The next question is
+    # whether the GMU window is reachable once CX is up.  The stage-2 block asks
+    # that but runs BEFORE the power-up, so on device it always reported
+    # `cx-down-gmu-not-mapped`; this block asks it after the five ops.
+    # ---- 1. the probe exists, is read-only, and is behind the second key ----
+    check('ROUND 165' in text and 'gmu=probe fwinit=%08x' in code,
+          'R165 the read-only GMU probe row is present')
+    check('gmuKey == 3u' in code and 'enchilada-pas-exec' in code,
+          'R165 the GMU probe is armed by `enchilada-pas-exec=3` (same key, '
+          'same width: the 991-byte command line does not grow)')
+    check('stage >= 7u' not in code,
+          'R165 no new stage value: the four verifiers pin the mask to 1..6')
+    _gmuHead = (code.split('gmuArmed', 1)[1].split('gmu=probe', 1)[0]
+                if 'gmuArmed' in code else '')
+    check(_gmuHead != '' and 'write32' not in _gmuHead and
+          'armcpu_scm_call' not in _gmuHead and 'smc5' not in _gmuHead,
+          'R165 the GMU probe performs NO register write and NO SMC')
+    # ---- 2. every read is a pinned a6xx_gmu.xml word offset ----------------
+    for _name in ('CM3_FW_INIT_RESULT', 'SPTPRAC_PWR_CLK_STATUS',
+                  'HFI_CTRL_STATUS', 'HFI_SFR_ADDR', 'RSCC_CONTROL_ACK',
+                  'GPU_CC_GX_GDSCR', 'GENERAL_7'):
+        check('ADRENO_GMU_BOOT_V1_%s * 4u' % _name in code,
+              'R165 the GMU probe reads %s at its pinned word offset' % _name)
+    check('char gmuRow[240]' in code,
+          'R165 the GMU row has a declared, sufficient bound')
+
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the
     # old 384, so the buffer grew to 512. A truncating snprintf would silently

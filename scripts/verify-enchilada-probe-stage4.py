@@ -136,15 +136,20 @@ def main():
           'GR0_ID0 is read once, at byte 0x20 (stage 6, coherent_walk)')
     check('rd32(gSmmuVa, 0x24u)' in code,
           'GR0_ID1 is read once, at byte 0x24 (stage 6, NUMCB/NUMS2CB)')
-    # ROUND 158: the ID reads stay exactly-once each (checked below); the total
-    # count is relaxed because the ROUND 158 read-only GPU-state snapshot adds
-    # gated gSmmuVa reads (GR0_SCTLR @0x0 + CB0 TTBR0/TTBR1) at the stage-7
-    # level. Each SMMU ID read must still appear exactly once.
+    # ROUND 158 added a read-only GPU-state snapshot; ROUND 164 device-verified
+    # that its "CB0" TTBR0/TTBR1 reads actually used the GR1 base (0x800) instead
+    # of the CB base (0x8000), hitting unimplemented GR1 offsets and aborting
+    # before the log window opened (seven silent boots).  R164 removed them and
+    # R164 on device produced the first `gputate=` row, so this contract now pins
+    # their ABSENCE -- otherwise they could come back and the boot would go
+    # silent again with no failing check.
     for _o in ('0x20u', '0x24u', '0x28u'):
         check(code.count('rd32(gSmmuVa, %s)' % _o) == 1,
               'SMMU read at byte %s appears exactly once (no duplicate ID read)' % _o)
-    check('0x800u + 0x20u' in code and '0x800u + 0x28u' in code,
-          'R158 the CB0 TTBR0/TTBR1 reads are the documented gated snapshot')
+    check('0x800u + 0x20u' not in code and '0x800u + 0x28u' not in code,
+          'R164 the GR1/CB0-offset TTBR0/TTBR1 reads stay removed (device-verified fatal)')
+    check('rd32(gSmmuVa, 0x0u)' in code,
+          'R158/R164 keeps exactly one GR0 SCTLR read (byte 0x0), the surviving snapshot word')
     check('dsb sy' in code,
           'a full barrier follows the register read')
     check('adreno_iommu_id2_decode(id2, &d)' in code,

@@ -1154,6 +1154,81 @@ extern "C" void enchilada_adreno_poll(void) {
                         IOLog("enchilada-adreno: %s\n", gpuStateRow);
                         setGpuStateReplay(gpuStateRow);
                     }
+                    // ---- ROUND 165 (slice 0): read-only GMU window probe ----
+                    // WHY THIS EXISTS. R164 closed the R158 question and left
+                    // two measured facts: the CPU-side path stops at CX (the
+                    // stage-5 five ops raised CX to 80001fe0, device-verified)
+                    // and GX is NOT raised by the CPU -- gpu_gx_gdsc.power_on is
+                    // gdsc_gx_do_nothing_enable (AdrenoPowerUpV1.h:60-63), so on
+                    // A630 the GX rail is raised by the GMU firmware over HFI.
+                    // The next question is therefore not "which register powers
+                    // GX" but "is the GMU window reachable at all once CX is up".
+                    //
+                    // The stage-2 block above asks the same question, but it runs
+                    // BEFORE the power-up, so on every observed boot it takes the
+                    // `stage2=cx-down-gmu-not-mapped` path and the window has
+                    // never been touched on this device. This block asks it AFTER
+                    // the five ops, inside the stage>=4 permitted branch (i.e.
+                    // only when CX is actually up).
+                    //
+                    // WHY A THIRD VALUE AND NOT A NEW BOOT ARG. The merged
+                    // command line is 991 bytes of a 1000-byte budget (asserted
+                    // by this verifier), and the four stage verifiers pin the
+                    // probe's stage mask to `stage < 1u || stage > 6u`. A new key
+                    // would overflow the line and widening the mask would weaken
+                    // those assertions. `enchilada-pas-exec=3` costs ZERO bytes
+                    // (`=2` and `=3` are the same length) and reuses the existing
+                    // second key, exactly like ROUND 131's `=2`.
+                    //
+                    // STRICTLY READ-ONLY: rd32 loads only. No register write, no
+                    // SMC, no map outside the already-approved GMU window. If the
+                    // GMU is unclocked these reads may abort -- that is precisely
+                    // what this slice is meant to discover, which is why the key
+                    // is absent by default (`enchilada-pas-exec=2`).
+                    {
+                        unsigned gmuKey = 0;
+                        const bool gmuArmed =
+                            PE_parse_boot_argn("enchilada-pas-exec", &gmuKey,
+                                               sizeof gmuKey) && gmuKey == 3u;
+                        if (gmuArmed) {
+                            if (!gGmuVa && &armcpu_map_physical) {
+                                const uint64_t gva = armcpu_map_physical(
+                                    ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
+                                if (gva) gGmuVa = static_cast<uintptr_t>(gva);
+                            }
+                            char gmuRow[240];
+                            if (!gGmuVa) {
+                                snprintf(gmuRow, sizeof gmuRow, "gmu=map-failed");
+                            } else {
+                                // Word offsets from AdrenoGmuBootV1.h (pinned to
+                                // a6xx_gmu.xml); the GMU window is dword-indexed,
+                                // so the byte offset is word * 4.
+                                const uint32_t fwInit = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                const uint32_t sptprac = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                const uint32_t hfiStat = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                const uint32_t hfiSfr = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_HFI_SFR_ADDR * 4u);
+                                const uint32_t rsccAck = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_RSCC_CONTROL_ACK * 4u);
+                                const uint32_t gdscr = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                const uint32_t g7 = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_GENERAL_7 * 4u);
+                                __asm__ volatile("dsb sy" ::: "memory");
+                                const uint32_t bs = AdrenoGmuBootV1BootState(g7);
+                                snprintf(gmuRow, sizeof gmuRow,
+                                         "gmu=probe fwinit=%08x sptprac=%08x "
+                                         "hfistat=%08x hfisfr=%08x rsccack=%08x "
+                                         "gdscr=%08x general7=%08x boot_state=%u",
+                                         fwInit, sptprac, hfiStat, hfiSfr,
+                                         rsccAck, gdscr, g7, bs);
+                            }
+                            IOLog("enchilada-adreno: %s\n", gmuRow);
+                        }
+                    }
                     // ---- ROUND 109 stage 7: the PAS three-stage PLAN ----
                     // WHY THIS IS NESTED INSIDE `stage >= 6` AND NOT `stage == 7`:
                     // four verifiers (probe-stage3/4/5/6) assert the boot-arg mask

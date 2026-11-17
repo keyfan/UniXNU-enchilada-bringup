@@ -896,3 +896,77 @@ ROUND 158 块里执行到的最后几行是：
   只读、不写。
 - `a630_gmu.bin` 的可信度来自「它是从这台手机的 vendor_a 抽出来的」，不是来自签名校验 —— 我们没验签，也不需要
   （CPU 加载不经 TZ）。
+
+## 十七、ROUND 165（切片 0）：GMU 窗口可读，但 GMU 从未启动
+
+**一句话**：CX 起来后 GMU 窗口**读得动、不 abort**（这是切片 0 要问的唯一问题，
+答案是「可读」）；但七个字的读数一致指向**GMU 从未被启动过**（固件从未加载），
+所以下一步不是「找 GX 寄存器」，而是**把 GMU 冷启动起来**。
+
+### 17.1 为什么用第二把钥匙的第三个值
+
+- 四个 stage 验证器把 probe 的 stage 掩码钉死为 `stage < 1u || stage > 6u`，加 stage 7
+  会削弱它们；合并后的命令行 991/1000 字节，加新 key 会溢出。
+- 所以沿用 ROUND 131 的形状：`enchilada-pas-exec` 的值本身选择动作。`=1`/`=2` 保持
+  R129/R131 的既有含义（`=2` 就是 FAST_CALL/STD_CALL 那条 PAS 计划），**`=3` 是新的**
+  「只读 GMU 探测」。`=2`→`=3` 同宽，payload 只改一个字节。
+- 真机把这条设计验证了两次：新块跑了（`gmu=` 行出现），而 stage-7 的 PAS 计划**没有**
+  被重新武装（`stage7=armed-not-executed why=not-armed armed=0 exec_key=3 rc=1 ran=0
+  calls=0`）。也就是说 `=3` 既拿到了 GMU 读数，又没有把 R129 那条危险的 SMC 路径
+  再跑一遍 —— 这正是「值选择动作」的好处。
+
+### 17.2 判决（DEVICE-VERIFIED）
+
+- 构建：#272 / run `44006845332`（分支 `r165-gmu-probe`，commit `8637c1a2`），
+  kernel sha256 `ac3299588290bfec81a4197fe5515a5734bcfd6e8c3bde28a17da3ad7f457d94`，
+  CI payload sha256 `034f2e9219249a526bbe2fd25fa894d38162c06663169499ceb2587cbd369652`。
+- 上机用的镜像是**本地重打 key** 的副本：`enchilada-pas-exec=2` → `=3`（等长替换），
+  sha256 `5b55c64b1fb1b8fd58325a78e30325c29833664996ba4002855f29218b7b02a7`。
+  刷写回读与 payload 头一致（`system_b` 头 8 MiB `46d655d93727087b24c50959b43373c3003d27cf896f50207153497f8783e181`）。
+- 窗口 33,554,432 B sha256 `32f764d5c5924443fbafa746441ea928c740141c1ae8bf8a7f7c28e5632e7d6a`，
+  **boot_id=583848016（本轮新写）**，msg_bytes=28959，slots_written=7，uptime_s=3，write_errors=0。
+- `gmu=` 行（逐字，本轮唯一新读数）：
+
+  `gmu=probe fwinit=00000000 sptprac=000000d4 hfistat=00000000 hfisfr=00000000 rsccack=00000000 gdscr=00222001 general7=00000000 boot_state=1`
+
+- 判据：**新 boot_id + `gmu=` 行** ⇒ GMU 窗口在 CX up 之后可达，读不 abort。
+
+### 17.3 七个字怎么读（只用仓库钉住的位定义，不猜）
+
+- `fwinit=0`：`CM3_FW_INIT_RESULT` 为 0，固件从未报告过 init 结果 —— CPU 从未把
+  `a630_gmu.bin` 拷进去，也没有启动它。
+- `hfistat=0 hfisfr=0 rsccack=0`：没有任何 HFI 活动、没有 SFR 地址、RSC 没有 ACK。
+  与「固件没跑」完全一致。
+- `general7=0` 且 `boot_state=1`：`AdrenoGmuBootV1BootState` 的规则是
+  `GENERAL_7 == 1 -> WARM，否则 COLD`，而 `ADRENO_GMU_BOOT_V1_COLD` 就是 1。**冷启动**。
+- `sptprac=0x000000d4`：`SPTPRAC_CLK_MASK 0x38`，`0xd4 & 0x38 = 0x14`，**不等于**
+  `SPTPRAC_CLK_PATTERN 0x28` ⇒ SPTPRAC 时钟不在「已开」模式。这个字**不是零**，说明
+  GMU 的寄存器块是被时钟过的（能读回非零值），但 SPTPRAC 那一步没做过。
+- `gdscr=0x00222001`：`GX_RETENTION_BIT 0x800` 未置位；bit16（POWER_UP_COMPLETE）也未置位。
+  与 R164 从 GPUCC 读到的 `gx=0x00088400`（bit15 POWER_DOWN_COMPLETE=1、bit16=0）互相印证：
+  **GX 轨道始终塌陷**。
+- 结论：GMU 的**窗口**活着、**控制器**没启动。这与上游 `a6xx_gmu.c` 的顺序一致 ——
+  在 `gmu_start`/`fw_load` 之前，`GENERAL_7`/`HFI` 本来就该是 0。
+
+### 17.4 这次判决的诚实边界
+
+- 只有**一回合**读数。`gmu=` 行是本轮新代码，必然属于本轮；但同一窗口里的
+  `gputate=` 行数值与 R164 完全相同（`gx=00088400 … sctlr=00200626`），**不能**用它
+  单独证明 R158 块本轮也跑了 —— 它可能是上一轮遗留在槽里的旧行。这不影响本节结论
+  （本轮结论只依赖 `gmu=` 行与 boot_id），但下游引用时不要混用。
+- 「读得动」只证明**读**不 abort。写同一个窗口会不会 abort **没有测**（本切片严格只读）。
+- GMU 是否被 CX 部分上电、`sptprac=0xd4` 的 bit2/bit4/bit6/bit7 各自含义、`gdscr` 的
+  bit13/17/21，本仓库**没有**钉住命名，这里**不解释**。
+
+### 17.5 下一步（切片 1：GMU 冷启动）
+
+- 目标：让 `fwinit` 变成 `a6xx_gmu` 的 `GMU_FW_START` 值、HFI 有 SFR 地址、GENERAL_7 变 1（WARM 之后才会走 warm 路径）。
+- 需要的输入已经齐了：`a630_gmu.bin`（32,768 B，sha256 `b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f`）、
+  GMEM 基址（`kgsl_gmu_reg` 里的 GMEM 窗口）、`AdrenoGmuBootV1PlanCold` 的 op 流、
+  `AdrenoHfiV1` 的队列布局。
+- 顺序（上游 `a6xx_gmu.c`）：RSC/PDC 初始化 → rpmh_start → GMU clocks → `gmu_start`
+  （CM3 复位 + boot config）→ HFI 初始化 → OOB → SPTPRAC → `gfx_rail_on` → power config
+  → **固件拷贝进 GMEM** → `fw_start`（fence + chipid）。
+- 风险已知且要说在前面：`gfx_rail_on` 要写 `vdd`（phandle 0x2a9，= gpu_gx_gdsc）。若 TZ
+  把 regulator 归自己管，第一次写就会 abort —— 那会是**在日志窗口打开之后**的 abort
+  （因为此时日志已经在写），所以会留下窗口，而不是像 R158 那样零字节。
