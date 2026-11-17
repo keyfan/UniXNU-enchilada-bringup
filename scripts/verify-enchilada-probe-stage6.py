@@ -1066,13 +1066,23 @@ def main():
           'R158 svt_read distinguishes "SECVID not read (GX down)" from "read"')
     # ---- 3. the new row fields ----
     check('gxb16=%d' in code and 'svt=%08x sbc=%08x sbb=%llx sbs=%08x' in code and
-          'sctlr=%08x ttbr0=%llx ttbr1=%llx' in code,
-          'R158 the row carries gx/gxon/gxb16/svt/sbc/sbb/sbs/sctlr/ttbr0/ttbr1')
-    # ---- 4. the SMMU config read uses the pinned CB0 offsets ----
-    check('rd32(gSmmuVa, 0x0u)' in code and
-          'rd32(gSmmuVa, 0x800u + 0x20u)' in code and
-          'rd32(gSmmuVa, 0x800u + 0x28u)' in code,
-          'R158 SMMU reads use GR0_SCTLR + CB0 TTBR0/TTBR1 offsets')
+          'sctlr=%08x' in code,
+          'R158/R164 the row carries gx/gxon/gxb16/svt/sbc/sbb/sbs/sctlr')
+    # ---- 4. only the GR0 page is read (ROUND 164, device-verified) ----
+    # ROUND 158 also read `0x800 + 0x20` / `0x800 + 0x28` believing those were
+    # CB0 TTBR0/TTBR1.  They are GR1 offsets (kAdrenoSmmuGr1Cba2r is pinned at
+    # 0x800) and CB0 actually sits at 0x8000 on a qcom SMMU-500.  ROUND 163's
+    # boot-arg bisect put the fatal read inside this block: stage=4 booted with
+    # `stage4=refused verdict=3(cx-down)`, stage=5 died once the power-up raised
+    # CX and let the permitted branch run, and the pre-R158 probe booted at both
+    # stage=5 and stage=6.  The unimplemented-GR1 read is the only access the
+    # surviving builds never performed, so it must stay out until CB0 is clocked
+    # and owned by this driver.
+    check('rd32(gSmmuVa, 0x0u)' in code,
+          'R164 SMMU read is the GR0_SCTLR word (the GR0 page is demonstrably alive)')
+    check('0x800u + 0x20u' not in code and '0x800u + 0x28u' not in code and
+          'ttbr0=%llx' not in code,
+          'R164 the fatal GR1/CB0-offset reads stay removed (device-verified)')
 
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the

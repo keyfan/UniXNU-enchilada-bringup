@@ -1111,28 +1111,46 @@ extern "C" void enchilada_adreno_poll(void) {
                             }
                         }
 
-                        // SMMU config: GR0_SCTLR (offset 0x0, the global enable),
-                        // and context-bank 0 TTBR0/TTBR1 (CB0 base 0x800 + the
-                        // pinned kAdrenoSmmuCbTtbr0=0x20 / kAdrenoSmmuCbTtbr1=0x28).
-                        // A non-zero TTBR means somebody already installed a
-                        // page table. gSmmuVa was mapped at stage 4 (CX up).
+                        // SMMU config: GR0_SCTLR (offset 0x0, the global enable).
+                        //
+                        // ROUND 164: THE CB0 TTBR READS ARE GONE, and this is a
+                        // device-verified removal, not a guess. ROUND 163 proved
+                        // the boot died inside this block and nowhere else:
+                        //   stage=1 booted  (block never reached),
+                        //   stage=4 booted  (`stage4=refused verdict=3(cx-down)`,
+                        //                    so the permitted branch never ran),
+                        //   stage=5 DIED    (stage 5 raised CX, the gate
+                        //                    permitted, this block ran),
+                        //   #267's pre-R158 probe at stage=5 and at stage=6
+                        //                    booted, i.e. the same stage-5 power-up
+                        //                    plus the stage-4 GR0_ID2 read is
+                        //                    harmless; only these additions are
+                        //                    fatal.
+                        // The SECVID part is gated on GX-up, and GX is collapsed
+                        // on every observed boot, so it never executed -- which is
+                        // why deleting it in R163 P1b changed nothing. What did
+                        // execute were these SMMU reads, and `0x800 + 0x20` /
+                        // `0x800 + 0x28` are NOT context-bank registers: 0x800 is
+                        // GR1 (kAdrenoSmmuGr1Cba2r is pinned there), while a qcom
+                        // SMMU-500 puts CB0 at 0x8000. Reading an unimplemented
+                        // GR1 offset is exactly the access that raises an external
+                        // abort on this SMMU, and an abort before the log writer
+                        // opens leaves no window at all -- which is what every
+                        // silent boot showed. So only the GR0 page, demonstrably
+                        // alive (the gate reads GR0_ID2 at 0x28 every poll), is
+                        // touched now. The TTBR question is not dropped, it is
+                        // deferred to a point where CB0 is clocked and owned.
                         uint32_t sctlr = gSmmuVa ? rd32(gSmmuVa, 0x0u) : 0u;
-                        uint64_t ttbr0 = 0, ttbr1 = 0;
-                        if (gSmmuVa) {
-                            ttbr0 = rd32(gSmmuVa, 0x800u + 0x20u);
-                            ttbr1 = rd32(gSmmuVa, 0x800u + 0x28u);
-                            __asm__ volatile("dsb sy" ::: "memory");
-                        }
+                        if (gSmmuVa) __asm__ volatile("dsb sy" ::: "memory");
 
                         char gpuStateRow[340];
                         snprintf(gpuStateRow, sizeof gpuStateRow,
                                  "gputate=gx=%08x gxon=%d gxb16=%d svt_read=%d "
                                  "svt=%08x sbc=%08x sbb=%llx sbs=%08x "
-                                 "sctlr=%08x ttbr0=%llx ttbr1=%llx",
+                                 "sctlr=%08x",
                                  gxNow, gxon, gxb16, svt_read,
                                  svt, sbc, (unsigned long long)sbb, sbs,
-                                 sctlr, (unsigned long long)ttbr0,
-                                 (unsigned long long)ttbr1);
+                                 sctlr);
                         IOLog("enchilada-adreno: %s\n", gpuStateRow);
                         setGpuStateReplay(gpuStateRow);
                     }
