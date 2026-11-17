@@ -1094,9 +1094,10 @@ def main():
     # ---- 1. the probe exists, is read-only, and is behind the second key ----
     check('ROUND 165' in text and 'gmu=probe fwinit=%08x' in code,
           'R165 the read-only GMU probe row is present')
-    check('gmuKey == 3u' in code and 'enchilada-pas-exec' in code,
-          'R165 the GMU probe is armed by `enchilada-pas-exec=3` (same key, '
-          'same width: the 991-byte command line does not grow)')
+    check('gmuKey >= 3u' in code and 'gmuKey <= 5u' in code and
+          'enchilada-pas-exec' in code,
+          'R165 the GMU probe family is armed by `enchilada-pas-exec` values '
+          '3..5 (same key, same width: the 991-byte command line does not grow)')
     check('stage >= 7u' not in code,
           'R165 no new stage value: the four verifiers pin the mask to 1..6')
     _gmuHead = (code.split('gmuArmed', 1)[1].split('gmu=probe', 1)[0]
@@ -1112,6 +1113,43 @@ def main():
               'R165 the GMU probe reads %s at its pinned word offset' % _name)
     check('char gmuRow[240]' in code,
           'R165 the GMU row has a declared, sufficient bound')
+
+    # ==== ROUND 166 (slice 1a): CM3 boot words + the PDC window ============
+    # R165 read seven GMU words without aborting but found the GMU COLD and
+    # never booted.  The next two questions are software preconditions the CPU
+    # can inspect before any write: (a) what do the CM3 boot strap words say
+    # (CM3_BOOT_CONFIG should be 0x2 and CM3_CFG 0x4052 before the firmware can
+    # fetch), and (b) is the separate 3 MiB PDC window readable at all.  They
+    # are split across two key values so a PDC abort cannot be mistaken for a
+    # CM3 read failure.
+    check('ROUND 166' in text and 'gmucm3=sptpwr=%08x' in code and
+          'gmupdc=pdcen=%08x' in code,
+          'R166 the CM3/boot row and the PDC row are both present')
+    check('gmupdc=map-failed' in code,
+          'R166 a failed PDC mapping has its own diagnostic, not a silent skip')
+    for _name in ('SPTPRAC_POWER_CONTROL', 'CM3_BOOT_CONFIG', 'CM3_CFG',
+                  'BOOT_SLUMBER_OPTION', 'GX_VOTE_IDX', 'MX_VOTE_IDX'):
+        check('ADRENO_GMU_BOOT_V1_%s * 4u' % _name in code,
+              'R166 the CM3 probe reads %s at its pinned word offset' % _name)
+    for _name in ('PDC_ENABLE_PDC', 'PDC_SEQ_START_ADDR', 'PDC_SEQ_MEM_0'):
+        check('ADRENO_GMU_BOOT_V1_%s * 4u' % _name in code,
+              'R166 the PDC probe reads %s at its pinned word offset' % _name)
+    check('ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE' in code and
+          'ADRENO_GMU_BOOT_V1_CM3_CFG_VALUE' in code,
+          'R166 the CM3 expectations are the pinned a6xx_gmu.xml values '
+          '(0x02 / 0x4052), not invented thresholds')
+    check('ADRENO_BOARD_GMU_PDC_BASE' in code and
+          'ADRENO_BOARD_GMU_PDC_SIZE' in code and
+          'stage >= 7u' not in code,
+          'R166 the PDC window is the DTB-pinned one, still inside the '
+          'stage>=4 permitted branch (no new stage value)')
+    _cm3Head = (code.split('if (gmuKey >= 4u', 1)[1].split('gmucm3=sptpwr', 1)[0]
+                if 'if (gmuKey >= 4u' in code else '')
+    check(_cm3Head != '' and 'write32' not in _cm3Head and
+          'armcpu_scm_call' not in _cm3Head and 'smc5' not in _cm3Head,
+          'R166 the CM3 probe performs NO register write and NO SMC')
+    check('char cm3Row[224]' in code and 'char pdcRow[184]' in code,
+          'R166 both new rows have declared, sufficient bounds')
 
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the

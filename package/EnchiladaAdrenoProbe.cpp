@@ -1189,7 +1189,8 @@ extern "C" void enchilada_adreno_poll(void) {
                         unsigned gmuKey = 0;
                         const bool gmuArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &gmuKey,
-                                               sizeof gmuKey) && gmuKey == 3u;
+                                               sizeof gmuKey) && gmuKey >= 3u &&
+                            gmuKey <= 5u;
                         if (gmuArmed) {
                             if (!gGmuVa && &armcpu_map_physical) {
                                 const uint64_t gva = armcpu_map_physical(
@@ -1227,6 +1228,85 @@ extern "C" void enchilada_adreno_poll(void) {
                                          rsccAck, gdscr, g7, bs);
                             }
                             IOLog("enchilada-adreno: %s\n", gmuRow);
+                            // ---- ROUND 166 (slice 1a): the CM3/boot words and
+                            // the PDC window, still strictly read-only.
+                            //
+                            // R165 answered "is the GMU window reachable once CX
+                            // is up" with yes: seven dword reads returned
+                            // fwinit=0 / hfistat=0 / hfisfr=0 / rsccack=0 /
+                            // general7=0 / sptprac=000000d4 / gdscr=00222001, i.e.
+                            // COLD and never booted, and no abort. The next two
+                            // unknowns are (a) what the CM3 boot strap currently
+                            // says -- if CM3_BOOT_CONFIG is not 0x2 or CM3_CFG is
+                            // not 0x4052 the firmware would never fetch, and that
+                            // is a software precondition we can fix before writing
+                            // a single register -- and (b) whether the separate
+                            // 3 MiB PDC window is even readable.
+                            //
+                            // WHY TWO VALUES AND NOT ONE. =4 adds only CM3 words
+                            // from the already-mapped GMU window; =5 additionally
+                            // maps ADRENO_BOARD_GMU_PDC_BASE, a window this device
+                            // has never touched. Keeping them separate means a
+                            // silent boot at =5 with =4 having succeeded isolates
+                            // the PDC window rather than the CM3 reads.
+                            if (gmuKey >= 4u && gGmuVa) {
+                                const uint32_t sptPwr = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL * 4u);
+                                const uint32_t bootCfg = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG * 4u);
+                                const uint32_t cm3Cfg = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_CM3_CFG * 4u);
+                                const uint32_t slumber = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION * 4u);
+                                const uint32_t gxVote = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_GX_VOTE_IDX * 4u);
+                                const uint32_t mxVote = rd32(gGmuVa,
+                                    ADRENO_GMU_BOOT_V1_MX_VOTE_IDX * 4u);
+                                __asm__ volatile("dsb sy" ::: "memory");
+                                char cm3Row[224];
+                                snprintf(cm3Row, sizeof cm3Row,
+                                         "gmucm3=sptpwr=%08x bootcfg=%08x "
+                                         "cm3cfg=%08x slumber=%08x gxvote=%08x "
+                                         "mxvote=%08x bootcfg_ok=%d cm3cfg_ok=%d",
+                                         sptPwr, bootCfg, cm3Cfg, slumber,
+                                         gxVote, mxVote,
+                                         bootCfg ==
+                                                 ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE
+                                             ? 1
+                                             : 0,
+                                         cm3Cfg ==
+                                                 ADRENO_GMU_BOOT_V1_CM3_CFG_VALUE
+                                             ? 1
+                                             : 0);
+                                IOLog("enchilada-adreno: %s\n", cm3Row);
+                            }
+                            if (gmuKey >= 5u) {
+                                static uintptr_t sPdcVa = 0;
+                                if (!sPdcVa && &armcpu_map_physical) {
+                                    const uint64_t pva = armcpu_map_physical(
+                                        ADRENO_BOARD_GMU_PDC_BASE,
+                                        ADRENO_BOARD_GMU_PDC_SIZE);
+                                    if (pva) sPdcVa = static_cast<uintptr_t>(pva);
+                                }
+                                char pdcRow[184];
+                                if (!sPdcVa) {
+                                    snprintf(pdcRow, sizeof pdcRow,
+                                             "gmupdc=map-failed");
+                                } else {
+                                    const uint32_t pdcEn = rd32(sPdcVa,
+                                        ADRENO_GMU_BOOT_V1_PDC_ENABLE_PDC * 4u);
+                                    const uint32_t seqStart = rd32(sPdcVa,
+                                        ADRENO_GMU_BOOT_V1_PDC_SEQ_START_ADDR * 4u);
+                                    const uint32_t seqMem = rd32(sPdcVa,
+                                        ADRENO_GMU_BOOT_V1_PDC_SEQ_MEM_0 * 4u);
+                                    __asm__ volatile("dsb sy" ::: "memory");
+                                    snprintf(pdcRow, sizeof pdcRow,
+                                             "gmupdc=pdcen=%08x seqstart=%08x "
+                                             "seqmem=%08x mapped=1",
+                                             pdcEn, seqStart, seqMem);
+                                }
+                                IOLog("enchilada-adreno: %s\n", pdcRow);
+                            }
                         }
                     }
                     // ---- ROUND 109 stage 7: the PAS three-stage PLAN ----
