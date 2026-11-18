@@ -2245,3 +2245,420 @@ boot-slumber 门铃照旧不应答，CM3 照旧 `post=00800000`（FAULT）。
   **不作解读**。
 - 本轮没有重新验证 R182 的 `0x861e0000`：那是另一支镜像的读数，本轮只测了
   `0x85fe0000` 与 `0xc3f00000` 页。
+
+## 三十六、ROUND 188：从 `0x85fe0000` 读三张 arc-vote 表 —— `gfx.lvl` 十档，另两张读不到
+
+**一句话**：命令数据库确实能解析，`gfx.lvl` 读出十档、最高 `0x01a0` 在下标 9；
+但 `cx.lvl` 与 `mx.lvl` 都报 0 条。**当时的结论（「这两张表不在这两个名字下」）后来
+被 ROUND 189/190/191 推翻**，真因是解析器的一个越界读 —— 见 §三十八、§三十九。
+
+### 36.1 键 35 的形状（只读）
+
+- 构建：#296 / run `44262364300`（分支 `r188-level-tables`，commit
+  `ac247592829432f7d1dc520b0c3853450c2aeb08`，tree
+  `2e0e1c8a5d609863d2f569602823a5deea4529a7`）。
+- 工件：kernel `23b5feb4f49121fb3260b12bc476604656d838842f2beb5a6065f032da4f5b3e`，
+  payload `ca9b4c422c636517bc5a16d49a44686c7940364d8a2d29a9d04c71f0af1cef51`；
+  `r188_static.py` PASS（required 39 / forbidden 12）。
+- rekey `=2 -> =35`：`8ea993141a24c6d6b267133f17e64b0710a317dac7835371783bc35926d22790`。
+- 块内容：一次 `armcpu_map_physical(0x85fe0000ULL, 0x00020000u)`，然后三次调用
+  文件级 helper `quiet_cmd_db_levels(db, "gfx.lvl"|"cx.lvl"|"mx.lvl", …)`，
+  各自求最大值与首次下标，三行 `gmudb2=`/`gmudb3=`/`gmudb4=`。纯 `rd32`。
+
+### 36.2 判决（DEVICE-VERIFIED，16:13）
+
+- 上机：`flash readback` 一致；boot_id **552771680**（新）；gputate 行在。
+- 逐字三行：
+
+      gmudb2=va=fffffff9a0dea000 magic=0c0330db gfx_n=10 cx_n=0 mx_n=0 gfx_a=00030050 cx_a=00000000 mx_a=00000000
+      gmudb3=g0=0000 g1=0010 g2=0030 g3=0040 c0=0000 c1=0000 c2=0000 c3=0000 m0=0000 m1=0000 ok=1
+      gmudb4=gfx_top=01a0 gfx_at=9 cx_top=0000 cx_at=0 mx_top=0000 mx_at=0
+
+- 解读：`gfx.lvl` 十档、最高 `0x01a0` 在下标 9 ⇒ 上游 `pindex` 公式
+  （「表中第一个 >= 目标 level 的下标」）在这一轮就能算出 9。
+- 诚实边界：`cx_n=0`/`mx_n=0` **只说明这次解析没找到**，不说明数据库里没有。
+  当时的下一步写成「去查 `gmxc.lvl`」，那是错的方向 —— 见 §三十九。
+
+## 三十七、ROUND 189：数据库里其实有 `cx.lvl`/`mx.lvl` —— R188 的 0 计数不是数据缺失
+
+**一句话**：把八个 slave 记录里的条目名逐条打出来，`cx.lvl`、`cx.tmr`、
+`mx.lvl`、`mx.tmr`、`ebi.lvl`、`ebi.tmr`、`lcx.lvl`、`lcx.tmr` 全在。
+所以 R188 的 `cx_n=0 mx_n=0` 是**解析侧的问题**，不是数据侧。
+
+### 37.1 键 36 的形状（只读）
+
+- 构建：#297 / run `44265620505`（分支 `r189-db-names`，commit
+  `b793cfea057f0170f4f59ec87f40b7da97fa64dc`，tree
+  `d5196452b6bbb61e509466e5cdfeb9fcb6c13d20`）。
+- 工件：kernel `22f394496dc9a32f2fe903b1f4654b63d61d9ad69f40a83760c6d7bc213d5bda`，
+  payload `1b313066b22b550b5acd9d3bfe728f7cfe9ec5b99d5776e3bb6722e7c8a1fee3`；
+  `r189_static.py` PASS（required 41）。
+- rekey `=2 -> =36`：`e28e7cb5afd752acf69fb0974b7702722a303188ede52db559fde3aa5ab4ebf2`。
+- 块内容：映射 `0x85fe0000`(0x20000)，按 slave 记录的 `(lo/65536)%65536` 与
+  `(hi/65536)%65536` 取头偏移与数据偏移（**除/模，不用移位**：stage-6 有守卫
+  禁止重新推导 ID1 字段），条目步长 24，名字按 8 字节拆开；两行
+  `gmudbn=`/`gmudbn2=`。
+
+### 37.2 判决（DEVICE-VERIFIED）
+
+- boot_id **553540595**（新）、write_errors 0。
+- 逐字：
+
+      gmudbn=va=fffffff9a6de4000 magic=0c0330db slaves=3 entries=8 n0=cx.lvl n1=cx.tmr
+      gmudbn2=n2=mx.lvl n3=mx.tmr n4=ebi.lvl n5=ebi.tmr n6=lcx.lvl n7=lcx.tmr
+
+- 解读：八个名字干净可读 ⇒ 数据库格式与我们的理解一致；`cx.lvl` 与 `mx.lvl`
+  **一直在库里**。这把 R188 的判读写成了「解析 bug」，也把 R181 的
+  `gmxc.lvl` 猜测彻底排除（库里没有 `gmxc.lvl`，所以上游回退 `mx.lvl` 是必然）。
+
+## 三十八、ROUND 190：逐条目读出地址/长度/偏移 —— `cx.lvl`/`mx.lvl` 形状完全正常
+
+**一句话**：`cx.lvl` 在 `0x00030000`、`mx.lvl` 在 `0x00030010`，两者长度都是
+32 字节（16 个 u16 = 16 档），辅助块偏移合法。数据侧一切正常，剩下的只能是
+解析器自己。
+
+### 38.1 键 37 的形状（只读）
+
+- 构建：#298 / run `44269397393`（分支 `r190-entry-shape`，commit
+  `8cecad02315f1d74c1fb734ee426ade1b99db851`，tree
+  `6a101860d7c0f98245db75b8f958cacadd696840`）。
+- 工件：kernel `3b38a910ed711cfcaf15efc247a3bf04115bf8a6540e5d2b0b98f09bfbd8969c`，
+  payload `1248b0a4d5089ce15c757cd8260ca4615bcdffd201473f6f7440dd841570b87f`；
+  `r190_static.py` PASS（required 45）。
+- rekey `=2 -> =37`：`44bce444cb5199ec0177fa792bfe0ef5643217790f7a3e49f50bd2aedf205dde`。
+- 块内容：逐 slave/entry 读 `+16` 的地址与 `+20` 的打包尾
+  （`len = tail % 65536`、`off = (tail / 65536) % 65536`），并判
+  `data + off + 2*len <= 0x20000`；四行 `gmudbe=`/`gmudbe2..4=`。
+
+### 38.2 判决（DEVICE-VERIFIED）
+
+- boot_id **553507328**（新）。
+- 逐字（节选）：
+
+      gmudbe=va=fffffff2c6c1a000 magic=0c0330db seen=9
+      gmudbe2=n0=cx.lvl a0=00030000 l0=32 o0=0 f0=1 n1=cx.tmr a1=00030004 l1=0 o1=32 f1=1 n2=mx.lvl a2=00030010 l2=32 o2=32 f2=1
+      gmudbe3=n3=mx.tmr a3=00030014 l3=0 o3=64 f3=1 n4=ebi.lvl a4=00030020 l4=32 o4=64 f4=1
+      gmudbe4=n6=lcx.lvl a6=00030030 l6=32 o6=96 f6=1 n7=lcx.tmr a7=00030034 l7=0 o7=128 f7=1 n8=lmx.lvl a8=00030040 l8=32 o8=128 f8=1
+
+- 解读：`f0/f2/f4/f6` 全为 1（适配），`l0=l2=32` ⇒ 每张 level 表 16 档。
+  `.tmr` 条目长度 0 是正常的（定时器资源没有 level 列表）。
+
+## 三十九、ROUND 191：真正的 bug —— 名字比较读了第 8 个字符
+
+**一句话**：`quiet_cmd_db_levels()` 的名字比较循环用 `(uint8_t)want[i]` 逐字节比
+到 `i == 7`。`"gfx.lvl"` 正好 7 个字符，`want[7]` 是 C 字符串的终止符；而
+`"cx.lvl"`/`"mx.lvl"` 只有 6 个字符，**`want[7]` 越界**。于是所有 6 字母资源
+都永远匹配失败。补零到 8 字节后三张表全部读出。
+
+### 39.1 为什么这条 bug 藏了四轮
+
+- R188 只试了 `gfx.lvl`（7 字母，碰巧工作）和两张 6 字母表（全失败）。
+  一成一败看起来像「数据缺失」，而不是「解析器只对 7 字母有效」。
+- R189/R190 读的是**原始字节**（名字、地址、长度），完全绕过比较函数，
+  所以它们正常 —— 这三轮的读数正好把 bug 夹在中间。
+- 这个 bug 出自我在 R181 写的 helper，不是仓库原有的代码。
+
+### 39.2 修法与键 38
+
+- helper 里加 `uint8_t wantPad[8]; unsigned wantLen = 0u; while (wantLen < 8u &&
+  want[wantLen] != '\0') { ++wantLen; }`，再补零到 8，比较改成
+  `if (byte != wantPad[i]) same = false;`。
+- 键 38 重做三次 lookup（`gfx.lvl`/`cx.lvl`/`mx.lvl`），三行
+  `gmudb5=`/`gmudb6=`/`gmudb7=`。
+- 构建：#299 / run `44273934260`（分支 `r191-name-pad`，commit
+  `1eca33e2abe574e625255aa005478275a8583bb0`，tree
+  `d17408d2af3d779e3f5fc0d685e6915c04235692`）；kernel
+  `b4efa49c87d9611398728aef83a929f53ddbe3b56612c7522166a8e63ae4d8a0`、payload
+  `a3de375d7c003ec6ee1e03861dddda159cb2ac0671c4e8df55a259c280286c8b`；
+  `r191_static.py` PASS（required 48）；rekey `=38` →
+  `f7650403b60881d14b9c0a73a37708ec35e1c9361986437ef364ba5ee3b06de3`。
+
+### 39.3 判决（DEVICE-VERIFIED）
+
+- boot_id **553653878**（新）。
+- 逐字：
+
+      gmudb5=va=fffffffa3d0b4000 magic=0c0330db gfx_n=10 cx_n=8 mx_n=5 gfx_a=00030050 cx_a=00030000 mx_a=00030010
+      gmudb6=g0=0000 g1=0010 g2=0030 c0=0000 c1=0010 c2=0030 c3=0040 m0=0000 m1=0010
+      gmudb7=gfx_top=01a0 gfx_at=9 cx_top=0180 cx_at=7 mx_top=0180 mx_at=4 ok=1
+
+- 解读：三张表全读出（`gfx_n=10`、`cx_n=8`、`mx_n=5`）；上游公式要的两个下标
+  是 `pindex = gfx_at = 9`、`sindex = mx_at = 4`。
+- 教训（写给下一个模型）：**「读不到」和「没有」必须分开测**。R189/R190 绕开
+  helper 读原始字节，正是这两轮把结论从「数据缺失」掰回「解析 bug」。
+
+## 四十、ROUND 192：用真索引写 vote —— 值对、写进去、**没有人应答**
+
+**一句话**：把从数据库算出的 `gx=9 mx=4` 写进 `GX_VOTE_IDX`/`MX_VOTE_IDX`
+（`vote=0x01a00409`，与上游公式逐位相符），寄存器锁存读回一致；但 GX 轨道、
+SPTPRAC 时钟、boot-slumber 门铃 **全部照旧无响应**。与 R186 的「索引恒为 0」
+结果逐位相同 ⇒ 「vote 值不对」这条假设**彻底死亡**。
+
+### 40.1 键 39 的形状
+
+- 先只读：映射 `0x85fe0000`，读 `gfx.lvl`/`mx.lvl`，求 top 与首次下标。
+- 再写五笔 + 门铃：`BOOT_SLUMBER_OPTION=0`、`GX_VOTE_IDX`、`MX_VOTE_IDX`、
+  `SPTPRAC_POWER_CONTROL=0x00778000`、`HOST2GMU_INTR_SET=1<<22`，各自 `dsb`，
+  两个有界轮询（SPTPRAC 时钟、门铃 ACK bit30），然后 `GMU2HOST_INTR_CLR=1<<30`。
+- 两行 `gmuvote2=`/`gmuvote3=`。
+- 构建：#300 / run `44277876368`（分支 `r192-vote-derived`，commit
+  `119dd15698378b913808249b21a97f5dc5158b28`，tree
+  `701084b3cbd70e95aaddcaba646b9994461da32c`）；kernel
+  `19d2f2d025c36076446dbd3f621e617b628fbec6af861c7f88ac46923b0a3046`、payload
+  `d8b277c6874437610bd306c409319322cb2421dacb15811f90d234e55df8cdae`；
+  `r192_static.py` PASS（required 50）；rekey `=39` →
+  `a965ea44fa55284f04f22af5c621ec72c665645d16fc6d85bd1c5ac31ba4e4e2`。
+- 三处自找的错（已修）：①`avMx` 与 `uint16_t avMx[16]` 重名（
+  `error: redefinition of 'avMx' with a different type`），改名 `avGxIdx`/`avMxIdx`；
+  ②`(x << 16)` 触发 stage-4 的「不得重新推导 ID2 字段」守卫，改成 `* 65536u`；
+  ③验证器里四处「vote 只有一个写者」的断言要改成三写者，host 门写预算 43 → 49。
+
+### 40.2 判决（DEVICE-VERIFIED，17:56）
+
+- `flash readback matches: True`；窗口
+  **`e23a337c5da830c0969913470f8cd544de5b33bc994b37731f57a147cbc041fc`**、
+  boot_id **569930826**、write_errors 0。
+- 逐字：
+
+      gmuvote2=gx=9 mx=4 gfx_n=10 mx_n=5 gfx_top=01a0 mx_top=0180 vote=01a00409 have=1
+      gmuvote3=ack=0 polls=400000 gxvote=00000009 mxvote=00000004 gdscr_pre=00222001 gdscr=00222001 sptp=000000d4 sptpp=400000 intr=00000000 fwinit=babeface ok=0
+
+- 三点：
+  1. `gx=9`/`mx=4` 来自数据库，不是常量；`vote=0x01a00409` 与
+     `((pri & 0xffff) << 16) | (sindex << 8) | pindex` 逐位相符。
+  2. `gxvote=9`/`mxvote=4` ⇒ 写入选址锁存并被读回。
+  3. `gdscr` 前后同为 `00222001`（GX bit16 = 0）、`sptp` 仍 `0xd4`
+     （`& 0x38 = 0x14 ≠ 0x28`）、ACK 400000 次未置起、`intr=0`。
+- 结论：**问题不是「投什么票」，而是「谁该应答」**。这条结论把 R186 的
+  index-0 结果与 R192 的 index-9 结果合成同一条：两次都写进去了，两次都没人理。
+
+## 四十一、ROUND 193：把 RSC 定序器微码装进去 —— 写入并读回成功，握手仍然不应答
+
+**一句话**：按上游 `a6xx_gmu_rpmh_init()` 的探测期写法把五字定序器微码 +
+十一个设置字写进 RSCC 页，**五个字逐字读回**（`loaded=1`），后面独立跑的
+键 26 也在同一启动里读到了这些值；但 `RSCC_CONTROL_REQ=2` 之后
+`RSCC_CONTROL_ACK` 400000 次轮询内从未置起。**「RSC 缺微码所以不应答」被实测否掉。**
+
+### 41.1 依据
+
+- R180 的 `gmursc=… mem0=00000000 …` 读的是 `RSCC_SEQ_MEM_0_DRV0`
+  （RSCC 页 `0x0180`，字节偏移经 `GMU_RSCC_DELTA 0x23000`）—— 定序器微码从未装载。
+- 上游 `a6xx_gmu.c:561-595`（A630 走非 650/7xx 的 else 分支）：
+  `RSCC_STATUS0_DRV0 = BIT(24)`（关 SDE 时钟门控）、`RSCC_PDC_SLAVE_ID_DRV0 = 1`、
+  `HIDDEN_TCS_CMD0_ADDR/-DATA` 归零、`RSCC_OVERRIDE_START_ADDR = 0`、
+  `RSCC_PDC_SEQ_START_ADDR = 0x4520`、`MATCH_VALUE_LO = 0x4510`、
+  `MATCH_VALUE_HI = 0x4514`，然后是五字微码
+  `0xa7a506a0 / 0xa1e6a6e7 / 0xa2e081e1 / 0xe9a982e2 / 0x0020e8a8`。
+- `a6xx_gmu_rpmh_init()` 只在 `a6xx_gmu_init()`（探测期、`gmu->initialized = true`
+  之前）调用一次，所以这是**一次性初始化**，不是每次启动都做。
+- 已核对：R171 九笔里的 `RPMH_CTRL |= 0x00000f11` 展开正是
+  `RPMH_INTERFACE_ENABLE` + `LLC/DDR/MX/CX/GFX_VOTE_ENABLE` 六个使能位，
+  真机读回 `rpmh=00000f11` ⇒ 六个使能齐全，不是缺口。
+
+### 41.2 键 40 的形状
+
+- 先读十一个字做 `pre` 快照 → 按上游顺序写十一笔设置字 → 五笔微码 → `dsb sy`
+  → 读回五个字 → 重跑 `a6xx_rpmh_start()` 四步（`REQ=2` → 有界轮询 ACK bit1
+  → 读 `SEQ_BUSY_DRV0` → `REQ=0`）→ 读 `gdscr`/`sptp`。
+- **所有 RSC 写都写成 `gmuW[(GMU_RSCC_DELTA / 4u) + <offset>]`**（字节 delta 转
+  dword 索引）；写成 `* 4u` 是本仓库曾经踩过的坑。
+- 块内**不含** `HFI_CTRL_INIT`、不含 `CM3_SYSRESET` —— 避开键 18/31 与所有早期
+  HFI 尝试的致死写。
+- 构建：#301 / run `44282852022`（分支 `r193-rsc-ucode`，commit
+  `e7bb3bd7a3d8f7905b4e6c06fd2e885023ef447a`，tree
+  `07aa7736746c7164dbd7853e2ac68fd63cbb45cd`）；kernel
+  `ff2c436abe44ff2d62b15fac64da29442994d948c01b02d3bb89a7c21d9c82c0`、payload
+  `4b4916b78d89c9977208f44a3982280192f5a6a800c042bd39ee265d1ef451db`；
+  `r193_static.py` PASS（required 56）；rekey `=40` →
+  `d3dda08fe02170aaff0961d2dc3b6f070e6f9c1c154f6e10740b10c93c7f6c02`。
+- 门禁坑：①`RSCC_PDC_SEQ_START_VALUE` 这个宏名不存在，真名是
+  `ADRENO_GMU_BOOT_V1_PDC_SEQ_START_VALUE`（无反 `RSCC_` 前缀），我写错断言导致
+  stage6 617/618；②host 门写预算 49 → 68（键 40 新增 19 笔 store）。
+
+### 41.3 判决（DEVICE-VERIFIED，18:38）
+
+- `flash readback matches: True`（头 `83434f40…`）；窗口
+  **`1319ce5dfdc71b01e79676079f0b191da2b92cb55d0a2f1675897a9b7b080113`**、
+  boot_id **590380335**（新）、msg_bytes 30598、write_errors 0。
+- 逐字三行：
+
+      gmusetup=pre=00000000/00000000/00000000/00000000/00000000 st0=00000000 ovr=00000000 seq=00004520 lo=00004510 hi=00004514 slave=00000001
+      gmusetup2=post=a7a506a0/a1e6a6e7/a2e081e1/e9a982e2/0020e8a8 st0=01000000 loaded=1
+      gmursc5=ack=00000000 apolls=400000 busy=00000000 bpolls=0 req=00000002 gdscr=00222001 sptp=000000d4 ok=0
+
+- 四点：
+  1. `loaded=1` ⇒ 五个字写前全 0、写后逐字读回 ⇒ RSCC 页**接受并保存**写入。
+  2. 交叉侧证：同一启动里，后跑的键 26 读到 `mem0=a7a506a0 st0=01000000`
+     ⇒ 另一条代码路径能看到这些值，不是「读回的是写缓冲」。
+  3. `req=00000002` 已置位，`ack=00000000` 400000 次未回 ⇒ **微码不是缺口**。
+  4. GX/SPTPRAC 仍不动。
+- 这一轮把「RSC 因为没程序所以不理你」这条最合理的假设**排除**了，问题是
+  「谁在服务这个请求」。
+
+## 四十二、ROUND 194：PDC 页到底在哪 —— 厂商布局成立，mainline 推导的两个窗是空的
+
+**一句话**：在同一个 3 MiB 区域里，**基址**（`0x0b200000`）读得到
+`ENABLE_PDC=1`、`SEQ_MEM_0=0x00a000a8`，而 mainline `sdm845.dtsi` 推出的
+`+0x80000`（`gmu_pdc`）与 `+0x280000`（`gmu_pdc_seq`）**全读 0**。
+所以将来要写 PDC，位置在基址；如果照 mainline 写，写的就是没人读的空间。
+
+### 42.1 为什么要先问这个（而不是直接写 PDC 微码）
+
+- 上游 `a6xx_gmu_rpmh_init()` 在写完 RSC 页后**还有一整段 PDC**：
+  五字微码 `0xfebea1e1/0xa5a4a3a2/0x8382a6e0/0xbce3e284/0x002081fc`、
+  TCS1 六字（`ENABLE_BANK=7`、`WAIT=0`、`CONTROL=0`，三条命令 msgid `0x10108`
+  + addr `0x30010`/`0x30000`/`pdc_address_offset` + data `1`/`0`/`0`）、
+  TCS3 六字（同形，data `2`/`3`/`3`）、`PDC_SEQ_START_ADDR=0`、
+  `PDC_ENABLE_PDC=0x80000001`，最后才 `a6xx_rpmh_stop()`。
+- A630 走 `pdc_in_aop = false`，`pdc_address_offset = 0x30080`。
+- 但两套 DT 对位置的说法冲突：
+  - mainline `sdm845.dtsi`：`reg = <0x0506a000 0x30000>, <0x0b280000 0x10000>,
+    <0x0b480000 0x10000>`，`reg-names = "gmu", "gmu_pdc", "gmu_pdc_seq"`；
+  - 厂商 `enchilada.dts`：`reg = <0x506a000 0x30000 0xb200000 0x300000>`，
+    `reg-names = "kgsl_gmu_reg", "kgsl_gmu_pdc_reg"` —— 一整块，**包含**上面两个窗。
+- 后果：R166 在 `base + 0x4500` 读到 `pdcen=1` 若真相是 `+0x80000 + 0x4500`，
+  那次读数就**没有意义**。这一轮先把这个问清楚，**什么都不写**。
+
+### 42.2 键 41 的形状（只读）
+
+- 一次 `armcpu_map_physical(ADRENO_BOARD_GMU_PDC_BASE, ADRENO_BOARD_GMU_PDC_SIZE)`
+  （只读入口，不是 `_rw`），然后读两组：基址的
+  `SEQ_MEM_0`/`ENABLE_PDC`/`SEQ_START_ADDR`，以及 `+0x80000` 的同三个加上
+  `TCS0_CONTROL`；再读 `+0x280000` 的五字。两行 `gmupdc2=`/`gmupdc3=`。
+- 块内零写、零 `dsb`、零 `gmuW[`。
+- 构建：#302 / run `44290112701`（分支 `r194-pdc-window`，commit
+  `fe1216ba99c0b086c0f8326958a17580e89e7d17`，tree
+  `4d68a7f54f03dccdb66cc0d28a73768a4ee571ce`）；kernel
+  `233b5bb8b0db182d258a6fa5a717b85ed18e674be2c7dab0382a3a2a9a1371b2`、payload
+  `98ede926f18ad5eb3cc1f54e42fdfe912840a1c4908dc1e424b34551891dd09e`；
+  `r194_static.py` PASS（required 59）；rekey `=41` →
+  `4c8a7050a3abf3b782b0289040319a6711c491154769ff1a300921a36bc56c7c`。
+
+### 42.3 判决（DEVICE-VERIFIED，19:33）
+
+- `flash readback matches: True`（头 `a4c29686…`）；窗口
+  **`8673a819bd408104ba0c485b562e2d533d2f734e95edf7b6ea2233df0713e343`**、
+  boot_id **585770167**（新）、msg_bytes 30410、write_errors 0。
+- 逐字：
+
+      gmupdc2=vseq=00a000a8 ven=00000001 vst=00000000 pseq=00000000 pen=00000000 pst=00000000 pctl=00000000
+      gmupdc3=s0=00000000 s1=00000000 s2=00000000 s3=00000000 s4=00000000
+
+- 解读：
+  1. **厂商布局成立**：`ven=00000001`、`vseq=00a000a8`，与 R166 的
+     `gmupdc=pdcen=00000001 seqmem=00a000a8` 逐位相同 ⇒ R166 读的从来不是空地址。
+  2. mainline 推导的 `+0x80000` 三个字全 0 ⇒ 那里没有寄存器。
+  3. `+0x280000` 五字全 0 ⇒ 定序器内存不在那里（但也不代表基址那块就是定序器
+     内存，需要 ROUND 195 再确认）。
+  4. 同窗 `gmursc=mem0=00000000` —— R193 写的微码**没有持久化**（本轮不写，
+     所以回到 0），这既说明页是易失的，也再次证明 R193 的写入是真写。
+- 这一轮的收获是一条**负结果**：避免了按 mainline 地址去写 PDC 微码。
+
+## 四十三、ROUND 195：PDC 早就被引导器配好了 —— 它不是缺口
+
+**一句话**：在厂商基址读 TCS1/TCS3，`ENABLE_BANK=0x0f`、`CMD0_ADDR` 与
+`CMD0_DATA` 都不是 0，而且地址正好落在上游 `a6xx_gmu_rpmh_init()` 会写的那组
+`0x30010 / 0x30080` 上 —— **引导器已经把 PDC 定序器配好了**，用的是一套与我们
+手里 upstream 不完全相同、但同一族的命令表。所以 PDC 不是冷启动的缺口。
+
+### 43.1 为什么要问这个问题
+
+§四十二只读了基址的四个字（`SEQ_MEM_0`、`ENABLE_PDC`、`SEQ_START_ADDR`、
+`TCS0_CONTROL`）。`ENABLE_PDC=1` 只说明 PDC 被使能，不说明它的命令表被写过。
+上游 `a6xx_gmu_rpmh_init()` 在 A630（`pdc_in_aop = false`）这条路径上会写：
+
+- 五字定序器微码 `0xfebea1e1 / 0xa5a4a3a2 / 0x8382a6e0 / 0xbce3e284 / 0x002081fc`
+  （落在 `PDC_GPU_SEQ_MEM_0` 起）；
+- TCS1：`CMD_ENABLE_BANK=7`、`CMD_WAIT_BANK=0`、`CONTROL=0`，三条命令
+  `msgid 0x10108`，`addr = 0x30010 / 0x30000 / 0x30080`（`0x30080` 是 A630 的
+  `pdc_address_offset`），`data = 1 / 0 / 0`；
+- TCS3：同形，`data = 2 / 3 / 3`；
+- 最后 `PDC_SEQ_START_ADDR = 0`、`PDC_ENABLE_PDC = 0x80000001`。
+
+如果这一套已经在那儿，PDC 就没事；如果读出来全 0，那才是剩下的活。
+
+### 43.2 键 42 的形状（只读）
+
+- 一次 `armcpu_map_physical(ADRENO_BOARD_GMU_PDC_BASE, ADRENO_BOARD_GMU_PDC_SIZE)`
+  （只读入口），然后在**基址**读：
+  - `SEQ_MEM_0 + 0..4`（五个字）
+  - `ENABLE_PDC`、`SEQ_START_ADDR`、`TCS0_CONTROL`
+  - TCS1 六字（`ENABLE_BANK`/`WAIT_BANK`/`CONTROL`/`CMD0_MSGID`/`CMD0_ADDR`/`CMD0_DATA`）
+  - TCS3 六字（同上）
+  - 三行 `gmupdc4=`/`gmupdc5=`/`gmupdc6=`。
+- 块内零写、零 `dsb`、零 `gmuW[`；只有 `rd32`。
+- 构建：#303 / run `44298810517`（分支 `r195-pdc-block`，commit
+  `02fb90fa900277ef051f56f1fae4e230c783307a`，tree
+  `a790b2dd4374083262dde5dfe63387dd77cd0a84`）；kernel
+  `48bc614c5088ebecd53d75f51aba5ed63ee764129d146757e9c77eb558b234fe`、payload
+  `ee2493461454bf43450e10d5cccb7cfb5a4f9a3e0fa4db7c6266d2928e571cf7`；
+  `r195_static.py` PASS（required 65 / forbidden 12 / 固件头两处都在）；rekey
+  `=42` → `39940eba64bf67e9e365c5e8db9a4473dfd674ea509fe3deb7291e3b8f903af0`。
+
+### 43.3 判决（DEVICE-VERIFIED，20:26）
+
+- `flash readback matches: True`；窗口
+  **`960217304c3848ec8b73bea557a3cf3413d756c67ea56c8f01bb57279e8622da`**、
+  boot_id **585580743**（新）、msg_bytes 30566、slots_written 8、write_errors 0。
+- 逐字三行：
+
+      gmupdc4=m0=00a000a8 m1=00000000 m2=00000000 m3=00000000 m4=00000000 en=00000001 st=00000000 c0=00000000
+      gmupdc5=t1en=0000000f t1wt=00000000 t1ct=00000000 t1ms=00010000 t1ad=00030080 t1da=00000000
+      gmupdc6=t3en=0000000f t3wt=00000000 t3ct=00000000 t3ms=00010100 t3ad=00030010 t3da=00000003
+
+- 解读：
+  1. **`t1en = t3en = 0x0f`** —— 两个 TCS 的命令使能位都是满的（上游会写 `7`），
+     说明这两个 bank 里确实放着一组命令，不是空的。
+  2. **`t1ad = 0x00030080`** 正是 A630 的 `pdc_address_offset`；**`t3ad = 0x00030010`**
+     正是上游 TCS3 第一条命令的地址。两个都精确落在 upstream 那张表的地址族里，
+     不可能是随机残留。
+  3. **`t3da = 3`** 与上游 TCS3 的 `data = 3` 一致；`t1wt = t3wt = 0` 与
+     `CMD_WAIT_BANK = 0` 一致；`t1ct = t3ct = 0` 与 `CONTROL = 0` 一致。
+  4. 但 `t1ms = 0x00010000`、`t3ms = 0x00010100` **不是**上游的 `0x10108`，
+     `t1da = 0` 也不是上游 TCS1 的 `1`。⇒ 引导器用的是**另一套命令**（或另一版
+     上游代码），不是我们手里这份 `a6xx_gmu.c` 逐字复制。
+  5. `m1..m4` 全 0、`m0 = 0x00a000a8` ⇒ 基址这五个字里只有一个非零，
+     说明**定序器微码不在基址的 `SEQ_MEM_0` 起**（或只需第一个字作入口），
+     与上游「五字微码写进 `PDC_GPU_SEQ_MEM_0`」的形状不同。
+- 结论：**PDC 已经被下游配好了，写它既无必要也可能有害**。R194 那条负结果
+  （别按 mainline 地址写）与 R195 这条负结果（本来就不必写）合起来，
+  把 PDC 从缺口清单上划掉。
+
+### 43.4 缺口清单（本轮之后的诚实版本）
+
+被真机排除掉的（按轮次）：PAS 权限（R172-176 系列之前）、SECVID 读、
+statics 布局、`HFI_CTRL_INIT` 单独写（会死）、先配齐再脉冲（R183 证明
+CM3 干净）、RSC 缺微码（R193 证明写了也没人答）、PDC 未配置（本轮）。
+
+仍然没有解释的，只剩一条：**`RSCC_CONTROL_REQ = 2` 之后
+`RSCC_CONTROL_ACK` 从不应答（bit1 永不置起），`RSCC_SEQ_BUSY_DRV0` 恒 0，
+GX 轨道与 SPTPRAC 时钟都不动。** 而 CPU 侧的 APPS RSC 通道（`0x179e0000`）
+是通的（§三十五）。所以问题不是「这台机器不会投票」，而是
+「**GMU 侧的 RSC 为什么不响应非安全 CPU 的请求**」。
+
+### 43.5 下一步（ROUND 196，提议）
+
+在 RSCC 页上做一次**方向矩阵**，仍以只读为主、只写 `RSCC_CONTROL_REQ` 这一个
+32 位寄存器（R193 已经证明它可写可读回）：
+
+1. `REQ = 1`（上游 `a6xx_rpmh_stop()` 的方向），有界轮询
+   `RSCC_STATUS0_DRV0` 的 bit16，再 `REQ = 0`；
+2. `REQ = 2`（`a6xx_rpmh_start()` 的方向），有界轮询 `RSCC_CONTROL_ACK` bit1；
+3. 每一步都读回 `REQ`/`ACK`/`STATUS0`/`SEQ_BUSY`，行里一次给全。
+
+判读（开跑前钉死）：
+- **两个方向都不 ack** ⇒ RSC 对非安全 CPU 完全不服务，冷启动 GMU 这条路
+  在没有 TZ 配合的前提下走不通，应该转去评估「让 TZ/引导器代劳」
+  或「绕开 RSC 直接上电」的可行性；
+- **stop 方向 ack、start 方向不 ack** ⇒ RSC 活着，只是「上电请求」这个语义被
+  拒绝（很可能需要 CX 轨道先上电），那就有明确的下一步；
+- **写 `REQ` 之后再读 `REQ` 不再是写入值** ⇒ 有别的执行体在改这个寄存器。
+
+### 43.6 诚实边界
+
+- 本轮只读，`t1ms/t3ms` 与上游不同这一点**只能说明不同**，不能据此推断
+  引导器用了哪个版本的驱动或哪套命令语义。
+- `t1en = 0x0f` 解释为「命令使能位满」是基于寄存器位宽（低 4 位为 bank 位），
+  **没有**核对下游头文件里 `CMD_ENABLE_BANK` 的位定义。
+- `PDC 已被配置` 与 `PDC 工作正常` 是两件事：本轮只证明表里有东西，
+  没有证明 PDC 真的在跑。

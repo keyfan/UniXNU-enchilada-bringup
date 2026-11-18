@@ -132,7 +132,7 @@ def main():
     _outside = code.replace(_rw167, '') if _rw167 else code
     _outside = re.sub(r'gmuW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey >= 7u && fwKey <= 34u' in code and
+          'fwKey >= 7u && fwKey <= 42u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
     _k8 = (code.split('if (fwKey >= 8u) {', 1)[1]

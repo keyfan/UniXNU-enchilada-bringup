@@ -1207,7 +1207,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 34u' in _fw,
+    check('fwKey >= 7u && fwKey <= 42u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1444,11 +1444,12 @@ def main():
           'R179 the SPTPRAC wait looks for (status & 0x38) == 0x28 and is bounded')
     check('gmusptp=pre=%08x stat=%08x polls=%u ok=%d' in _k25,
           'R179 key 25 prints its own row')
-    check(code.count('ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]') == 2 and
-          code.count('ADRENO_GMU_BOOT_V1_MX_VOTE_IDX]') == 2,
-          'R179/R181/R185 each rail vote is written in exactly two places: key 28 '
-          '(an index read out of the RPMh command database) and key 32 (index 0, '
-          'the lowest level, because this device carries no command database)')
+    check(code.count('ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]') == 3 and
+          code.count('ADRENO_GMU_BOOT_V1_MX_VOTE_IDX]') == 3,
+          'R179/R181/R185/R192 each rail vote is written in exactly three places: '
+          'key 28 (an index read out of the RPMh command database), key 32 (index '
+          '0, written before R187 found the database), and key 39 (the index that '
+          'lookup now produces)')
     _g7 = code.find('gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;')
     _i24 = code.find('if (fwKey >= 24u) {')
     _fwinit = code.find('gmuW[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;')
@@ -1527,9 +1528,10 @@ def main():
           'R170 it writes exactly the slumber option, the doorbell and the clear (%r)'
           % sorted(set(_oobst)))
     for _vote in ('GX_VOTE_IDX', 'MX_VOTE_IDX'):
-        check(code.count('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _vote) == 2,
-              'R170/R181/R185 %s is written exactly twice: key 28 (a value the '
-              'RPMh command database supplied) and key 32 (index 0)' % _vote)
+        check(code.count('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _vote) == 3,
+              'R170/R181/R185/R192 %s is written exactly three times: key 28 (a '
+              'value the RPMh command database supplied), key 32 (index 0) and '
+              'key 39 (the index the lookup now derives)' % _vote)
     check('1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET' in _oob,
           'R170 the doorbell uses the pinned set bit (22), not a literal')
     check('1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK' in _oob,
@@ -1597,9 +1599,10 @@ def main():
           'R171 the CM3 fault bit is a read-side mask, never a write')
     check('char cfgRow[264]' in code, 'R171 the row has a declared, sufficient bound')
     for _vote in ('GX_VOTE_IDX', 'MX_VOTE_IDX'):
-        check(code.count('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _vote) == 2,
-              'R171/R181/R185 %s has exactly two writers: the command-database '
-              'read of key 27/28 and the index-0 rail step of key 32' % _vote)
+        check(code.count('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _vote) == 3,
+              'R171/R181/R185/R192 %s has exactly three writers: the '
+              'command-database read of key 27/28, the index-0 rail step of '
+              'key 32, and the derived-index vote of key 39' % _vote)
     check('stage >= 7u' not in code,
           'R171 still no new stage value: the boot-arg mask stays exactly 1..6')
 
@@ -1669,7 +1672,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 34u)' in code,
+    check('(fwKey >= 7u && fwKey <= 42u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -1760,11 +1763,11 @@ def main():
     check(0 < _i26b < _i27 < _i28,
           'R181 the ladder stays strictly ordered behind key 26, so a surviving '
           'boot names the next fatal step')
-    check(code.count('ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]') == 2 and
-          code.count('ADRENO_GMU_BOOT_V1_MX_VOTE_IDX]') == 2,
-          'R181/R185 the vote registers appear in exactly two statements each: '
-          'key 28 (command database) and key 32 (index 0), so neither can leak '
-          'into a read-only key')
+    check(code.count('ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]') == 3 and
+          code.count('ADRENO_GMU_BOOT_V1_MX_VOTE_IDX]') == 3,
+          'R181/R185/R192 the vote registers appear in exactly three statements '
+          'each: key 28 (command database), key 32 (index 0) and key 39 (the '
+          'derived index), so none can leak into a read-only key')
 
     # ---- ROUND 182: the DT node points at the table, it is not the table -------
     # R181 read 0x861e0000 first, the address in the node's name, and its second
@@ -1954,7 +1957,7 @@ def main():
           'R187 key 34 is its own block, so nothing earlier in the file decides '
           'what it reads')
     _k34 = code.split('if (fwKey == 34u) {', 1)[1]
-    _k34 = _k34.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
+    _k34 = _k34.split('if (fwKey == 35u) {', 1)[0]
     check(_k34 != '', 'R187 the APPS RSC block exists ahead of the doorbell ladder')
     check('0x00000000179e0000ULL' in _k34 and '0x00010000u' in _k34,
           'R187 the block maps the whole 0x179e0000 window once, the same window '
@@ -1996,6 +1999,406 @@ def main():
     check(0 < _i33 < _i34 < _i18,
           'R187 key 34 sits after the rail keys and before the doorbell ladder, so '
           'it inherits the full pre-start write set and adds none of its own')
+
+
+    # ---- ROUND 188: the level tables, read from the base R187 proved ---------
+    # Key 27 asked 0x861e0000 for "gfx.lvl" and got magic=0, which is what put
+    # R181's vote derivation on the shelf.  R187 found the database at
+    # 0x85fe0000 with a real header, so the same question is asked again through
+    # the same helper at the right address -- still read-only, because the point
+    # is to learn whether the tables are in there and which index holds the top
+    # level.
+    check(code.count('if (fwKey == 35u) {') == 1,
+          'R188 key 35 is its own block, so nothing earlier decides what it reads')
+    _k35 = code.split('if (fwKey == 35u) {', 1)[1]
+    _k35 = _k35.split('if (fwKey == 36u) {', 1)[0]
+    check(_k35 != '', 'R188 the level-table block exists ahead of the doorbell ladder')
+    check('armcpu_map_physical(0x85fe0000ULL, 0x00020000u)' in _k35,
+          'R188 the block maps the database address R187 measured, at the same '
+          '0x20000 span the touch driver uses')
+    check('0x861e0000ULL' not in _k35,
+          'R188 the block does not fall back to the address key 27 already proved '
+          'empty: a second look at 0x861e0000 would only re-measure a known zero')
+    check('gmuW[' not in _k35 and 'dsb sy' not in _k35 and 'write32' not in _k35 and
+          'wr32(' not in _k35,
+          'R188 the block is read-only: no GMU store, no barrier, no RSC write')
+    check(_k35.count('quiet_cmd_db_levels(') == 3 and
+          '"gfx.lvl"' in _k35 and '"cx.lvl"' in _k35 and '"mx.lvl"' in _k35,
+          'R188 the three resources the upstream vote derivation asks for are the '
+          'three this block reads, through the already-verified helper')
+    check('gmudb2=va=%lx magic=%08x gfx_n=%u cx_n=%u mx_n=%u ' in _k35 and
+          'gfx_a=%08x cx_a=%08x mx_a=%08x' in _k35,
+          'R188 the first row reports the magic, the three table counts and the '
+          'three database addresses the helper resolved')
+    check('gmudb3=g0=%04x g1=%04x g2=%04x g3=%04x c0=%04x c1=%04x ' in _k35 and
+          'c2=%04x c3=%04x m0=%04x m1=%04x ok=%d' in _k35,
+          'R188 the second row carries the low four levels of each table, so a '
+          'plausible staircase is visible without a second boot')
+    check('gmudb4=gfx_top=%04x gfx_at=%u cx_top=%04x cx_at=%u ' in _k35 and
+          'mx_top=%04x mx_at=%u' in _k35,
+          'R188 the third row reports the top level of each table and its first '
+          'index, which is the pindex/sindex the upstream formula needs')
+    check('(lvMagic == 0x0c0330dbu) ? 1 : 0' in _k35,
+          'R188 ok is the pinned database magic test, not a table-count guess')
+    check('char lvRowA[352]' in _k35 and 'char lvRowB[352]' in _k35 and
+          'char lvRowC[288]' in _k35,
+          'R188 each of the three rows has a declared bound')
+    _i35 = code.find('if (fwKey == 35u) {')
+    check(0 < _i34 < _i35 < _i18,
+          'R188 key 35 sits after key 34 and before the doorbell ladder, so it '
+          'sees the same pre-start state and adds no write of its own')
+
+
+    # ---- ROUND 189: which resources the database actually carries -----------
+    # Key 35 found "gfx.lvl" (ten levels, top 0x01a0 at index 9) but got nothing
+    # for "cx.lvl" and "mx.lvl", while the upstream code looks the secondary
+    # list up as "gmxc.lvl" before "mx.lvl".  Rather than guess a third name,
+    # this key prints the entry names the database really has.
+    check(code.count('if (fwKey == 36u) {') == 1,
+          'R189 key 36 is its own block, so no earlier key decides what it reads')
+    _k36 = code.split('if (fwKey == 36u) {', 1)[1]
+    _k36 = _k36.split('if (fwKey == 37u) {', 1)[0]
+    check(_k36 != '', 'R189 the enumeration block exists ahead of the doorbell ladder')
+    check('armcpu_map_physical(0x85fe0000ULL, 0x00020000u)' in _k36,
+          'R189 the block reads the database address R187 measured, at the same '
+          '0x20000 span key 35 used')
+    check('gmuW[' not in _k36 and 'dsb sy' not in _k36 and 'write32' not in _k36 and
+          'wr32(' not in _k36,
+          'R189 the block is read-only: no GMU store, no barrier, no RSC write')
+    check(_k36.count('quiet_cmd_db_levels(') == 0,
+          'R189 the enumeration walks the header itself instead of asking the '
+          'name lookup for names it does not know')
+    check('0x0c0330dbu' in _k36, 'R189 the walk is gated on the pinned magic')
+    check('(esLo / 65536u) % 65536u' in _k36 and '(esHi / 65536u) % 65536u' in _k36,
+          'R189 the slave header fields are decoded arithmetically, so the '
+          'half-word split cannot be mistaken for a shift decode')
+    check('144u + ((esLo / 65536u) % 65536u)' in _k36 and '24u * ee' in _k36,
+          'R189 entries are walked from the pinned 144-byte base at the pinned '
+          '24-byte stride')
+    check('gmudbn=va=%lx magic=%08x slaves=%u entries=%u n0=%.8s n1=%.8s' in _k36 and
+          'gmudbn2=n2=%.8s n3=%.8s n4=%.8s n5=%.8s n6=%.8s n7=%.8s' in _k36,
+          'R189 the two rows carry the counts and the first eight names, which is '
+          'what says whether the database has the resources at all')
+    check('char enumRowA[352]' in _k36 and 'char enumRowB[352]' in _k36,
+          'R189 both rows have a declared bound')
+    _i36 = code.find('if (fwKey == 36u) {')
+    check(0 < _i35 < _i36 < _i18,
+          'R189 key 36 sits after key 35 and before the doorbell ladder')
+
+
+    # ---- ROUND 190: where each database entry actually points ----------------
+    # Key 36 printed eight entry names and they include "cx.lvl" and "mx.lvl",
+    # yet key 35's lookup returned zero levels for both.  The lookup refuses an
+    # entry whose address is zero or whose auxiliary block falls outside the
+    # span, so this key prints the per-entry address, length, auxiliary offset
+    # and the fit verdict, and stops there.
+    check(code.count('if (fwKey == 37u) {') == 1,
+          'R190 key 37 is its own block, so no earlier key decides what it reads')
+    _k37 = code.split('if (fwKey == 37u) {', 1)[1]
+    _k37 = _k37.split('if (fwKey == 38u) {', 1)[0]
+    check(_k37 != '', 'R190 the per-entry block exists ahead of the doorbell ladder')
+    check('armcpu_map_physical(0x85fe0000ULL, 0x00020000u)' in _k37,
+          'R190 the block reads the database address R187 measured, at the same '
+          '0x20000 span keys 35 and 36 used')
+    check('gmuW[' not in _k37 and 'dsb sy' not in _k37 and 'write32' not in _k37 and
+          'wr32(' not in _k37,
+          'R190 the block is read-only: no GMU store, no barrier, no RSC write')
+    check('0x0c0330dbu' in _k37, 'R190 the walk is gated on the pinned magic')
+    check('rd32(entVa, e3At + 16u)' in _k37 and 'rd32(entVa, e3At + 20u)' in _k37,
+          'R190 the address and the packed tail are read from the pinned entry '
+          'offsets 16 and 20')
+    check('entLen[entSeen] = e3Tail % 65536u' in _k37 and
+          'entOff[entSeen] = (e3Tail / 65536u) % 65536u' in _k37,
+          'R190 the tail is split into length and auxiliary offset arithmetically, '
+          'not by shifts')
+    check('s3Data + entOff[entSeen] + 2u * entLen[entSeen] <= 0x00020000u' in _k37,
+          'R190 the fit test repeats the bound the lookup applies, so a non-zero '
+          'fit means the lookup had no shape reason to refuse')
+    check('gmudbe=va=%lx magic=%08x seen=%u' in _k37,
+          'R190 the first row carries the mapped address, the magic and how many '
+          'entries were walked')
+    check('gmudbe2=n0=%.8s a0=%08x l0=%u o0=%u f0=%d ' in _k37 and
+          'gmudbe3=n3=%.8s a3=%08x l3=%u o3=%u f3=%d ' in _k37 and
+          'gmudbe4=n6=%.8s a6=%08x l6=%u o6=%u f6=%d ' in _k37,
+          'R190 three rows carry name, address, length, auxiliary offset and fit '
+          'for nine entries')
+    check('char entRowA[352]' in _k37 and 'char entRowB[352]' in _k37 and
+          'char entRowC[352]' in _k37 and 'char entRowD[352]' in _k37,
+          'R190 every row has a declared bound')
+    _i37 = code.find('if (fwKey == 37u) {')
+    check(0 < _i36 < _i37 < _i18,
+          'R190 key 37 sits after key 36 and before the doorbell ladder')
+
+
+    # ---- ROUND 191: the name compare must not index past a short name --------
+    # Key 37 proved cx.lvl and mx.lvl are in the database with a good address and
+    # a fitting auxiliary block, yet key 35 got zero levels for both and ten for
+    # "gfx.lvl".  The compare indexed the caller's literal at 7, which is one
+    # past the end of a six-letter name.  These checks make the fix structural:
+    # the helper must compare a zero-padded copy, never the literal.
+    check('uint8_t wantPad[8];' in code,
+          'R191 the lookup pads the wanted name into a fixed eight-byte buffer')
+    check('while (wantLen < 8u && want[wantLen] != ' in code,
+          'R191 the pad is built by walking the literal only up to its terminator')
+    check('byte != wantPad[i]' in code,
+          'R191 the comparison reads the padded copy, so a short name compares as '
+          'name plus padding like the database stores it')
+    check('(uint8_t)want[i]' not in code,
+          'R191 nothing indexes the caller literal by the field width any more, '
+          'which is the one-past-the-end read that hid every six-letter resource')
+    check(code.count('if (fwKey == 38u) {') == 1,
+          'R191 key 38 is its own block, so no earlier key decides what it reads')
+    _k38 = code.split('if (fwKey == 38u) {', 1)[1]
+    _k38 = _k38.split('if (fwKey == 39u) {', 1)[0]
+    check(_k38 != '', 'R191 the recheck block exists ahead of the doorbell ladder')
+    check(_k38.count('quiet_cmd_db_levels(') == 3 and
+          '"gfx.lvl"' in _k38 and '"cx.lvl"' in _k38 and '"mx.lvl"' in _k38,
+          'R191 key 38 repeats exactly the three lookups key 35 made, so the two '
+          'rounds differ only in the helper')
+    check('gmuW[' not in _k38 and 'dsb sy' not in _k38 and 'write32' not in _k38 and
+          'wr32(' not in _k38,
+          'R191 the recheck is read-only')
+    check('gmudb5=va=%lx magic=%08x gfx_n=%u cx_n=%u mx_n=%u ' in _k38 and
+          'gmudb6=g0=%04x g1=%04x g2=%04x c0=%04x ' in _k38 and
+          'gmudb7=gfx_top=%04x gfx_at=%u cx_top=%04x cx_at=%u ' in _k38,
+          'R191 three rows carry the counts, the first levels and the top index '
+          'for each list')
+    check('char lfRowA[352]' in _k38 and 'char lfRowB[352]' in _k38 and
+          'char lfRowC[352]' in _k38,
+          'R191 every row has a declared bound')
+    _i38 = code.find('if (fwKey == 38u) {')
+    check(0 < _i37 < _i38 < _i18,
+          'R191 key 38 sits after key 37 and before the doorbell ladder')
+
+
+    # ---- ROUND 192: the vote indexes now come from the database --------------
+    # Round 191 fixed the name compare, and key 38 then read gfx.lvl (10 levels,
+    # top 0x01a0 at 9), cx.lvl (8, top 0x0180 at 7) and mx.lvl (5, top 0x0180 at
+    # 4).  Round 186 had pinned both vote indexes at 0 only because R182 found no
+    # command database.  Key 39 derives them at run time from the same helper and
+    # writes them, so the vote word and the indexes are no longer constants.
+    check(code.count('if (fwKey == 39u) {') == 1,
+          'R192 key 39 is its own block, so no earlier key decides what it writes')
+    _k39 = code.split('if (fwKey == 39u) {', 1)[1]
+    _k39 = _k39.split('if (fwKey == 40u) {', 1)[0]
+    check(_k39 != '', 'R192 the vote block exists ahead of the doorbell ladder')
+    check(_k39.count('quiet_cmd_db_levels(') == 2 and
+          '"gfx.lvl"' in _k39 and '"mx.lvl"' in _k39,
+          'R192 the block reads the primary list and the mx fallback, which is '
+          'what the upstream secondary lookup lands on when gmxc.lvl is absent')
+    check('"gmxc.lvl"' not in _k39,
+          'R192 the block does not invent a gmxc.lvl read: key 36 printed the '
+          'database names and that one is not among them')
+    check('gmuW[ADRENO_GMU_BOOT_V1_GX_VOTE_IDX] = avGxIdx & 0xffu;' in _k39 and
+          'gmuW[ADRENO_GMU_BOOT_V1_MX_VOTE_IDX] = avMxIdx & 0xffu;' in _k39,
+          'R192 both vote indexes are written from values the lookup produced, '
+          'not from a literal zero')
+    check('const bool avHave = (avGfxHit.count > 0u && avMxHit.count > 0u);' in _k39 and
+          'const unsigned avGxIdx = avHave ? avGfxAt : 0u;' in _k39 and
+          'const unsigned avMxIdx = avHave ? avMxAt : 0u;' in _k39,
+          'R192 an empty list falls back to index 0 instead of voting through a '
+          'meaningless index')
+    check('const uint32_t avVote = ((uint32_t)avGfxTop * 65536u) |' in _k39 and
+          '((uint32_t)(avMxIdx & 0xffu) * 256u)' in _k39,
+          'R192 the row reports the full vote word in the upstream shape '
+          '((pri << 16) | (sindex << 8) | pindex)')
+    check('gmuW[ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION] = 0u;' in _k39,
+          'R192 the block still starts the rail step the way gfx_rail_on does')
+    check('gmuW[ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL] = ADRENO_GMU_BOOT_V1_SPTPRAC_ON_VALUE;' in _k39,
+          'R192 the sptprac enable word is unchanged from round 186, so the only '
+          'difference from that round is the two vote indexes')
+    check(_k39.count('gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] =') == 1 and
+          _k39.count('gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] =') == 1,
+          'R192 the boot-slumber doorbell is set once and cleared once')
+    check('1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET' in _k39 and
+          '1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_CLEAR' in _k39,
+          'R192 the doorbell uses the boot-slumber bits, not the GPU_SET pair '
+          'round 185 used by mistake')
+    check('HFI_CTRL_INIT' not in _k39,
+          'R192 the block does not retry the HFI store that killed keys 18 and 31 '
+          'when nothing was ready')
+    check('avSptpPolls < 400000u' in _k39 and 'avPolls < 400000u' in _k39,
+          'R192 both waits are bounded')
+    check('(avGdscr & 0x00010000u) != 0u' in _k39,
+          'R192 the verdict is the GX_ON bit of GPU_CC_GX_GDSCR, as in round 186')
+    check('char avRowA[352]' in _k39 and 'char avRowB[352]' in _k39,
+          'R192 every row has a declared bound')
+    check('gmuvote2=gx=%u mx=%u gfx_n=%u mx_n=%u ' in _k39 and
+          'gmuvote3=ack=%u polls=%u gxvote=%08x mxvote=%08x ' in _k39,
+          'R192 one row reports the derived indexes and one reports what the '
+          'registers read back after the writes')
+    _i39 = code.find('if (fwKey == 39u) {')
+    check(0 < _i38 < _i39 < _i18,
+          'R192 key 39 sits after key 38 and before the doorbell ladder')
+
+
+    # ---- ROUND 193: load the RSC sequencer, then retry the handshake ---------
+    # Key 26 read RSCC_SEQ_MEM_0_DRV0 and got zero, and a6xx_gmu_rpmh_init()
+    # (:581-595) is the only thing upstream ever writes there.  Without that
+    # microcode the RSC has no reason to answer RSCC_CONTROL_REQ, which is
+    # exactly what keys 24, 30..33 and 39 have all reported.  Key 40 reproduces
+    # the probe-time setup from :561-595 verbatim and then runs the
+    # a6xx_rpmh_start() handshake again, so the ack decides the question.
+    check(code.count('if (fwKey == 40u) {') == 1,
+          'R193 key 40 is its own block, so no other key decides what it writes')
+    _k40 = code.split('if (fwKey == 40u) {', 1)[1]
+    _k40 = _k40.split('if (fwKey == 41u) {', 1)[0]
+    check(_k40 != '', 'R193 the sequencer block exists ahead of the doorbell ladder')
+    check('0xa7a506a0u' in _k40 and '0xa1e6a6e7u' in _k40 and
+          '0xa2e081e1u' in _k40 and '0xe9a982e2u' in _k40 and
+          '0x0020e8a8u' in _k40,
+          'R193 the five sequencer words are the literals from a6xx_gmu.c:590-594, '
+          'not values recomputed on the bench')
+    check(_k40.count('ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0') >= 10,
+          'R193 the words are written and read back through the same named offset')
+    check('ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0] =' in _k40 and '0x01000000u' in _k40,
+          'R193 the SDE clock gate is disabled with BIT(24), as :561 does before '
+          'touching anything else on the RSC page')
+    check('ADRENO_GMU_BOOT_V1_RSCC_PDC_SLAVE_ID_DRV0] =' in _k40 and '1u;' in _k40,
+          'R193 the PDC slave id is set to 1, as :564 does')
+    check('ADRENO_GMU_BOOT_V1_PDC_SEQ_START_VALUE;' in _k40 and
+          'ADRENO_GMU_BOOT_V1_PDC_MATCH_LO_VALUE;' in _k40 and
+          'ADRENO_GMU_BOOT_V1_PDC_MATCH_HI_VALUE;' in _k40,
+          'R193 the three PDC handshake words come from the pinned header '
+          'constants rather than from literals')
+    check('ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u' in _k40,
+          'R193 every RSC store goes through the byte delta converted to a dword '
+          'index, which is the addressing the header documents')
+    check('loaded=%d' in _k40 and
+          '((riPost0 == 0xa7a506a0u) && (riPost1 == 0xa1e6a6e7u) &&' in _k40,
+          'R193 the block reports whether all five words read back, so a silent '
+          'write cannot be mistaken for a load')
+    check(_k40.count('ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 2u;') == 1 and
+          _k40.count('ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 0u;') == 1,
+          'R193 the handshake is the upstream pair: request up once, request down once')
+    check('riAckPolls < 400000u' in _k40 and 'riBusyPolls < 400000u' in _k40,
+          'R193 both waits are bounded')
+    check('gmursc5=ack=%08x apolls=%u busy=%08x bpolls=%u ' in _k40,
+          'R193 one row reports the handshake outcome together with the rail and '
+          'SPTPRAC state, so a surviving run answers three questions at once')
+    check('char riRowA[384]' in _k40 and 'char riRowB[384]' in _k40 and
+          'char riRowC[384]' in _k40,
+          'R193 every row has a declared bound')
+    check('gmusetup=pre=%08x/%08x/%08x/%08x/%08x ' in _k40 and
+          'gmusetup2=post=%08x/%08x/%08x/%08x/%08x ' in _k40,
+          'R193 the before and after rows carry all five words, so a partial '
+          'load is visible')
+    check('HFI_CTRL_INIT' not in _k40 and 'CM3_SYSRESET' not in _k40,
+          'R193 the block does not touch the two registers that killed keys 18, 31 '
+          'and every earlier HFI attempt')
+    _i40 = code.find('if (fwKey == 40u) {')
+    check(0 < _i39 < _i40 < _i18,
+          'R193 key 40 sits after key 39 and before the doorbell ladder')
+
+    # ---- ROUND 194: where does the GPU PDC page actually live? -----------
+    # R193 loaded the RSC sequencer microcode and read all five words back, and
+    # the RSCC handshake still never answered.  Upstream a6xx_gmu_rpmh_init()
+    # does not stop there: after the RSC page it programs a PDC page (five
+    # sequencer words, six TCS1 commands, six TCS3 commands, then
+    # PDC_SEQ_START_ADDR=0 and ENABLE_PDC=0x80000001) before a6xx_rpmh_stop().
+    # We have never written that page, and before writing it we have to know
+    # which window it is in: mainline sdm845.dtsi splits the gmu node into
+    # "gmu_pdc" at 0x0b280000 and "gmu_pdc_seq" at 0x0b480000, while the vendor
+    # enchilada.dts hands us one 3 MiB region at 0x0b200000 that contains both.
+    # Key 41 surveys the region read-only so the answer comes from the device.
+    check(code.count('if (fwKey == 41u) {') == 1,
+          'R194 key 41 is its own block, so no other key decides what it reads')
+    _k41 = code.split('if (fwKey == 41u) {', 1)[1]
+    _k41 = _k41.split('if (fwKey == 42u) {', 1)[0]
+    check(_k41 != '', 'R194 the PDC survey block exists ahead of the doorbell ladder')
+    check('ADRENO_BOARD_GMU_PDC_BASE' in _k41 and
+          'ADRENO_BOARD_GMU_PDC_SIZE' in _k41,
+          'R194 the survey maps the board region, not a hand-typed address')
+    check('armcpu_map_physical(' in _k41 and 'armcpu_map_physical_rw(' not in _k41,
+          'R194 the survey takes the read-only mapping entry, so a stray store '
+          'cannot happen through this window')
+    check('pcPdcDelta = 0x00080000u;' in _k41 and 'pcSeqDelta = 0x00280000u;' in _k41,
+          'R194 the two deltas are the ones mainline sdm845.dtsi implies for a '
+          'region based at 0x0b200000: 0x0b280000-0x0b200000 and '
+          '0x0b480000-0x0b200000')
+    check('fwKey == 41u' in code and 'gmuW[' not in _k41,
+          'R194 the survey never writes through the GMU window')
+    check('dsb sy' not in _k41 and 'wr32(' not in _k41 and 'write32(' not in _k41,
+          'R194 the survey is read-only: no barrier and no store call at all')
+    check('ADRENO_GMU_BOOT_V1_PDC_SEQ_MEM_0' in _k41 and
+          'ADRENO_GMU_BOOT_V1_PDC_ENABLE_PDC' in _k41 and
+          'ADRENO_GMU_BOOT_V1_PDC_SEQ_START_ADDR' in _k41,
+          'R194 the three registers read at both offsets come from the pinned '
+          'header, so the two windows are compared on the same names')
+    check('ADRENO_GMU_BOOT_V1_PDC_TCS0_CONTROL' in _k41,
+          'R194 the TCS0 control word is read as a second opinion on which '
+          'offset block is backed by real registers')
+    check('gmupdc2=vseq=%08x ven=%08x vst=%08x ' in _k41 and
+          'pseq=%08x pen=%08x pst=%08x pctl=%08x' in _k41,
+          'R194 one row carries both candidate windows, so a single boot '
+          'settles the disagreement')
+    check('gmupdc3=s0=%08x s1=%08x s2=%08x ' in _k41 and
+          's3=%08x s4=%08x' in _k41,
+          'R194 the second row carries the five sequencer words at +0x280000')
+    check('char pcRowA[320]' in _k41 and 'char pcRowB[320]' in _k41,
+          'R194 every row has a declared bound')
+    check('gmupdc2=map-failed' in _k41,
+          'R194 a failed mapping says so instead of printing zeros as data')
+    _i41 = code.find('if (fwKey == 41u) {')
+    check(0 < _i40 < _i41 < _i18,
+          'R194 key 41 sits after key 40 and before the doorbell ladder')
+
+    # ---- ROUND 195: what does the PDC block already contain? -------------
+    # R194 settled where the block is: the vendor region base reads ENABLE_PDC=1
+    # and SEQ_MEM_0=0x00a000a8, while the two offsets mainline sdm845.dtsi
+    # implies (+0x80000, +0x280000) read zero.  So a future PDC write belongs at
+    # the base.  What is left is whether the bootloader already programmed the
+    # sequencer.  Key 42 reads the five sequencer words, the two handshake
+    # registers and both TCS command banks at the base, read-only, so one boot
+    # says whether the PDC is a gap at all.
+    check(code.count('if (fwKey == 42u) {') == 1,
+          'R195 key 42 is its own block, so no other key decides what it reads')
+    _k42 = code.split('if (fwKey == 42u) {', 1)[1]
+    _k42 = _k42.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
+    check(_k42 != '', 'R195 the PDC block survey exists ahead of the doorbell ladder')
+    check('ADRENO_BOARD_GMU_PDC_BASE' in _k42 and
+          'ADRENO_BOARD_GMU_PDC_SIZE' in _k42,
+          'R195 the survey maps the board region, not a hand-typed address')
+    check('armcpu_map_physical(' in _k42 and 'armcpu_map_physical_rw(' not in _k42,
+          'R195 the survey takes the read-only mapping entry')
+    check('gmuW[' not in _k42 and 'dsb sy' not in _k42 and
+          'wr32(' not in _k42 and 'write32(' not in _k42,
+          'R195 the survey is read-only: no GMU window, no barrier, no store call')
+    check('pcPdcDelta' not in _k42 and 'pcSeqDelta' not in _k42,
+          'R195 the survey reads the base, because R194 already showed the two '
+          'mainline-derived offsets are empty')
+    for _name in ('ADRENO_GMU_BOOT_V1_PDC_SEQ_MEM_0 + 1u',
+                  'ADRENO_GMU_BOOT_V1_PDC_SEQ_MEM_0 + 4u',
+                  'ADRENO_GMU_BOOT_V1_PDC_ENABLE_PDC',
+                  'ADRENO_GMU_BOOT_V1_PDC_SEQ_START_ADDR',
+                  'ADRENO_GMU_BOOT_V1_PDC_TCS0_CONTROL',
+                  'ADRENO_GMU_BOOT_V1_PDC_TCS1_CMD_ENABLE_BANK',
+                  'ADRENO_GMU_BOOT_V1_PDC_TCS1_CMD0_MSGID',
+                  'ADRENO_GMU_BOOT_V1_PDC_TCS1_CMD0_ADDR',
+                  'ADRENO_GMU_BOOT_V1_PDC_TCS3_CMD_ENABLE_BANK',
+                  'ADRENO_GMU_BOOT_V1_PDC_TCS3_CMD0_MSGID',
+                  'ADRENO_GMU_BOOT_V1_PDC_TCS3_CMD0_ADDR'):
+        check(_name in _k42,
+              'R195 the survey reads %s from the pinned header' % _name)
+    check('gmupdc4=m0=%08x m1=%08x m2=%08x ' in _k42 and
+          'm3=%08x m4=%08x en=%08x st=%08x c0=%08x' in _k42,
+          'R195 one row carries all five sequencer words plus the two handshake '
+          'registers')
+    check('gmupdc5=t1en=%08x t1wt=%08x t1ct=%08x ' in _k42 and
+          't1ms=%08x t1ad=%08x t1da=%08x' in _k42,
+          'R195 the TCS1 row carries the enable bank, wait bank, control and the '
+          'first command triple, so an already-programmed sequencer is visible')
+    check('gmupdc6=t3en=%08x t3wt=%08x t3ct=%08x ' in _k42 and
+          't3ms=%08x t3ad=%08x t3da=%08x' in _k42,
+          'R195 the TCS3 row mirrors TCS1')
+    check('char pcRowD[320]' in _k42 and 'char pcRowE[320]' in _k42 and
+          'char pcRowF[320]' in _k42,
+          'R195 every row has a declared bound')
+    check('gmupdc4=map-failed' in _k42,
+          'R195 a failed mapping says so instead of printing zeros as data')
+    _i42 = code.find('if (fwKey == 42u) {')
+    check(0 < _i41 < _i42 < _i18,
+          'R195 key 42 sits after key 41 and before the doorbell ladder')
 
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the

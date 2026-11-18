@@ -710,6 +710,7 @@ limits = [
 
   "R186 判决：轨道五笔（BOOT_SLUMBER_OPTION=0 + 两个 vote=0 + SPTPRAC_ON_VALUE）在脉冲后写下去全部被接受、不致死，但 GPU_CC_GX_GDSCR 的 bit16 与 SPTPRAC_PWR_CLK_STATUS 的时钟位一个都没变；boot-slumber 门铃（HOST2GMU_INTR_SET bit22）只把 GMU2HOST_INTR_INFO 从 0 变成 00800000（CM3_FAULT），ACK(bit30) 400000 次内从不置起。R185 那次「键 32 静默死」已查明是继承键 31 的 HFI_CTRL_INIT 致死写（守卫 >= 泄漏），属设计错误，不作为设备证据",
   "R187 判决（DEVICE-VERIFIED）：CPU 侧 APPS RSC（0x179e0000，qcom,tcs-drv）从这支内核里可读，drv=00010100 与触摸驱动自己的 RAIL 行逐位相同（major 1 => legacy 布局）；顺着它读到带 magic 的命令数据库头 h0=00000001 h1=0c0330db，基址 0x85fe0000 => R182 的「这台机器引导器没灌 cmd-db」只对当时试过的 0x861e0000 与 AOSS 指针页两个地址成立，不是机器事实；四个 TCS 的 ctl/en 全 0、st 全 1 全部空闲；0xc3f00000 页读到的 10c11c22 与 R182 键 29 相同，确认那页是 AOSS 消息 RAM 而非指针",
+  "R188-R195 判决（DEVICE-VERIFIED，八轮单变量）：GPU 冷启动的所有外围原因已被真机逐一排除，只剩一条——GMU 侧 RSCC_CONTROL_REQ=2 之后 RSCC_CONTROL_ACK 的 bit1 在 400000 次有界轮询内从未置起、RSCC_SEQ_BUSY_DRV0 恒 0、GPU_CC_GX_GDSCR 前后同为 00222001（bit16=0）、SPTPRAC_PWR_CLK_STATUS 恒 0xd4（&0x38=0x14 != 0x28），而 CPU 侧 APPS RSC（0x179e0000）可读且四个 TCS 空闲 => 问题不是「这台机器不会投票」，是 GMU 侧 RSC 不服务非安全 CPU。被排除的假设：vote 值不对（R192 用 cmd-db 算出的真索引 gx=9 mx=4 写 vote=0x01a00409 并读回，仍无人应答）、RSC 缺微码（R193 把五字 0xa7a506a0/a1e6a6e7/a2e081e1/e9a982e2/0020e8a8 写进去并逐字读回 loaded=1，同启动后跑的键 26 也读到 mem0=a7a506a0，握手照旧 ack=0）、PDC 未配置（R194 证明寄存器在厂商基址 0x0b200000、mainline sdm845.dtsi 推出的 +0x80000 与 +0x280000 全 0；R195 在基址读到 t1en=t3en=0x0f、t1ad=0x00030080、t3ad=0x00030010、t3da=3，说明引导器早配好了，且 t1ms=0x00010000/t3ms=0x00010100 与上游 0x10108 不同族，是另一套命令）。中途修掉一个真 bug：quiet_cmd_db_levels() 的名字比较读到 want[7] 越界，导致 6 字母资源全部误判不存在（R191 修好后 gfx_n=10 cx_n=8 mx_n=5、pindex=9、sindex=4）",
 ]
 next_action = [
   '[ROUND 163 2026-11-16, BISECT RUNNING] CI #265 (run 43854373803) builds 3f1de2be with only the R162 ArmCpu.cpp. Read its window the same way as every other run (gate, flash system_b, fastboot boot work/out/boot-r16.img, wait for recovery, arm-bcb, dd bs=4096 skip=13207739 count=8192, pull 32 MiB, compare boot_id against 584678385/629517746/935335677). Silent means the culprit is inside ArmCpu.cpp and the next bisect swaps only the early scm path; a new boot_id means the culprit is the probe file and bisect B splits gGpuStateReplay and the gputate row away from the armcpu_scm_call_full and s7 fields. device_ref must be a branch name: a short sha makes actions/checkout fetch refs/heads/<sha> and the job dies in Check out the device repository (#263). Delete the throwaway branches r163-ctl-ci258 and r163-b-armcpu-new when the bisect is finished.',
@@ -796,6 +797,7 @@ next_action = [
 
   "R187：先做只读的 APPS RSC TCS 状态转储（照 package/EnchiladaTouchRpmh.h 的 ftb_rsc_layout_for() 两套偏移：v3 tcs_stride 672 / control 0x24 / status 0x28 / cmd_enable 0x2c；FTB_RSC_TCS 0xd00），确认 CPU 侧 RSC 通道是否也像 GMU 侧一样无响应，再决定是否照 ftb_rpmh_active_request() 写 ACTIVE_MODE|TRIGGER；另一条备选是跳过 RSC 握手、vote 索引保持 0 直接推进（能跑但不可靠）",
   "R188：用已验证的基址 0x85fe0000 做只读 arc-vote 数据采集——quiet_cmd_db_levels() 读 gfx.lvl / cx.lvl / mx.lvl 三张 level 表，打印每张的条目数与最大 level 及其下标（对照上游 a6xx_gmu_rpmh_arc_votes_init：primary 取 pri[j]>=level 的首个 j，secondary 先试 gmxc.lvl、IS_ERR 且非 -EPROBE_DEFER 时退 mx.lvl）；拿到 pindex/sindex 之后再让键写 GX_VOTE_IDX/MX_VOTE_IDX，观察 GMU 侧 RSCC_CONTROL_ACK 是否变 1。注意 GMU 侧 RSCC 与 CPU 侧 APPS RSC 是两条不同的路，前者仍然 ack=0",
+  "R196：在 RSCC 页做方向矩阵，只写 RSCC_CONTROL_REQ 一个寄存器（R193 已证明它可写可读回）——先 REQ=1（a6xx_rpmh_stop 方向）、有界轮询 RSCC_STATUS0_DRV0 的 bit16、再 REQ=0；然后 REQ=2（a6xx_rpmh_start 方向）、有界轮询 RSCC_CONTROL_ACK 的 bit1；每一步都读回 REQ/ACK/STATUS0/SEQ_BUSY 并一行给全。判读开跑前钉死：两向都不 ack => RSC 对非安全 CPU 完全不服务，冷启动这条路在没有 TZ 配合下走不通，应转去评估「让引导器/TZ 代劳」或「绕开 RSC 直接上电」；stop 向 ack 而 start 向不 ack => RSC 活着、只是「上电」语义被拒（很可能需要 CX 轨道先起来）；写完再读 REQ 不再是写入值 => 有别的执行体在改它",
 ]
 evidence = [
   { kind = "device", reference = "evidence/stage5-gpu-pas-device.md", result = "ROUND 163 DEVICE-RUN: control build #264 (the ci258 tree rebuilt with todays workflow) booted and wrote a full log, window cd2e4c1b80, boot_id 584678385; the pipeline is therefore exonerated and the silent boots are our own source delta." },
@@ -891,6 +893,7 @@ evidence = [
 
   "evidence §三十三/§三十四：R185 的致死写是继承来的（判决无效）、R186 键 32 轨道写不致死也无效果、键 33 门铃只换来 CM3_FAULT；连同 R179/R180 的 RSCC_CONTROL_ACK=0 合成「APPS RSC / RPMh 不应答 CPU」",
   "evidence §三十五：R187 键 34 只读转储 APPS RSC（三行 gmursc2/3/4、boot_id 553864669），确认 CPU 侧通道可用、命令数据库在 0x85fe0000、四个 TCS 空闲，并推翻 R182 的「无 cmd-db」结论",
+  "evidence §三十六..§四十三：R188 读三张 arc-vote 表（gfx.lvl 十档 top 0x01a0@9，另两张误报 0）、R189 枚举八个条目名（cx.lvl/mx.lvl 一直在库里）、R190 逐条目读出地址长度偏移（cx.lvl@0x30000、mx.lvl@0x30010 各 32 B）、R191 修好越界读的真 bug（gfx_n=10 cx_n=8 mx_n=5、pindex=9、sindex=4）、R192 用真索引写 vote（vote=0x01a00409 读回 gx=9 mx=4，仍 ack=0）、R193 装载 RSC 定序器微码（loaded=1 仍 ack=0）、R194 只读勘察 PDC 两个候选窗（厂商基址成立、mainline 偏移全 0）、R195 在基址读 TCS1/TCS3（t1en=t3en=0x0f、地址落在 0x30080/0x30010 => PDC 早被配好）",
 ]
 
 [[area]]

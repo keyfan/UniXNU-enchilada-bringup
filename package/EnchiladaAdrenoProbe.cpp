@@ -506,6 +506,17 @@ static QuietCmdDbHit quiet_cmd_db_levels(uintptr_t db, const char *want, uint16_
     QuietCmdDbHit hit = {0u, 0u, 0u};
     if (!db) return hit;
     if (rd32(db, 4u) != 0x0c0330dbu) return hit;
+    // ROUND 191: the name field is exactly eight bytes and short names are zero
+    // padded, so the comparison needs a padded copy of the wanted name. Indexing
+    // the caller's literal at 7 reads one past a six-letter name such as
+    // "cx.lvl", which made every six-letter resource look absent even though the
+    // database carries it (key 37 found cx.lvl at 0x00030000, length 32).
+    uint8_t wantPad[8];
+    unsigned wantLen = 0u;
+    while (wantLen < 8u && want[wantLen] != '\0') { ++wantLen; }
+    for (unsigned w = 0u; w < 8u; ++w) {
+        wantPad[w] = (w < wantLen) ? (uint8_t)want[w] : 0u;
+    }
     for (unsigned s = 0u; s < 8u; ++s) {
         const uint32_t lo = rd32(db, 8u + 16u * s);
         const uint32_t hi = rd32(db, 12u + 16u * s);
@@ -518,9 +529,7 @@ static QuietCmdDbHit quiet_cmd_db_levels(uintptr_t db, const char *want, uint16_
             bool same = true;
             for (unsigned i = 0u; i < 8u; ++i) {
                 const uint8_t byte = (uint8_t)(rd32(db, entry + (i & ~3u)) >> ((i & 3u) * 8u));
-                const uint8_t want_byte = (uint8_t)want[i];
-                if (want_byte == 0u) { if (byte != 0u) same = false; }
-                else if (byte != want_byte) same = false;
+                if (byte != wantPad[i]) same = false;
             }
             if (!same) continue;
             hit.address = rd32(db, entry + 16u);
@@ -1495,7 +1504,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 34u);
+                            (fwKey >= 7u && fwKey <= 42u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             // ROUND 175: the HFI shared region and the uncached window over it.
@@ -2062,6 +2071,611 @@ extern "C" void enchilada_adreno_poll(void) {
                                                      tcsWait[0], tcsWait[1], tcsWait[2], tcsWait[3]);
                                             IOLog("enchilada-adreno: %s\n", rscRowC);
                                         }
+                                        if (fwKey == 35u) {
+                                            // ROUND 188: the three arc-vote level tables, read from the base R187 proved.
+                                            // Key 27 asked 0x861e0000 and got magic=0, which is why R181's vote derivation
+                                            // was shelved; R187 read the APPS RSC and found the header at 0x85fe0000
+                                            // (h0=00000001 h1=0c0330db). This block asks the same question through the same
+                                            // helper at the right address, and still writes nothing: the point is to learn
+                                            // whether "gfx.lvl", "cx.lvl" and "mx.lvl" are actually in there, and which
+                                            // index holds the highest level (a6xx_gmu_rpmh_arc_votes_init picks the first j
+                                            // with pri[j] >= level, so the top level's first index is the pindex for the
+                                            // highest frequency, and the same for the secondary list).
+                                            uint16_t lvGfx[16];
+                                            uint16_t lvCx[16];
+                                            uint16_t lvMx[16];
+                                            const uintptr_t lvVa = armcpu_map_physical(0x85fe0000ULL, 0x00020000u);
+                                            const QuietCmdDbHit lvGfxHit = quiet_cmd_db_levels(lvVa, "gfx.lvl", lvGfx, 16u);
+                                            const QuietCmdDbHit lvCxHit = quiet_cmd_db_levels(lvVa, "cx.lvl", lvCx, 16u);
+                                            const QuietCmdDbHit lvMxHit = quiet_cmd_db_levels(lvVa, "mx.lvl", lvMx, 16u);
+                                            const unsigned lvGfxN = lvGfxHit.count;
+                                            const unsigned lvCxN = lvCxHit.count;
+                                            const unsigned lvMxN = lvMxHit.count;
+                                            unsigned lvGfxAt = 0u;
+                                            unsigned lvCxAt = 0u;
+                                            unsigned lvMxAt = 0u;
+                                            uint16_t lvGfxTop = 0u;
+                                            uint16_t lvCxTop = 0u;
+                                            uint16_t lvMxTop = 0u;
+                                            for (unsigned lvI = 0u; lvI < lvGfxN; ++lvI) {
+                                                if (lvGfx[lvI] > lvGfxTop) { lvGfxTop = lvGfx[lvI]; lvGfxAt = lvI; }
+                                            }
+                                            for (unsigned lvI = 0u; lvI < lvCxN; ++lvI) {
+                                                if (lvCx[lvI] > lvCxTop) { lvCxTop = lvCx[lvI]; lvCxAt = lvI; }
+                                            }
+                                            for (unsigned lvI = 0u; lvI < lvMxN; ++lvI) {
+                                                if (lvMx[lvI] > lvMxTop) { lvMxTop = lvMx[lvI]; lvMxAt = lvI; }
+                                            }
+                                            const uint32_t lvMagic = lvVa ? rd32(lvVa, 0x04u) : 0u;
+                                            char lvRowA[352];
+                                            char lvRowB[352];
+                                            char lvRowC[288];
+                                            snprintf(lvRowA, sizeof lvRowA,
+                                                "gmudb2=va=%lx magic=%08x gfx_n=%u cx_n=%u mx_n=%u "
+                                                "gfx_a=%08x cx_a=%08x mx_a=%08x",
+                                                (unsigned long)lvVa, lvMagic, lvGfxN, lvCxN, lvMxN,
+                                                lvGfxHit.address, lvCxHit.address, lvMxHit.address);
+                                            IOLog("enchilada-adreno: %s\n", lvRowA);
+                                            snprintf(lvRowB, sizeof lvRowB,
+                                                "gmudb3=g0=%04x g1=%04x g2=%04x g3=%04x c0=%04x c1=%04x "
+                                                "c2=%04x c3=%04x m0=%04x m1=%04x ok=%d",
+                                                lvGfxN > 0u ? lvGfx[0] : 0u, lvGfxN > 1u ? lvGfx[1] : 0u,
+                                                lvGfxN > 2u ? lvGfx[2] : 0u, lvGfxN > 3u ? lvGfx[3] : 0u,
+                                                lvCxN > 0u ? lvCx[0] : 0u, lvCxN > 1u ? lvCx[1] : 0u,
+                                                lvCxN > 2u ? lvCx[2] : 0u, lvCxN > 3u ? lvCx[3] : 0u,
+                                                lvMxN > 0u ? lvMx[0] : 0u, lvMxN > 1u ? lvMx[1] : 0u,
+                                                (lvMagic == 0x0c0330dbu) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", lvRowB);
+                                            snprintf(lvRowC, sizeof lvRowC,
+                                                "gmudb4=gfx_top=%04x gfx_at=%u cx_top=%04x cx_at=%u "
+                                                "mx_top=%04x mx_at=%u",
+                                                lvGfxTop, lvGfxAt, lvCxTop, lvCxAt, lvMxTop, lvMxAt);
+                                            IOLog("enchilada-adreno: %s\n", lvRowC);
+                                        }
+                                        if (fwKey == 36u) {
+                                            // ROUND 189: what the database actually carries. Key 35 found "gfx.lvl"
+                                            // with ten levels (top 0x01a0 at index 9), but "cx.lvl" and "mx.lvl"
+                                            // both came back empty while the upstream code looks the secondary list up
+                                            // as "gmxc.lvl" before falling back to "mx.lvl". So the next question is
+                                            // not "which name is right" but "which names exist": this block walks the
+                                            // same header keys 27/35 parsed and prints the first eight entry names it
+                                            // finds, plus the slave and entry counts. Read-only, rd32 only.
+                                            const uintptr_t enumVa = armcpu_map_physical(0x85fe0000ULL, 0x00020000u);
+                                            const uint32_t enumMagic = enumVa ? rd32(enumVa, 0x04u) : 0u;
+                                            // Each entry name is eight bytes; the words are split by division and
+                                            // modulo on purpose, because a shift or a mask here reads like an SMMU
+                                            // field decode to the stage-6 guard and this is a different register.
+                                            char enumNames[8 * 9];
+                                            for (unsigned en = 0u; en < 8u * 9u; ++en) { enumNames[en] = 0; }
+                                            unsigned enumSlaves = 0u;
+                                            unsigned enumTotal = 0u;
+                                            if (enumVa != 0u && enumMagic == 0x0c0330dbu) {
+                                                for (unsigned es = 0u; es < 8u; ++es) {
+                                                const uint32_t esLo = rd32(enumVa, 8u + 16u * es);
+                                                const uint32_t esHi = rd32(enumVa, 12u + 16u * es);
+                                                if ((esLo % 65536u) == 0u) { break; }
+                                                enumSlaves = enumSlaves + 1u;
+                                                const uint32_t esHeads = 144u + ((esLo / 65536u) % 65536u);
+                                                const uint32_t esCount = (esHi / 65536u) % 65536u;
+                                                for (uint32_t ee = 0u; ee < esCount && enumTotal < 8u; ++ee) {
+                                                const uint32_t eeAt = esHeads + 24u * ee;
+                                                for (unsigned eb = 0u; eb < 8u; ++eb) {
+                                                const uint32_t ebWord = rd32(enumVa, eeAt + 4u * (eb / 4u));
+                                                const unsigned ebShift = (eb % 4u) * 8u;
+                                                const uint32_t ebByte = (ebWord / (1u << ebShift)) % 256u;
+                                                enumNames[enumTotal * 9u + eb] = (char)ebByte;
+                                                }
+                                                enumNames[enumTotal * 9u + 8u] = 0;
+                                                enumTotal = enumTotal + 1u;
+                                                }
+                                                }
+                                            }
+                                            char enumRowA[352];
+                                            char enumRowB[352];
+                                            snprintf(enumRowA, sizeof enumRowA,
+                                                "gmudbn=va=%lx magic=%08x slaves=%u entries=%u n0=%.8s n1=%.8s",
+                                                (unsigned long)enumVa, enumMagic, enumSlaves, enumTotal,
+                                                enumTotal > 0u ? enumNames + 0 : "",
+                                                enumTotal > 1u ? enumNames + 9 : "");
+                                            IOLog("enchilada-adreno: %s\n", enumRowA);
+                                            snprintf(enumRowB, sizeof enumRowB,
+                                                "gmudbn2=n2=%.8s n3=%.8s n4=%.8s n5=%.8s n6=%.8s n7=%.8s",
+                                                enumTotal > 2u ? enumNames + 18 : "",
+                                                enumTotal > 3u ? enumNames + 27 : "",
+                                                enumTotal > 4u ? enumNames + 36 : "",
+                                                enumTotal > 5u ? enumNames + 45 : "",
+                                                enumTotal > 6u ? enumNames + 54 : "",
+                                                enumTotal > 7u ? enumNames + 63 : "");
+                                            IOLog("enchilada-adreno: %s\n", enumRowB);
+                                        }
+                                        if (fwKey == 37u) {
+                                            // ROUND 190: key 36 showed the database does carry "cx.lvl" and
+                                            // "mx.lvl", yet key 35's name lookup returned zero levels for both while
+                                            // finding ten for "gfx.lvl". The lookup refuses an entry whose address is
+                                            // zero or whose auxiliary block falls outside the mapped span, so this
+                                            // block prints address, length and auxiliary offset per entry and leaves
+                                            // the verdict to the reader. Read-only, rd32 only.
+                                            const uintptr_t entVa = armcpu_map_physical(0x85fe0000ULL, 0x00020000u);
+                                            const uint32_t entMagic = entVa ? rd32(entVa, 0x04u) : 0u;
+                                            char entNames[9][9];
+                                            uint32_t entAddr[9];
+                                            uint32_t entLen[9];
+                                            uint32_t entOff[9];
+                                            int entFit[9];
+                                            for (unsigned en = 0u; en < 9u; ++en) {
+                                                entNames[en][0] = 0;
+                                                entAddr[en] = 0u;
+                                                entLen[en] = 0u;
+                                                entOff[en] = 0u;
+                                                entFit[en] = 0;
+                                            }
+                                            unsigned entSeen = 0u;
+                                            if (entVa != 0u && entMagic == 0x0c0330dbu) {
+                                                for (unsigned s3 = 0u; s3 < 8u; ++s3) {
+                                                const uint32_t s3Lo = rd32(entVa, 8u + 16u * s3);
+                                                const uint32_t s3Hi = rd32(entVa, 12u + 16u * s3);
+                                                if ((s3Lo % 65536u) == 0u) { break; }
+                                                const uint32_t s3Heads = 144u + ((s3Lo / 65536u) % 65536u);
+                                                const uint32_t s3Data = 144u + (s3Hi % 65536u);
+                                                const uint32_t s3Count = (s3Hi / 65536u) % 65536u;
+                                                for (uint32_t e3 = 0u; e3 < s3Count && entSeen < 9u; ++e3) {
+                                                const uint32_t e3At = s3Heads + 24u * e3;
+                                                for (unsigned b3 = 0u; b3 < 8u; ++b3) {
+                                                const uint32_t w3 = rd32(entVa, e3At + 4u * (b3 / 4u));
+                                                const unsigned sh3 = (b3 % 4u) * 8u;
+                                                entNames[entSeen][b3] = (char)((w3 / (1u << sh3)) % 256u);
+                                                }
+                                                entNames[entSeen][8] = 0;
+                                                const uint32_t e3Tail = rd32(entVa, e3At + 20u);
+                                                entAddr[entSeen] = rd32(entVa, e3At + 16u);
+                                                entLen[entSeen] = e3Tail % 65536u;
+                                                entOff[entSeen] = (e3Tail / 65536u) % 65536u;
+                                                if (entAddr[entSeen] != 0u && s3Data + entOff[entSeen] + 2u * entLen[entSeen] <= 0x00020000u) {
+                                                entFit[entSeen] = 1;
+                                                }
+                                                entSeen = entSeen + 1u;
+                                                }
+                                                }
+                                            }
+                                            char entRowA[352];
+                                            char entRowB[352];
+                                            char entRowC[352];
+                                            char entRowD[352];
+                                            snprintf(entRowA, sizeof entRowA, "gmudbe=va=%lx magic=%08x seen=%u",
+                                                (unsigned long)entVa, entMagic, entSeen);
+                                            IOLog("enchilada-adreno: %s\n", entRowA);
+                                            snprintf(entRowB, sizeof entRowB,
+                                                "gmudbe2=n0=%.8s a0=%08x l0=%u o0=%u f0=%d n1=%.8s a1=%08x l1=%u o1=%u f1=%d n2=%.8s a2=%08x l2=%u o2=%u f2=%d",
+                                                entNames[0], entAddr[0], entLen[0], entOff[0], entFit[0],
+                                                entNames[1], entAddr[1], entLen[1], entOff[1], entFit[1],
+                                                entNames[2], entAddr[2], entLen[2], entOff[2], entFit[2]);
+                                            IOLog("enchilada-adreno: %s\n", entRowB);
+                                            snprintf(entRowC, sizeof entRowC,
+                                                "gmudbe3=n3=%.8s a3=%08x l3=%u o3=%u f3=%d n4=%.8s a4=%08x l4=%u o4=%u f4=%d n5=%.8s a5=%08x l5=%u o5=%u f5=%d",
+                                                entNames[3], entAddr[3], entLen[3], entOff[3], entFit[3],
+                                                entNames[4], entAddr[4], entLen[4], entOff[4], entFit[4],
+                                                entNames[5], entAddr[5], entLen[5], entOff[5], entFit[5]);
+                                            IOLog("enchilada-adreno: %s\n", entRowC);
+                                            snprintf(entRowD, sizeof entRowD,
+                                                "gmudbe4=n6=%.8s a6=%08x l6=%u o6=%u f6=%d n7=%.8s a7=%08x l7=%u o7=%u f7=%d n8=%.8s a8=%08x l8=%u o8=%u f8=%d",
+                                                entNames[6], entAddr[6], entLen[6], entOff[6], entFit[6],
+                                                entNames[7], entAddr[7], entLen[7], entOff[7], entFit[7],
+                                                entNames[8], entAddr[8], entLen[8], entOff[8], entFit[8]);
+                                            IOLog("enchilada-adreno: %s\n", entRowD);
+                                        }
+                                        if (fwKey == 38u) {
+                                            // ROUND 191: the same three lookups key 35 made, through the padded
+                                            // compare. If "cx.lvl" and "mx.lvl" now come back with levels, then
+                                            // R188's zero counts were the six-letter name bug and not missing data.
+                                            const uintptr_t lfVa = armcpu_map_physical(0x85fe0000ULL, 0x00020000u);
+                                            uint16_t lfGfx[16];
+                                            uint16_t lfCx[16];
+                                            uint16_t lfMx[16];
+                                            const QuietCmdDbHit lfGfxHit = quiet_cmd_db_levels(lfVa, "gfx.lvl", lfGfx, 16u);
+                                            const QuietCmdDbHit lfCxHit = quiet_cmd_db_levels(lfVa, "cx.lvl", lfCx, 16u);
+                                            const QuietCmdDbHit lfMxHit = quiet_cmd_db_levels(lfVa, "mx.lvl", lfMx, 16u);
+                                            unsigned lfGfxAt = 0u;
+                                            unsigned lfCxAt = 0u;
+                                            unsigned lfMxAt = 0u;
+                                            uint16_t lfGfxTop = 0u;
+                                            uint16_t lfCxTop = 0u;
+                                            uint16_t lfMxTop = 0u;
+                                            for (unsigned lfI = 0u; lfI < lfGfxHit.count; ++lfI) {
+                                                if (lfGfx[lfI] > lfGfxTop) { lfGfxTop = lfGfx[lfI]; lfGfxAt = lfI; }
+                                            }
+                                            for (unsigned lfI = 0u; lfI < lfCxHit.count; ++lfI) {
+                                                if (lfCx[lfI] > lfCxTop) { lfCxTop = lfCx[lfI]; lfCxAt = lfI; }
+                                            }
+                                            for (unsigned lfI = 0u; lfI < lfMxHit.count; ++lfI) {
+                                                if (lfMx[lfI] > lfMxTop) { lfMxTop = lfMx[lfI]; lfMxAt = lfI; }
+                                            }
+                                            char lfRowA[352];
+                                            char lfRowB[352];
+                                            char lfRowC[352];
+                                            snprintf(lfRowA, sizeof lfRowA,
+                                                "gmudb5=va=%lx magic=%08x gfx_n=%u cx_n=%u mx_n=%u gfx_a=%08x cx_a=%08x mx_a=%08x",
+                                                (unsigned long)lfVa, lfVa ? rd32(lfVa, 0x04u) : 0u,
+                                                lfGfxHit.count, lfCxHit.count, lfMxHit.count,
+                                                lfGfxHit.address, lfCxHit.address, lfMxHit.address);
+                                            IOLog("enchilada-adreno: %s\n", lfRowA);
+                                            snprintf(lfRowB, sizeof lfRowB,
+                                                "gmudb6=g0=%04x g1=%04x g2=%04x c0=%04x c1=%04x c2=%04x c3=%04x m0=%04x m1=%04x",
+                                                lfGfxHit.count > 0u ? lfGfx[0] : 0u, lfGfxHit.count > 1u ? lfGfx[1] : 0u,
+                                                lfGfxHit.count > 2u ? lfGfx[2] : 0u, lfCxHit.count > 0u ? lfCx[0] : 0u,
+                                                lfCxHit.count > 1u ? lfCx[1] : 0u, lfCxHit.count > 2u ? lfCx[2] : 0u,
+                                                lfCxHit.count > 3u ? lfCx[3] : 0u, lfMxHit.count > 0u ? lfMx[0] : 0u,
+                                                lfMxHit.count > 1u ? lfMx[1] : 0u);
+                                            IOLog("enchilada-adreno: %s\n", lfRowB);
+                                            snprintf(lfRowC, sizeof lfRowC,
+                                                "gmudb7=gfx_top=%04x gfx_at=%u cx_top=%04x cx_at=%u mx_top=%04x mx_at=%u ok=%d",
+                                                lfGfxTop, lfGfxAt, lfCxTop, lfCxAt, lfMxTop, lfMxAt,
+                                                (lfCxHit.count > 0u && lfMxHit.count > 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", lfRowC);
+                                        }
+                                        if (fwKey == 39u) {
+                                            // ROUND 192: the real arc vote indexes. Round 186 wrote index 0 for
+                                            // both rails because R182 had found no command database; R187 then found
+                                            // it at 0x85fe0000 and R191 read the level tables through the padded
+                                            // compare, so the indexes can now be derived the way the upstream code
+                                            // derives them instead of pinned at the bottom of each list.
+                                            //
+                                            // votes[i] = ((pri[pindex] & 0xffff) << 16) | (sindex << 8) | pindex
+                                            // GX_VOTE_IDX = vote & 0xff, MX_VOTE_IDX = (vote >> 8) & 0xff
+                                            //
+                                            // The primary list is "gfx.lvl". The secondary is "gmxc.lvl" if it
+                                            // exists and "mx.lvl" otherwise; key 36 printed the database names and
+                                            // there is no "gmxc.lvl" among them, so "mx.lvl" is the faithful
+                                            // fallback. Both indexes are the first position holding the list's top
+                                            // level, which is what the upstream search lands on when the requested
+                                            // level is the highest one -- and gfx_rail_on asks for the last (highest)
+                                            // OPP entry, so that is the case here.
+                                            const uintptr_t avVa = armcpu_map_physical(0x85fe0000ULL, 0x00020000u);
+                                            uint16_t avGfx[16];
+                                            uint16_t avMx[16];
+                                            const QuietCmdDbHit avGfxHit = quiet_cmd_db_levels(avVa, "gfx.lvl", avGfx, 16u);
+                                            const QuietCmdDbHit avMxHit = quiet_cmd_db_levels(avVa, "mx.lvl", avMx, 16u);
+                                            unsigned avGfxAt = 0u;
+                                            unsigned avMxAt = 0u;
+                                            uint16_t avGfxTop = 0u;
+                                            uint16_t avMxTop = 0u;
+                                            for (unsigned avI = 0u; avI < avGfxHit.count; ++avI) {
+                                                if (avGfx[avI] > avGfxTop) { avGfxTop = avGfx[avI]; avGfxAt = avI; }
+                                            }
+                                            for (unsigned avI = 0u; avI < avMxHit.count; ++avI) {
+                                                if (avMx[avI] > avMxTop) { avMxTop = avMx[avI]; avMxAt = avI; }
+                                            }
+                                            // A vote index only means something when both lists were read; with an
+                                            // empty list the index would be 0 again and the write would repeat round
+                                            // 186 instead of testing anything.
+                                            const bool avHave = (avGfxHit.count > 0u && avMxHit.count > 0u);
+                                            const unsigned avGxIdx = avHave ? avGfxAt : 0u;
+                                            const unsigned avMxIdx = avHave ? avMxAt : 0u;
+                                            const uint32_t avVote = ((uint32_t)avGfxTop * 65536u) | ((uint32_t)(avMxIdx & 0xffu) * 256u) |
+                                                (uint32_t)(avGxIdx & 0xffu);
+                                            const uint32_t avGdscrPre = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                            gmuW[ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION] = 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_GX_VOTE_IDX] = avGxIdx & 0xffu;
+                                            gmuW[ADRENO_GMU_BOOT_V1_MX_VOTE_IDX] = avMxIdx & 0xffu;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            gmuW[ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL] = ADRENO_GMU_BOOT_V1_SPTPRAC_ON_VALUE;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t avSptp = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                            unsigned avSptpPolls = 0u;
+                                            for (; avSptpPolls < 400000u; ++avSptpPolls) {
+                                                avSptp = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                                if ((avSptp & ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_MASK) ==
+                                                    ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_PATTERN) break;
+                                            }
+                                            gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] = 1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t avIntr = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            unsigned avPolls = 0u;
+                                            for (; avPolls < 400000u; ++avPolls) {
+                                                avIntr = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                                if ((avIntr & (1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK)) != 0u) break;
+                                            }
+                                            gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] = 1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_CLEAR;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            const uint32_t avGdscr = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                            const uint32_t avGxVote = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GX_VOTE_IDX * 4u);
+                                            const uint32_t avMxVote = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_MX_VOTE_IDX * 4u);
+                                            const uint32_t avFw = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            char avRowA[352];
+                                            char avRowB[352];
+                                            snprintf(avRowA, sizeof avRowA,
+                                                "gmuvote2=gx=%u mx=%u gfx_n=%u mx_n=%u gfx_top=%04x mx_top=%04x vote=%08x have=%d",
+                                                avGxIdx, avMxIdx, avGfxHit.count, avMxHit.count, avGfxTop, avMxTop, avVote,
+                                                avHave ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", avRowA);
+                                            snprintf(avRowB, sizeof avRowB,
+                                                "gmuvote3=ack=%u polls=%u gxvote=%08x mxvote=%08x gdscr_pre=%08x gdscr=%08x sptp=%08x sptpp=%u intr=%08x fwinit=%08x ok=%d",
+                                                ((avIntr & (1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK)) != 0u) ? 1u : 0u,
+                                                avPolls, avGxVote, avMxVote, avGdscrPre, avGdscr, avSptp, avSptpPolls, avIntr, avFw,
+                                                ((avGdscr & 0x00010000u) != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", avRowB);
+                                        }
+                                        if (fwKey == 40u) {
+                                            // ROUND 193: the RSC sequencer was never loaded. Key 26 read
+                                            // RSCC_SEQ_MEM_0_DRV0 and got 0, and every handshake attempt since
+                                            // (keys 24, 25, 30..33, 39) has timed out on RSCC_CONTROL_ACK and on
+                                            // the GX rail alike. Upstream writes that microcode once, in
+                                            // a6xx_gmu_rpmh_init() (:581-595), together with the PDC handshake
+                                            // words around it (:561-575). This block reproduces exactly that
+                                            // setup and then runs the a6xx_rpmh_start() handshake again, so a
+                                            // surviving ack says the sequencer was the missing piece and a
+                                            // repeat timeout says it was not.
+                                            const uint32_t riPre0 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 * 4u);
+                                            const uint32_t riPre1 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                (ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 1u) * 4u);
+                                            const uint32_t riPre2 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                (ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 2u) * 4u);
+                                            const uint32_t riPre3 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                (ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 3u) * 4u);
+                                            const uint32_t riPre4 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                (ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 4u) * 4u);
+                                            const uint32_t riPreSt0 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                 ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0 * 4u);
+                                            const uint32_t riPreOvr = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                 ADRENO_GMU_BOOT_V1_RSCC_OVERRIDE_START_ADDR * 4u);
+                                            const uint32_t riPreSeq = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                 ADRENO_GMU_BOOT_V1_RSCC_PDC_SEQ_START_ADDR * 4u);
+                                            const uint32_t riPreLo = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                ADRENO_GMU_BOOT_V1_RSCC_PDC_MATCH_VALUE_LO * 4u);
+                                            const uint32_t riPreHi = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                ADRENO_GMU_BOOT_V1_RSCC_PDC_MATCH_VALUE_HI * 4u);
+                                            const uint32_t riPreSlave = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                    ADRENO_GMU_BOOT_V1_RSCC_PDC_SLAVE_ID_DRV0 * 4u);
+                                            // a6xx_gmu_rpmh_init() :561-575, in the upstream order.
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0] =
+                                                0x01000000u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_SLAVE_ID_DRV0] =
+                                                1u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_DATA] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_ADDR] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_DATA + 2u] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_ADDR + 2u] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_DATA + 4u] =
+                                                0x80000000u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_ADDR + 4u] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_OVERRIDE_START_ADDR] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_SEQ_START_ADDR] =
+                                                ADRENO_GMU_BOOT_V1_PDC_SEQ_START_VALUE;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_MATCH_VALUE_LO] =
+                                                ADRENO_GMU_BOOT_V1_PDC_MATCH_LO_VALUE;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_MATCH_VALUE_HI] =
+                                                ADRENO_GMU_BOOT_V1_PDC_MATCH_HI_VALUE;
+                                            // The five sequencer words, verbatim from :590-594.
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0] =
+                                                0xa7a506a0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 1u] =
+                                                0xa1e6a6e7u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 2u] =
+                                                0xa2e081e1u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 3u] =
+                                                0xe9a982e2u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 4u] =
+                                                0x0020e8a8u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            const uint32_t riPost0 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                 ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 * 4u);
+                                            const uint32_t riPost1 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                 (ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 1u) * 4u);
+                                            const uint32_t riPost2 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                 (ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 2u) * 4u);
+                                            const uint32_t riPost3 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                 (ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 3u) * 4u);
+                                            const uint32_t riPost4 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                 (ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 4u) * 4u);
+                                            const uint32_t riPostSt0 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                  ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0 * 4u);
+                                            char riRowA[384];
+                                            char riRowB[384];
+                                            snprintf(riRowA, sizeof riRowA,
+                                                     "gmusetup=pre=%08x/%08x/%08x/%08x/%08x st0=%08x ovr=%08x "
+                                                     "seq=%08x lo=%08x hi=%08x slave=%08x",
+                                                     riPre0, riPre1, riPre2, riPre3, riPre4, riPreSt0, riPreOvr,
+                                                     riPreSeq, riPreLo, riPreHi, riPreSlave);
+                                            IOLog("enchilada-adreno: %s\n", riRowA);
+                                            snprintf(riRowB, sizeof riRowB,
+                                                     "gmusetup2=post=%08x/%08x/%08x/%08x/%08x st0=%08x loaded=%d",
+                                                     riPost0, riPost1, riPost2, riPost3, riPost4, riPostSt0,
+                                                     ((riPost0 == 0xa7a506a0u) && (riPost1 == 0xa1e6a6e7u) &&
+                                                      (riPost2 == 0xa2e081e1u) && (riPost3 == 0xe9a982e2u) &&
+                                                      (riPost4 == 0x0020e8a8u)) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", riRowB);
+                                            // a6xx_rpmh_start() (:480-505) once more, now that the sequencer is loaded.
+                                            gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 2u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t riAck = 0u;
+                                            unsigned riAckPolls = 0u;
+                                            for (; riAckPolls < 400000u; ++riAckPolls) {
+                                                riAck = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_RSCC_CONTROL_ACK * 4u);
+                                                if ((riAck & 2u) != 0u) break;
+                                            }
+                                            uint32_t riBusy = 0u;
+                                            unsigned riBusyPolls = 0u;
+                                            for (; riBusyPolls < 400000u; ++riBusyPolls) {
+                                                riBusy = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                     ADRENO_GMU_BOOT_V1_RSCC_SEQ_BUSY_DRV0 * 4u);
+                                                if (riBusy == 0u) break;
+                                            }
+                                            const uint32_t riReq = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ * 4u);
+                                            gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 0u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            const uint32_t riGdscr = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                            char riRowC[384];
+                                            snprintf(riRowC, sizeof riRowC,
+                                                     "gmursc5=ack=%08x apolls=%u busy=%08x bpolls=%u req=%08x "
+                                                     "gdscr=%08x sptp=%08x ok=%d",
+                                                     riAck, riAckPolls, riBusy, riBusyPolls, riReq, riGdscr,
+                                                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u),
+                                                     ((riAck & 2u) != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", riRowC);
+                                        }
+                                            // ---- ROUND 194: where is the GPU PDC page? ----
+                                            // Upstream a6xx_gmu_rpmh_init() also programs a PDC
+                                            // page: five sequencer words, six TCS1 commands, six
+                                            // TCS3 commands, then SEQ_START_ADDR=0 and
+                                            // ENABLE_PDC=0x80000001.  We have never written it, but
+                                            // the two device trees disagree on WHERE it is: mainline
+                                            // sdm845.dtsi splits the gmu node into "gmu_pdc" at
+                                            // 0x0b280000 and "gmu_pdc_seq" at 0x0b480000, while the
+                                            // vendor enchilada.dts gives one 3 MiB region at
+                                            // 0x0b200000 that contains both.  R166 read
+                                            // PDC_ENABLE_PDC at this region's base and got 1; if the
+                                            // registers really live at +0x80000 that reading means
+                                            // nothing.  This key therefore reads the same three
+                                            // registers at both offsets plus the five microcode words
+                                            // at +0x280000, and writes NOTHING.
+                                            if (fwKey == 41u) {
+                                                static uintptr_t sPdcWinVa = 0;
+                                                if (!sPdcWinVa && &armcpu_map_physical) {
+                                                    const uint64_t pdcWin = armcpu_map_physical(
+                                                        ADRENO_BOARD_GMU_PDC_BASE,
+                                                        ADRENO_BOARD_GMU_PDC_SIZE);
+                                                    if (pdcWin) sPdcWinVa = static_cast<uintptr_t>(pdcWin);
+                                                }
+                                                char pcRowA[320];
+                                                char pcRowB[320];
+                                                if (!sPdcWinVa) {
+                                                    snprintf(pcRowA, sizeof pcRowA,
+                                                             "gmupdc2=map-failed");
+                                                    IOLog("enchilada-adreno: %s\n", pcRowA);
+                                                } else {
+                                                    // mainline sdm845.dtsi: gmu_pdc = 0x0b280000,
+                                                    // gmu_pdc_seq = 0x0b480000, both inside the
+                                                    // vendor region that starts at 0x0b200000.
+                                                    const uint32_t pcPdcDelta = 0x00080000u;
+                                                    const uint32_t pcSeqDelta = 0x00280000u;
+                                                    const uint32_t pcVseq = rd32(sPdcWinVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_SEQ_MEM_0 * 4u);
+                                                    const uint32_t pcVen = rd32(sPdcWinVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_ENABLE_PDC * 4u);
+                                                    const uint32_t pcVst = rd32(sPdcWinVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_SEQ_START_ADDR * 4u);
+                                                    const uint32_t pcPseq = rd32(sPdcWinVa,
+                                                        pcPdcDelta + ADRENO_GMU_BOOT_V1_PDC_SEQ_MEM_0 * 4u);
+                                                    const uint32_t pcPen = rd32(sPdcWinVa,
+                                                        pcPdcDelta + ADRENO_GMU_BOOT_V1_PDC_ENABLE_PDC * 4u);
+                                                    const uint32_t pcPst = rd32(sPdcWinVa,
+                                                        pcPdcDelta + ADRENO_GMU_BOOT_V1_PDC_SEQ_START_ADDR * 4u);
+                                                    const uint32_t pcPctl = rd32(sPdcWinVa,
+                                                        pcPdcDelta + ADRENO_GMU_BOOT_V1_PDC_TCS0_CONTROL * 4u);
+                                                    const uint32_t pcS0 = rd32(sPdcWinVa, pcSeqDelta + 0u);
+                                                    const uint32_t pcS1 = rd32(sPdcWinVa, pcSeqDelta + 4u);
+                                                    const uint32_t pcS2 = rd32(sPdcWinVa, pcSeqDelta + 8u);
+                                                    const uint32_t pcS3 = rd32(sPdcWinVa, pcSeqDelta + 12u);
+                                                    const uint32_t pcS4 = rd32(sPdcWinVa, pcSeqDelta + 16u);
+                                                    snprintf(pcRowA, sizeof pcRowA,
+                                                             "gmupdc2=vseq=%08x ven=%08x vst=%08x "
+                                                             "pseq=%08x pen=%08x pst=%08x pctl=%08x",
+                                                             pcVseq, pcVen, pcVst, pcPseq, pcPen,
+                                                             pcPst, pcPctl);
+                                                    IOLog("enchilada-adreno: %s\n", pcRowA);
+                                                    snprintf(pcRowB, sizeof pcRowB,
+                                                             "gmupdc3=s0=%08x s1=%08x s2=%08x "
+                                                             "s3=%08x s4=%08x",
+                                                             pcS0, pcS1, pcS2, pcS3, pcS4);
+                                                    IOLog("enchilada-adreno: %s\n", pcRowB);
+                                                }
+                                            }
+                                            // ---- ROUND 195: what is already in the PDC, at the base ----
+                                            // R194 settled WHERE the PDC block is: the vendor region
+                                            // base (0x0b200000) reads ENABLE_PDC=1 and
+                                            // SEQ_MEM_0=0x00a000a8, while the two mainline-derived
+                                            // windows at +0x80000 and +0x280000 read zero.  So a
+                                            // future write must land at the base, not there.
+                                            // What is left is whether the bootloader already programmed
+                                            // the sequencer.  Upstream a6xx_gmu_rpmh_init() writes five
+                                            // sequencer words, then six TCS1 words and six TCS3 words
+                                            // carrying msgid 0x10108 with addr 0x30010/0x30000/<offset>,
+                                            // then SEQ_START_ADDR=0 and ENABLE_PDC=0x80000001.  If that
+                                            // table is already there the PDC is configured and the RSC
+                                            // refusal is elsewhere; if these read zero the PDC is the
+                                            // remaining gap.  Nothing is written here.
+                                            if (fwKey == 42u) {
+                                                static uintptr_t sPdcBlkVa = 0;
+                                                if (!sPdcBlkVa && &armcpu_map_physical) {
+                                                    const uint64_t pdcBlk = armcpu_map_physical(
+                                                        ADRENO_BOARD_GMU_PDC_BASE,
+                                                        ADRENO_BOARD_GMU_PDC_SIZE);
+                                                    if (pdcBlk) sPdcBlkVa = static_cast<uintptr_t>(pdcBlk);
+                                                }
+                                                char pcRowD[320];
+                                                char pcRowE[320];
+                                                char pcRowF[320];
+                                                if (!sPdcBlkVa) {
+                                                    snprintf(pcRowD, sizeof pcRowD,
+                                                             "gmupdc4=map-failed");
+                                                    IOLog("enchilada-adreno: %s\n", pcRowD);
+                                                } else {
+                                                    const uint32_t pdM0 = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_SEQ_MEM_0 * 4u);
+                                                    const uint32_t pdM1 = rd32(sPdcBlkVa,
+                                                        (ADRENO_GMU_BOOT_V1_PDC_SEQ_MEM_0 + 1u) * 4u);
+                                                    const uint32_t pdM2 = rd32(sPdcBlkVa,
+                                                        (ADRENO_GMU_BOOT_V1_PDC_SEQ_MEM_0 + 2u) * 4u);
+                                                    const uint32_t pdM3 = rd32(sPdcBlkVa,
+                                                        (ADRENO_GMU_BOOT_V1_PDC_SEQ_MEM_0 + 3u) * 4u);
+                                                    const uint32_t pdM4 = rd32(sPdcBlkVa,
+                                                        (ADRENO_GMU_BOOT_V1_PDC_SEQ_MEM_0 + 4u) * 4u);
+                                                    const uint32_t pdEn = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_ENABLE_PDC * 4u);
+                                                    const uint32_t pdSt = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_SEQ_START_ADDR * 4u);
+                                                    const uint32_t pdC0 = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS0_CONTROL * 4u);
+                                                    const uint32_t pdT1en = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS1_CMD_ENABLE_BANK * 4u);
+                                                    const uint32_t pdT1wt = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS1_CMD_WAIT_BANK * 4u);
+                                                    const uint32_t pdT1ct = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS1_CONTROL * 4u);
+                                                    const uint32_t pdT1ms = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS1_CMD0_MSGID * 4u);
+                                                    const uint32_t pdT1ad = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS1_CMD0_ADDR * 4u);
+                                                    const uint32_t pdT1da = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS1_CMD0_DATA * 4u);
+                                                    const uint32_t pdT3en = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS3_CMD_ENABLE_BANK * 4u);
+                                                    const uint32_t pdT3wt = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS3_CMD_WAIT_BANK * 4u);
+                                                    const uint32_t pdT3ct = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS3_CONTROL * 4u);
+                                                    const uint32_t pdT3ms = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS3_CMD0_MSGID * 4u);
+                                                    const uint32_t pdT3ad = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS3_CMD0_ADDR * 4u);
+                                                    const uint32_t pdT3da = rd32(sPdcBlkVa,
+                                                        ADRENO_GMU_BOOT_V1_PDC_TCS3_CMD0_DATA * 4u);
+                                                    snprintf(pcRowD, sizeof pcRowD,
+                                                             "gmupdc4=m0=%08x m1=%08x m2=%08x "
+                                                             "m3=%08x m4=%08x en=%08x st=%08x c0=%08x",
+                                                             pdM0, pdM1, pdM2, pdM3, pdM4,
+                                                             pdEn, pdSt, pdC0);
+                                                    IOLog("enchilada-adreno: %s\n", pcRowD);
+                                                    snprintf(pcRowE, sizeof pcRowE,
+                                                             "gmupdc5=t1en=%08x t1wt=%08x t1ct=%08x "
+                                                             "t1ms=%08x t1ad=%08x t1da=%08x",
+                                                             pdT1en, pdT1wt, pdT1ct,
+                                                             pdT1ms, pdT1ad, pdT1da);
+                                                    IOLog("enchilada-adreno: %s\n", pcRowE);
+                                                    snprintf(pcRowF, sizeof pcRowF,
+                                                             "gmupdc6=t3en=%08x t3wt=%08x t3ct=%08x "
+                                                             "t3ms=%08x t3ad=%08x t3da=%08x",
+                                                             pdT3en, pdT3wt, pdT3ct,
+                                                             pdT3ms, pdT3ad, pdT3da);
+                                                    IOLog("enchilada-adreno: %s\n", pcRowF);
+                                                }
+                                            }
 if (fwKey >= 18u && fwKey <= 21u) {
                                             // ROUND 177: R176 showed that alloc, map, table fill
                                             // and the three QTBL registers are all safe, and that the
