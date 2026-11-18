@@ -490,6 +490,57 @@ int zapBridgeCall(void *cookie, uint32_t fn, uint32_t arginfo, uint32_t args0,
 // already bounds against GPUCC_SIZE / REG_STRIDE.
 uint32_t rd32(uintptr_t va, uint32_t off) {return *reinterpret_cast<volatile uint32_t *>(va + off);}
 
+// ---- ROUND 181: the RPMh command database, read straight out of AOSS RAM -------
+// The layout is the one package/EnchiladaTouchRpmh.h already parses for the touch
+// rail: a 144-byte header (version, magic), then eight 16-byte slave records, then
+// 24-byte entries (8-byte name, two priorities, the resource address, the byte
+// length and offset of the zero-padded u16 level list).  Nothing here writes.
+struct QuietCmdDbHit {
+    unsigned count;
+    uint32_t address;
+    unsigned length;
+};
+
+static QuietCmdDbHit quiet_cmd_db_levels(uintptr_t db, const char *want, uint16_t *levels,
+                                         unsigned cap) {
+    QuietCmdDbHit hit = {0u, 0u, 0u};
+    if (!db) return hit;
+    if (rd32(db, 4u) != 0x0c0330dbu) return hit;
+    for (unsigned s = 0u; s < 8u; ++s) {
+        const uint32_t lo = rd32(db, 8u + 16u * s);
+        const uint32_t hi = rd32(db, 12u + 16u * s);
+        if ((lo & 0xffffu) == 0u) break;
+        const uint32_t heads = 144u + ((lo >> 16) & 0xffffu);
+        const uint32_t data = 144u + (hi & 0xffffu);
+        const uint32_t count = (hi >> 16) & 0xffffu;
+        for (uint32_t e = 0u; e < count; ++e) {
+            const uint32_t entry = heads + 24u * e;
+            bool same = true;
+            for (unsigned i = 0u; i < 8u; ++i) {
+                const uint8_t byte = (uint8_t)(rd32(db, entry + (i & ~3u)) >> ((i & 3u) * 8u));
+                const uint8_t want_byte = (uint8_t)want[i];
+                if (want_byte == 0u) { if (byte != 0u) same = false; }
+                else if (byte != want_byte) same = false;
+            }
+            if (!same) continue;
+            hit.address = rd32(db, entry + 16u);
+            const uint32_t tail = rd32(db, entry + 20u);
+            const unsigned length = (unsigned)(tail & 0xffffu);
+            const unsigned at = data + (unsigned)((tail >> 16) & 0xffffu);
+            hit.length = length;
+            unsigned n = 0u;
+            for (unsigned l = 0u; l + 1u < length && n < cap; l += 2u) {
+                const uint16_t level = (uint16_t)(rd32(db, at + (l & ~3u)) >> ((l & 3u) * 8u));
+                if (n != 0u && level == 0u) break;
+                levels[n++] = level;
+            }
+            hit.count = n;
+            return hit;
+        }
+    }
+    return hit;
+}
+
 // ---- ROUND 120: fold the embedded firmware through a CHECKSUM ---------------
 // WHY THIS EXISTS. Until this round the two generated arrays were DECLARED and
 // never READ: the probe consumed only the kAdrenoZap* macros, so clang treated
@@ -1444,7 +1495,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 26u);
+                            (fwKey >= 7u && fwKey <= 33u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             // ROUND 175: the HFI shared region and the uncached window over it.
@@ -1778,7 +1829,198 @@ extern "C" void enchilada_adreno_poll(void) {
                                                  hfiStat, postReset,
                                                  ((final & mask) == expect) ? 1 : 0);
                                         IOLog("enchilada-adreno: %s\n", boot2Row);
-                                        if (fwKey >= 18u && fwKey <= 21u) {
+                                        if (fwKey >= 30u) {
+                                            // ROUND 183: the CM3 is running either way --
+                                            // GMU2HOST_INTR_INFO says so -- but no surviving
+                                            // key has read that word right after a pulse that
+                                            // already had the HFI table and the queue
+                                            // registers in place.  Keys 9..13 read it with no
+                                            // table at all; keys 15..17 wrote the table but
+                                            // reported only hfistat.  This row is read-only:
+                                            // no store follows the pulse, so a fault here is
+                                            // the firmware's own state and not a reaction to
+                                            // the host doorbell.
+                                            const uint32_t stIntr = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            const uint32_t stInit = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            const uint32_t stReset = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_CM3_SYSRESET * 4u);
+                                            const uint32_t stGdscr = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                            const uint32_t stHfi = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            uint32_t stWi = 0u;
+                                            uint32_t stRi = 0u;
+                                            if (sHfiWin) {
+                                                volatile const uint32_t *stTbl =
+                                                    reinterpret_cast<volatile const uint32_t *>(
+                                                        sHfiWin);
+                                                stWi = stTbl[ADRENO_HFI_V1_QHDR0_OFFSET_WORDS +
+                                                              ADRENO_HFI_V1_QUEUE_HEADER_WORDS + 11u];
+                                                stRi = stTbl[ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + 10u];
+                                            }
+                                            char stRow[248];
+                                            snprintf(stRow, sizeof stRow,
+                                                     "gmustat=intr=%08x fwinit=%08x reset=%08x "
+                                                     "gdscr=%08x hfistat=%08x wi1=%08x ri0=%08x ok=%d",
+                                                     stIntr, stInit, stReset, stGdscr, stHfi,
+                                                     stWi, stRi, (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", stRow);
+                                        }
+                                                                                if (fwKey >= 31u) {
+                                            // ROUND 184: R183 proved the CM3 comes up
+                                            // clean with the full pre-start
+                                            // configuration and the HFI table already
+                                            // in place -- GMU2HOST_INTR_INFO read 0 right
+                                            // after the pulse.  The CM3_FAULT that every
+                                            // doorbell key reports is therefore provoked
+                                            // by the boot-slumber exchange, not by the
+                                            // boot itself.  This key takes the one step
+                                            // upstream takes next (a6xx_gmu_hfi_start)
+                                            // without any doorbell: write HFI_CTRL_INIT
+                                            // and poll HFI_CTRL_STATUS.  Surviving with
+                                            // the status bit up means the firmware's HFI
+                                            // is alive and the doorbell fault is about
+                                            // the rails; dying here means the HFI start
+                                            // itself needs the rails up first.
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t hfiNow = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            unsigned hfiPoll = 0u;
+                                            for (; hfiPoll < 400000u; ++hfiPoll) {
+                                                hfiNow = rd32(
+                                                    sGmuFwVa,
+                                                    ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                if ((hfiNow & 1u) == 1u) break;
+                                            }
+                                            const uint32_t hfiIntr = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            const uint32_t hfiFw = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            char hfiRow[256];
+                                            snprintf(hfiRow, sizeof hfiRow,
+                                                     "gmuhfi2=stat=%08x polls=%u intr=%08x "
+                                                     "fwinit=%08x ok=%d",
+                                                     hfiNow, hfiPoll, hfiIntr, hfiFw,
+                                                     ((hfiNow & 1u) == 1u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", hfiRow);
+                                        }
+                                        if (fwKey >= 32u) {
+                                            // ROUND 185: the one upstream step still
+                                            // missing between the pulse and
+                                            // hfi_start is a6xx_gmu_gfx_rail_on()
+                                            // followed by a6xx_sptprac_enable().
+                                            // R183 left the CM3 running with no fault
+                                            // and R184 showed HFI_CTRL_INIT cannot be
+                                            // written in that state, so this key puts
+                                            // the rail step back in and stops: it
+                                            // reports whether the GX rail actually
+                                            // comes up before anything else touches
+                                            // the HFI block.
+                                            //
+                                            // The arc vote index is 0 for both rails.
+                                            // Upstream derives it from the RPMh
+                                            // command DB ("gfx.lvl"/"cx.lvl"), which
+                                            // this device does not carry (R182 read
+                                            // both candidates and found no header), so
+                                            // index 0 -- the lowest level in the table
+                                            // -- is the only value that cannot ask for
+                                            // a higher voltage than the table allows.
+                                            const uint32_t railGdscrPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                            gmuW[ADRENO_GMU_BOOT_V1_GX_VOTE_IDX] = 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_MX_VOTE_IDX] = 0u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            // a6xx_gmu_oob_bits[] in a6xx_gmu.c:265-344
+                                            // gives GPU_SET = {set 18, ack 26, clear 26}.
+                                            gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] =
+                                                1u << 18;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t railIntr = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            unsigned railAckPolls = 0u;
+                                            for (; railAckPolls < 400000u; ++railAckPolls) {
+                                                railIntr = rd32(
+                                                    sGmuFwVa,
+                                                    ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                                if ((railIntr & (1u << 26)) != 0u) break;
+                                            }
+                                            gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] =
+                                                1u << 26;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            gmuW[ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL] =
+                                                ADRENO_GMU_BOOT_V1_SPTPRAC_ON_VALUE;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t railSptp = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                            unsigned railSptpPolls = 0u;
+                                            for (; railSptpPolls < 400000u; ++railSptpPolls) {
+                                                railSptp = rd32(
+                                                    sGmuFwVa,
+                                                    ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                                if ((railSptp & ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_MASK) ==
+                                                    ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_PATTERN) break;
+                                            }
+                                            const uint32_t railGdscr = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                            char rail2Row[288];
+                                            snprintf(rail2Row, sizeof rail2Row,
+                                                     "gmurail2=gx=0 mx=0 ack=%u polls=%u "
+                                                     "gdscr_pre=%08x gdscr=%08x sptp=%08x "
+                                                     "sptppolls=%u intr=%08x ok=%d",
+                                                     ((railIntr & (1u << 26)) != 0u) ? 1u : 0u,
+                                                     railAckPolls, railGdscrPre, railGdscr,
+                                                     railSptp, railSptpPolls, railIntr,
+                                                     ((railGdscr & 0x00010000u) != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", rail2Row);
+                                        }
+                                        if (fwKey >= 33u) {
+                                            // ROUND 185: only meaningful after key 32 has
+                                            // reported a live GX rail.  Same single store
+                                            // as key 31, now with the rail step in front
+                                            // of it, so a death here means the HFI start
+                                            // needs something beyond the rails.
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t hfi3 = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            unsigned hfi3Polls = 0u;
+                                            for (; hfi3Polls < 400000u; ++hfi3Polls) {
+                                                hfi3 = rd32(
+                                                    sGmuFwVa,
+                                                    ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                if ((hfi3 & 1u) == 1u) break;
+                                            }
+                                            const uint32_t hfi3Intr = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            const uint32_t hfi3Fw = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            char hfi3Row[256];
+                                            snprintf(hfi3Row, sizeof hfi3Row,
+                                                     "gmuhfi3=stat=%08x polls=%u intr=%08x "
+                                                     "fwinit=%08x ok=%d",
+                                                     hfi3, hfi3Polls, hfi3Intr, hfi3Fw,
+                                                     ((hfi3 & 1u) == 1u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", hfi3Row);
+                                        }
+if (fwKey >= 18u && fwKey <= 21u) {
                                             // ROUND 177: R176 showed that alloc, map, table fill
                                             // and the three QTBL registers are all safe, and that the
                                             // doorbell itself kills the kernel.  The doorbell is now
@@ -2008,6 +2250,144 @@ extern "C" void enchilada_adreno_poll(void) {
                                                      rscFwInit, rscReset, rscSptp, rscIntr, 1);
                                             IOLog("enchilada-adreno: %s\n", rscRow);
                                         }
+        if (fwKey >= 27u && fwKey <= 29u) {
+            // ---- ROUND 181: where the arc votes come from (read-only) ------------
+            // a6xx_gmu_gfx_rail_on() writes GX_VOTE_IDX = vote & 0xff and
+            // MX_VOTE_IDX = (vote >> 8) & 0xff, and the vote itself is built by
+            // a6xx_gmu_rpmh_arc_votes_init() from the RPMh command database: the
+            // index of the first level in "gfx.lvl" that is >= the level of the
+            // frequency, and the same for "mx.lvl" (or "gmxc.lvl" when present).
+            // R180 proved the RSC never answers while both vote registers stay 0,
+            // so this key only reads the tables and prints the two indexes; key 28
+            // writes them.  0x861e0000 is the node name in enchilada.dts (the reg
+            // value 0xc3f000c is the AOSS pointer word, not the table address).
+            uint16_t gfxLv[16];
+            uint16_t cxLv[16];
+            uint16_t mxLv[16];
+            const uintptr_t dbVa = armcpu_map_physical(0x861e0000ULL, 0x00020000u);
+            const QuietCmdDbHit gfxHit = quiet_cmd_db_levels(dbVa, "gfx.lvl", gfxLv, 16u);
+            const QuietCmdDbHit cxHit = quiet_cmd_db_levels(dbVa, "cx.lvl", cxLv, 16u);
+            const QuietCmdDbHit mxHit = quiet_cmd_db_levels(dbVa, "mx.lvl", mxLv, 16u);
+            const unsigned gfxN = gfxHit.count;
+            const unsigned cxN = cxHit.count;
+            const unsigned mxN = mxHit.count;
+            const uint32_t gfxAddr = gfxHit.address;
+            const unsigned gfxLen = gfxHit.length;
+            (void)cxHit;
+            (void)mxHit;
+            const uint32_t dbMagic = dbVa ? rd32(dbVa, 4u) : 0u;
+            char lvlRow[352];
+            snprintf(lvlRow, sizeof(lvlRow),
+                     "gmulvl=va=%lx magic=%08x gfx_n=%u cx_n=%u mx_n=%u g0=%04x g1=%04x g2=%04x",
+                     (unsigned long)dbVa, dbMagic, gfxN, cxN, mxN,
+                     gfxN > 0u ? gfxLv[0] : 0u, gfxN > 1u ? gfxLv[1] : 0u, gfxN > 2u ? gfxLv[2] : 0u);
+            IOLog("enchilada-adreno: %s\n", lvlRow);
+            unsigned gfxPmax = 0u;
+            unsigned cxPmax = 0u;
+            unsigned mxPmax = 0u;
+            uint16_t gfxTop = 0u;
+            uint16_t cxTop = 0u;
+            uint16_t mxTop = 0u;
+            for (unsigned i = 0u; i < gfxN; ++i) if (gfxLv[i] > gfxTop) { gfxTop = gfxLv[i]; gfxPmax = i; }
+            for (unsigned i = 0u; i < cxN; ++i) if (cxLv[i] > cxTop) { cxTop = cxLv[i]; cxPmax = i; }
+            for (unsigned i = 0u; i < mxN; ++i) if (mxLv[i] > mxTop) { mxTop = mxLv[i]; mxPmax = i; }
+            char lvl2Row[288];
+            snprintf(lvl2Row, sizeof(lvl2Row),
+                     "gmulvl2=gfx_p=%u gfx_top=%04x cx_p=%u cx_top=%04x mx_p=%u mx_top=%04x gfx_addr=%08x gfx_len=%u",
+                     gfxPmax, gfxTop, cxPmax, cxTop, mxPmax, mxTop, gfxAddr, gfxLen);
+            IOLog("enchilada-adreno: %s\n", lvl2Row);
+        }
+        if (fwKey >= 28u && fwKey <= 29u) {
+            // ---- ROUND 181: the two arc votes, then the boot-slumber handshake ---
+            // Everything key 22 did, except that the two vote registers now carry
+            // the top-of-table indexes read from the command database instead of
+            // being left at zero.  If the RSC was only waiting for a vote, the ack
+            // bit should finally come back; if it does not, the vote is not the
+            // missing piece and the RSC/ARC path needs a different explanation.
+            uint16_t gfxLv[16];
+            uint16_t mxLv[16];
+            const uintptr_t dbVa = armcpu_map_physical(0x861e0000ULL, 0x00020000u);
+            const QuietCmdDbHit gfxHit = quiet_cmd_db_levels(dbVa, "gfx.lvl", gfxLv, 16u);
+            const QuietCmdDbHit mxHit = quiet_cmd_db_levels(dbVa, "mx.lvl", mxLv, 16u);
+            const unsigned gfxN = gfxHit.count;
+            const unsigned mxN = mxHit.count;
+            (void)gfxHit;
+            (void)mxHit;
+            unsigned gfxPmax = 0u;
+            unsigned mxPmax = 0u;
+            uint16_t gfxTop = 0u;
+            uint16_t mxTop = 0u;
+            for (unsigned i = 0u; i < gfxN; ++i) if (gfxLv[i] > gfxTop) { gfxTop = gfxLv[i]; gfxPmax = i; }
+            for (unsigned i = 0u; i < mxN; ++i) if (mxLv[i] > mxTop) { mxTop = mxLv[i]; mxPmax = i; }
+            gmuW[ADRENO_GMU_BOOT_V1_GX_VOTE_IDX] = (uint32_t)gfxPmax;
+            gmuW[ADRENO_GMU_BOOT_V1_MX_VOTE_IDX] = (uint32_t)mxPmax;
+            __asm__ volatile("dsb sy" ::: "memory");
+            gmuW[ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION] = 0u;
+            __asm__ volatile("dsb sy" ::: "memory");
+            gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] = 1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET;
+            __asm__ volatile("dsb sy" ::: "memory");
+            uint32_t votePolls = 0u;
+            uint32_t voteIntr = 0u;
+            for (; votePolls < 400000u; ++votePolls) {
+                voteIntr = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                if ((voteIntr & (1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK)) != 0u) break;
+            }
+            const uint32_t voteAck = (voteIntr >> ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK) & 1u;
+            gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] = 1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_CLEAR;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t votePost = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+            const uint32_t voteSlumber = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION * 4u);
+            const uint32_t voteFwInit = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+            char voteRow[320];
+            snprintf(voteRow, sizeof(voteRow),
+                     "gmuvote=gx=%u mx=%u ack=%u polls=%u post=%08x slumber=%08x fwinit=%08x ok=%d",
+                     gfxPmax, mxPmax, voteAck, votePolls, votePost, voteSlumber, voteFwInit, voteAck);
+            IOLog("enchilada-adreno: %s\n", voteRow);
+        }
+        if (fwKey >= 29u && fwKey <= 29u) {
+            // ROUND 182: the DT node tells the kernel where the database is.
+            //
+            // R181 read 0x861e0000 first, as the touch reader prefers, and its
+            // second word was not the magic. The node's own reg is
+            // <0xc3f000c 0x08> -- eight bytes of AOSS message RAM holding a
+            // pointer to the table -- so this dump prints the pointer page and
+            // the first four words behind the pointer, and behind 0x861e0000
+            // for comparison. READ-ONLY: no store, no barrier.
+            char dbPtrRow[320];
+            char dbHdrRow[352];
+            const uintptr_t dbPtrVa = armcpu_map_physical(0x00000000c3f00000ULL, 0x00001000u);
+            const uintptr_t dbBaseVa = armcpu_map_physical(0x00000000861e0000ULL, 0x00000010u);
+            const uint32_t dbp0 = dbPtrVa ? rd32(dbPtrVa, 0x00u) : 0u;
+            const uint32_t dbp1 = dbPtrVa ? rd32(dbPtrVa, 0x04u) : 0u;
+            const uint32_t dbp2 = dbPtrVa ? rd32(dbPtrVa, 0x08u) : 0u;
+            const uint32_t dbp3 = dbPtrVa ? rd32(dbPtrVa, 0x0cu) : 0u;
+            if (!dbPtrVa) {
+                IOLog("enchilada-adreno: gmudbp=map-failed\n");
+            } else {
+                snprintf(dbPtrRow, sizeof(dbPtrRow),
+                         "gmudbp=va=%lx w0=%08x w4=%08x w8=%08x wc=%08x",
+                         (unsigned long)dbPtrVa, dbp0, dbp1, dbp2, dbp3);
+                IOLog("enchilada-adreno: %s\n", dbPtrRow);
+            }
+            const uint32_t dbCand = dbp3;
+            uintptr_t dbCandVa = 0;
+            if (dbCand >= 0x80000000u && dbCand < 0x90000000u && (dbCand & 3u) == 0u) {
+                dbCandVa = armcpu_map_physical((uint64_t)dbCand, 0x00001000u);
+            }
+            snprintf(dbHdrRow, sizeof(dbHdrRow),
+                     "gmudbc=cand=%08x va=%lx h0=%08x magic=%08x h2=%08x h3=%08x base0=%08x base1=%08x base2=%08x base3=%08x ok=%d",
+                     dbCand, (unsigned long)dbCandVa,
+                     dbCandVa ? rd32(dbCandVa, 0x00u) : 0u,
+                     dbCandVa ? rd32(dbCandVa, 0x04u) : 0u,
+                     dbCandVa ? rd32(dbCandVa, 0x08u) : 0u,
+                     dbCandVa ? rd32(dbCandVa, 0x0cu) : 0u,
+                     dbBaseVa ? rd32(dbBaseVa, 0x00u) : 0u,
+                     dbBaseVa ? rd32(dbBaseVa, 0x04u) : 0u,
+                     dbBaseVa ? rd32(dbBaseVa, 0x08u) : 0u,
+                     dbBaseVa ? rd32(dbBaseVa, 0x0cu) : 0u,
+                     (dbCandVa != 0 && rd32(dbCandVa, 0x04u) == 0x0c0330dbu) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", dbHdrRow);
+        }
                                     }
                                     if (fwKey >= 11u) {
                                         // ROUND 171 read-back: did the pre-start words latch,

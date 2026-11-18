@@ -1207,7 +1207,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 26u' in _fw,
+    check('fwKey >= 7u && fwKey <= 33u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1272,7 +1272,12 @@ def main():
               # ROUND 179: a6xx_rpmh_start() and a6xx_sptprac_enable(), the two
               # steps upstream runs that this probe had been skipping.
               'ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ',
-              'ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL'])),
+              'ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL',
+              # ROUND 181: the two arc-vote indexes. R179 proved the write is
+              # safe; key 28 now supplies a real index read out of the RPMh
+              # command database instead of a guess.
+              'ADRENO_GMU_BOOT_V1_GX_VOTE_IDX',
+              'ADRENO_GMU_BOOT_V1_MX_VOTE_IDX'])),
           'R168+R170+R171+R175 the register write set is exactly the named words (%r)'
           % sorted(set(_stores)))
     # ==== ROUND 175 (slice 4): the HFI queue table, at a PHYSICAL address ====
@@ -1439,10 +1444,11 @@ def main():
           'R179 the SPTPRAC wait looks for (status & 0x38) == 0x28 and is bounded')
     check('gmusptp=pre=%08x stat=%08x polls=%u ok=%d' in _k25,
           'R179 key 25 prints its own row')
-    check('ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]' not in code and
-          'ADRENO_GMU_BOOT_V1_MX_VOTE_IDX]' not in code,
-          'R179 still NEITHER rail vote is written anywhere: the vote is an RPMh '
-          'command-db arc index and this board ships no opp-hz/arc-level data')
+    check(code.count('ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]') == 2 and
+          code.count('ADRENO_GMU_BOOT_V1_MX_VOTE_IDX]') == 2,
+          'R179/R181/R185 each rail vote is written in exactly two places: key 28 '
+          '(an index read out of the RPMh command database) and key 32 (index 0, '
+          'the lowest level, because this device carries no command database)')
     _g7 = code.find('gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;')
     _i24 = code.find('if (fwKey >= 24u) {')
     _fwinit = code.find('gmuW[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;')
@@ -1521,9 +1527,9 @@ def main():
           'R170 it writes exactly the slumber option, the doorbell and the clear (%r)'
           % sorted(set(_oobst)))
     for _vote in ('GX_VOTE_IDX', 'MX_VOTE_IDX'):
-        check('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _vote not in code,
-              'R170 %s is NOT written: gx_arc_votes has no source here, and a '
-              'guessed index would pick a rail voltage' % _vote)
+        check(code.count('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _vote) == 2,
+              'R170/R181/R185 %s is written exactly twice: key 28 (a value the '
+              'RPMh command database supplied) and key 32 (index 0)' % _vote)
     check('1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET' in _oob,
           'R170 the doorbell uses the pinned set bit (22), not a literal')
     check('1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK' in _oob,
@@ -1591,8 +1597,9 @@ def main():
           'R171 the CM3 fault bit is a read-side mask, never a write')
     check('char cfgRow[264]' in code, 'R171 the row has a declared, sufficient bound')
     for _vote in ('GX_VOTE_IDX', 'MX_VOTE_IDX'):
-        check('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _vote not in code,
-              'R171 %s is still NOT written: no arc-vote source exists here' % _vote)
+        check(code.count('gmuW[ADRENO_GMU_BOOT_V1_%s]' % _vote) == 2,
+              'R171/R181/R185 %s has exactly two writers: the command-database '
+              'read of key 27/28 and the index-0 rail step of key 32' % _vote)
     check('stage >= 7u' not in code,
           'R171 still no new stage value: the boot-arg mask stays exactly 1..6')
 
@@ -1657,14 +1664,14 @@ def main():
     # would mean the probe has been reading unbacked addresses all along. Key 26
     # therefore stores NOTHING and polls NOTHING -- it only loads ten words.
     _k26 = (code.split('if (fwKey >= 26u) {', 1)[1]
-            .split('if (fwKey >= 11u) {', 1)[0]
+            .split('if (fwKey >= 27u && fwKey <= 29u) {', 1)[0]
             if 'if (fwKey >= 26u) {' in code else '')
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 26u)' in code,
-          'R180 key 26 is armed by the same boot-arg window, still inside 1..6 '
-          'stages and with no new boot argument')
+    check('(fwKey >= 7u && fwKey <= 33u)' in code,
+          'R182 keys 7 to 29 are armed by the same boot-arg window, still '
+          'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
     check('gmuW[' not in _k26 and 'write32' not in _k26,
           'R180 key 26 writes NOTHING through the GMU window: this key asks one '
@@ -1697,10 +1704,229 @@ def main():
     check(0 < _i25 < _i26,
           'R180 key 26 comes after key 25, so the ladder stays strictly ordered '
           'and one surviving boot names the next fatal step')
-    check('ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]' not in code and
-          'ADRENO_GMU_BOOT_V1_MX_VOTE_IDX]' not in code,
-          'R180 the rail votes are still never written anywhere: the vote is an '
-          'RPMh command-db arc index and this board DT has no opp-hz to derive it')
+    # ---- ROUND 181: the votes come from the RPMh command database ------------
+    # R180 read the RSC page and every handshake field stayed zero, so the next
+    # question is where gfx_rail_on()'s two vote indexes come from.  Upstream
+    # builds them from the RPMh command database (gfx.lvl / mx.lvl), not from the
+    # device tree, which on this board carries no opp-hz at all.  Key 27 only
+    # reads that database; key 28 writes the two indexes and repeats the
+    # handshake.  So the old "the vote is never written" claim is replaced -- not
+    # deleted -- by "the vote is written in exactly one place, and only after the
+    # database has been read".
+    _k27 = code.split('if (fwKey >= 27u && fwKey <= 29u) {', 1)[1].split('if (fwKey >= 28u && fwKey <= 29u) {', 1)[0]
+    _k28 = code.split('if (fwKey >= 28u && fwKey <= 29u) {', 1)[1].split('if (fwKey >= 29u && fwKey <= 29u) {', 1)[0]
+    check(_k27.startswith('\n') and _k28 != '',
+          'R181 keys 27 and 28 both exist, so the read and the write are separate '
+          'single-variable boots')
+    check('static QuietCmdDbHit quiet_cmd_db_levels(uintptr_t db, const char *want' in code,
+          'R181 the command database is parsed by one named read-only helper')
+    check('0x0c0330dbu' in code,
+          'R181 the helper validates the database magic before trusting any '
+          'offset (the 0xc3f000c in the DT reg is the AOSS pointer word, not the '
+          'magic)')
+    check('0x861e0000ULL' in _k27 and '0x861e0000ULL' in _k28,
+          'R181 both keys map the node address from the DT node name, 0x861e0000, '
+          'not the pointer word')
+    check('gmuW[' not in _k27 and 'write32' not in _k27,
+          'R181 key 27 writes nothing at all: it must not perturb the tables it '
+          'is measuring')
+    check('gmulvl=va=%lx magic=%08x gfx_n=%u cx_n=%u mx_n=%u ' in _k27,
+          'R181 the first row shows whether the database was found and how many '
+          'levels each of the three resources carries')
+    check('gmulvl2=gfx_p=%u gfx_top=%04x cx_p=%u cx_top=%04x mx_p=%u mx_top=%04x ' in _k27,
+          'R181 the second row shows the index of the top level in each list, '
+          'which is exactly the value gfx_rail_on() would put in the vote byte')
+    check('char lvlRow[352]' in _k27 and 'char lvl2Row[288]' in _k27,
+          'R181 both rows have declared bounds')
+    check(_k28.count('gmuW[ADRENO_GMU_BOOT_V1_GX_VOTE_IDX] = (uint32_t)gfxPmax;') == 1 and
+          _k28.count('gmuW[ADRENO_GMU_BOOT_V1_MX_VOTE_IDX] = (uint32_t)mxPmax;') == 1,
+          'R181 exactly one store sets each vote index, so the write set stays '
+          'countable')
+    check(_k28.find('quiet_cmd_db_levels(dbVa, "gfx.lvl"') <
+          _k28.find('gmuW[ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]'),
+          'R181 the vote is computed from the database before it is written, i.e. '
+          'the key cannot write a stale or zero index by construction')
+    check(_k28.count('gmuW[') == 5,
+          'R181 key 28 writes exactly five words: the two votes and the three '
+          'handshake words it repeats from key 22')
+    check('gmuvote=gx=%u mx=%u ack=%u polls=%u post=%08x slumber=%08x fwinit=%08x' in _k28,
+          'R181 the row carries both indexes, the ack, the poll count and the '
+          'three post-handshake words in one line')
+    check('char voteRow[320]' in _k28,
+          'R181 the vote row buffer is declared and large enough for eight fields')
+    _i27 = code.find('if (fwKey >= 27u && fwKey <= 29u) {')
+    _i28 = code.find('if (fwKey >= 28u && fwKey <= 29u) {')
+    _i26b = code.find('if (fwKey >= 26u) {')
+    check(0 < _i26b < _i27 < _i28,
+          'R181 the ladder stays strictly ordered behind key 26, so a surviving '
+          'boot names the next fatal step')
+    check(code.count('ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]') == 2 and
+          code.count('ADRENO_GMU_BOOT_V1_MX_VOTE_IDX]') == 2,
+          'R181/R185 the vote registers appear in exactly two statements each: '
+          'key 28 (command database) and key 32 (index 0), so neither can leak '
+          'into a read-only key')
+
+    # ---- ROUND 182: the DT node points at the table, it is not the table -------
+    # R181 read 0x861e0000 first, the address in the node's name, and its second
+    # word was zero rather than the magic.  The node's own reg is
+    # <0xc3f000c 0x08>, which the existing touch reader already treats as an
+    # eight-byte pointer in AOSS message RAM, so key 29 dumps that page and the
+    # header the pointer names.  It is a dump: no store, so it cannot move the
+    # tables it is looking for.
+    _k29 = code.split('if (fwKey >= 29u && fwKey <= 29u) {', 1)[1].split('if (fwKey >= 11u) {', 1)[0]
+    check(_k29.startswith('\n') and _k29 != '',
+          'R182 key 29 exists as its own block, after the vote write')
+    check('0x00000000c3f00000ULL' in _k29,
+          'R182 key 29 maps the page that holds the pointer word, 0xc3f0000')
+    check('0x00000000861e0000ULL' in _k29,
+          'R182 key 29 also reads the node-name address, so one boot compares '
+          'both candidates the existing reader talks about')
+    check('gmudbp=va=%lx w0=%08x w4=%08x w8=%08x wc=%08x' in _k29,
+          'R182 the pointer row shows the four words of that page, the pointer '
+          'being the fourth')
+    check('gmudbc=cand=%08x va=%lx h0=%08x magic=%08x h2=%08x h3=%08x ' in _k29,
+          'R182 the header row carries the pointer, its mapping and the first '
+          'four words behind it, with the magic word separated out')
+    check('base0=%08x base1=%08x base2=%08x base3=%08x ok=%d' in _k29,
+          'R182 the same row carries the node-name words, so both candidates are '
+          'judged from one line')
+    check('0x0c0330dbu' in _k29,
+          'R182 the dump decides with the same magic constant the helper uses')
+    check('0x80000000u' in _k29 and '0x90000000u' in _k29 and '(dbCand & 3u) == 0u' in _k29,
+          'R182 the pointer is only followed when it is a plausible, aligned RAM '
+          'address, so a garbage word cannot make the probe map random memory')
+    check('gmuW[' not in _k29 and 'dsb sy' not in _k29 and 'write32' not in _k29,
+          'R182 key 29 writes nothing: it is a read-only dump of two mappings')
+    check('char dbPtrRow[320]' in _k29 and 'char dbHdrRow[352]' in _k29,
+          'R182 both dump rows have declared bounds')
+    check('gmudbp=map-failed' in _k29,
+          'R182 a failed pointer-page mapping is reported instead of silently '
+          'printing zeros')
+    _i28 = code.find('if (fwKey >= 28u && fwKey <= 29u) {')
+    _i29 = code.find('if (fwKey >= 29u && fwKey <= 29u) {')
+    check(0 < _i28 < _i29,
+          'R182 key 29 sits behind key 28, so the ladder stays strictly ordered')
+
+    # ---- ROUND 183: is the fault the firmware's, or the doorbell's? -----------
+    # Keys 9..13 read GMU2HOST_INTR_INFO with no HFI table; keys 15..17 wrote the
+    # table but never read that word after the pulse.  Key 30 runs the key-17
+    # write set and then one read-only row, so a fault bit in it is the CM3's own
+    # state after start rather than a reaction to anything the host sent later.
+    _k30 = code.split('if (fwKey >= 30u && fwKey <= 30u) {')[1] \
+        if 'if (fwKey >= 30u && fwKey <= 30u) {' in code else \
+        code.split('if (fwKey >= 30u) {', 1)[1]
+    _k30 = _k30.split('if (fwKey >= 31u) {', 1)[0] \
+        if 'if (fwKey >= 31u) {' in _k30 else \
+        _k30.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
+    check(_k30 != '', 'R183 key 30 exists as its own block after the pulse')
+    check('gmustat=intr=%08x fwinit=%08x reset=%08x ' in _k30,
+          'R183 the row leads with the interrupt word and the init result, the '
+          'two registers that separate "faulted" from "started"')
+    check('gdscr=%08x hfistat=%08x wi1=%08x ri0=%08x ok=%d' in _k30,
+          'R183 the row also carries the GX domain state, the HFI control word '
+          'and the two ring indexes, so "the firmware never spoke" is visible')
+    check('gmuW[' not in _k30 and 'dsb sy' not in _k30 and 'write32' not in _k30,
+          'R183 key 30 stores nothing: it is the same write set as key 17 plus a '
+          'read, so a fault cannot be blamed on the probe')
+    check('char stRow[248]' in _k30, 'R183 the row has a declared bound')
+    check('ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u' in _k30,
+          'R183 the interrupt word is read at the offset the model pins')
+    check(_k30.find('GMU2HOST_INTR_INFO') < _k30.find('gdscr=%08x'),
+          'R183 the reads happen before the row is formatted (no uninitialised '
+          'field can reach the log)')
+    _i30 = code.find('if (fwKey >= 30u')
+    _i18 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    check(0 < _i30 < _i18,
+          'R183 key 30 sits between the boot row and the doorbell ladder, i.e. '
+          'exactly where the post-pulse state is still untouched')
+
+
+    # ---- ROUND 184: can the HFI block start without any doorbell? ------------
+    # R183 showed the CM3 comes up clean (intr=0) once the table and the whole
+    # pre-start configuration are written before the pulse, so the CM3_FAULT
+    # every doorbell key reports is provoked by the boot-slumber exchange.  Key
+    # 31 takes the next upstream step -- a6xx_gmu_hfi_start -- in that clean
+    # state: one store of HFI_CTRL_INIT, then a bounded poll of HFI_CTRL_STATUS.
+    _k31 = code.split('if (fwKey >= 31u) {', 1)[1]
+    _k31 = _k31.split('if (fwKey >= 32u) {', 1)[0] \
+        if 'if (fwKey >= 32u) {' in _k31 else \
+        _k31.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
+    check(_k31 != '', 'R184 key 31 exists as its own block after key 30')
+    check(_k31.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1,
+          'R184 key 31 writes HFI_CTRL_INIT exactly once, the same single store '
+          'a6xx_gmu_hfi_start performs')
+    check('HOST2GMU_INTR_SET' not in _k31 and 'BOOT_SLUMBER_OPTION' not in _k31,
+          'R184 key 31 rings no doorbell: the boot-slumber exchange is exactly '
+          'what R183 proved is not part of the boot')
+    check('gmuhfi2=stat=%08x polls=%u intr=%08x ' in _k31,
+          'R184 the row leads with the HFI control word, the poll count and the '
+          'interrupt word, i.e. the three facts that separate "HFI up" from '
+          '"HFI refused"')
+    check('fwinit=%08x ok=%d' in _k31,
+          'R184 the row keeps the firmware init latch and a derived ok flag')
+    check('for (; hfiPoll < 400000u; ++hfiPoll)' in _k31,
+          'R184 the status poll is bounded, so a wedged HFI cannot hang the boot')
+    check('char hfiRow[256]' in _k31, 'R184 the row has a declared bound')
+    check(_k31.find('HFI_CTRL_INIT] = 1u') < _k31.find('HFI_CTRL_STATUS * 4u'),
+          'R184 the store precedes the poll (the poll can only see a real start)')
+    _i31 = code.find('if (fwKey >= 31u) {')
+    check(0 < _i30 < _i31 < _i18,
+          'R184 key 31 sits after key 30 and before the doorbell ladder, so it '
+          'inherits the full write set and adds no doorbell')
+
+    # ---- ROUND 185: the GX rail step, then hfi_start --------------------------
+    # R183 left the CM3 running with intr=0 and R184 showed that a lone
+    # HFI_CTRL_INIT store in that state wedges the host, so the only upstream step
+    # still missing between the pulse and hfi_start is the rail: gfx_rail_on()
+    # followed by sptprac_enable().  Key 32 performs exactly that step and stops;
+    # key 33 repeats it and then retries the HFI start.
+    _k32 = code.split('if (fwKey >= 32u) {', 1)[1]
+    _k32 = _k32.split('if (fwKey >= 33u) {', 1)[0]
+    check(_k32 != '', 'R185 key 32 exists as its own block after key 31')
+    check(_k32.count('gmuW[ADRENO_GMU_BOOT_V1_GX_VOTE_IDX] = 0u;') == 1 and
+          _k32.count('gmuW[ADRENO_GMU_BOOT_V1_MX_VOTE_IDX] = 0u;') == 1,
+          'R185 key 32 writes both arc vote indexes, and writes 0: with no command '
+          'DB on this device index 0 is the lowest level, never a higher voltage')
+    check('gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] =' in _k32 and
+          '1u << 18' in _k32 and '1u << 26' in _k32,
+          'R185 key 32 rings the GPU_SET doorbell (set 18 / ack 26 / clear 26, the '
+          'a6xx_gmu_oob_bits[] entry for A6XX_GMU_GPU_SET)')
+    check('gmuW[ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL] =' in _k32 and
+          'ADRENO_GMU_BOOT_V1_SPTPRAC_ON_VALUE' in _k32,
+          'R185 key 32 enables SPTPRAC with the value a6xx_sptprac_enable() writes')
+    check('gmurail2=gx=0 mx=0 ack=%u polls=%u ' in _k32,
+          'R185 the row leads with the vote values it wrote and the doorbell ack')
+    check('gdscr_pre=%08x gdscr=%08x sptp=%08x ' in _k32 and 'sptppolls=%u intr=%08x ok=%d' in _k32,
+          'R185 the row carries the GX domain state before and after, the SPTPRAC '
+          'clock word and the interrupt word')
+    check('(railGdscr & 0x00010000u) != 0u' in _k32,
+          'R185 ok is derived from the GX_ON bit (16) of GPU_CC_GX_GDSCR, the bit '
+          'the domain state header pins')
+    check('for (; railAckPolls < 400000u; ++railAckPolls)' in _k32 and
+          'for (; railSptpPolls < 400000u; ++railSptpPolls)' in _k32,
+          'R185 both polls are bounded, so a rail that never answers cannot hang '
+          'the boot')
+    check('char rail2Row[288]' in _k32, 'R185 the row has a declared bound')
+    check(_k32.find('GX_VOTE_IDX] = 0u') < _k32.find('HOST2GMU_INTR_SET] ='),
+          'R185 the votes are written before the doorbell that asks for the rail')
+
+    _k33 = code.split('if (fwKey >= 33u) {', 1)[1]
+    _k33 = _k33.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
+    check(_k33 != '', 'R185 key 33 exists as its own block after key 32')
+    check(_k33.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1,
+          'R185 key 33 writes HFI_CTRL_INIT exactly once, the same single store '
+          'a6xx_gmu_hfi_start performs')
+    check('gmuhfi3=stat=%08x polls=%u intr=%08x ' in _k33 and 'fwinit=%08x ok=%d' in _k33,
+          'R185 the row keeps the status word, the poll count, the interrupt word '
+          'and the firmware latch')
+    check('for (; hfi3Polls < 400000u; ++hfi3Polls)' in _k33,
+          'R185 the status poll is bounded')
+    check('char hfi3Row[256]' in _k33, 'R185 the row has a declared bound')
+    _i32 = code.find('if (fwKey >= 32u) {')
+    _i33 = code.find('if (fwKey >= 33u) {')
+    check(0 < _i31 < _i32 < _i33 < _i18,
+          'R185 the rail key and the retry key sit between key 31 and the doorbell '
+          'ladder, so both inherit the full write set')
 
 
     # ---- the row must FIT its buffer ----

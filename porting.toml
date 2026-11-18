@@ -706,6 +706,8 @@ limits = [
   "ROUND 178: 把 gfx_rail_on 的握手形状（BOOT_SLUMBER_OPTION=0 + 置 HOST2GMU_INTR_SET bit22 + 有界等 GMU2HOST_INTR_INFO bit30 + 清 bit30，两个 vote 不写）补在 HFI_CTRL_INIT=1 之前后，同一个 store 不再致死（键 22/23 均 NEW LOG，boot_id 547712722 / 547212046）；但固件仍不应答：ack=0、post=00800000（CM3_FAULT）、HFI_CTRL_STATUS 连读 1000 次为 0；上游 a6xx_gmu_fw_start() 的第一件事 a6xx_rpmh_start()（RSCC_CONTROL_REQ=2 → 等 ACK bit1 → 等 RSCC_SEQ_BUSY_DRV0==0 → REQ=0）本仓库从未实现。",
   "ROUND 179: 按上游顺序补 a6xx_rpmh_start() 四步（RSCC_CONTROL_REQ=2 → 等 ACK bit1 → 等 RSCC_SEQ_BUSY_DRV0==0 → REQ=0，键 24）与 a6xx_sptprac_enable()（SPTPRAC_POWER_CONTROL=0x778000，键 25）后，两次启动都是 NEW LOG、写操作安全；但 RSC 的 ACK 位从未置起（apolls 耗尽 400000，ack=00000000），SPTPRAC 状态字 写前写后都是 000000d4（& 0x38 = 0x14 ≠ 0x28），boot-slumber 门铃照旧 ack=0、CM3 照旧 post=00800000（FAULT）。寄存器偏移已与上游 a6xx_gmu.xml 及两份 vendor 头核对一致。",
   "ROUND 180: 键 26 只读 RSC 页后确认 `gmu mmio + 0x23000` 这片窗口**有背衬**（`tcs0=00000001`），所以 R179 的「RSC 不应答」是真读数、不是打空气；但写 `RSCC_CONTROL_REQ=2` 后 `RSCC_CONTROL_ACK` 仍为 0（400000 次轮询耗尽），`busy/mem0/st0/ovr` 全 0，`CM3_FW_INIT_RESULT` 仍 `babeface`（CM3 活着）。顺带更正 R179 的错误判断：`rd32()` 的 offset 是字节偏移，键 24 的 `GMU_RSCC_DELTA + RSCC_SEQ_BUSY_DRV0 * 4u = 0x23404` 本来就在窗口内。",
+  "R184 判决：在「配齐 + 脉冲」的干净状态下单独写 HFI_CTRL_INIT 会静默打死内核；HFI 启动还缺 gfx_rail_on() 与 sptprac_enable()",
+
 ]
 next_action = [
   '[ROUND 163 2026-11-16, BISECT RUNNING] CI #265 (run 43854373803) builds 3f1de2be with only the R162 ArmCpu.cpp. Read its window the same way as every other run (gate, flash system_b, fastboot boot work/out/boot-r16.img, wait for recovery, arm-bcb, dd bs=4096 skip=13207739 count=8192, pull 32 MiB, compare boot_id against 584678385/629517746/935335677). Silent means the culprit is inside ArmCpu.cpp and the next bisect swaps only the early scm path; a new boot_id means the culprit is the probe file and bisect B splits gGpuStateReplay and the gputate row away from the armcpu_scm_call_full and s7 fields. device_ref must be a branch name: a short sha makes actions/checkout fetch refs/heads/<sha> and the job dies in Check out the device repository (#263). Delete the throwaway branches r163-ctl-ci258 and r163-b-armcpu-new when the bisect is finished.',
@@ -788,6 +790,8 @@ next_action = [
   "ROUND 179: 键 24 = 在脉冲之前补 a6xx_rpmh_start() 四步，其余沿用键 22 形状，看 boot-slumber 门铃是否终于被应答（ack=1）；键 25 = 在键 24 之上再补 a6xx_sptprac_enable()（SPTPRAC_POWER_CONTROL=1，等 (val & 0x38) == 0x28）。vote 仍不写，直到拿到 RPMh cmd-db。",
   "ROUND 180: 候选 A（首选）= 先只读 RPMh command DB（enchilada.dts 的 qcom,cmd-db@861e0000）把 gfx.lvl 的 aux 数据读出来，据此算出 GX/MX 两个 arc vote 的合法取值，再用键 26 写 vote 并看 gmurail2= 的 ack 是否终于变 1；候选 B = 先单独验证 RSC 窗口（gmu mmio + 0x23000）本身可读，区分「ACK 没置」与「整个 RSC 窗口读回 0」。",
   "ROUND 181: 只读 RPMh command DB（`enchilada.dts` 的 `qcom,cmd-db@861e0000`）取 `gfx.lvl`/`cx.lvl` 的 aux 数据，按上游 `a6xx_gmu_get_arc_level()` 规则算 `pindex`/`sindex`，得到 `vote = pindex | (sindex << 8)`，再把 `GX_VOTE_IDX`/`MX_VOTE_IDX` 写进 rail-on 路径，看 `gmurail2=` 的 `ack` 是否终于变 1 —— 以检验「arc vote 是 RSC 应答前提」这个假设。",
+  "R185 键 32/33：脉冲后补 gfx_rail_on()（vote 索引 0 + GPU_SET 门铃 set 18/ack 26/clear 26）与 sptprac_enable()，先只报 gdscr bit16，再加 HFI_CTRL_INIT",
+
 ]
 evidence = [
   { kind = "device", reference = "evidence/stage5-gpu-pas-device.md", result = "ROUND 163 DEVICE-RUN: control build #264 (the ci258 tree rebuilt with todays workflow) booted and wrote a full log, window cd2e4c1b80, boot_id 584678385; the pipeline is therefore exonerated and the silent boots are our own source delta." },
@@ -879,6 +883,8 @@ evidence = [
   "ROUND 178（rail-on 握手形状）: #285 / run 44115787915（分支 r178-rail-on，commit e4546974）；kernel 191c69c52f65c685ffff315aef31e064fd29779762536db21a21fe3cc8e962d2，CI payload 65338ecca680f74777476ba9b916a1c8607fb4ff9a663d09ce7f34e7d8e98718；键 22 NEW LOG boot_id 547712722 窗口 b1e28fee…，行 gmurail=pre=00000000 ack=0 polls=400000 post=00800000 slumber=00000000 hfipre=00000000 hfi=00000000 ok=0；键 23 NEW LOG boot_id 547212046 窗口 bd352d04…，行 gmurail2=… polls=1000 ok=0；结论：HFI_CTRL_INIT=1 本身不致死，致死的是「握手之前」的那次 store；固件仍 ack=0 / CM3_FAULT=00800000 / HFI 未初始化；下一个缺口是上游第一件事 a6xx_rpmh_start()（RSCC REQ/ACK/SEQ_BUSY），本仓库从未实现。",
   "ROUND 179（rpmh_start + sptprac）: #286 / run 44200606987（分支 r179-rpmh-start，commit 8ecde9d2）；kernel 92f76066dafa9f9359a83621048086d0ff7187dba7a5d6e4399e8b74a7356d2c，CI payload c66dffccba2afacfaacfc9e4f075ae81f2147e3aee6c081ebc84680a8aa9d691；键 24 NEW LOG boot_id 552735802 窗口 d401f8c0…，行 gmurpmh=pre=00000000 ack=00000000 apolls=400000 busy=00000000 bpolls=0 ok=0；键 25 NEW LOG boot_id 561907766 窗口 e5d46018…，行 gmusptp=pre=000000d4 stat=000000d4 polls=400000 ok=0；两轮 gmurail2=ack=0 post=00800000；结论：两组写操作安全但无效；新线索是 enchilada.dts 有 qcom,cmd-db@861e0000，可读出 gfx.lvl 算 arc vote，不必猜电压档。",
   "ROUND 180（只读 RSC 页）: #287 / run 44216700269（分支 r180-rscc-read，commit f11228fc）；kernel 7b575e84241c8c1a402377b651b7f7f8ca533b7da199b34ed8e7d5ea18ae2067，CI payload 977648f43ec4220998b71a250da53ddcae68ba869f913d24e5ef920a7b976783；键 26 NEW LOG boot_id 584538485 窗口 574dfc99…，行 gmursc=ack=00000000 busy=00000000 mem0=00000000 st0=00000000 ovr=00000000 tcs0=00000001 fwinit=babeface reset=00000000 sptp=000000d4 intr=00000000 ok=1；结论：RSC 页有背衬（tcs0 非零），但 ACK 仍不置、CM3 仍 babeface；排除地址错/窗口未实现/CM3 死亡三条，arc vote 缺失成为首选假设；并更正 R179 关于 rd32 offset 的错误判断。下一步读 qcom,cmd-db@861e0000 算 vote。",
+  "evidence §二十九..§三十二：cmd-db 两候选全否（R181/R182）、配齐再脉冲使 CM3 干净（R183）、干净状态下 HFI_CTRL_INIT 致死（R184）",
+
 ]
 
 [[area]]

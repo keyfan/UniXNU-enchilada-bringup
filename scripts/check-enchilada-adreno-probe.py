@@ -327,17 +327,21 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 31,
-              'R168+R170+R171+R175+R178 the pointer writes are exactly the ITCM '
-              'loop, the pulse words, the three handshake words, the nine '
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 43,
+              'R168+R170+R171+R175+R178+R181 the pointer writes are exactly the '
+              'ITCM loop, the pulse words, the three handshake words, the nine '
               'pre-start configuration words, the four HFI words (QTBL_ADDR, '
-              'QTBL_INFO, CP_MSG, CTRL_INIT) and the four rail-on words of keys '
+              'QTBL_INFO, CP_MSG, CTRL_INIT), the four rail-on words of keys '
               '22/23 (BOOT_SLUMBER_OPTION, HOST2GMU_INTR_SET, GMU2HOST_INTR_CLR '
-              'and the second, handshake-gated doorbell, plus the two '
-              'a6xx_rpmh_start() writes and the SPTPRAC enable of keys 24/25); '
-              'the 18 table/ring '
-              'stores go through hfiTbl/hfiQh into the allocated buffer, not '
-              'through this mapping, and neither vote register is ever written')
+              'and the second, handshake-gated doorbell), the two '
+              'a6xx_rpmh_start() writes, the SPTPRAC enable of keys 24/25, and '
+              'the second rail-on pass of key 28 with its two arc-vote words '
+              '(GX_VOTE_IDX, MX_VOTE_IDX, the only place the vote is written) and '
+              'the single HFI_CTRL_INIT store of key 31 (R184), the five rail '
+              'stores of key 32 (two votes, the GPU_SET doorbell, its '
+              'clear and SPTPRAC) and the retry store of key 33; '
+              'the 18 table/ring stores go through hfiTbl/hfiQh into the '
+              'allocated buffer, not through this mapping')
         check('volatile uint32_t *const gmuW' in text,
               'R168 every one of those writes goes through a volatile mapping')
 

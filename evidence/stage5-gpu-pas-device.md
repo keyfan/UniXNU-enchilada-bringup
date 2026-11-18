@@ -1806,3 +1806,197 @@ boot-slumber 门铃照旧不应答，CM3 照旧 `post=00800000`（FAULT）。
   `seqmem=00a000a8` 是**不同寄存器**（RSCC 的 TCS 序列内存 vs PDC 的序列内存），
   两者不矛盾，也**不互相印证**。
 - `tcs0=00000001` 只证明「页有背衬」，没有证明 TCS 在做什么（没有位定义，不做解读）。
+
+## 二十九、ROUND 181：cmd-db 的第一条候选被否 —— `0x861e0000` 的第二字不是 magic
+
+**一句话**：键 27 把 `0x861e0000` 映射进来读头四字，映射成功、内核存活，但
+`magic=00000000`，`quiet_cmd_db_levels()` 在 magic 校验处直接返回 0，于是
+`gfx_n/cx_n/mx_n` 全 0。**这不是「表是空的」，是「这里没有表」。**
+
+### 29.1 为什么先试这个地址
+
+- 上游 `a6xx_gmu_rpmh_arc_votes_init()` 用 `cmd_db_read_aux_data()` 读
+  `gfx.lvl` / `cx.lvl`，把 aux 数据当成**电平表**，再按
+  `dev_pm_opp_find_freq_exact()` 给的 level 找下标，最后
+  `votes[i] = ((pri[pindex] & 0xffff) << 16) | (sindex << 8) | pindex`。
+- `a6xx_gmu_gfx_rail_on()` 只取低 16 位（`GX_VOTE_IDX = vote & 0xff`、
+  `MX_VOTE_IDX = (vote >> 8) & 0xff`），所以本仓库不需要 OPP 表，只需
+  「表中最大 level 首次出现的下标」就能忠实复现。
+- `package/EnchiladaTouchRpmh.h:65` 已经有一套同样的解析器，判据是
+  `ftb_le32(db + 4) == 0x0c0330dbu`，头后 8 条 slave 记录各 16 B，条目 24 B。
+
+### 29.2 判决（DEVICE-VERIFIED）
+
+- 构建：#288 / run `44227307738`（分支 `r181-cmd-db-vote`，commit
+  `01e7a4b37ef9062d71754c722217e4e6b4abeb92`），CI payload
+  `e7479079…`，`r181_static.py` 21 REQUIRED / 12 FORBIDDEN 全过。
+- 键 27 上机：窗口
+  `175efbb4dff005dd1d45a588716536f858d5282d4b9a393a03aa69bd843efc0d`，
+  boot_id **547378411**，msg_bytes 30273，slots_written 8，write_errors 0。
+- 逐字行：
+
+      gmulvl=va=fffffffa34eb8000 magic=00000000 gfx_n=0 cx_n=0 mx_n=0 g0=0000 g1=0000 g2=0000
+      gmulvl2=gfx_p=0 gfx_top=0000 cx_p=0 cx_top=0000 mx_p=0 mx_top=0000 gfx_addr=00000000 gfx_len=0
+
+### 29.3 这条行证明了什么、没证明什么
+
+- 证明：`0x861e0000` 可以映射、可以读、读它**不会 abort**（合法内核 VA
+  `fffffffa34eb8000`，本次启动仍写出完整窗口）。
+- 证明：那个地址的第二字不是 magic ⇒ **不是数据库头**。
+- 没证明：设备上是否存在数据库。`gfx_addr=0`、`gfx_len=0` 都是「没找到」的
+  产物，不是「找到但为空」。
+
+### 29.4 下一个候选
+
+- `enchilada.dts` 的 `qcom,cmd-db@861e0000` 节点写的是 `reg = <0xc3f000c 0x08>`，
+  而 `package/EnchiladaTouchRpmh.h:27-30` 的注释说明这八个字节是
+  **AOSS message RAM 里指向数据库的指针**：「the probe tests the node's own
+  address first and this word second」。
+- 于是 R182 的键 29 同时读这个指针页与 `0x861e0000` 的头四字。
+
+### 29.5 诚实边界
+
+- 只有一次上机、一次采样；`va` 值每次启动都不同，不能当常数用。
+
+## 三十、ROUND 182：AOSS 指针页给出的也不是地址 —— 这台机器引导器没灌 cmd-db
+
+**一句话**：键 29 读 `0xc3f0000` 那一页（指针在 `+0xc`），读回
+`w0=8c010e08 w4=08200266 w8=09020526 wc=10c11c22`；`+0xc` 的值
+`0x10c11c22` 不在 RAM 范围（`0x80000000..0x90000000`）内，因此没有跟随，
+`gmudbc` 的 `va=0`、四字全 0。同时 `0x861e0000` 前四字**全 0**。
+**结论：这台机器的引导器没有灌 cmd-db**，上游那条「从数据库算 arc vote」的路
+在本机走不通。
+
+### 30.1 判决（DEVICE-VERIFIED）
+
+- 构建：#289 / run `44231777595`（分支 `r182-aoss-pointer`，commit
+  `521260d8f6d135781814a00d5f3b8d735803f434`，tree
+  `a4d24b90bf45eeacc6a4f95b92cc255cfbac9a67`）。
+- 工件：kernel `27ae8ac9fdd1303f6326e0caa2740755b9dfec00f395156e669e1ffa18bbf7b7`，
+  payload `39126affa77d505ef514506262fad8da18f8e2d101c576a63e4bb188639b856b`；
+  `r182_static.py` PASS（25 REQUIRED / 12 FORBIDDEN + 固件头两处）。
+- rekey `=2 -> =29`：`70cba8e4931f6f1368f972dde5fdeb21eb6ce8befcd57b975fb5b4baa0cb6a7f`
+  （config 1377 → 1378 B，镜像 150,994,944 B）。
+- 上机：`flash readback matches: True`（头 `dd933b25…`），窗口
+  `6e92c9ceb5cad24d3f6513ca836478c3cb7f43261544d88c58516f574ae7abaf`，
+  boot_id **553126703**，msg_bytes 30708，slots_written 9，write_errors 0。
+- 逐字三行：
+
+      gmudbp=va=fffffff8cbb2f000 w0=8c010e08 w4=08200266 w8=09020526 wc=10c11c22
+      gmudbc=cand=10c11c22 va=0 h0=00000000 magic=00000000 h2=00000000 h3=00000000 base0=00000000 base1=00000000 base2=00000000 base3=00000000 ok=0
+      gmuvote=gx=0 mx=0 ack=0 polls=400000 post=00800000 slumber=00000000 fwinit=babeface ok=0
+
+### 30.2 三条读数各自的意思
+
+1. `0xc3f0000` 那一页**有背衬**（四个字各不相同、看起来像 RPMh 命令字），
+   但 `+0xc` 不是 RAM 地址 ⇒ 它不是「指向数据库的指针」。
+2. `0x861e0000` 前四字全 0 ⇒ 节点名地址上也没有数据库。
+3. `gmuvote=gx=0 mx=0` 是键 28 沿用了「找不到就给 0」的写法，**无害但无意义**；
+   `ack=0`、`post=00800000`（CM3_FAULT）与 R170/R178 的门铃结论一致。
+
+### 30.3 影响
+
+- 上游 `a6xx_gmu_rpmh_arc_votes_init()` 在本机**无源可读**。
+- 因此任何「写真实 arc vote」的路线都要先自建 RPMh 路径（例如用
+  `package/EnchiladaTouchRpmh.h` 里已有的 TCS 写序列），而不是读数据库。
+- 本轮不猜电压档：`GX_VOTE_IDX/MX_VOTE_IDX` 只允许写「表里最低的那一档」，
+  索引 0 是唯一不会要求更高电压的选择（R185 采用）。
+
+### 30.4 诚实边界
+
+- 单次采样；`va` 非常数；AOSS 那一页的内容是否随启动变化未测（只读一次）。
+
+## 三十一、ROUND 183：把「配齐」搬到脉冲之前 —— CM3 不再 fault
+
+**一句话**：键 30 把队列表与全部预启动配置**都写在脉冲之前**，脉冲之后只读不写，
+结果 `intr=00000000`：**CM3 起来时是干净的**。R170/R178/R181 一直读到的
+`post_intr=00800000`（`CM3_FAULT`）**是 boot-slumber 门铃诱发的**，不是配置错、
+也不是固件自己出错。
+
+### 31.1 为什么此前一直分不开
+
+- 键 9..13 读 `GMU2HOST_INTR_INFO` 时，HFI 队列表**还不存在**；
+- 键 15..17 把表写进去了，却只报 `hfistat`，从不读 intr；
+- 键 18..25 都先敲门铃再读，于是「firmware 自己 fault」与「门铃让它 fault」
+  在数据上永远同相。
+
+### 31.2 判决（DEVICE-VERIFIED）
+
+- 构建：#290 / run `44237425903`（分支 `r183-stat-after-pulse`，commit
+  `6e186963798a64a7403e053b4c7cc243215c5cd0`，tree
+  `aefb2141767aafd0d4da9f23f99d59b3fb55268c`）。
+- 工件：kernel `0b2a2ed03f8f1999bc7dd3e899462337c8120063241b622f96da9a330081ed45`，
+  payload `aad1fcd63720440661d616e0ccfb495fb5730b01b292cef66f01f2ed91e97224`；
+  `r183_static.py` PASS。
+- rekey `=2 -> =30`：`6bc2918eba460d1d8c3cb626eac5c7c6cf23814973aabee047f17e064e543e8d`。
+- 上机：readback `87dc8d08…` 一致；窗口
+  `41ab63d58db98ee0eab5a5e6a04f4d16c99842ec39eb6e2d45087780d776534e`，
+  boot_id **546568834**，msg_bytes 30172，slots_written 8，write_errors 0。
+- 逐字两行：
+
+      gmuboot2=sig=00000000 mask=ffffffff expect=babeface final=babeface polls=40 hfistat=00000000 reset=00000000 ok=1
+      gmustat=intr=00000000 fwinit=babeface reset=00000000 gdscr=00222001 hfistat=00000000 wi1=00000000 ri0=00000000 ok=1
+
+### 31.3 解读
+
+- `final=babeface`：CM3 自己写的值，固件确实执行（主机只写 0）。
+- `intr=00000000`：脉冲之后、无门铃时**没有 fault**。
+- `hfistat=00000000`、`wi1=ri0=0`：HFI 未初始化，两个环形队列没被动过。
+- `gdscr=00222001`：bit16（GX_ON）为 0，GX 轨仍未上电。
+
+### 31.4 由此改变的两条判断
+
+1. 「配置不对导致 fault」作废：配齐之后 CM3 干净。
+2. `CM3_FAULT` 是**现象**（门铃的后果），不是启动失败的证据。
+
+### 31.5 诚实边界
+
+- 只有一次上机；`intr=0` 是单点采样，未测「等待更久会不会自己 fault」。
+
+## 三十二、ROUND 184：干净状态下写 `HFI_CTRL_INIT` 直接把内核打死
+
+**一句话**：键 31 在 R183 的干净稳态之后只多做一步——写 `HFI_CTRL_INIT=1`
+并有界轮询 `HFI_CTRL_STATUS`，**不敲门铃**——结果窗口与 R183 **逐字节相同**：
+内核死在日志 writer 打开之前，零字节。
+
+### 32.1 设计
+
+- R183 证明 CM3 起来时干净；上游 `a6xx_gmu_fw_start()` 在脉冲之后依次做
+  `gfx_rail_on()` → `sptprac_enable()` → `hfi_start()`。
+- 键 31 只做最后一步，用来判断「HFI 启动」本身是否可以在无轨道、无门铃的
+  状态下完成。三种预期结局被事先写进 runner 的 docstring。
+
+### 32.2 判决（DEVICE-VERIFIED）
+
+- 构建：#292 / run `44241487655`（分支 `r184-hfi-init`，commit
+  `808c5d16a11e8840e170ab7fc7c1593af2711835`，tree
+  `4dba1ab689a07c842e5bd9e58c9f89e01938a930`）；#291 因 runner 侧
+  `socket.gaierror`（DNS）失败，非编译错误。
+- 工件：kernel `eab18a902fbc6064619cdfdbc8d7c95b5e41a90bb21f12b30e8c4dfca5863a34`，
+  payload `26d2c5b9c7b3e0d28513ef33d64e4fa993e5cac5284976628d88e59d07b1136c`；
+  `r184_static.py` PASS。
+- rekey `=2 -> =31`：`7d1ce078a3ad36c7ccc38c605b93c6aed16652315cef30bd083113193c2741c0`。
+- 上机：`flash readback matches: True`（system_b 头 `5e7e16fc…` == payload 头），
+  窗口 **`41ab63d5…`（与 R183 逐字节相同）**、boot_id **546568834**（旧值）、
+  `gmuhfi2=` 计数 **0**。
+
+### 32.3 四次实验拼出的阶梯
+
+| 键 | 写集 | 结果 |
+|----|------|------|
+| 30（R183） | 配齐 + 队列表 + 脉冲，之后只读 | 活：`intr=0`、`fwinit=babeface`、`hfistat=0` |
+| 31（R184） | 键 30 + 写 `HFI_CTRL_INIT` + 轮询 | **静默死** |
+| 22/23（R178） | 旧顺序 + 门铃 + 写 `HFI_CTRL_INIT` | 活：`intr=00800000`、`hfistat=0` |
+| 18（R177） | 只有表 + 写 `HFI_CTRL_INIT` | 静默死 |
+
+### 32.4 解读
+
+- `HFI_CTRL_INIT` 这笔写在「CM3 干净运行」时会挂死主机；只有在门铃先把 CM3
+  打成 FAULT 之后，同样的写才无害。也就是说：**门铃不是 HFI 启动的前提，而是
+  把 CM3 提前打死，让后面那笔写落空**。
+- 上游在脉冲与 `hfi_start` 之间还有 `gfx_rail_on()` 与 `sptprac_enable()`，
+  这两步本仓库从未在「配齐 + 脉冲」之后试过 ⇒ 下一个实验（R185）把它们补上。
+
+### 32.5 诚实边界
+
+- 单次采样；「零字节」只证明 writer 打开前已死，不定位死在 store 还是后续读。
