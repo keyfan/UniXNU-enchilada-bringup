@@ -1744,3 +1744,65 @@ boot-slumber 门铃照旧不应答，CM3 照旧 `post=00800000`（FAULT）。
 - **候选 B**：先验证 RSC 窗口本身可读性（读几个已知非零的 RSC 寄存器），
   区分「ACK 没置」与「整个 RSC 窗口读回 0」这两种可能 —— 键 25 的 `sp` 读数
   （`0xd4` 非零）说明 GMU 窗口是真的，RSC 窗口（`GMU_DELTA` 区）尚未单独验证过。
+
+## 二十八、ROUND 180：RSC 页确实有背衬，但 `RSCC_CONTROL_ACK` 依旧不置
+
+**一句话**：键 26 只读一次 RSC 页，证明 `gmu mmio + 0x23000` 这片窗口**是真内存**
+（`tcs0=00000001`），所以 R179 的「RSC 不应答」不是打空气、不是地址写错；但写
+`RSCC_CONTROL_REQ=2` 之后 ACK 位仍然一路 0（400000 次轮询耗尽），同时
+`busy/mem0/st0/ovr` 全 0、`CM3_FW_INIT_RESULT` 仍是 `babeface`（CM3 活着）。
+
+### 28.1 判决（DEVICE-VERIFIED）
+
+- 构建：#287 / run `44216700269`（分支 `r180-rscc-read`，commit
+  `f11228fc1592ea833ade93dec689f69f8d3d14d4`），kernel sha256
+  `7b575e84241c8c1a402377b651b7f7f8ca533b7da199b34ed8e7d5ea18ae2067`，
+  CI payload sha256 `977648f43ec4220998b71a250da53ddcae68ba869f913d24e5ef920a7b976783`。
+- 静态门 `work/tmp/r180_static.py`：18 条 REQUIRED 全在、12 条 FORBIDDEN 全 0、
+  两个 vote 寄存器在 kernel 文本里不出现。
+- 键 26（`enchilada-pas-exec=26`，本地 rekey payload `4c61a386…`）：**NEW LOG**，
+  boot_id **584538485**，窗口 `574dfc991ec229d090bc256ae20c9596efdefb50890550b37803d50ee233aa35`，
+  msg_bytes 30022，slots_written 8，write_errors 0，`flash readback matches: True`。
+- 逐字行：
+
+      gmursc=ack=00000000 busy=00000000 mem0=00000000 st0=00000000 ovr=00000000 tcs0=00000001 fwinit=babeface reset=00000000 sptp=000000d4 intr=00000000 ok=1
+
+  同窗还有（键 26 同时满足 `>= 24u`，故 rpmh 块也跑了）：
+
+      gmurpmh=pre=00000000 ack=00000000 apolls=400000 busy=00000000 bpolls=0 ok=0
+
+### 28.2 这条行到底证明了什么
+
+- `tcs0=00000001`（`RSCC_TCS0_DRV0_STATUS`，偏移 `0x0346`，经 `GMU_RSCC_DELTA`
+  落到字节 `0x23d18`）读出非零 ⇒ **RSC 页被真实背衬**，读回的不是「未实现窗口的全 0」。
+- 因此 R179 的 `busy=00000000`、`ack=00000000` 都是**真读数**；`a6xx_rpmh_start()`
+  的第一步写下去之后，RSC 就是没有把 ACK 位置起来。
+- `fwinit=babeface` 说明 CM3 依然在跑（R168 之后一直如此），`sptp=000000d4`
+  与 R165/R179 一致，`intr=00000000` 因为本轮 rail 块被 `<= 25u` 关掉、没敲门铃。
+
+### 28.3 三件被排除的事
+
+1. **不是地址错**：`rd32(va, off)` 的 `off` 是字节偏移（`package/EnchiladaAdrenoProbe.cpp:491`），
+   `GMU_RSCC_DELTA + RSCC_SEQ_BUSY_DRV0 * 4u = 0x23404`，落在 `ADRENO_BOARD_GMU_SIZE
+   0x00030000` 之内；R179 里记的「倍数写错」是错误判断，已在文档中更正。
+2. **不是窗口没实现**：`tcs0` 非零。
+3. **不是 CM3 死了**：`fwinit=babeface`。
+
+### 28.4 下一个假设：arc vote 是 RSC 应答的前提
+
+- 上游 `a6xx_gmu_fw_start()` 在 `a6xx_rpmh_start()` 之前只写 `GENERAL_7=1`；
+  但 `a6xx_gmu_gfx_rail_on()` 写的 `GX_VOTE_IDX`/`MX_VOTE_IDX` 是 RPMh 的
+  **arc level 索引**，由 `a6xx_gmu_rpmh_arc_votes_init()` 从 command DB 里读
+  `gfx.lvl`/`cx.lvl` 的 aux 数据算出来（`vote = pindex | (sindex << 8)`）。
+- 本板从未写过这两个 vote，也没有读 cmd-db ⇒ RSC 看到的 CX/MX 轨没有合法电压档，
+  拒绝 ACK 与之一致（这是假设，不是结论）。
+- `enchilada.dts` 里有 `qcom,cmd-db@861e0000 { compatible = "qcom,cmd-db"; ... }`
+  以及 `cmd_db = "/soc/qcom,cmd-db@861e0000";` ⇒ **command DB 有物理落点，可以只读**，
+  不必猜电压档。
+
+### 28.5 诚实边界
+
+- 只有一次上机、一次采样；`mem0=00000000` 与 R166 从 PDC 窗口读到的
+  `seqmem=00a000a8` 是**不同寄存器**（RSCC 的 TCS 序列内存 vs PDC 的序列内存），
+  两者不矛盾，也**不互相印证**。
+- `tcs0=00000001` 只证明「页有背衬」，没有证明 TCS 在做什么（没有位定义，不做解读）。

@@ -1207,7 +1207,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 25u' in _fw,
+    check('fwKey >= 7u && fwKey <= 26u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1288,11 +1288,11 @@ def main():
           code.count('if (fwKey >= 16u') == 1 and
           code.count('if (fwKey >= 17u') == 1 and
           code.count('if (fwKey >= 18u && fwKey <= 21u) {') == 1 and
-          code.count('if (fwKey >= 22u) {') == 1 and
+          code.count('if (fwKey >= 22u && fwKey <= 25u) {') == 1 and
           code.count('if (fwKey >= 23u) {') == 1,
           'R176+R178 the HFI ladder is 15 allocate, 16 +map and fill, 17 +the '
           'three QTBL registers, then the doorbell keys 18..21 (re-gated so the '
-          'rail-on keys 22/23 cannot fall through them) and 22/23 for the '
+          'rail-on keys 22..25 cannot fall through them) and 22..25 for the '
           'BOOT_SLUMBER handshake and the status poll')
     check('gmuhfi=alloc pa=%08x' in code and 'gmuhfi=table win=%08x' in code and
           'gmuhfi=qtbl addr=%08x' in code and 'gmuhfi=pa=%08x' in code,
@@ -1301,7 +1301,7 @@ def main():
     check(code.index('if (fwKey >= 15u) {') <
           code.index('gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;') <
           code.index('if (fwKey >= 18u && fwKey <= 21u) {') <
-          code.index('if (fwKey >= 22u) {'),
+          code.index('if (fwKey >= 22u && fwKey <= 25u) {'),
           'R176 the table is built before the pulse and hfi_start runs after it, '
           'as upstream orders a6xx_gmu_fw_start() and a6xx_gmu_hfi_start()')
     check('ADRENO_HFI_V1_TABLE_SIZE_BYTES' in code and
@@ -1346,7 +1346,7 @@ def main():
           'R175 a refused allocation has its own diagnostic instead of silently '
           'writing a null table address')
     _h2 = (code.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[1]
-           .split('if (fwKey >= 22u) {', 1)[0]
+           .split('if (fwKey >= 22u && fwKey <= 25u) {', 1)[0]
            if 'if (fwKey >= 18u && fwKey <= 21u) {' in code else '')
     check('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;' in _h2,
           'R175 hfi_start stores HFI_CTRL_INIT exactly once')
@@ -1372,9 +1372,9 @@ def main():
           'command read index) instead of being assumed zero')
     check('char hfiRow[288]' in code and 'gmuhfi=pa=%08x' in code,
           'R175 the new row has a declared, sufficient bound')
-    _rail = (code.split('if (fwKey >= 22u) {', 1)[1]
-             .split('if (fwKey >= 11u) {', 1)[0]
-             if 'if (fwKey >= 22u) {' in code else '')
+    _rail = (code.split('if (fwKey >= 22u && fwKey <= 25u) {', 1)[1]
+             .split('if (fwKey >= 26u) {', 1)[0]
+             if 'if (fwKey >= 22u && fwKey <= 25u) {' in code else '')
     check('char railRow[264]' in _rail and 'char rail2Row[264]' in _rail,
           'R178 both rail-on rows declare their own bounded buffers')
     check('gmuW[ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION] = 0u;' in _rail,
@@ -1447,7 +1447,7 @@ def main():
     _i24 = code.find('if (fwKey >= 24u) {')
     _fwinit = code.find('gmuW[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;')
     _i25 = code.find('if (fwKey >= 25u) {')
-    _i22r = code.find('if (fwKey >= 22u) {')
+    _i22r = code.find('if (fwKey >= 22u && fwKey <= 25u) {')
     check(0 <= _g7 < _i24 < _fwinit,
           'R179 key 24 sits where upstream puts a6xx_rpmh_start(): after '
           'GENERAL_7 and before the firmware words')
@@ -1648,6 +1648,60 @@ def main():
           'R174 no GR1 address is formed at all, so the reserved range is unreachable')
     check('stage >= 7u' not in code,
           'R173 still no new stage value: the boot-arg mask stays exactly 1..6')
+
+    # ==== ROUND 180 (slice 3, step 5): is the RSCC page backed at all? ==========
+    # R179 ran the RSC handshake for real and the ACK bit never came up across
+    # 400000 polls, while the same key's REQ stores were harmless. Before blaming
+    # the arc vote, prove the page answers: a bootloader that ran the RPMh reset
+    # sequence leaves RSCC_SEQ_MEM_0_DRV0 populated, so an all-zero/all-ones reply
+    # would mean the probe has been reading unbacked addresses all along. Key 26
+    # therefore stores NOTHING and polls NOTHING -- it only loads ten words.
+    _k26 = (code.split('if (fwKey >= 26u) {', 1)[1]
+            .split('if (fwKey >= 11u) {', 1)[0]
+            if 'if (fwKey >= 26u) {' in code else '')
+    check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
+          'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
+          'doorbell or the SPTPRAC write on its way to the dump')
+    check('(fwKey >= 7u && fwKey <= 26u)' in code,
+          'R180 key 26 is armed by the same boot-arg window, still inside 1..6 '
+          'stages and with no new boot argument')
+    check(_k26 != '', 'R180 key 26 exists')
+    check('gmuW[' not in _k26 and 'write32' not in _k26,
+          'R180 key 26 writes NOTHING through the GMU window: this key asks one '
+          'question and must not perturb what it measures')
+    check('dsb sy' not in _k26 and 'for (' not in _k26,
+          'R180 key 26 has no barrier and no poll loop: it is a single pass of '
+          'loads, so a dead RSC page cannot spin or fault the boot')
+    check(_k26.count('rd32(') == 10,
+          'R180 key 26 reads exactly ten words (ACK, busy, seq-mem, status0, '
+          'override, TCS0, fw-init, sysreset, sptprac, intr)')
+    check('ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +' in _k26 and
+          'ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 * 4u' in _k26 and
+          'ADRENO_GMU_BOOT_V1_RSCC_SEQ_BUSY_DRV0 * 4u' in _k26,
+          'R180 the RSCC words are read through the derived +0x23000 slice in '
+          'BYTE offsets (rd32 adds a byte offset), i.e. 0x23404 and 0x23600, '
+          'both inside the 0x30000 GMU window')
+    check('0x346u * 4u' in _k26,
+          'R180 RSCC_TCS0_DRV0_STATUS is read at its pinned RSCC offset 0x346')
+    check('gmursc=ack=%08x busy=%08x mem0=%08x st0=%08x ovr=%08x tcs0=%08x ' in _k26,
+          'R180 key 26 prints the whole RSCC slice on one line, so the judgement '
+          'is "page backed / page unbacked" rather than a guess')
+    check('fwinit=%08x reset=%08x sptp=%08x intr=%08x ok=%d' in _k26,
+          'R180 the same row carries the CM3 words the earlier keys already read, '
+          'so the RSC answer and the CM3 fault are measured in one snapshot')
+    check('char rscRow[352]' in _k26,
+          'R180 the row buffer is declared and large enough for ten 8-digit '
+          'fields plus the prefix')
+    _i26 = code.find('if (fwKey >= 26u) {')
+    _i25 = code.find('if (fwKey >= 25u) {')
+    check(0 < _i25 < _i26,
+          'R180 key 26 comes after key 25, so the ladder stays strictly ordered '
+          'and one surviving boot names the next fatal step')
+    check('ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]' not in code and
+          'ADRENO_GMU_BOOT_V1_MX_VOTE_IDX]' not in code,
+          'R180 the rail votes are still never written anywhere: the vote is an '
+          'RPMh command-db arc index and this board DT has no opp-hz to derive it')
+
 
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the

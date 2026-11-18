@@ -1444,7 +1444,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 25u);
+                            (fwKey >= 7u && fwKey <= 26u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             // ROUND 175: the HFI shared region and the uncached window over it.
@@ -1873,7 +1873,7 @@ extern "C" void enchilada_adreno_poll(void) {
                                                 }
                                             }
                                         }
-                                        if (fwKey >= 22u) {
+                                        if (fwKey >= 22u && fwKey <= 25u) {
                                             // ROUND 178: R177 showed that the bare store of
                                             // HFI_CTRL_INIT kills the kernel before the log writer opens.
                                             // Upstream a6xx_gmu_fw_start() never writes that register right
@@ -1974,6 +1974,39 @@ extern "C" void enchilada_adreno_poll(void) {
                                                          ((sHfiWin != 0u) && ((railPoll & 1u) == 1u)) ? 1 : 0);
                                                 IOLog("enchilada-adreno: %s\n", rail2Row);
                                             }
+                                        }
+                                        // ROUND 180: R179 showed that the RSC handshake never acknowledges (400000 polls,
+                                        // ACK bit still clear) and that the SPTPRAC status word does not move, yet the
+                                        // requests themselves are safe (two keys, two NEW LOGs, zero write errors).  The
+                                        // question left is whether the RSC page is even backed: a bootloader that ran the
+                                        // RPMh reset sequence must have left RSCC_SEQ_MEM_0_DRV0 populated and
+                                        // RSCC_SEQ_BUSY_DRV0 clear.  Key 26 is STRICTLY READ-ONLY -- no store, no poll, no
+                                        // doorbell -- and dumps the RSCC slice of the GMU window together with the CM3
+                                        // words the earlier keys already read.  All offsets are BYTE offsets into the GMU
+                                        // mapping (rd32(va, off) adds a byte offset), and the RSCC slice lives at
+                                        // GMU mmio + 0x23000, i.e. inside the same 0x30000 window.
+                                        if (fwKey >= 26u) {
+                                            const uint32_t rscAck = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_RSCC_CONTROL_ACK * 4u);
+                                            const uint32_t rscBusy = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                      ADRENO_GMU_BOOT_V1_RSCC_SEQ_BUSY_DRV0 * 4u);
+                                            const uint32_t rscMem0 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                      ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 * 4u);
+                                            const uint32_t rscSt0 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                     ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0 * 4u);
+                                            const uint32_t rscOvr = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                     ADRENO_GMU_BOOT_V1_RSCC_OVERRIDE_START_ADDR * 4u);
+                                            const uint32_t rscTcs0 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA + 0x346u * 4u);
+                                            const uint32_t rscFwInit = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            const uint32_t rscReset = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_SYSRESET * 4u);
+                                            const uint32_t rscSptp = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                            const uint32_t rscIntr = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            char rscRow[352];
+                                            snprintf(rscRow, sizeof rscRow,
+                                                     "gmursc=ack=%08x busy=%08x mem0=%08x st0=%08x ovr=%08x tcs0=%08x "
+                                                     "fwinit=%08x reset=%08x sptp=%08x intr=%08x ok=%d",
+                                                     rscAck, rscBusy, rscMem0, rscSt0, rscOvr, rscTcs0,
+                                                     rscFwInit, rscReset, rscSptp, rscIntr, 1);
+                                            IOLog("enchilada-adreno: %s\n", rscRow);
                                         }
                                     }
                                     if (fwKey >= 11u) {
