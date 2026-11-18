@@ -1815,8 +1815,8 @@ def main():
     _k30 = code.split('if (fwKey >= 30u && fwKey <= 30u) {')[1] \
         if 'if (fwKey >= 30u && fwKey <= 30u) {' in code else \
         code.split('if (fwKey >= 30u) {', 1)[1]
-    _k30 = _k30.split('if (fwKey >= 31u) {', 1)[0] \
-        if 'if (fwKey >= 31u) {' in _k30 else \
+    _k30 = _k30.split('if (fwKey == 31u) {', 1)[0] \
+        if 'if (fwKey == 31u) {' in _k30 else \
         _k30.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
     check(_k30 != '', 'R183 key 30 exists as its own block after the pulse')
     check('gmustat=intr=%08x fwinit=%08x reset=%08x ' in _k30,
@@ -1847,9 +1847,9 @@ def main():
     # every doorbell key reports is provoked by the boot-slumber exchange.  Key
     # 31 takes the next upstream step -- a6xx_gmu_hfi_start -- in that clean
     # state: one store of HFI_CTRL_INIT, then a bounded poll of HFI_CTRL_STATUS.
-    _k31 = code.split('if (fwKey >= 31u) {', 1)[1]
-    _k31 = _k31.split('if (fwKey >= 32u) {', 1)[0] \
-        if 'if (fwKey >= 32u) {' in _k31 else \
+    _k31 = code.split('if (fwKey == 31u) {', 1)[1]
+    _k31 = _k31.split('if (fwKey == 32u || fwKey == 33u) {', 1)[0] \
+        if 'if (fwKey == 32u || fwKey == 33u) {' in _k31 else \
         _k31.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
     check(_k31 != '', 'R184 key 31 exists as its own block after key 30')
     check(_k31.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1,
@@ -1869,64 +1869,78 @@ def main():
     check('char hfiRow[256]' in _k31, 'R184 the row has a declared bound')
     check(_k31.find('HFI_CTRL_INIT] = 1u') < _k31.find('HFI_CTRL_STATUS * 4u'),
           'R184 the store precedes the poll (the poll can only see a real start)')
-    _i31 = code.find('if (fwKey >= 31u) {')
+    _i31 = code.find('if (fwKey == 31u) {')
     check(0 < _i30 < _i31 < _i18,
           'R184 key 31 sits after key 30 and before the doorbell ladder, so it '
           'inherits the full write set and adds no doorbell')
 
-    # ---- ROUND 185: the GX rail step, then hfi_start --------------------------
-    # R183 left the CM3 running with intr=0 and R184 showed that a lone
-    # HFI_CTRL_INIT store in that state wedges the host, so the only upstream step
-    # still missing between the pulse and hfi_start is the rail: gfx_rail_on()
-    # followed by sptprac_enable().  Key 32 performs exactly that step and stops;
-    # key 33 repeats it and then retries the HFI start.
-    _k32 = code.split('if (fwKey >= 32u) {', 1)[1]
-    _k32 = _k32.split('if (fwKey >= 33u) {', 1)[0]
-    check(_k32 != '', 'R185 key 32 exists as its own block after key 31')
+    # ---- ROUND 186: the rail step, with and without the boot-slumber doorbell --
+    # R185 shipped key 32 as "rails", but keys 30/31/32/33 all used open-ended
+    # guards, so key 32 also ran key 31's HFI_CTRL_INIT store -- the one R184
+    # proved fatal.  The R185 device run therefore said nothing about the rails.
+    # R186 closes key 31 at 31, widens the rail block to keys 32 and 33, and puts
+    # the upstream boot-slumber doorbell in key 33 only.
+    check(code.count('if (fwKey == 31u) {') == 1,
+          'R186 key 31 is closed at 31, so the lone HFI store no longer leaks into '
+          'the rail keys that follow it')
+    _k32 = code.split('if (fwKey == 32u || fwKey == 33u) {', 1)[1]
+    _k32 = _k32.split('if (fwKey == 33u) {', 1)[0]
+    check(_k32 != '', 'R186 the rail block is shared by keys 32 and 33')
+    check(_k32.count('gmuW[ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION] = 0u;') == 1,
+          'R186 the rail step clears BOOT_SLUMBER_OPTION first, exactly as '
+          'a6xx_gmu_gfx_rail_on() does before it touches a vote')
     check(_k32.count('gmuW[ADRENO_GMU_BOOT_V1_GX_VOTE_IDX] = 0u;') == 1 and
           _k32.count('gmuW[ADRENO_GMU_BOOT_V1_MX_VOTE_IDX] = 0u;') == 1,
-          'R185 key 32 writes both arc vote indexes, and writes 0: with no command '
-          'DB on this device index 0 is the lowest level, never a higher voltage')
-    check('gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] =' in _k32 and
-          '1u << 18' in _k32 and '1u << 26' in _k32,
-          'R185 key 32 rings the GPU_SET doorbell (set 18 / ack 26 / clear 26, the '
-          'a6xx_gmu_oob_bits[] entry for A6XX_GMU_GPU_SET)')
+          'R186 the rail step writes both arc vote indexes, and writes 0: with no '
+          'command DB on this device index 0 is the lowest level, never a higher '
+          'voltage')
+    check('HOST2GMU_INTR_SET' not in _k32 and 'GMU2HOST_INTR_CLR' not in _k32,
+          'R186 the shared rail block rings no doorbell: the set/ack/clear '
+          'exchange lives in key 33 so the two halves stay separable')
     check('gmuW[ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL] =' in _k32 and
           'ADRENO_GMU_BOOT_V1_SPTPRAC_ON_VALUE' in _k32,
-          'R185 key 32 enables SPTPRAC with the value a6xx_sptprac_enable() writes')
-    check('gmurail2=gx=0 mx=0 ack=%u polls=%u ' in _k32,
-          'R185 the row leads with the vote values it wrote and the doorbell ack')
-    check('gdscr_pre=%08x gdscr=%08x sptp=%08x ' in _k32 and 'sptppolls=%u intr=%08x ok=%d' in _k32,
-          'R185 the row carries the GX domain state before and after, the SPTPRAC '
-          'clock word and the interrupt word')
+          'R186 the rail step enables SPTPRAC with the value a6xx_sptprac_enable() '
+          'writes')
+    check('gmurail2=gdscr_pre=%08x gdscr=%08x sptp_pre=%08x sptp=%08x ' in _k32,
+          'R186 the row leads with the GX domain and SPTPRAC clock words before and '
+          'after, so a half-applied rail step is visible')
+    check('sptppolls=%u intr_pre=%08x intr=%08x ok=%d' in _k32,
+          'R186 the row carries the bounded poll count and the interrupt word from '
+          'both sides of the writes')
     check('(railGdscr & 0x00010000u) != 0u' in _k32,
-          'R185 ok is derived from the GX_ON bit (16) of GPU_CC_GX_GDSCR, the bit '
+          'R186 ok is derived from the GX_ON bit (16) of GPU_CC_GX_GDSCR, the bit '
           'the domain state header pins')
-    check('for (; railAckPolls < 400000u; ++railAckPolls)' in _k32 and
-          'for (; railSptpPolls < 400000u; ++railSptpPolls)' in _k32,
-          'R185 both polls are bounded, so a rail that never answers cannot hang '
-          'the boot')
-    check('char rail2Row[288]' in _k32, 'R185 the row has a declared bound')
-    check(_k32.find('GX_VOTE_IDX] = 0u') < _k32.find('HOST2GMU_INTR_SET] ='),
-          'R185 the votes are written before the doorbell that asks for the rail')
+    check('for (; railSptpPolls < 400000u; ++railSptpPolls)' in _k32,
+          'R186 the SPTPRAC poll is bounded, so a rail that never answers cannot '
+          'hang the boot')
+    check('char rail2Row[320]' in _k32, 'R186 the rail row has a declared bound')
 
-    _k33 = code.split('if (fwKey >= 33u) {', 1)[1]
+    _k33 = code.split('if (fwKey == 33u) {', 1)[1]
     _k33 = _k33.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
-    check(_k33 != '', 'R185 key 33 exists as its own block after key 32')
-    check(_k33.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1,
-          'R185 key 33 writes HFI_CTRL_INIT exactly once, the same single store '
-          'a6xx_gmu_hfi_start performs')
-    check('gmuhfi3=stat=%08x polls=%u intr=%08x ' in _k33 and 'fwinit=%08x ok=%d' in _k33,
-          'R185 the row keeps the status word, the poll count, the interrupt word '
-          'and the firmware latch')
-    check('for (; hfi3Polls < 400000u; ++hfi3Polls)' in _k33,
-          'R185 the status poll is bounded')
-    check('char hfi3Row[256]' in _k33, 'R185 the row has a declared bound')
-    _i32 = code.find('if (fwKey >= 32u) {')
-    _i33 = code.find('if (fwKey >= 33u) {')
+    check(_k33 != '', 'R186 key 33 exists as its own block after the rail step')
+    check(_k33.count('gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] =') == 1 and
+          '1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET' in _k33,
+          'R186 key 33 rings the boot-slumber doorbell (bit 22), the sequence '
+          'gfx_rail_on() ends with')
+    check(_k33.count('gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] =') == 1 and
+          '1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_CLEAR' in _k33,
+          'R186 key 33 clears the acknowledge bit (30), so the exchange is the full '
+          'set/ack/clear triple')
+    check('for (; rail3Polls < 400000u; ++rail3Polls)' in _k33,
+          'R186 the acknowledge poll is bounded')
+    check('gmurail3=ack=%u polls=%u gdscr=%08x intr=%08x fwinit=%08x ' in _k33 and
+          'reset=%08x ok=%d' in _k33,
+          'R186 the row reports the acknowledge, the poll count, the GX domain and '
+          'the firmware latch together')
+    check('char rail3Row[288]' in _k33, 'R186 the rail3 row has a declared bound')
+    check(_k33.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT]') == 0,
+          'R186 key 33 does not retry the HFI start: the rail question is asked '
+          'with the rails only')
+    _i32 = code.find('if (fwKey == 32u || fwKey == 33u) {')
+    _i33 = code.find('if (fwKey == 33u) {')
     check(0 < _i31 < _i32 < _i33 < _i18,
-          'R185 the rail key and the retry key sit between key 31 and the doorbell '
-          'ladder, so both inherit the full write set')
+          'R186 the rail block and the doorbell key sit between key 31 and the '
+          'doorbell ladder, so both inherit the full write set')
 
 
     # ---- the row must FIT its buffer ----

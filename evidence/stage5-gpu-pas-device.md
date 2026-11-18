@@ -2000,3 +2000,154 @@ boot-slumber 门铃照旧不应答，CM3 照旧 `post=00800000`（FAULT）。
 ### 32.5 诚实边界
 
 - 单次采样；「零字节」只证明 writer 打开前已死，不定位死在 store 还是后续读。
+
+## 三十三、ROUND 185：轨道那几笔写在「继承来的致死写」后面，判决无效
+
+**一句话**：键 32 上机后窗口与 R183 **逐字节相同**（`gmurail2=` 一条也没有），
+但复查代码发现键 32 用的守卫是 `fwKey >= 32u`，而键 31（`>= 31u`，写
+`HFI_CTRL_INIT`，R184 已证致死）那一段**是它的前缀** —— 也就是说键 32 必然
+继承了那笔已知会杀死内核的写。因此这次「静默死」**不携带任何关于轨道的信息**，
+是本轮实验设计的一处真错误，不是设备行为。
+
+### 33.1 设计原意
+
+- R183 证明「配齐再脉冲」后 CM3 干净（`intr=0`）。
+- R184 证明在这个干净状态里写 `HFI_CTRL_INIT` 会挂死主机。
+- 上游 `a6xx_gmu_fw_start()` 在脉冲与 `hfi_start()` 之间还剩两步：
+  `a6xx_gmu_gfx_rail_on()` 与 `a6xx_sptprac_enable()`。
+- 键 32 本应只做这两步并停手，用 GX 域的 bit16 判断轨道是否真的起来了。
+
+### 33.2 判决（DEVICE-VERIFIED）
+
+- 构建：#293 / run `44244959898`（分支 `r185-gfx-rail`，commit
+  `b7030acc291d1f3f9e8df4c06610de2189ac00e1`，tree
+  `51fa158ff1dcf6bb84debc32ec9a975ea3c2f9fb`）。
+- 工件：kernel `569d55102576094c456b3b38e59157b3a84d6439ce3e7bfd982a2077137d5163`，
+  payload `b2581a45937802d85b60f355f7d5d24246ff37212d26e3a989e31d82a8f6fabd`；
+  十条门禁全绿（stage3 40 / stage4 57 / stage5 44 / stage6 536 / host 28 /
+  k3 76 / gmu-boot 213 / gmu-bus 43 / hfi 46 / gmu-caller 26）。
+- rekey `=2 -> =32`：`310fd5a93a3395102e4e2b033924125eee37617a09442eb01ad292a8be26907e`。
+- 上机（`r185_s32_device_run.py`，14:05:28–14:05:43）：门禁 PASS、flash 成功、
+  `flash readback matches: True`（system_b 头 8 MiB `2f2067f0…` == payload 头）。
+- 窗口 **`41ab63d58db98ee0eab5a5e6a04f4d16c99842ec39eb6e2d45087780d776534e`**、
+  boot_id **546568834**、msg_bytes 30172、slots_written 8、write_errors 0 ——
+  与 R183 **逐字节相同**。
+- 计数：`gmurail2=0`、`gmuhfi3=0`；`gmustat=1`、`gmuboot2=1` 都是 R183 那次
+  留在窗口里的旧行。
+
+### 33.3 为什么这次判决无效（自查）
+
+- 键 30、31、32、33 的守卫分别写成 `if (fwKey >= 30u)`、`>= 31u`、`>= 32u`、
+  `>= 33u`，是**累积式**的：选 key 33 会把 30/31/32 全部执行一遍。
+- 键 31 那一段的第一笔就是 `gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;`，
+  而 R184 已经用单变量证明这笔写在「配齐 + 脉冲」的干净状态里**必然挂死主机**。
+- 于是「键 32 静默死」在逻辑上是**必然**的，与轨道写无关。R185 这一轮没有
+  回答它想问的问题。
+
+### 33.4 修正（R186 的形状）
+
+- 键 31 收窄成 `if (fwKey == 31u)`，不再向后面的键泄漏那笔致死写。
+- 键 32 与键 33 共用一个轨道块（`if (fwKey == 32u || fwKey == 33u)`），
+  内容是 `BOOT_SLUMBER_OPTION=0` + `GX_VOTE_IDX=0` + `MX_VOTE_IDX=0` +
+  `SPTPRAC_POWER_CONTROL=SPTPRAC_ON_VALUE` 与一次有界 SPTPRAC 轮询，**不敲门铃**。
+- 键 33 在轨道块之后再补上游 `a6xx_gmu_set_oob(GMU_OOB_BOOT_SLUMBER)` 的完整
+  三步：`HOST2GMU_INTR_SET = 1<<22` → 有界等待 `GMU2HOST_INTR_INFO` bit30 →
+  `GMU2HOST_INTR_CLR = 1<<30`。
+- 这样「轨道写」与「门铃」被拆成两个独立可判的键，任何一个死亡都携带新信息。
+
+### 33.5 诚实边界
+
+- 本轮的唯一产出是「实验设计有错」这一条结论；轨道是否可写、GX 是否会
+  上电，R185 一个字都没回答。
+- 键 32 的死亡位置（store 还是随后的读）未定位，且已无意义 —— R186 会重问。
+
+## 三十四、ROUND 186：轨道写不再致死，但门铃只换来 `CM3_FAULT` —— 电源链的指针指向 RSC
+
+**一句话**：把键 31 收窄之后，轨道那五笔写（`BOOT_SLUMBER_OPTION=0`、两个 vote、
+`SPTPRAC_POWER_CONTROL`）**全部被总线接受且不再致死**（键 32 活），但
+`GPU_CC_GX_GDSCR` 的 bit16 与 `SPTPRAC_PWR_CLK_STATUS` 的时钟位**一个都没变**；
+在同一支镜像里加上上游的 boot-slumber 门铃（键 33），门铃之前 `intr=0`、
+门铃之后 `intr=00800000`（`CM3_FAULT`），ACK 位始终不置。四次真机读数合起来
+指向同一条链：**RSC/RPMh 电源控制器不应答 CPU**。
+
+### 34.1 为什么必须先修 R185 的形状
+
+- R185 的键 32 用 `if (fwKey >= 32u)`，而键 31（`>= 31u`）那一段的第一笔就是
+  `HFI_CTRL_INIT = 1u`——R184 已用单变量证明这笔写在「配齐 + 脉冲」之后必然
+  挂死主机。因此键 32 的静默死是**继承来的**，与轨道无关（见 §三十三）。
+- R186 把键 31 收窄为 `if (fwKey == 31u)`，并把轨道步写成
+  `if (fwKey == 32u || fwKey == 33u)`，门铃单独放进 `if (fwKey == 33u)`。
+  这样「轨道写」与「门铃」第一次成为两个可以分开判的键。
+
+### 34.2 判决一：轨道写被接受、不致死、也无效果（DEVICE-VERIFIED）
+
+- 构建：#294 / run `44249842067`（分支 `r186-rail-doorbell`，commit
+  `dbb0704c17b5f1e860889a1b704517f6bb791c39`，tree
+  `faaf7c48777bff0cd932685bf4b2cd526ed6e939`）。
+- 工件：kernel `0b9809f00939d287029478c17fe96a2dc47a8e12343769b542487cda978e29dc`，
+  payload `bb655f4e659973b2ca322b249b6725ac08883aa0ec523b5ea2ca896ead802e1e`；
+  `r186_static.py` PASS（required 29 / forbidden 12 / 固件头两处都在）。
+- rekey `=2 -> =32`：`cf165f1646a5488175b11751ef368d0638766ec93d991f6870ae5f2ec6fc5d8e`。
+- 上机（`r186_s32_device_run.py`，14:44:0x）：`flash readback matches: True`
+  （system_b 头 `b91149ee…` == payload 头）；窗口
+  **`51c46aec9126cccfbf5f8d2e30ee82d6d643d9a0702e5978aeabbd63fd902442`**、
+  boot_id **561345366**（新）、msg_bytes 30336、slots_written 9、write_errors 0。
+- 逐字行：
+
+      gmurail2=gdscr_pre=00222001 gdscr=00222001 sptp_pre=000000d4 sptp=000000d4 sptppolls=400000 intr_pre=00000000 intr=00000000 ok=0
+
+- 解读：五笔写全部落盘（总线没有挂）；`gdscr` 前后**逐位相同**（bit16 GX_ON 仍 0）；
+  `sptp` 前后相同（`0xd4` 的 `&0x38` 是 `0x14`，不等于 `0x28`，轮询耗尽 400000 次）；
+  `intr` 前后都是 0——**轨道写本身不产生 fault**。
+
+### 34.3 判决二：门铃在同一支镜像里制造 `CM3_FAULT`（DEVICE-VERIFIED）
+
+- rekey `=2 -> =33`：`312a3351c69fecb24505e94e7f558692b11cf61781e472a4d403ab3870400b48`。
+- 上机（`r186_s33_device_run.py`，14:45:0x）：readback 同上；窗口
+  **`dab0ae7ceeff0099464dfa513e7f4da9184b44931aabdc744e0cb55deb6e40c0`**、
+  boot_id **569740160**（新）、msg_bytes 30453、slots_written 9、write_errors 0。
+- 逐字两行（同一次启动，门铃之前 / 之后）：
+
+      gmurail2=gdscr_pre=00222001 gdscr=00222001 sptp_pre=000000d4 sptp=000000d4 sptppolls=400000 intr_pre=00000000 intr=00000000 ok=0
+      gmurail3=ack=0 polls=400000 gdscr=00222001 intr=00800000 fwinit=babeface reset=00000000 ok=0
+
+- 解读：`HOST2GMU_INTR_SET = 1<<22` 之后，同一个 CM3 的 `GMU2HOST_INTR_INFO`
+  从 `00000000` 变成 `00800000`（`CM3_FAULT`，bit23），ACK(bit30) 在 400000 次
+  轮询内从未置起；`fwinit=babeface`（固件仍在）、`reset=00000000`（不在复位里）。
+  这是「门铃把 CM3 打成 FAULT 而不是让它应答」的**同启动内对照**，比 R183 的
+  跨轮次推断更强。
+
+### 34.4 四条读数合起来的一条链
+
+| 轮 | 观测 | 读数 |
+|---|---|---|
+| R179/R180 | `RSCC_CONTROL_ACK`（GMU 页 `0x9308`） | 400000 次轮询后仍 `00000000` |
+| R186 键 32 | `SPTPRAC_PWR_CLK_STATUS`（`0x50d0`） | 写 `0x00778000` 后仍 `000000d4` |
+| R186 键 32 | `GPU_CC_GX_GDSCR`（`0x9c03`） | 前后都是 `00222001`，bit16=0 |
+| R186 键 33 | `GMU2HOST_INTR_INFO` 的 OOB ACK | 门铃后是 `00800000`（FAULT），ACK 从不置 |
+
+⇒ 三条独立的电源握手（RSC ack、SPTPRAC 时钟就绪、GX 域上电）**全部无响应**，
+而唯一有响应的是「CM3 收下写并报 fault」。CM3 能跑（`babeface` 是它自己写的），
+说明它靠的是复位后的本地状态，**外部电源控制器（APPS RSC / RPMh）没有对它
+履行任何一条请求**。这与 R182「引导器没灌 cmd-db」不是两件事，而是同一条
+电源路径的两端。
+
+### 34.5 下一步的两个方向（尚未选定）
+
+1. **补齐 APPS RSC 的 TCS 配置**：`package/EnchiladaTouchRpmh.h` 里已有
+   `ftb_rpmh_active_request()` 与 `ftb_rsc_layout_for()` 两套 TCS 写序列
+   （`FTB_RSC_TCS 0xd00u`、`FTB_CONTROL_ACTIVE_MODE (1u<<16)`、
+   `FTB_CONTROL_TRIGGER (1u<<24)`），touch 驱动用它成功对 RPMh 下过请求。
+   这是本仓库里**唯一已经在本机跑通过 RPMh 的代码**。
+2. **绕开 RPMh**：评估是否存在让 GMU 在「无 arc vote」状态下继续的路径
+   （例如把 `GX_VOTE_IDX/MX_VOTE_IDX` 保持为 0 并跳过 RSC 握手），代价是
+   无法保证电压档，属于「能跑但不可靠」的路线。
+
+### 34.6 诚实边界
+
+- 键 32/33 各一次上机；`sptppolls=400000` 是**有界轮询耗尽**，不等于
+  「永远不会有响应」，但已足够说明 400000 次内没有。
+- `gdscr` 的位定义只用仓库钉住的 `AdrenoDomainState.h`（`GX_ON_BIT 16`）；
+  其余位（`00222001` 里的 13/17/21）**不作解读**。
+- 本轮**没有**验证 `HOST2GMU_INTR_SET` 的其他 OOB 位（GPU_SET/DCVS），
+  只验证了上游 `gfx_rail_on()` 实际使用的 boot-slumber 位（22）。

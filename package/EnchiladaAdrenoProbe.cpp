@@ -1873,7 +1873,7 @@ extern "C" void enchilada_adreno_poll(void) {
                                                      stWi, stRi, (sHfiWin != 0u) ? 1 : 0);
                                             IOLog("enchilada-adreno: %s\n", stRow);
                                         }
-                                                                                if (fwKey >= 31u) {
+                                                                                if (fwKey == 31u) {
                                             // ROUND 184: R183 proved the CM3 comes up
                                             // clean with the full pre-start
                                             // configuration and the HFI table already
@@ -1915,111 +1915,92 @@ extern "C" void enchilada_adreno_poll(void) {
                                                      ((hfiNow & 1u) == 1u) ? 1 : 0);
                                             IOLog("enchilada-adreno: %s\n", hfiRow);
                                         }
-                                        if (fwKey >= 32u) {
-                                            // ROUND 185: the one upstream step still
-                                            // missing between the pulse and
-                                            // hfi_start is a6xx_gmu_gfx_rail_on()
-                                            // followed by a6xx_sptprac_enable().
-                                            // R183 left the CM3 running with no fault
-                                            // and R184 showed HFI_CTRL_INIT cannot be
-                                            // written in that state, so this key puts
-                                            // the rail step back in and stops: it
-                                            // reports whether the GX rail actually
-                                            // comes up before anything else touches
-                                            // the HFI block.
+                                        if (fwKey == 32u || fwKey == 33u) {
+                                            // ROUND 186: R185 key 32 inherited the HFI_CTRL_INIT store from key 31,
+                                            // because both used an open-ended ">=" guard -- so its silence carried no
+                                            // information about the rails.  This block is the rail step on its own, with
+                                            // the boot-slumber doorbell deliberately withheld so the two halves can be
+                                            // told apart: a6xx_gmu_gfx_rail_on() (a6xx_gmu.c:409-424) writes
+                                            // BOOT_SLUMBER_OPTION=0, then both arc vote indexes, and only then rings the
+                                            // doorbell; a6xx_sptprac_enable() follows the doorbell.
                                             //
-                                            // The arc vote index is 0 for both rails.
-                                            // Upstream derives it from the RPMh
-                                            // command DB ("gfx.lvl"/"cx.lvl"), which
-                                            // this device does not carry (R182 read
-                                            // both candidates and found no header), so
-                                            // index 0 -- the lowest level in the table
-                                            // -- is the only value that cannot ask for
-                                            // a higher voltage than the table allows.
+                                            // The arc vote index is 0 for both rails: upstream derives it from the RPMh
+                                            // command DB ("gfx.lvl"/"cx.lvl"), which this device does not carry (R182
+                                            // read both candidates and found no header), so index 0 -- the lowest level
+                                            // in the table -- is the only value that cannot ask for a higher voltage
+                                            // than the table allows.
                                             const uint32_t railGdscrPre = rd32(
-                                                sGmuFwVa,
-                                                ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                            const uint32_t railSptpPre = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                            const uint32_t railIntrPre = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            gmuW[ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION] = 0u;
                                             gmuW[ADRENO_GMU_BOOT_V1_GX_VOTE_IDX] = 0u;
                                             gmuW[ADRENO_GMU_BOOT_V1_MX_VOTE_IDX] = 0u;
-                                            __asm__ volatile("dsb sy" ::: "memory");
-                                            // a6xx_gmu_oob_bits[] in a6xx_gmu.c:265-344
-                                            // gives GPU_SET = {set 18, ack 26, clear 26}.
-                                            gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] =
-                                                1u << 18;
-                                            __asm__ volatile("dsb sy" ::: "memory");
-                                            uint32_t railIntr = rd32(
-                                                sGmuFwVa,
-                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
-                                            unsigned railAckPolls = 0u;
-                                            for (; railAckPolls < 400000u; ++railAckPolls) {
-                                                railIntr = rd32(
-                                                    sGmuFwVa,
-                                                    ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
-                                                if ((railIntr & (1u << 26)) != 0u) break;
-                                            }
-                                            gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] =
-                                                1u << 26;
                                             __asm__ volatile("dsb sy" ::: "memory");
                                             gmuW[ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL] =
                                                 ADRENO_GMU_BOOT_V1_SPTPRAC_ON_VALUE;
                                             __asm__ volatile("dsb sy" ::: "memory");
                                             uint32_t railSptp = rd32(
-                                                sGmuFwVa,
-                                                ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
                                             unsigned railSptpPolls = 0u;
                                             for (; railSptpPolls < 400000u; ++railSptpPolls) {
                                                 railSptp = rd32(
-                                                    sGmuFwVa,
-                                                    ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                                    sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
                                                 if ((railSptp & ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_MASK) ==
                                                     ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_PATTERN) break;
                                             }
                                             const uint32_t railGdscr = rd32(
-                                                sGmuFwVa,
-                                                ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
-                                            char rail2Row[288];
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                            const uint32_t railIntr = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            char rail2Row[320];
                                             snprintf(rail2Row, sizeof rail2Row,
-                                                     "gmurail2=gx=0 mx=0 ack=%u polls=%u "
-                                                     "gdscr_pre=%08x gdscr=%08x sptp=%08x "
-                                                     "sptppolls=%u intr=%08x ok=%d",
-                                                     ((railIntr & (1u << 26)) != 0u) ? 1u : 0u,
-                                                     railAckPolls, railGdscrPre, railGdscr,
-                                                     railSptp, railSptpPolls, railIntr,
+                                                     "gmurail2=gdscr_pre=%08x gdscr=%08x sptp_pre=%08x sptp=%08x "
+                                                     "sptppolls=%u intr_pre=%08x intr=%08x ok=%d",
+                                                     railGdscrPre, railGdscr, railSptpPre, railSptp, railSptpPolls,
+                                                     railIntrPre, railIntr,
                                                      ((railGdscr & 0x00010000u) != 0u) ? 1 : 0);
                                             IOLog("enchilada-adreno: %s\n", rail2Row);
-                                        }
-                                        if (fwKey >= 33u) {
-                                            // ROUND 185: only meaningful after key 32 has
-                                            // reported a live GX rail.  Same single store
-                                            // as key 31, now with the rail step in front
-                                            // of it, so a death here means the HFI start
-                                            // needs something beyond the rails.
-                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
-                                            __asm__ volatile("dsb sy" ::: "memory");
-                                            uint32_t hfi3 = rd32(
-                                                sGmuFwVa,
-                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
-                                            unsigned hfi3Polls = 0u;
-                                            for (; hfi3Polls < 400000u; ++hfi3Polls) {
-                                                hfi3 = rd32(
-                                                    sGmuFwVa,
-                                                    ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
-                                                if ((hfi3 & 1u) == 1u) break;
                                             }
-                                            const uint32_t hfi3Intr = rd32(
-                                                sGmuFwVa,
-                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
-                                            const uint32_t hfi3Fw = rd32(
-                                                sGmuFwVa,
-                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
-                                            char hfi3Row[256];
-                                            snprintf(hfi3Row, sizeof hfi3Row,
-                                                     "gmuhfi3=stat=%08x polls=%u intr=%08x "
-                                                     "fwinit=%08x ok=%d",
-                                                     hfi3, hfi3Polls, hfi3Intr, hfi3Fw,
-                                                     ((hfi3 & 1u) == 1u) ? 1 : 0);
-                                            IOLog("enchilada-adreno: %s\n", hfi3Row);
-                                        }
+                                        if (fwKey == 33u) {
+                                            // ROUND 186: key 32 wrote the rails but never rang the doorbell.  This block
+                                            // rings it exactly the way a6xx_gmu_set_oob(GMU_OOB_BOOT_SLUMBER) does on a
+                                            // legacy GMU: HOST2GMU_INTR_SET = bit22 (set), poll GMU2HOST_INTR_INFO bit30
+                                            // (ack), then GMU2HOST_INTR_CLR = bit30 (clear).  R170 rang the same bit on a
+                                            // half-configured CM3 and collected a CM3_FAULT; the question here is whether
+                                            // it behaves differently once the pre-start configuration, the HFI table and
+                                            // the rails are all in place.
+                                            gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] =
+                                                1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t railIntr3 = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            unsigned rail3Polls = 0u;
+                                            for (; rail3Polls < 400000u; ++rail3Polls) {
+                                                railIntr3 = rd32(
+                                                    sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                                if ((railIntr3 & (1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK)) != 0u) break;
+                                            }
+                                            gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] =
+                                                1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_CLEAR;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            const uint32_t rail3Gdscr = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u);
+                                            const uint32_t rail3Fw = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            const uint32_t rail3Reset = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_SYSRESET * 4u);
+                                            char rail3Row[288];
+                                            snprintf(rail3Row, sizeof rail3Row,
+                                                     "gmurail3=ack=%u polls=%u gdscr=%08x intr=%08x fwinit=%08x "
+                                                     "reset=%08x ok=%d",
+                                                     ((railIntr3 & (1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_ACK)) != 0u) ? 1u : 0u,
+                                                     rail3Polls, rail3Gdscr, railIntr3, rail3Fw, rail3Reset,
+                                                     ((rail3Gdscr & 0x00010000u) != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", rail3Row);
+                                            }
 if (fwKey >= 18u && fwKey <= 21u) {
                                             // ROUND 177: R176 showed that alloc, map, table fill
                                             // and the three QTBL registers are all safe, and that the
