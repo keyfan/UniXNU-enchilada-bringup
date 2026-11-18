@@ -1207,7 +1207,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 48u' in _fw,
+    check('fwKey >= 7u && fwKey <= 50u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1672,7 +1672,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 48u)' in code,
+    check('(fwKey >= 7u && fwKey <= 50u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -2615,7 +2615,7 @@ def main():
     check(code.count('if (fwKey == 48u) {') == 1,
           'R201 there is exactly one CX-control block')
     _k48 = (code.split('if (fwKey == 48u) {', 1)[1]
-            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0])
+            .split('if (fwKey == 49u) {', 1)[0])
     check(_k48 != '', 'R201 the block is delimited by the doorbell ladder')
     check('(0x0509106cull - ADRENO_BOARD_GMU_BASE) / 4u' in _k48 and
           '(0x05091070ull - ADRENO_BOARD_GMU_BASE) / 4u' in _k48,
@@ -2636,6 +2636,65 @@ def main():
     _i48 = code.find('if (fwKey == 48u) {')
     check(0 < _i47 < _i48 < _i18,
           'R201 key 48 sits after key 47 and before the doorbell ladder')
+
+    # ---- R202: the HFI start with the queue table withheld ----
+    _i48b = code.find('if (fwKey == 48u) {')
+    _i49 = code.find('if (fwKey == 49u) {')
+    _i18r202 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    _k49 = (code.split('if (fwKey == 49u) {', 1)[1]
+            .split('if (fwKey == 50u) {', 1)[0])
+    check(_k49 != '', 'R202 key 49 sits before the doorbell ladder')
+    check(_k49.count('ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;') == 1,
+          'R202 the queue table address is zeroed exactly once')
+    check(_k49.count('ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 0u;') == 1,
+          'R202 the queue table info word is zeroed exactly once')
+    check(_k49.count('ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1,
+          'R202 the HFI start store is the one write under test')
+    check(_k49.count('gmuW[') == 3,
+          'R202 the block has exactly three writes')
+    check('hzPolls < 400000u' in _k49,
+          'R202 the status wait is bounded')
+    check('(hzStat & 1u) == 1u' in _k49,
+          'R202 success is the status bit coming up')
+    check('"gmuhfi5=qtbl_pre=%08x info_pre=%08x "' in _k49 and
+          '"stat_pre=%08x win=%d"' in _k49,
+          'R202 the pre snapshot row is pinned')
+    check('"gmuhfi6=stat=%08x polls=%u intr=%08x "' in _k49 and
+          '"fwinit=%08x ok=%d"' in _k49,
+          'R202 the outcome row is pinned')
+    check('char hzRowA[320];' in _k49 and 'char hzRowB[320];' in _k49,
+          'R202 the two rows fit their buffers')
+    check('CM3_SYSRESET' not in _k49,
+          'R202 the block never pulses the CM3 reset')
+    check(0 < _i48b < _i49 < _i18r202,
+          'R202 key 49 sits after key 48 and before the doorbell ladder')
+
+    # ---- R203: null table address with the info word live ----
+    _i50 = code.find('if (fwKey == 50u) {')
+    _i18r203 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    _k50 = (code.split('if (fwKey == 50u) {', 1)[1]
+            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0])
+    check(_k50 != '', 'R203 key 50 sits before the doorbell ladder')
+    check(_k50.count('ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;') == 1,
+          'R203 only the table address is zeroed')
+    check(_k50.count('ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;') == 1,
+          'R203 the info word keeps the upstream value of one')
+    check(_k50.count('ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1,
+          'R203 the HFI start store is the one write under test')
+    check(_k50.count('gmuW[') == 3, 'R203 the block has exactly three writes')
+    check('iaPolls < 400000u' in _k50, 'R203 the status wait is bounded')
+    check('(iaStat & 1u) == 1u' in _k50, 'R203 success is the status bit coming up')
+    check('"gmuhfi7=addr_pre=%08x info_pre=%08x "' in _k50 and
+          '"stat_pre=%08x win=%d"' in _k50,
+          'R203 the pre snapshot row is pinned')
+    check('"gmuhfi8=stat=%08x polls=%u intr=%08x "' in _k50 and
+          '"fwinit=%08x ok=%d"' in _k50,
+          'R203 the outcome row is pinned')
+    check('char iaRowA[320];' in _k50 and 'char iaRowB[320];' in _k50,
+          'R203 the two rows fit their buffers')
+    check('CM3_SYSRESET' not in _k50, 'R203 the block never pulses the CM3 reset')
+    check(0 < _i50 < _i18r203,
+          'R203 key 50 sits after key 49 and before the doorbell ladder')
 
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the

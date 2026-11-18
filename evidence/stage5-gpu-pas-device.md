@@ -2859,3 +2859,134 @@ CI #309 / #310 / #311 三次都在 `Build kernel` 之前被取消：`job build c
 `runner = ''`、`steps = 0`，而 #303–#308 全是 `runner = 'GitHub Actions 10000003xx'`、
 `steps = 28`、`success`。仓库侧 `actions/permissions` 正常、GitHub 状态页 `All Systems Operational`。
 ⇒ 这是 runner 分配侧的偶发故障，与本轮代码无关；#312 起恢复正常，重新编译。
+## 五十、ROUND 202：把队列表拿掉之后，那笔致死写就活了
+
+### 50.1 为什么做这一轮
+
+R177 与 R184 都见过同一件事：CM3 刚起来、配置干净的时候，只要写一笔
+`HFI_CTRL_INIT = 1`，整台机器就静默（内核死在日志 writer 打开之前，窗口逐字节不变）。
+R178 则发现同样是这笔写，如果先做一次 boot-slumber 门铃把 CM3 打成 FAULT，它就不致死。
+
+那几轮里队列表一直是发布着的（R176 已证明 alloc / map / 填表 / 三笔 QTBL 寄存器都安全），
+所以 `HFI_CTRL_INIT` 之后固件会去读 `QTBL_ADDR` 指向的那张表，而「读那张表」这一步从未被单独隔离过。
+键 49 就是把它隔离出来：先把 `QTBL_ADDR` 与 `QTBL_INFO` 两个都清零，再写 `HFI_CTRL_INIT`。
+
+### 50.2 判决（DEVICE-VERIFIED）
+
+CI #313（run `44405803206`，分支 `r202-hfi-no-qtbl`，commit `913e27db`）→
+kernel `a830e8b9f88b58e1ec646e8352eb7be5573329f650f83f892c419c8b3591e375`（126,197,760 B）、
+payload `06228f1d75f8122398c9b631b74a633ccb9854af5eaf477017689994b18f78d8`。
+`r202_static.py` PASS（required 43 / forbidden 12 / 固件 32,768 B 头在 kernel 与 payload 均 True）。
+rekey `enchilada-pas-exec=2 -> =49` → `d69172bc35f15c9196597ac97f8be570081549d83f698d89c571fda2c311047b`。
+
+上机（06:24，boot_id 590898803 / NEW LOG）：
+`flash readback matches: True`（system_b 头 8 MiB `7af4b113…` == payload 头）；
+窗口 33,554,432 B sha256 `8c35b1a5341b6a9ae21915e3095e4ee8bb1237095f4f1cccaac9e07c95256bd5`；
+msg_bytes 30379、slots_written 9、uptime_s 4、`write_errors=0`。
+
+两行逐字：
+
+```
+gmuhfi5=qtbl_pre=ad940000 info_pre=00000001 stat_pre=00000000 win=1
+gmuhfi6=stat=00000000 polls=400000 intr=00000000 fwinit=babeface ok=0
+```
+
+### 50.3 解读
+
+1. 存活。同一笔 `HFI_CTRL_INIT` 写在「表指针指着一张真表」时打死内核（R177/R184），
+   写在「表指针为零」时无害。所以死因不在写这个寄存器本身，而在固件去取那张表。
+2. `gmuhfi5=` 里的 `qtbl_pre=ad940000` 与 `gmuhfi=` 那三行里的 `addr=ad940000` 一致，
+   `info_pre=00000001` 与 R186 起一直写进去的值一致，说明清零前的状态就是我们自己刚写的那份。
+3. `stat=00000000`（400000 次轮询内 bit0 从未置起）、`intr=00000000`、`fwinit=babeface`
+   说明 CM3 活着，但 HFI 没有起来。这与「把指针清空固件就不启动 HFI」完全自洽。
+
+### 50.4 诚实边界
+
+我同时改了两个字：`QTBL_ADDR` 和 `QTBL_INFO`。所以「存活」有两种解释：
+
+- A：固件照常尝试启动 HFI，去取一张空表，取到 0 但没有崩，说明我们的表确实有问题；
+- B：`QTBL_INFO=0` 本身就是「不要启动 HFI」的信号，固件直接跳过取表，那么这一轮根本没测到取表。
+
+这两种解释在数据上无法区分，所以 R203（键 50）做单变量：只清地址、把 INFO 保持在上游值 1。
+若那时仍存活，A 成立；若那时致死，则 B 成立、本轮的正面结论作废。
+
+另一处边界：`ok=0` 只说明「状态位没起来」，并不说明固件对空表做了什么，固件内部的失败路径本轮不可观测。
+
+### 50.5 下一步
+
+- R203（键 50）：`QTBL_ADDR=0`、`QTBL_INFO=1`、写 `HFI_CTRL_INIT`，读回 `gmuhfi7/8=`。
+- 若 A 成立，把注意力放到表本身：地址（`ad940000` 是 `armcpu_dma_alloc_writable` 给的低 4 GiB
+  物理页）、几何（`AdrenoHfiV1.h` 的两队列 / 12 KiB 共享区）、以及 GMU 从 SID 4/5 看这块内存的
+  视角（`sCR0=0x00200626` 显示 SMMU 未使能，理论上应是恒等映射，但这一点从未在真机上单独验证过）。
+
+## 五十一、ROUND 203：把地址清掉、把启动请求留着 —— 静默死，R202 的结论被判为 B
+
+### 51.1 为什么做这一轮
+
+R202（键 49）同时清零 `HFI_QTBL_ADDR` 与 `HFI_QTBL_INFO` 之后写 `HFI_CTRL_INIT`，机器存活。
+但那一轮改了两个字，因此有两种解释：
+
+- **A**：固件照常启动 HFI、去取一张空表，取到 0 却没崩，说明致死的是「我们那张表」；
+- **B**：`QTBL_INFO=0` 本身就是「不要启动 HFI」的信号，固件跳过取表，那么 R202 根本没测到取表。
+
+键 50 就是单变量：**只清地址，`QTBL_INFO` 保持上游值 1**，让启动请求仍然发出，只是指向空表。
+
+### 51.2 判决（DEVICE-VERIFIED）：静默死
+
+CI #314（run `44411496388`，分支 `r203-hfi-null-addr`，commit `b7523102`）→
+kernel `ab47e61cc3de5061c16d2bb601cad8fd2f2843e66438f3208ed66061a18b8351`（126,197,760 B）、
+payload `d9abb4c3da7e0988408a9c70b7af40a0a0223841bddf2acdb5a2a0db45ab3d96`。
+`r203_static.py` PASS（required 43 / forbidden 12 / 固件 32,768 B 头在 kernel 与 payload 均 True）。
+rekey `enchilada-pas-exec=2 -> =50` → `e6fdaf808a7f9ec4f4eb8b105613effb9402873e036ffb1a64531e83a92b7325`。
+
+上机（06:43:56 起，门禁 3/3 PASS、flash OK、`boot sent ok=True`）：
+`flash readback matches: True`（system_b 头 8 MiB 与 payload 头同为 `b245b1a68d520f6ae5b29f35c843050036c42d42aeeeeddcd806b60577d795a5`）
+⇒ 镜像确实是本轮的，不是上一次的残留。
+
+窗口 33,554,432 B sha256 仍是 **`8c35b1a5…`**、**boot_id 仍是 590898803（= R202 那次）**、
+msg_bytes 30379、slots_written 9、`write_errors=0`；本轮该写的 `gmuhfi7=`/`gmuhfi8=` 计数都是 **0**。
+窗口里能读到的 `gmuhfi5=`/`gmuhfi6=` 两行是 R202 那次留下的旧内容。
+
+⇒ **键 50 静默死**：内核死在日志 writer 打开窗口之前，零字节。判据与 R177/R184 完全一致。
+
+### 51.3 解读：R202 的存活是 B，不是 A
+
+三次单变量并排：
+
+| 键 | `QTBL_ADDR` | `QTBL_INFO` | `HFI_CTRL_INIT=1` 之后 |
+|----|-------------|-------------|------------------------|
+| 17/31（R176/R184） | 真表 `ad940000` | 1 | 静默死 |
+| 49（R202） | **0** | **0** | **存活**（`gmuhfi6=stat=0`） |
+| 50（R203） | **0** | **1** | **静默死** |
+
+- 地址从「真表」换成「空」并不能救活（键 50 与键 17/31 一样死），
+  所以**致死因子不是我们那张表的内容或几何**；
+- 唯一让写变安全的是 `QTBL_INFO=0`，即**把启动请求本身关掉**；
+- 结论：**只要固件真的被要求启动 HFI，这笔写就必然静默打死主机，与本机给它的表无关**。
+  R202 §50.4 里的解释 A 作废，B 成立。
+
+这也重新解释了 R178 的旧观察：先做一次 boot-slumber 门铃把 CM3 打成 FAULT 之后，同一笔写就不致死——
+那次「无害」同样是因为 CM3 已经不在正常状态去执行 HFI 启动，而不是因为握手提供了什么前提。
+
+### 51.4 诚实边界
+
+- 本轮只证明「INFO=1 + HFI start」必死；**没有**定位死在固件内部哪一步
+  （取表？建队列？发第一条 HFI 消息？），因为内核在能写日志之前就没了。
+- 「空地址」在 GMU 视角可能立即触发一次总线错误、也可能被固件当作合法值继续走，
+  这两种情况从主机侧不可区分；本轮不据此推断固件读了 0 地址。
+- 仍未验证：把 `HFI_CTRL_INIT` 换成「先配 `CP_MSG` 日志页再启动」是否能改变结局——
+  那是 R171 就刻意跳过的两笔（`QTBL_ADDR`/`CP_MSG` 需要 GMU IOMMU 视角的 IOVA），本轮仍未碰。
+
+### 51.5 下一步（方向变更）
+
+HFI 这条路现在的形状是：**配置全部合法、CM3 活着、但一要求启动 HFI 主机就死**。
+在下一次盲目重试之前，值得先把问题从「让 HFI 起来」换成「谁在 HFI 启动时访问了什么」：
+
+- 选项一：查上游 `a6xx_gmu_hfi_start()` 之后固件第一条 HFI 消息的目标（`HFI_SFR_ADDR` 的
+  chipid 值 `0x06030100` 是否与这颗芯片真的匹配——本轮之前一直是我们按上游公式算的，
+  从未与真机侧任何读数对照过）；
+- 选项二：暂时放弃 HFI，回到 GX 域的电源门控问题（R201 已把「CX 能完成、GX 不能完成」
+  钉死在同一颗芯片的同一次启动里）；
+- 选项三：接受「本 CPU 供不出 GX 上电」这一结论，转去做不依赖 GX 域的部分
+  （微码 / CP 环 / seam 骨架的 host 侧推进），把真机验证留到有新信息时。
+

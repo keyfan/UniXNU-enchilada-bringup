@@ -1504,7 +1504,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 48u);
+                            (fwKey >= 7u && fwKey <= 50u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             // ROUND 175: the HFI shared region and the uncached window over it.
@@ -3279,6 +3279,113 @@ if (fwKey == 47u) {
                                                      gyGdPre, gyGd, gyCfg, rd32(sGmuFwVa, gyClampWord * 4u),
                                                      (gyCfg & 0x00010000u) != 0u, gyPolls);
                                             IOLog("enchilada-adreno: %s\n", gyRowB);
+                                        }
+if (fwKey == 49u) {
+                                            // ROUND 202: R177 and R184 both died on the bare
+                                            // HFI_CTRL_INIT store while the CM3 was clean, and R178
+                                            // survived the same store only after a doorbell had
+                                            // already faulted the CM3.  Upstream always publishes
+                                            // the queue table before that store, so the untested
+                                            // variable is whether the firmware dies while fetching
+                                            // the table the pointer names.  Zero both words, then
+                                            // store INIT and read back.
+                                            const uint32_t hzQtblPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u);
+                                            const uint32_t hzInfoPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u);
+                                            const uint32_t hzStatPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            char hzRowA[320];
+                                            snprintf(hzRowA, sizeof hzRowA,
+                                                     "gmuhfi5=qtbl_pre=%08x info_pre=%08x "
+                                                     "stat_pre=%08x win=%d",
+                                                     hzQtblPre, hzInfoPre, hzStatPre,
+                                                     (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", hzRowA);
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 0u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t hzStat = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            unsigned hzPolls = 0u;
+                                            for (; hzPolls < 400000u; ++hzPolls) {
+                                                hzStat = rd32(
+                                                    sGmuFwVa,
+                                                    ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                if ((hzStat & 1u) == 1u) break;
+                                            }
+                                            const uint32_t hzIntr = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            const uint32_t hzFw = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            char hzRowB[320];
+                                            snprintf(hzRowB, sizeof hzRowB,
+                                                     "gmuhfi6=stat=%08x polls=%u intr=%08x "
+                                                     "fwinit=%08x ok=%d",
+                                                     hzStat, hzPolls, hzIntr, hzFw,
+                                                     ((hzStat & 1u) == 1u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", hzRowB);
+                                        }
+if (fwKey == 50u) {
+                                            // ROUND 203: R202 zeroed both QTBL_ADDR and
+                                            // QTBL_INFO and survived a store that kills the
+                                            // machine when the real table is published.  The
+                                            // confound is that INFO=0 may mean "do not start
+                                            // HFI" rather than "start with no table".  Keep
+                                            // INFO at the upstream value and zero only the
+                                            // address, so the fetch is still requested.
+                                            const uint32_t iaAddrPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u);
+                                            const uint32_t iaInfoPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u);
+                                            const uint32_t iaStatPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            char iaRowA[320];
+                                            snprintf(iaRowA, sizeof iaRowA,
+                                                     "gmuhfi7=addr_pre=%08x info_pre=%08x "
+                                                     "stat_pre=%08x win=%d",
+                                                     iaAddrPre, iaInfoPre, iaStatPre,
+                                                     (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", iaRowA);
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t iaStat = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            unsigned iaPolls = 0u;
+                                            for (; iaPolls < 400000u; ++iaPolls) {
+                                                iaStat = rd32(
+                                                    sGmuFwVa,
+                                                    ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                if ((iaStat & 1u) == 1u) break;
+                                            }
+                                            const uint32_t iaIntr = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            const uint32_t iaFw = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            char iaRowB[320];
+                                            snprintf(iaRowB, sizeof iaRowB,
+                                                     "gmuhfi8=stat=%08x polls=%u intr=%08x "
+                                                     "fwinit=%08x ok=%d",
+                                                     iaStat, iaPolls, iaIntr, iaFw,
+                                                     ((iaStat & 1u) == 1u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", iaRowB);
                                         }
 if (fwKey >= 18u && fwKey <= 21u) {
                                             // ROUND 177: R176 showed that alloc, map, table fill
