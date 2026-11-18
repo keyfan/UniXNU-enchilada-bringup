@@ -327,7 +327,7 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 68,
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 122,
               'R168+R170+R171+R175+R178+R181+R186 the pointer writes are exactly '
               'the ITCM loop, the pulse words, the three handshake words, the '
               'nine pre-start configuration words, the four HFI words (QTBL_ADDR, '
@@ -349,7 +349,14 @@ def main():
               'microcode words that RSCC_SEQ_MEM_0_DRV0 receives, and the '
               'request-up/request-down pair. That last pair is the SAME two '
               'stores keys 24/25 and 28 already use, so the budget counts '
-              'them once per source site rather than once per behaviour')
+              'them once per source site rather than once per behaviour; '
+              'and the R199 GDSC key adds four more through the same mapping: '
+              'the AON reset assert and its deassert on the clamp word, the '
+              'clamp-IO deassert, and the SW_COLLAPSE clear on the GX GDSCR; '
+              'and the R200 repeat adds the same four once more, because that '
+              'key runs with the CM3 alive and the budget counts source sites; '
+              'and the R201 measurement adds the same four a third time, since '
+              'it repeats the sequence to time it against a CX control')
         check('volatile uint32_t *const gmuW' in text,
               'R168 every one of those writes goes through a volatile mapping')
 

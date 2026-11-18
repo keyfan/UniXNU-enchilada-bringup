@@ -2662,3 +2662,200 @@ GX 轨道与 SPTPRAC 时钟都不动。** 而 CPU 侧的 APPS RSC 通道（`0x17
   **没有**核对下游头文件里 `CMD_ENABLE_BANK` 的位定义。
 - `PDC 已被配置` 与 `PDC 工作正常` 是两件事：本轮只证明表里有东西，
   没有证明 PDC 真的在跑。
+
+## 四十四、ROUND 196：把 RSC 的两个方向都问一遍 —— 停方向应答，起方向不完成
+
+### 44.1 为什么要分方向
+R179 到 R195 一直在问同一个问题（`RSCC_CONTROL_REQ = 2` 之后 `RSCC_CONTROL_ACK` 的 bit1 为什么
+从不置起），但只问了一个方向。上游 `a6xx_gmu.c` 里对这颗 RSC 有**两条**握手：
+
+* `a6xx_rpmh_start()`（`:480`）：`REQ = BIT(1)`，等 `GMU_RSCC_CONTROL_ACK` 的 bit1，再等
+  `RSCC_SEQ_BUSY_DRV0 == 0`，最后 `REQ = 0`；
+* `a6xx_rpmh_stop()`（`:507`）：`REQ = 1`，等 `GPU_RSCC_RSC_STATUS0_DRV0` 的 bit16，最后 `REQ = 0`。
+
+如果两个方向都不应答，「这颗 CPU 碰不到 GMU 侧 RSC」是一条硬结论；如果只有停方向应答，
+那就说明控制器服务我们，是起方向缺一个具体前提。这轮把两个方向都做。
+
+### 44.2 键 43 做了什么
+先重复 R193 的十六笔（十一个 RSC 设置字 + 五个定序器微码字），读回 `stLoaded`，然后：
+
+1. 停方向：`REQ = 1u` → 有界轮询 `(stDown & 0x00010000u) != 0u` → `REQ = 0u`；
+2. 起方向：`REQ = 2u` → 有界轮询 `(stUpAck & 2u) != 0u` → 有界轮询 `RSCC_SEQ_BUSY_DRV0 == 0`
+   → `REQ = 0u`；
+3. 收尾读 `gdscr` / `sptp` / `fwinit` / `intr`。
+
+所有 RSC 写都走 `gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + <offset>]`。
+
+### 44.3 设备判决（CI #304 / run 44309515638，boot_id 603749984）
+```
+gmust1=dir=down req1 st0=01010006 bit16=1 polls=3
+gmust2=dir=up req2 ack=00000001 bit1=0 polls=400000 busy=00000001 bpolls=400000
+gmust3=loaded=1 gdscr=00222001 sptp=000000d4 fwinit=babeface intr=00000000
+```
+
+### 44.4 三条结论
+1. **停方向三次轮询就应答**。R193 之后该位是 0，这次是 `REQ = 1` 之后才置起，不是残留。
+   所以「非安全 CPU 被 GMU 侧 RSC 完全拒绝」这条假设**被真机否掉**。
+2. 起方向不应答，但 `ACK` 的 **bit0** 从 `0` 变成 `1` —— 这个位在 R193 里从未出现过。
+   同时 `SEQ_BUSY_DRV0 = 1` 卡在整个有界等待里。
+3. 轨道完全不动：`gdscr = 00222001`（bit16 = 0）、`sptp = 0xd4`（`& 0x38 = 0x14`，不是 `0x28`）。
+
+### 44.5 诚实边界
+* 400000 次有界轮询只能说明「在这个窗口内没完成」，不等于「永远不完成」；R201 把窗口放大十倍
+  是为了正面处理这一点。
+* `ACK` 的 bit0 与 bit1 分别代表什么，上游代码没有用到 bit0，本轮不对它作语义推断。
+
+## 四十五、ROUND 197：三相位快照 —— 请求根本没落到命令表
+
+### 45.1 为什么要三相位
+R196 只给了两个时间点的读数，无法区分「停方向正常、起方向卡住」与「任何 REQ 之后定序器都不收尾」。
+这轮在三个时刻各拍一次完整快照：写之前（`pre`）、停方向之后（`stop`）、起方向之后（`start`），
+每次都读九个字：`st0` / `ack` / `busy` / 四个 TCS 状态字（`0x0346 / 0x03ee / 0x0496 / 0x053e`）。
+
+### 45.2 设备判决（CI #305 / run 44323014940，boot_id 591058325）
+```
+gmusq1=pre   st0=01000000 ack=00000000 busy=00000000 tcs=00000001/00000001/00000001/00000001
+gmusq2=stop  st0=01010006 ack=00000001 busy=00000001 tcs=00000001/00000001/00000001/00000001
+gmusq3=start st0=0101000a ack=00000001 busy=00000001 tcs=00000001/00000001/00000001/00000001
+gmusq4=ao=00000000 fence=00000000 intr=00000000 gdscr=00222001 sptp=000000d4 fwinit=babeface
+```
+
+### 45.3 判决
+1. `SEQ_BUSY_DRV0` 在**停方向就已经置 1 且再不回 0** ⇒ busy = 1 不是「起方向卡住」的特征，
+   而是「任何 REQ 之后定序器都不收尾」。这一条更正了 R196 的读法。
+2. 四个 TCS 状态字在三个快照里**逐位相同**（全 1）⇒ 请求根本没有落到任何一张命令表，
+   卡在更前面的地方。
+3. AO 中断（`0x9305`）、AHB fence（`0x9313`）、`GMU2HOST_INTR_INFO` 全 0 ⇒ 控制器不报错，
+   只是不复位。
+
+⇒ GMU 侧 RSC 的应答位能置起，但定序器永远不完成；arc vote 到不了 RPMh，GX 轨道恒 `00222001`。
+剩下的唯一现实选择是绕开它：用 CPU 侧 APPS RSC 代投。
+
+## 四十六、ROUND 198：用 CPU 侧 APPS RSC 代投轨道 —— 投票通了，电源域没开
+
+### 46.1 为什么这条路值得走
+触摸驱动在本机成功投过 RPMh 命令（`RAIL rc0 db85fe0000 w85fe0000 tcs0 drv00010100
+a00042100 ctl00000000 st00000001 n36`），而 R187/R188/R191 又把命令数据库的全套几何钉住了：
+
+* 数据库基址 `0x85fe0000`（`magic 0x0c0330db` 在 `+4`）；
+* `gfx.lvl` 在 `0x00030050`、`cx.lvl` 在 `0x00030000`，长度各 32 字节（16 个 u16 电平）；
+* APPS RSC 窗口 `0x179e0000`、`drv = 0x00010100`（major 1 ⇒ legacy 偏移组）、`tcs_stride = 672`、
+  四个 TCS 全空闲。
+
+### 46.2 键 45 做了什么
+可写映射 `0x179e0000`，只读映射 `0x85fe0000`，用 `quiet_cmd_db_levels` 取两张表的最高电平与
+首次下标，然后按上游 `a6xx_gmu_rpmh_arc_votes_init()` 的公式算 vote，再按
+`ftb_rpmh_active_request()` 的写序把两条命令投出去：
+
+`ctl = 0` → `irq_clear = 1 << tcs` → cmd0（`msgid 0x00010108`、`addr = gfx.lvl 地址`、
+`data = gfx 最高电平`）→ cmd1（同形，`cx.lvl`）→ `wait = 3` → `en = 3` →
+`ctl = 0x00010000` → `ctl = 0x01010000`（ACTIVE | TRIGGER）→ 有界轮询 `status` bit0。
+
+写全部走新指针 `rscW[...]`，这是探针里第三个钉住的写例外（前两个是 R167 的 `*cfg` 与 R168 的 `gmuW`）。
+
+### 46.3 设备判决（CI #306 / run 44331132291，boot_id 585362561）
+```
+gmurail4=rsc=fffffffa49d2a000 drv=00010100 tcs=0 gfx_n=10 cx_n=8 gfx_a=00030050 cx_a=00030000
+gmurail5=gfx_top=01a0 cx_top=0180 gfx_at=9 cx_at=7 en=00000003 ctl=01010000 st=00000001 polls=1
+gmurail6=gdscr=00222001 cxst=80001fe0 gxst=00088400 sptp=000000d4 fwinit=babeface
+```
+
+### 46.4 判决
+1. **CPU 侧 APPS RSC 通了**：`tcs = 0`、两条命令都写进去、`ctl = 01010000`、`st = 00000001`
+   且 **`polls = 1`** —— 一次轮询就完成。这与 GMU 侧「永远 busy、永不收尾」在同一颗芯片上
+   构成干净对照。
+2. 投票值正确（`gfx_top = 01a0`、`cx_top = 0180`，来自数据库）。
+3. **GX 仍然关着**：`gdscr = 00222001`（bit16 = 0）、`gxst = 00088400`（bit15 = 1，GX_OFF）、
+   `cxst = 80001fe0`（这是更早的 stage 5 我们自己上电的 CX）。
+
+⇒ RPMh 收下并执行了 gfx 轨道的电平投票，但**投票不等于打开 GX 电源域**。主线上
+`gdsc_gx_do_nothing_enable()` 是空实现，正因为 GX 预期由 GMU 固件打开。剩下的唯一杠杆是直接写
+GPUCC 的 GX GDSC。
+
+## 四十七、ROUND 199：直接写 GX GDSC —— 四笔全生效，完成位不置
+
+### 47.1 上游的 GX GDSC 事实
+`.cache/adreno-a630-source/drivers/clk/qcom/gpucc-sdm845.c`：
+
+```c
+static struct gdsc gpu_gx_gdsc = {
+    .gdscr = 0x100c,
+    .clamp_io_ctrl = 0x1508,
+    .pd = { .name = "gpu_gx_gdsc", .power_on = gdsc_gx_do_nothing_enable },
+    .pwrsts = PWRSTS_OFF_ON,
+    .flags = CLAMP_IO | AON_RESET | POLL_CFGDSCR,
+};
+```
+
+`gdsc.c` 的位定义：`PWR_ON_MASK BIT(31)`、`SW_COLLAPSE_MASK BIT(0)`、
+`GMEM_CLAMP_IO_MASK BIT(0)`、`GMEM_RESET_MASK BIT(4)`、`GDSC_POWER_UP_COMPLETE BIT(16)`、
+`CFG_GDSCR_OFFSET 0x4`。`gdsc_enable()` 对带 `CLAMP_IO | AON_RESET` 的域，顺序是
+「assert reset（`clamp |= BIT(4)`，延时，`&= ~BIT(4)`）→ 解 clamp（`&= ~BIT(0)`）→
+清 `SW_COLLAPSE`」→ 轮询 `gdscr + 4` 的 bit16。
+
+地址换算：GPUCC 块起点 = GMU 映射基址 + `0x26000`，于是 `0x0509100c` 正好等于
+`gmuW[ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR]`（`0x9c03 * 4 = 0x2700c`）。`CFG_GDSCR` 用 `+1u`，
+clamp 用 `(0x05091508 - GMU_BASE) / 4`，CX 状态用 `(0x05091540 - GMU_BASE) / 4`。
+**不需要新映射、不需要新写入口。**
+
+### 47.2 设备判决（CI #307 / run 44346484706，boot_id 587430090）
+```
+gmugx2=vote_a=00030050 vote_top=01a0 tcs=0 st=00000001 en=00000001 polls=1
+gmugx3=pre_gdscr=00222001 pre_cfg=00088400 pre_clamp=00000001 pre_cx=80001fe0
+gmugx4=gdscr=08222000 cfg=01080400 clamp=00000000 cx=80001fe0 gx_on=0 polls=20000
+```
+
+### 47.3 判决
+1. 轨道投票仍然一次完成（`polls = 1`）。
+2. `pre_cfg = 00088400` ⇒ CFG 的字在写之前不是 0（bit16 = 0、bit15 = 1，域是关的）。
+3. 四笔 GDSC 写**全部生效**：clamp `1 -> 0`、`GDSCR 00222001 -> 08222000`
+   （bit0 `SW_COLLAPSE` 已清、bit31 `PWR_ON` 已置）。
+4. **但 `CFG_GDSCR` 在 20000 次有界轮询里 bit16（`POWER_UP_COMPLETE`）始终为 0，
+   `gx_on = 0`。**
+
+### 47.4 诚实边界
+`0x01080400` 的其余位（bit10 / bit18 / bit19）本轮不作解读：它们可能包含厂商固件留下的
+保留位，没有钉住的位定义就不猜。
+
+## 四十八、ROUND 200：CM3 活着时重跑同一序列 —— 逐位相同
+
+### 48.1 为什么再跑一次
+R199 的键 46 走的是自己的路径，那个路径里 CM3 并没有按键 30 的方式被完整配好并放出来。
+最自然的解释是「GX 的上电完成信号需要 GMU 在跑」。这轮把键 46 的四笔 GDSC 原样搬到
+**键 30 的完整预启动之后**（也就是 R183 已经证明能让 CM3 干净运行的那套），再跑一遍。
+
+### 48.2 设备判决（CI #308 / run 44355632757，boot_id 586859198）
+```
+gmugx5=vote_a=00030050 vote_top=01a0 tcs=0 st=00000001 en=00000001 polls=1
+gmugx6=pre_gdscr=00222001 pre_cfg=00088400 pre_clamp=00000001 pre_cx=80001fe0
+gmugx7=gdscr=08222000 cfg=01080400 clamp=00000000 cx=80001fe0 gx_on=0 polls=20000
+```
+
+### 48.3 判决
+三行**与 R199 逐位相同**。同窗的 `gmustat=intr=00000000 fwinit=babeface` 说明这一轮 CM3
+确实起来了（`babeface` 是 CM3 自己写的），所以「CM3 没启动」这个前提被排除，而结果没变：
+GDSC 序列生效、完成位不置。
+
+## 四十九、ROUND 201：CX 对照 + 十倍窗口
+
+### 49.1 设计
+这轮要回答的是「GX 是慢，还是根本不会完成」。两条读数：
+
+1. **CX 对照**：stage 5 在这台机器上成功把 CX 从 `00005ff4` 抬到 `80001fe0`，说明 GDSC 机制本身
+   在本机是工作的。读 CX 的 GDSCR / CFG 与 `cx_bit16`，看同一套完成位在 CX 上是否置起。
+2. **十倍窗口**：把 GX 的完成位轮询从 20000 放大到 200000。
+
+### 49.2 键 48 的形状
+先只读 CX 的 `cx_gdscr`（`0x0509106c`）与 `cx_cfg`（`0x05091070`），打 `gmugx8=`；然后重做
+AON 脉冲 / 清 clamp / 清 `SW_COLLAPSE`，用 200000 的上界等 bit16，打 `gmugx9=`。
+
+### 49.3 预期判读（事前钉住）
+* `gx_on = 1` ⇒ 只是慢，R199/R200 的界太短；
+* `cx_bit16 = 1` 且 `gx_on = 0` ⇒ CX 在同一启动里报完成而 GX 不报，GX 确由本 CPU 供不出的东西门控；
+* `cx_bit16 = 0` ⇒ 这个完成位不能当判据，本轮前提要重审。
+
+### 49.4 构建侧记录（诚实）
+CI #309 / #310 / #311 三次都在 `Build kernel` 之前被取消：`job build completed [cancelled]`、
+`runner = ''`、`steps = 0`，而 #303–#308 全是 `runner = 'GitHub Actions 10000003xx'`、
+`steps = 28`、`success`。仓库侧 `actions/permissions` 正常、GitHub 状态页 `All Systems Operational`。
+⇒ 这是 runner 分配侧的偶发故障，与本轮代码无关；#312 起恢复正常，重新编译。

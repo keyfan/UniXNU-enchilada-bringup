@@ -131,10 +131,28 @@ def main():
     # and the block is then asserted POSITIVELY to hold exactly the pinned writes.
     _outside = code.replace(_rw167, '') if _rw167 else code
     _outside = re.sub(r'gmuW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
+    # ROUND 198 is the third pinned exception: the CPU-side APPS RSC
+    # request, whose stores all go through `rscW[...]`.
+    _outside = re.sub(r'rscW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
+    # ROUND 199 drives the GX GDSC through `gxW[...]`; same treatment.
+    _outside = re.sub(r'gxW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey >= 7u && fwKey <= 42u' in code and
+          'fwKey >= 7u && fwKey <= 48u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
+    check('if (fwKey == 45u) {' in code and
+          code.count('rscW[') >= 10 and
+          'armcpu_map_physical_rw(0x00000000179e0000ULL, 0x00010000u)' in code,
+          'R198 the APPS RSC request is a third pinned write exception (key 45)')
+    check('if (fwKey == 46u) {' in code and
+          code.count('gxW[') >= 10,
+          'R199 the GX GDSC sequence is a fourth pinned write exception (key 46)')
+    check('if (fwKey == 47u) {' in code and
+          "vote_a=%08x vote_top=%04x tcs=%u st=%08x en=%08x polls=%u" in code,
+          'R200 the same GDSC sequence is repeated with the CM3 alive (key 47)')
+    check('if (fwKey == 48u) {' in code and
+          'gyPolls < 200000u' in code,
+          'R201 the GX completion is re-measured against a CX control (key 48)')
     _k8 = (code.split('if (fwKey >= 8u) {', 1)[1]
            if 'if (fwKey >= 8u) {' in code else '')
     check(_k8 != '' and

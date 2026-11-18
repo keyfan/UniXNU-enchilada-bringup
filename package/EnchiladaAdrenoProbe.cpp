@@ -1504,7 +1504,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 42u);
+                            (fwKey >= 7u && fwKey <= 48u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             // ROUND 175: the HFI shared region and the uncached window over it.
@@ -2676,6 +2676,610 @@ extern "C" void enchilada_adreno_poll(void) {
                                                     IOLog("enchilada-adreno: %s\n", pcRowF);
                                                 }
                                             }
+                                        if (fwKey == 43u) {
+                                            // ROUND 196: ask the RSC for a power-DOWN as well as a power-up.
+                                            // R193 loaded the sequencer microcode (it read back word for word) and
+                                            // then replayed a6xx_rpmh_start(): REQ=2 armed, RSCC_CONTROL_ACK bit 1
+                                            // never set in 400000 polls.  One direction is silent.  Upstream has a
+                                            // second direction, a6xx_rpmh_stop() (:507-520), which writes REQ=1 and
+                                            // waits on GPU_RSCC_RSC_STATUS0_DRV0 bit 16 instead -- a different
+                                            // register, a different bit, the same controller.  This key loads the
+                                            // microcode once more and then asks BOTH directions in one boot, so
+                                            // "the controller ignores this CPU" and "the start path is missing one
+                                            // precondition" stop looking alike.  No GMU start, no HFI, no pulse.
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0] =
+                                                0x01000000u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_SLAVE_ID_DRV0] =
+                                                1u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_DATA] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_ADDR] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_DATA + 2u] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_ADDR + 2u] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_DATA + 4u] =
+                                                0x80000000u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_ADDR + 4u] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_OVERRIDE_START_ADDR] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_SEQ_START_ADDR] =
+                                                ADRENO_GMU_BOOT_V1_PDC_SEQ_START_VALUE;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_MATCH_VALUE_LO] =
+                                                ADRENO_GMU_BOOT_V1_PDC_MATCH_LO_VALUE;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_MATCH_VALUE_HI] =
+                                                ADRENO_GMU_BOOT_V1_PDC_MATCH_HI_VALUE;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0] =
+                                                0xa7a506a0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 1u] =
+                                                0xa1e6a6e7u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 2u] =
+                                                0xa2e081e1u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 3u] =
+                                                0xe9a982e2u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 4u] =
+                                                0x0020e8a8u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            const uint32_t stPost0 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 * 4u);
+                                            const uint32_t stPost4 = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                (ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 4u) * 4u);
+                                            const bool stLoaded = (stPost0 == 0xa7a506a0u) && (stPost4 == 0x0020e8a8u);
+                                            // ---- direction 1: a6xx_rpmh_stop() (:507-520), REQ=1 ----------------
+                                            gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t stDown = 0u;
+                                            unsigned stDownPolls = 0u;
+                                            for (; stDownPolls < 400000u; ++stDownPolls) {
+                                                stDown = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                       ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0 * 4u);
+                                                if ((stDown & 0x00010000u) != 0u) break;
+                                            }
+                                            gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 0u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            char stRowA[320];
+                                            snprintf(stRowA, sizeof stRowA,
+                                                     "gmust1=dir=down req1 st0=%08x bit16=%d polls=%u", stDown,
+                                                     ((stDown & 0x00010000u) != 0u) ? 1 : 0, stDownPolls);
+                                            IOLog("enchilada-adreno: %s\n", stRowA);
+                                            // ---- direction 2: a6xx_rpmh_start() (:480-505), REQ=2 ---------------
+                                            gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 2u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t stUpAck = 0u;
+                                            unsigned stUpPolls = 0u;
+                                            for (; stUpPolls < 400000u; ++stUpPolls) {
+                                                stUpAck = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_RSCC_CONTROL_ACK * 4u);
+                                                if ((stUpAck & 2u) != 0u) break;
+                                            }
+                                            uint32_t stBusy = 0u;
+                                            unsigned stBusyPolls = 0u;
+                                            for (; stBusyPolls < 400000u; ++stBusyPolls) {
+                                                stBusy = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                        ADRENO_GMU_BOOT_V1_RSCC_SEQ_BUSY_DRV0 * 4u);
+                                                if (stBusy == 0u) break;
+                                            }
+                                            gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 0u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            char stRowB[320];
+                                            snprintf(stRowB, sizeof stRowB,
+                                                     "gmust2=dir=up req2 ack=%08x bit1=%d polls=%u busy=%08x bpolls=%u",
+                                                     stUpAck, ((stUpAck & 2u) != 0u) ? 1 : 0, stUpPolls, stBusy,
+                                                     stBusyPolls);
+                                            IOLog("enchilada-adreno: %s\n", stRowB);
+                                            // ---- what the GPU rails did, and whether the microcode stuck ---------
+                                            char stRowC[320];
+                                            snprintf(stRowC, sizeof stRowC,
+                                                     "gmust3=loaded=%d gdscr=%08x sptp=%08x fwinit=%08x intr=%08x",
+                                                     stLoaded ? 1 : 0,
+                                                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u),
+                                                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u),
+                                                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u),
+                                                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u));
+                                            IOLog("enchilada-adreno: %s\n", stRowC);
+                                        }
+                                        if (fwKey == 44u) {
+                                            // ROUND 197: where does the RSC wake sequence stop?
+                                            // R196 showed the controller serves this CPU (REQ=1 answers in 3 polls)
+                                            // and that REQ=2 moves RSCC_CONTROL_ACK bit 0 but never bit 1, leaving
+                                            // RSCC_SEQ_BUSY_DRV0 stuck at 1.  A sequencer that starts and does not
+                                            // finish has to be localised before anything else is written, so this key
+                                            // loads the same microcode and then snapshots the same nine words three
+                                            // times: before a request, after the stop direction, after the stall.
+                                            // The four per-TCS status words come from the xml offsets
+                                            // RSCC_TCS0..3_DRV0_STATUS (0x0346/0x03ee/0x0496/0x053e); the AO
+                                            // interrupt and fence status come from the GMU page so a stuck RPMh
+                                            // command has somewhere to show up.  Read-only apart from the microcode
+                                            // and the two request toggles R196 already proved safe.
+                                            const uint32_t rscTcsStatus[4] = { 0x0346u, 0x03eeu, 0x0496u, 0x053eu };
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0] =
+                                                0x01000000u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_SLAVE_ID_DRV0] =
+                                                1u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_DATA] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_ADDR] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_DATA + 2u] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_ADDR + 2u] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_DATA + 4u] =
+                                                0x80000000u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_HIDDEN_TCS_CMD0_ADDR + 4u] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_OVERRIDE_START_ADDR] =
+                                                0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_SEQ_START_ADDR] =
+                                                ADRENO_GMU_BOOT_V1_PDC_SEQ_START_VALUE;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_MATCH_VALUE_LO] =
+                                                ADRENO_GMU_BOOT_V1_PDC_MATCH_LO_VALUE;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_PDC_MATCH_VALUE_HI] =
+                                                ADRENO_GMU_BOOT_V1_PDC_MATCH_HI_VALUE;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0] =
+                                                0xa7a506a0u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 1u] =
+                                                0xa1e6a6e7u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 2u] =
+                                                0xa2e081e1u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 3u] =
+                                                0xe9a982e2u;
+                                            gmuW[(ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u) + ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0 + 4u] =
+                                                0x0020e8a8u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            // ---- snapshot A: microcode loaded, no request armed yet --------------
+                                            uint32_t sqSt0[3] = { 0u, 0u, 0u };
+                                            uint32_t sqAck[3] = { 0u, 0u, 0u };
+                                            uint32_t sqBusy[3] = { 0u, 0u, 0u };
+                                            uint32_t sqTcs[3][4] = { { 0u, 0u, 0u, 0u }, { 0u, 0u, 0u, 0u },
+                                                                     { 0u, 0u, 0u, 0u } };
+                                            for (unsigned sqPhase = 0u; sqPhase < 3u; ++sqPhase) {
+                                                if (sqPhase == 1u) {
+                                                    // ---- the stop direction, exactly as R196 drove it -----------
+                                                    gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 1u;
+                                                    __asm__ volatile("dsb sy" ::: "memory");
+                                                    for (unsigned sqPoll = 0u; sqPoll < 400000u; ++sqPoll) {
+                                                        if ((rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                            ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0 * 4u) &
+                                                             0x00010000u) != 0u) {
+                                                            break;
+                                                        }
+                                                    }
+                                                    gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 0u;
+                                                    __asm__ volatile("dsb sy" ::: "memory");
+                                                } else if (sqPhase == 2u) {
+                                                    // ---- the start direction, allowed to stall ------------------
+                                                    gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 2u;
+                                                    __asm__ volatile("dsb sy" ::: "memory");
+                                                    for (unsigned sqPoll = 0u; sqPoll < 400000u; ++sqPoll) {
+                                                        if ((rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_RSCC_CONTROL_ACK * 4u) &
+                                                             2u) != 0u) {
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                sqSt0[sqPhase] = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                  ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0 * 4u);
+                                                sqAck[sqPhase] = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_RSCC_CONTROL_ACK * 4u);
+                                                sqBusy[sqPhase] = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                   ADRENO_GMU_BOOT_V1_RSCC_SEQ_BUSY_DRV0 * 4u);
+                                                for (unsigned sqT = 0u; sqT < 4u; ++sqT) {
+                                                    sqTcs[sqPhase][sqT] = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                                                           rscTcsStatus[sqT] * 4u);
+                                                }
+                                            }
+                                            // ---- release the request the stalled direction left armed -----------
+                                            gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 0u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            char sqRow[384];
+                                            const char * const sqName[3] = { "pre", "stop", "start" };
+                                            for (unsigned sqRowI = 0u; sqRowI < 3u; ++sqRowI) {
+                                                snprintf(sqRow, sizeof sqRow, "gmusq%u=%s st0=%08x ack=%08x busy=%08x tcs=%08x/%08x/%08x/%08x",
+                                                         sqRowI + 1u, sqName[sqRowI], sqSt0[sqRowI], sqAck[sqRowI],
+                                                         sqBusy[sqRowI], sqTcs[sqRowI][0], sqTcs[sqRowI][1],
+                                                         sqTcs[sqRowI][2], sqTcs[sqRowI][3]);
+                                                IOLog("enchilada-adreno: %s\n", sqRow);
+                                            }
+                                            char sqTail[384];
+                                            snprintf(sqTail, sizeof sqTail,
+                                                     "gmusq4=ao=%08x fence=%08x intr=%08x gdscr=%08x sptp=%08x fwinit=%08x",
+                                                     rd32(sGmuFwVa, 0x9305u * 4u), rd32(sGmuFwVa, 0x9313u * 4u),
+                                                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                                                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u),
+                                                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u),
+                                                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
+                                            IOLog("enchilada-adreno: %s\n", sqTail);
+                                        }
+                                        if (fwKey == 45u) {
+                                            // ROUND 198: the GPU-side RSC sequencer accepts the request and never
+                                            // finishes it (R196/R197), but the CPU-side APPS RSC does -- the touch
+                                            // driver votes ldoa28 through it with rc=0. Ask that one for the two GPU
+                                            // rails, using the addresses and levels the command database carries.
+                                            static uintptr_t sRscRwVa = 0;
+                                            static uintptr_t sDbRoVa = 0;
+                                            if (sRscRwVa == 0u) {
+                                                sRscRwVa = static_cast<uintptr_t>(armcpu_map_physical_rw(0x00000000179e0000ULL, 0x00010000u));
+                                            }
+                                            if (sDbRoVa == 0u) {
+                                                sDbRoVa = armcpu_map_physical(0x0000000085fe0000ULL, 0x00020000u);
+                                            }
+                                            if (sRscRwVa == 0u || sDbRoVa == 0u) {
+                                                IOLog("enchilada-adreno: gmurail4=map-failed rsc=%d db=%d\n", sRscRwVa != 0u, sDbRoVa != 0u);
+                                            } else {
+                                                volatile uint32_t *rscW = reinterpret_cast<volatile uint32_t *>(sRscRwVa);
+                                                uint16_t rlGfx[16];
+                                                uint16_t rlCx[16];
+                                                for (unsigned rlZ = 0u; rlZ < 16u; ++rlZ) {
+                                                    rlGfx[rlZ] = 0u;
+                                                    rlCx[rlZ] = 0u;
+                                                }
+                                                const QuietCmdDbHit rlGfxHit = quiet_cmd_db_levels(sDbRoVa, "gfx.lvl", rlGfx, 16u);
+                                                const QuietCmdDbHit rlCxHit = quiet_cmd_db_levels(sDbRoVa, "cx.lvl", rlCx, 16u);
+                                                uint16_t rlGfxTop = 0u;
+                                                uint16_t rlCxTop = 0u;
+                                                unsigned rlGfxAt = 0u;
+                                                unsigned rlCxAt = 0u;
+                                                for (unsigned rlI = 0u; rlI < rlGfxHit.count; ++rlI) {
+                                                    if (rlGfx[rlI] > rlGfxTop) {
+                                                        rlGfxTop = rlGfx[rlI];
+                                                        rlGfxAt = rlI;
+                                                    }
+                                                }
+                                                for (unsigned rlI = 0u; rlI < rlCxHit.count; ++rlI) {
+                                                    if (rlCx[rlI] > rlCxTop) {
+                                                        rlCxTop = rlCx[rlI];
+                                                        rlCxAt = rlI;
+                                                    }
+                                                }
+                                                const uint32_t rlDrv = rd32(sRscRwVa, 0x00u);
+                                                const uint32_t rlMajor = (rlDrv / 0x10000u) % 256u;
+                                                const bool rlV3 = (rlMajor >= 3u);
+                                                const uint32_t rlCtlOff = rlV3 ? 0x24u : 0x14u;
+                                                const uint32_t rlEnOff = rlV3 ? 0x2cu : 0x1cu;
+                                                const uint32_t rlStOff = rlV3 ? 0x28u : 0x18u;
+                                                const uint32_t rlWtOff = rlV3 ? 0x20u : 0x10u;
+                                                const uint32_t rlCmdStride = rlV3 ? 24u : 20u;
+                                                const uint32_t rlMsgOff = rlV3 ? 0x34u : 0x30u;
+                                                const uint32_t rlAdrOff = rlV3 ? 0x38u : 0x34u;
+                                                const uint32_t rlDatOff = rlV3 ? 0x3cu : 0x38u;
+                                                unsigned rlTcs = 4u;
+                                                for (unsigned rlT = 0u; rlT < 4u; ++rlT) {
+                                                    const uint32_t rlTBase = 0x0d00u + 672u * rlT;
+                                                    if (rd32(sRscRwVa, rlTBase + rlEnOff) == 0u) {
+                                                        rlTcs = rlT;
+                                                        break;
+                                                    }
+                                                }
+                                                uint32_t rlEnAfter = 0xffffffffu;
+                                                uint32_t rlCtl = 0xffffffffu;
+                                                uint32_t rlSt = 0xffffffffu;
+                                                unsigned rlPolls = 0u;
+                                                if (rlTcs < 4u && rlGfxHit.address != 0u && rlCxHit.address != 0u) {
+                                                    const uint32_t rlBase = 0x0d00u + 672u * rlTcs;
+                                                    rscW[(rlBase + rlCtlOff) / 4u] = 0u;
+                                                    rscW[(0x0d00u + 0x0008u) / 4u] = 1u << rlTcs;
+                                                    rscW[(rlBase + rlMsgOff) / 4u] = 0x00010108u;
+                                                    rscW[(rlBase + rlAdrOff) / 4u] = rlGfxHit.address;
+                                                    rscW[(rlBase + rlDatOff) / 4u] = static_cast<uint32_t>(rlGfxTop);
+                                                    rscW[(rlBase + rlCmdStride + rlMsgOff) / 4u] = 0x00010108u;
+                                                    rscW[(rlBase + rlCmdStride + rlAdrOff) / 4u] = rlCxHit.address;
+                                                    rscW[(rlBase + rlCmdStride + rlDatOff) / 4u] = static_cast<uint32_t>(rlCxTop);
+                                                    rscW[(rlBase + rlWtOff) / 4u] = 3u;
+                                                    rscW[(rlBase + rlEnOff) / 4u] = 3u;
+                                                    rscW[(rlBase + rlCtlOff) / 4u] = 0x00010000u;
+                                                    rscW[(rlBase + rlCtlOff) / 4u] = 0x01010000u;
+                                                    __asm__ volatile("dsb sy" ::: "memory");
+                                                    for (; rlPolls < 200000u; ++rlPolls) {
+                                                        rlSt = rd32(sRscRwVa, rlBase + rlStOff);
+                                                        if ((rlSt & 1u) != 0u) {
+                                                            break;
+                                                        }
+                                                        IODelay(1u);
+                                                    }
+                                                    rlEnAfter = rd32(sRscRwVa, rlBase + rlEnOff);
+                                                    rlCtl = rd32(sRscRwVa, rlBase + rlCtlOff);
+                                                    rscW[(0x0d00u + 0x0008u) / 4u] = 1u << rlTcs;
+                                                    rscW[(rlBase + rlCtlOff) / 4u] = 0u;
+                                                    rscW[(rlBase + rlEnOff) / 4u] = 0u;
+                                                    __asm__ volatile("dsb sy" ::: "memory");
+                                                }
+                                                char railRowA[352];
+                                                snprintf(railRowA, sizeof railRowA,
+                                                         "gmurail4=rsc=%lx drv=%08x tcs=%u gfx_n=%u cx_n=%u gfx_a=%08x cx_a=%08x",
+                                                         sRscRwVa, rlDrv, rlTcs, rlGfxHit.count, rlCxHit.count,
+                                                         rlGfxHit.address, rlCxHit.address);
+                                                IOLog("enchilada-adreno: %s\n", railRowA);
+                                                char railRowB[352];
+                                                snprintf(railRowB, sizeof railRowB,
+                                                         "gmurail5=gfx_top=%04x cx_top=%04x gfx_at=%u cx_at=%u en=%08x ctl=%08x st=%08x polls=%u",
+                                                         (unsigned)rlGfxTop, (unsigned)rlCxTop, rlGfxAt, rlCxAt, rlEnAfter, rlCtl, rlSt, rlPolls);
+                                                IOLog("enchilada-adreno: %s\n", railRowB);
+                                                char railRowC[352];
+                                                snprintf(railRowC, sizeof railRowC,
+                                                         "gmurail6=gdscr=%08x cxst=%08x gxst=%08x sptp=%08x fwinit=%08x",
+                                                         rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u),
+                                                         gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u,
+                                                         gGpuccVa ? rd32(gGpuccVa, kGxOffset) : 0u,
+                                                         rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u),
+                                                         rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
+                                                IOLog("enchilada-adreno: %s\n", railRowC);
+                                            }
+                                        }
+                                        if (fwKey == 46u) {
+                                            // ROUND 199: R198 showed the CPU-side APPS RSC accepts the gfx.lvl vote
+                                            // and completes it in one poll, yet GX stayed off -- so a rail vote is not
+                                            // a power-domain switch. GPUCC 0x509100c sits inside this same writable
+                                            // GMU mapping (GMU + 0x2700c), so the GX GDSC can be driven from here
+                                            // with no new mapping and no new write entry point.
+                                            const uint32_t gxGdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+                                            const uint32_t gxCfgWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u;
+                                            const uint32_t gxClampWord = static_cast<uint32_t>((0x05091508ull - ADRENO_BOARD_GMU_BASE) / 4u);
+                                            const uint32_t gxCxWord = static_cast<uint32_t>((ADRENO_DOMAIN_CX_STATUS - ADRENO_BOARD_GMU_BASE) / 4u);
+                                            static uintptr_t sGxDbVa = 0;
+                                            static uintptr_t sGxRscVa = 0;
+                                            if (sGxDbVa == 0u) {
+                                                sGxDbVa = armcpu_map_physical(0x0000000085fe0000ULL, 0x00020000u);
+                                            }
+                                            if (sGxRscVa == 0u) {
+                                                sGxRscVa = static_cast<uintptr_t>(armcpu_map_physical_rw(0x00000000179e0000ULL, 0x00010000u));
+                                            }
+                                            uint16_t gxLvl[16];
+                                            for (unsigned gxZ = 0u; gxZ < 16u; ++gxZ) {
+                                                gxLvl[gxZ] = 0u;
+                                            }
+                                            const QuietCmdDbHit gxHit = quiet_cmd_db_levels(sGxDbVa, "gfx.lvl", gxLvl, 16u);
+                                            uint16_t gxTop = 0u;
+                                            for (unsigned gxI = 0u; gxI < gxHit.count; ++gxI) {
+                                                if (gxLvl[gxI] > gxTop) {
+                                                    gxTop = gxLvl[gxI];
+                                                }
+                                            }
+                                            uint32_t gxEn = 0xffffffffu;
+                                            uint32_t gxSt = 0xffffffffu;
+                                            unsigned gxTcs = 4u;
+                                            unsigned gxPolls = 0u;
+                                            if (sGxRscVa != 0u && sGxDbVa != 0u && gxHit.address != 0u) {
+                                                volatile uint32_t *gxW = reinterpret_cast<volatile uint32_t *>(sGxRscVa);
+                                                const uint32_t gxDrv = rd32(sGxRscVa, 0x00u);
+                                                const bool gxV3 = ((gxDrv / 0x10000u) % 256u) >= 3u;
+                                                const uint32_t gxCtl = gxV3 ? 0x24u : 0x14u;
+                                                const uint32_t gxEnb = gxV3 ? 0x2cu : 0x1cu;
+                                                const uint32_t gxSta = gxV3 ? 0x28u : 0x18u;
+                                                const uint32_t gxWtc = gxV3 ? 0x20u : 0x10u;
+                                                                                        const uint32_t gxMsg = gxV3 ? 0x34u : 0x30u;
+                                                const uint32_t gxAdr = gxV3 ? 0x38u : 0x34u;
+                                                const uint32_t gxDat = gxV3 ? 0x3cu : 0x38u;
+                                                for (unsigned gxT = 0u; gxT < 4u; ++gxT) {
+                                                    const uint32_t gxBase = 0x0d00u + 672u * gxT;
+                                                    if (rd32(sGxRscVa, gxBase + gxEnb) == 0u) {
+                                                        gxTcs = gxT;
+                                                        break;
+                                                    }
+                                                }
+                                                if (gxTcs < 4u) {
+                                                    const uint32_t gxBase = 0x0d00u + 672u * gxTcs;
+                                                    gxW[(gxBase + gxCtl) / 4u] = 0u;
+                                                    gxW[(0x0d00u + 0x0008u) / 4u] = 1u << gxTcs;
+                                                    gxW[(gxBase + gxMsg) / 4u] = 0x00010108u;
+                                                    gxW[(gxBase + gxAdr) / 4u] = gxHit.address;
+                                                    gxW[(gxBase + gxDat) / 4u] = static_cast<uint32_t>(gxTop);
+                                                    gxW[(gxBase + gxWtc) / 4u] = 1u;
+                                                    gxW[(gxBase + gxEnb) / 4u] = 1u;
+                                                    gxW[(gxBase + gxCtl) / 4u] = 0x00010000u;
+                                                    gxW[(gxBase + gxCtl) / 4u] = 0x01010000u;
+                                                    __asm__ volatile("dsb sy" ::: "memory");
+                                                    for (; gxPolls < 200000u; ++gxPolls) {
+                                                        gxSt = rd32(sGxRscVa, gxBase + gxSta);
+                                                        if ((gxSt & 1u) != 0u) {
+                                                            break;
+                                                        }
+                                                        IODelay(1u);
+                                                    }
+                                                    gxEn = rd32(sGxRscVa, gxBase + gxEnb);
+                                                    gxW[(0x0d00u + 0x0008u) / 4u] = 1u << gxTcs;
+                                                    gxW[(gxBase + gxCtl) / 4u] = 0u;
+                                                    gxW[(gxBase + gxEnb) / 4u] = 0u;
+                                                    __asm__ volatile("dsb sy" ::: "memory");
+                                                }
+                                                                                    }
+                                            char gxRowA[352];
+                                            snprintf(gxRowA, sizeof gxRowA,
+                                                     "gmugx2=vote_a=%08x vote_top=%04x tcs=%u st=%08x en=%08x polls=%u",
+                                                     gxHit.address, (unsigned)gxTop, gxTcs, gxSt, gxEn, gxPolls);
+                                            IOLog("enchilada-adreno: %s\n", gxRowA);
+                                            const uint32_t gxGdPre = rd32(sGmuFwVa, gxGdscrWord * 4u);
+                                            const uint32_t gxCfgPre = rd32(sGmuFwVa, gxCfgWord * 4u);
+                                            const uint32_t gxClPre = rd32(sGmuFwVa, gxClampWord * 4u);
+                                            const uint32_t gxCxPre = rd32(sGmuFwVa, gxCxWord * 4u);
+                                            char gxRowB[352];
+                                            snprintf(gxRowB, sizeof gxRowB,
+                                                     "gmugx3=pre_gdscr=%08x pre_cfg=%08x pre_clamp=%08x pre_cx=%08x",
+                                                     gxGdPre, gxCfgPre, gxClPre, gxCxPre);
+                                            IOLog("enchilada-adreno: %s\n", gxRowB);
+                                            gmuW[gxClampWord] = gxClPre | 0x00000010u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            IODelay(1u);
+                                            gmuW[gxClampWord] = gxClPre & 0xffffffefu;
+                                            gmuW[gxClampWord] = gxClPre & 0xfffffffeu;
+                                            gmuW[gxGdscrWord] = gxGdPre & 0xfffffffeu;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            unsigned gxOnPolls = 0u;
+                                            uint32_t gxCfgPost = gxCfgPre;
+                                            for (; gxOnPolls < 20000u; ++gxOnPolls) {
+                                                gxCfgPost = rd32(sGmuFwVa, gxCfgWord * 4u);
+                                                if ((gxCfgPost & 0x00010000u) != 0u) {
+                                                    break;
+                                                }
+                                                IODelay(1u);
+                                            }
+                                            char gxRowC[352];
+                                            snprintf(gxRowC, sizeof gxRowC,
+                                                     "gmugx4=gdscr=%08x cfg=%08x clamp=%08x cx=%08x gx_on=%d polls=%u",
+                                                     rd32(sGmuFwVa, gxGdscrWord * 4u), gxCfgPost,
+                                                     rd32(sGmuFwVa, gxClampWord * 4u), rd32(sGmuFwVa, gxCxWord * 4u),
+                                                     (gxCfgPost & 0x00010000u) != 0u, gxOnPolls);
+                                            IOLog("enchilada-adreno: %s\n", gxRowC);
+                                        }
+if (fwKey == 47u) {
+                                            // ROUND 200: R198 showed the CPU-side APPS RSC accepts the gfx.lvl vote
+                                            // and completes it in one poll, yet GX stayed off -- so a rail vote is not
+                                            // a power-domain switch. GPUCC 0x509100c sits inside this same writable
+                                            // GMU mapping (GMU + 0x2700c), so the GX GDSC can be driven from here
+                                            // with no new mapping and no new write entry point.
+                                            const uint32_t gxGdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+                                            const uint32_t gxCfgWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u;
+                                            const uint32_t gxClampWord = static_cast<uint32_t>((0x05091508ull - ADRENO_BOARD_GMU_BASE) / 4u);
+                                            const uint32_t gxCxWord = static_cast<uint32_t>((ADRENO_DOMAIN_CX_STATUS - ADRENO_BOARD_GMU_BASE) / 4u);
+                                            static uintptr_t sGxDbVa = 0;
+                                            static uintptr_t sGxRscVa = 0;
+                                            if (sGxDbVa == 0u) {
+                                                sGxDbVa = armcpu_map_physical(0x0000000085fe0000ULL, 0x00020000u);
+                                            }
+                                            if (sGxRscVa == 0u) {
+                                                sGxRscVa = static_cast<uintptr_t>(armcpu_map_physical_rw(0x00000000179e0000ULL, 0x00010000u));
+                                            }
+                                            uint16_t gxLvl[16];
+                                            for (unsigned gxZ = 0u; gxZ < 16u; ++gxZ) {
+                                                gxLvl[gxZ] = 0u;
+                                            }
+                                            const QuietCmdDbHit gxHit = quiet_cmd_db_levels(sGxDbVa, "gfx.lvl", gxLvl, 16u);
+                                            uint16_t gxTop = 0u;
+                                            for (unsigned gxI = 0u; gxI < gxHit.count; ++gxI) {
+                                                if (gxLvl[gxI] > gxTop) {
+                                                    gxTop = gxLvl[gxI];
+                                                }
+                                            }
+                                            uint32_t gxEn = 0xffffffffu;
+                                            uint32_t gxSt = 0xffffffffu;
+                                            unsigned gxTcs = 4u;
+                                            unsigned gxPolls = 0u;
+                                            if (sGxRscVa != 0u && sGxDbVa != 0u && gxHit.address != 0u) {
+                                                volatile uint32_t *gxW = reinterpret_cast<volatile uint32_t *>(sGxRscVa);
+                                                const uint32_t gxDrv = rd32(sGxRscVa, 0x00u);
+                                                const bool gxV3 = ((gxDrv / 0x10000u) % 256u) >= 3u;
+                                                const uint32_t gxCtl = gxV3 ? 0x24u : 0x14u;
+                                                const uint32_t gxEnb = gxV3 ? 0x2cu : 0x1cu;
+                                                const uint32_t gxSta = gxV3 ? 0x28u : 0x18u;
+                                                const uint32_t gxWtc = gxV3 ? 0x20u : 0x10u;
+                                                                                        const uint32_t gxMsg = gxV3 ? 0x34u : 0x30u;
+                                                const uint32_t gxAdr = gxV3 ? 0x38u : 0x34u;
+                                                const uint32_t gxDat = gxV3 ? 0x3cu : 0x38u;
+                                                for (unsigned gxT = 0u; gxT < 4u; ++gxT) {
+                                                    const uint32_t gxBase = 0x0d00u + 672u * gxT;
+                                                    if (rd32(sGxRscVa, gxBase + gxEnb) == 0u) {
+                                                        gxTcs = gxT;
+                                                        break;
+                                                    }
+                                                }
+                                                if (gxTcs < 4u) {
+                                                    const uint32_t gxBase = 0x0d00u + 672u * gxTcs;
+                                                    gxW[(gxBase + gxCtl) / 4u] = 0u;
+                                                    gxW[(0x0d00u + 0x0008u) / 4u] = 1u << gxTcs;
+                                                    gxW[(gxBase + gxMsg) / 4u] = 0x00010108u;
+                                                    gxW[(gxBase + gxAdr) / 4u] = gxHit.address;
+                                                    gxW[(gxBase + gxDat) / 4u] = static_cast<uint32_t>(gxTop);
+                                                    gxW[(gxBase + gxWtc) / 4u] = 1u;
+                                                    gxW[(gxBase + gxEnb) / 4u] = 1u;
+                                                    gxW[(gxBase + gxCtl) / 4u] = 0x00010000u;
+                                                    gxW[(gxBase + gxCtl) / 4u] = 0x01010000u;
+                                                    __asm__ volatile("dsb sy" ::: "memory");
+                                                    for (; gxPolls < 200000u; ++gxPolls) {
+                                                        gxSt = rd32(sGxRscVa, gxBase + gxSta);
+                                                        if ((gxSt & 1u) != 0u) {
+                                                            break;
+                                                        }
+                                                        IODelay(1u);
+                                                    }
+                                                    gxEn = rd32(sGxRscVa, gxBase + gxEnb);
+                                                    gxW[(0x0d00u + 0x0008u) / 4u] = 1u << gxTcs;
+                                                    gxW[(gxBase + gxCtl) / 4u] = 0u;
+                                                    gxW[(gxBase + gxEnb) / 4u] = 0u;
+                                                    __asm__ volatile("dsb sy" ::: "memory");
+                                                }
+                                                                                    }
+                                            char gxRowA[352];
+                                            snprintf(gxRowA, sizeof gxRowA,
+                                                     "gmugx5=vote_a=%08x vote_top=%04x tcs=%u st=%08x en=%08x polls=%u",
+                                                     gxHit.address, (unsigned)gxTop, gxTcs, gxSt, gxEn, gxPolls);
+                                            IOLog("enchilada-adreno: %s\n", gxRowA);
+                                            const uint32_t gxGdPre = rd32(sGmuFwVa, gxGdscrWord * 4u);
+                                            const uint32_t gxCfgPre = rd32(sGmuFwVa, gxCfgWord * 4u);
+                                            const uint32_t gxClPre = rd32(sGmuFwVa, gxClampWord * 4u);
+                                            const uint32_t gxCxPre = rd32(sGmuFwVa, gxCxWord * 4u);
+                                            char gxRowB[352];
+                                            snprintf(gxRowB, sizeof gxRowB,
+                                                     "gmugx6=pre_gdscr=%08x pre_cfg=%08x pre_clamp=%08x pre_cx=%08x",
+                                                     gxGdPre, gxCfgPre, gxClPre, gxCxPre);
+                                            IOLog("enchilada-adreno: %s\n", gxRowB);
+                                            gmuW[gxClampWord] = gxClPre | 0x00000010u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            IODelay(1u);
+                                            gmuW[gxClampWord] = gxClPre & 0xffffffefu;
+                                            gmuW[gxClampWord] = gxClPre & 0xfffffffeu;
+                                            gmuW[gxGdscrWord] = gxGdPre & 0xfffffffeu;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            unsigned gxOnPolls = 0u;
+                                            uint32_t gxCfgPost = gxCfgPre;
+                                            for (; gxOnPolls < 20000u; ++gxOnPolls) {
+                                                gxCfgPost = rd32(sGmuFwVa, gxCfgWord * 4u);
+                                                if ((gxCfgPost & 0x00010000u) != 0u) {
+                                                    break;
+                                                }
+                                                IODelay(1u);
+                                            }
+                                            char gxRowC[352];
+                                            snprintf(gxRowC, sizeof gxRowC,
+                                                     "gmugx7=gdscr=%08x cfg=%08x clamp=%08x cx=%08x gx_on=%d polls=%u",
+                                                     rd32(sGmuFwVa, gxGdscrWord * 4u), gxCfgPost,
+                                                     rd32(sGmuFwVa, gxClampWord * 4u), rd32(sGmuFwVa, gxCxWord * 4u),
+                                                     (gxCfgPost & 0x00010000u) != 0u, gxOnPolls);
+                                            IOLog("enchilada-adreno: %s\n", gxRowC);
+                                        }
+                                        if (fwKey == 48u) {
+                                            // ROUND 201: R199 (CM3 cold) and R200 (CM3 alive) both left the GX GDSC in
+                                            // the same state -- clamp and SW_COLLAPSE cleared, bit 16 never set. Two
+                                            // readings decide what that means: a positive control on CX, whose domain
+                                            // stage 5 raises on this same part, and a ten-times longer bound.
+                                            const uint32_t gyGdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+                                            const uint32_t gyCfgWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u;
+                                            const uint32_t gyClampWord = static_cast<uint32_t>((0x05091508ull - ADRENO_BOARD_GMU_BASE) / 4u);
+                                            const uint32_t gyCxGdscrWord = static_cast<uint32_t>((0x0509106cull - ADRENO_BOARD_GMU_BASE) / 4u);
+                                            const uint32_t gyCxCfgWord = static_cast<uint32_t>((0x05091070ull - ADRENO_BOARD_GMU_BASE) / 4u);
+                                            const uint32_t gyCxGdPre = rd32(sGmuFwVa, gyCxGdscrWord * 4u);
+                                            const uint32_t gyCxCfgPre = rd32(sGmuFwVa, gyCxCfgWord * 4u);
+                                            char gyRowA[352];
+                                            snprintf(gyRowA, sizeof gyRowA,
+                                                     "gmugx8=cx_gdscr=%08x cx_cfg=%08x cx_bit16=%d",
+                                                     gyCxGdPre, gyCxCfgPre, (gyCxCfgPre & 0x00010000u) != 0u);
+                                            IOLog("enchilada-adreno: %s\n", gyRowA);
+                                            const uint32_t gyGdPre = rd32(sGmuFwVa, gyGdscrWord * 4u);
+                                            const uint32_t gyClPre = rd32(sGmuFwVa, gyClampWord * 4u);
+                                            gmuW[gyClampWord] = gyClPre | 0x00000010u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            IODelay(1u);
+                                            gmuW[gyClampWord] = gyClPre & 0xffffffefu;
+                                            gmuW[gyClampWord] = gyClPre & 0xfffffffeu;
+                                            gmuW[gyGdscrWord] = gyGdPre & 0xfffffffeu;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            unsigned gyPolls = 0u;
+                                            uint32_t gyCfg = 0u;
+                                            uint32_t gyGd = 0u;
+                                            for (; gyPolls < 200000u; ++gyPolls) {
+                                                gyCfg = rd32(sGmuFwVa, gyCfgWord * 4u);
+                                                if ((gyCfg & 0x00010000u) != 0u) {
+                                                    break;
+                                                }
+                                                IODelay(1u);
+                                            }
+                                            gyGd = rd32(sGmuFwVa, gyGdscrWord * 4u);
+                                            char gyRowB[352];
+                                            snprintf(gyRowB, sizeof gyRowB,
+                                                     "gmugx9=pre=%08x gdscr=%08x cfg=%08x clamp=%08x gx_on=%d polls=%u",
+                                                     gyGdPre, gyGd, gyCfg, rd32(sGmuFwVa, gyClampWord * 4u),
+                                                     (gyCfg & 0x00010000u) != 0u, gyPolls);
+                                            IOLog("enchilada-adreno: %s\n", gyRowB);
+                                        }
 if (fwKey >= 18u && fwKey <= 21u) {
                                             // ROUND 177: R176 showed that alloc, map, table fill
                                             // and the three QTBL registers are all safe, and that the

@@ -1207,7 +1207,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 42u' in _fw,
+    check('fwKey >= 7u && fwKey <= 48u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1672,7 +1672,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 42u)' in code,
+    check('(fwKey >= 7u && fwKey <= 48u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -2354,7 +2354,7 @@ def main():
     check(code.count('if (fwKey == 42u) {') == 1,
           'R195 key 42 is its own block, so no other key decides what it reads')
     _k42 = code.split('if (fwKey == 42u) {', 1)[1]
-    _k42 = _k42.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
+    _k42 = _k42.split('if (fwKey == 43u) {', 1)[0]
     check(_k42 != '', 'R195 the PDC block survey exists ahead of the doorbell ladder')
     check('ADRENO_BOARD_GMU_PDC_BASE' in _k42 and
           'ADRENO_BOARD_GMU_PDC_SIZE' in _k42,
@@ -2399,6 +2399,243 @@ def main():
     _i42 = code.find('if (fwKey == 42u) {')
     check(0 < _i41 < _i42 < _i18,
           'R195 key 42 sits after key 41 and before the doorbell ladder')
+    # ---- ROUND 196: does the RSC ignore BOTH directions? ------------------
+    # R193 loaded the sequencer microcode (it read back word for word) and then
+    # replayed a6xx_rpmh_start(): REQ=2 armed, RSCC_CONTROL_ACK bit 1 never set
+    # in 400000 polls.  One silent direction cannot separate "the controller
+    # never serves this CPU" from "the start path is missing one precondition",
+    # so key 43 asks the mirror question in the same boot: a6xx_rpmh_stop()
+    # writes REQ=1 and waits on GPU_RSCC_RSC_STATUS0_DRV0 bit 16, a different
+    # register and a different bit on the same controller.
+    check(code.count('if (fwKey == 43u) {') == 1,
+          'R196 key 43 is its own block, so no other key decides what it asks')
+    _k43 = code.split('if (fwKey == 43u) {', 1)[1]
+    _k43 = _k43.split('if (fwKey == 44u) {', 1)[0]
+    check(_k43 != '', 'R196 the two-direction matrix exists ahead of the doorbell ladder')
+    check('ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u' in _k43,
+          'R196 every RSC store converts the pinned byte delta to a dword index, '
+          'so it lands inside the GMU window')
+    check('ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA * 4u' not in _k43,
+          'R196 the byte delta is never multiplied by four again')
+    for _name in ('ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0',
+                  'ADRENO_GMU_BOOT_V1_RSCC_PDC_SLAVE_ID_DRV0',
+                  'ADRENO_GMU_BOOT_V1_RSCC_OVERRIDE_START_ADDR',
+                  'ADRENO_GMU_BOOT_V1_RSCC_PDC_SEQ_START_ADDR',
+                  'ADRENO_GMU_BOOT_V1_RSCC_PDC_MATCH_VALUE_LO',
+                  'ADRENO_GMU_BOOT_V1_RSCC_PDC_MATCH_VALUE_HI',
+                  'ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0',
+                  'ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ',
+                  'ADRENO_GMU_BOOT_V1_RSCC_CONTROL_ACK',
+                  'ADRENO_GMU_BOOT_V1_RSCC_SEQ_BUSY_DRV0'):
+        check(_name in _k43, 'R196 the matrix uses %s from the pinned header' % _name)
+    check(_k43.count('gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 1u;') == 1,
+          'R196 the stop direction arms exactly one REQ=1')
+    check(_k43.count('gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 2u;') == 1,
+          'R196 the start direction arms exactly one REQ=2')
+    check(_k43.count('gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 0u;') == 2,
+          'R196 each direction releases the request it armed')
+    check('(stDown & 0x00010000u) != 0u' in _k43,
+          'R196 the stop direction polls STATUS0_DRV0 bit 16, as a6xx_rpmh_stop does')
+    check('(stUpAck & 2u) != 0u' in _k43,
+          'R196 the start direction polls RSCC_CONTROL_ACK bit 1, as a6xx_rpmh_start does')
+    check('stDownPolls < 400000u' in _k43 and 'stUpPolls < 400000u' in _k43 and
+          'stBusyPolls < 400000u' in _k43,
+          'R196 all three waits are bounded, so a silent controller cannot hang the boot')
+    check('gmust1=dir=down req1 st0=%08x bit16=%d polls=%u' in _k43,
+          'R196 the stop row carries the answered bit and the poll count, so a '
+          'zero poll count and a missing answer look different')
+    check('gmust2=dir=up req2 ack=%08x bit1=%d polls=%u busy=%08x bpolls=%u' in _k43,
+          'R196 the start row carries the ack bit, the poll count and SEQ_BUSY')
+    check('gmust3=loaded=%d gdscr=%08x sptp=%08x fwinit=%08x intr=%08x' in _k43,
+          'R196 one row says whether the microcode stuck and what the rails did')
+    check('char stRowA[320]' in _k43 and 'char stRowB[320]' in _k43 and
+          'char stRowC[320]' in _k43,
+          'R196 every row has a declared bound')
+    check('stLoaded = (stPost0 == 0xa7a506a0u) && (stPost4 == 0x0020e8a8u)' in _k43,
+          'R196 the microcode is judged by read-back, not assumed written')
+    check('HFI_CTRL_INIT' not in _k43 and 'CM3_SYSRESET' not in _k43,
+          'R196 the matrix touches no doorbell and no reset, so it cannot repeat '
+          'the deaths R177 and R184 established')
+    _i43 = code.find('if (fwKey == 43u) {')
+    check(0 < _i42 < _i43 < _i18,
+          'R196 key 43 sits after key 42 and before the doorbell ladder')
+
+
+
+    # ---- ROUND 197: localise a start sequence that never finishes -------
+    _i44 = code.find('if (fwKey == 44u) {')
+    check(_i44 >= 0, 'R197 key 44 exists')
+    check(code.count('if (fwKey == 44u) {') == 1, 'R197 key 44 appears exactly once')
+    _k44 = code.split('if (fwKey == 44u) {', 1)[1]
+    _k44 = _k44.split('if (fwKey == 45u) {', 1)[0]
+    check('ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA / 4u' in _k44,
+          'R197 the sequencer words go through the dword-indexed RSC window')
+    check('ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA * 4u' not in _k44,
+          'R197 the byte delta is never multiplied by four')
+    for _needle in ('ADRENO_GMU_BOOT_V1_RSCC_STATUS0_DRV0',
+                    'ADRENO_GMU_BOOT_V1_RSCC_PDC_SLAVE_ID_DRV0',
+                    'ADRENO_GMU_BOOT_V1_RSCC_OVERRIDE_START_ADDR',
+                    'ADRENO_GMU_BOOT_V1_RSCC_PDC_SEQ_START_ADDR',
+                    'ADRENO_GMU_BOOT_V1_RSCC_SEQ_MEM_0_DRV0',
+                    'ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ',
+                    'ADRENO_GMU_BOOT_V1_RSCC_CONTROL_ACK',
+                    'ADRENO_GMU_BOOT_V1_RSCC_SEQ_BUSY_DRV0'):
+        check(_needle in _k44, 'R197 uses the pinned constant %s' % _needle)
+    check('0xa7a506a0u' in _k44 and '0x0020e8a8u' in _k44,
+          'R197 loads the pinned five-word sequencer microcode')
+    check(_k44.count('ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 1u;') == 1,
+          'R197 arms the stop direction exactly once')
+    check(_k44.count('ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 2u;') == 1,
+          'R197 arms the start direction exactly once')
+    check(_k44.count('ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 0u;') == 2,
+          'R197 releases the request after each direction')
+    check('(rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +' in _k44,
+          'R197 reads the RSCC state back through the read helper')
+    check('0x00010000u' in _k44, 'R197 waits on the stop-direction status bit')
+    check('2u) != 0u' in _k44, 'R197 waits on the acknowledge bit one')
+    check(_k44.count('400000u') >= 2, 'R197 both waits are bounded')
+    check('0x0346u' in _k44 and '0x053eu' in _k44,
+          'R197 reads the four pinned per-TCS status offsets')
+    for _row in ('"gmusq%u=%s st0=%08x ack=%08x busy=%08x tcs=%08x/%08x/%08x/%08x"',
+                 '"gmusq4=ao=%08x fence=%08x intr=%08x gdscr=%08x sptp=%08x fwinit=%08x"'):
+        check(_row in code, 'R197 emits the row %s' % _row[:24])
+    check('char sqRow[384];' in _k44, 'R197 sizes the per-phase row buffer')
+    check('char sqTail[384];' in _k44, 'R197 sizes the tail row buffer')
+    check('HFI_CTRL_INIT' not in _k44,
+          'R197 never touches the HFI init that wedges the host')
+    check('CM3_SYSRESET' not in _k44,
+          'R197 never repulses the CM3 reset')
+    check(0 < _i43 < _i44 < _i18,
+          'R197 key 44 sits after key 43 and before the doorbell ladder')
+
+    # ---- ROUND 198: the CPU-side APPS RSC votes the two GPU rails ----------
+    check(code.count('if (fwKey == 45u) {') == 1,
+          'R198 there is exactly one APPS RSC request block')
+    _k45 = (code.split('if (fwKey == 45u) {', 1)[1]
+            .split('if (fwKey == 46u) {', 1)[0])
+    check(_k45 != '', 'R198 the block is delimited by the doorbell ladder')
+    check('armcpu_map_physical_rw(0x00000000179e0000ULL, 0x00010000u)' in _k45,
+          'R198 the APPS RSC window is mapped with the WRITABLE entry point')
+    check('armcpu_map_physical(0x0000000085fe0000ULL, 0x00020000u)' in _k45,
+          'R198 the command database is mapped read-only')
+    check(_k45.count('quiet_cmd_db_levels(sDbRoVa, "gfx.lvl"') == 1 and
+          _k45.count('quiet_cmd_db_levels(sDbRoVa, "cx.lvl"') == 1,
+          'R198 both rail resources are looked up by name')
+    check('(rlDrv / 0x10000u) % 256u' in _k45,
+          'R198 the layout version is derived without a reserved field literal')
+    check('0x0d00u + 672u * rlT' in _k45 and 'rlTBase + rlEnOff' in _k45,
+          'R198 the free TCS is found by reading cmd_enable at the pinned stride')
+    check('tcs_base' not in _k45 and '0x00010000u' in _k45 and '0x01010000u' in _k45,
+          'R198 the control register is armed then triggered')
+    check(_k45.count('0x00010108u') == 2,
+          'R198 both writes use the write-response message id')
+    check(_k45.count('IODelay(1u);') == 1 and 'rlPolls < 200000u' in _k45,
+          'R198 the completion poll is bounded and sleeps between reads')
+    check('char railRowA[352];' in _k45 and 'char railRowB[352];' in _k45 and
+          'char railRowC[352];' in _k45,
+          'R198 the three rows fit their buffers')
+    check('gmurail4=rsc=%lx drv=%08x tcs=%u gfx_n=%u cx_n=%u gfx_a=%08x cx_a=%08x' in code and
+          'gmurail5=gfx_top=%04x cx_top=%04x gfx_at=%u cx_at=%u ' in code and
+          'gmurail6=gdscr=%08x cxst=%08x gxst=%08x sptp=%08x fwinit=%08x' in code,
+          'R198 the three rows carry the pinned field order')
+    check('HFI_CTRL_INIT' not in _k45 and 'CM3_SYSRESET' not in _k45,
+          'R198 the block never touches the two known lethal registers')
+    check('gmurail4=map-failed' in code,
+          'R198 a failed map is reported rather than silently skipped')
+    _i45 = code.find('if (fwKey == 45u) {')
+    check(0 < _i44 < _i45 < _i18,
+          'R198 key 45 sits after key 44 and before the doorbell ladder')
+
+    # ---- ROUND 199: the GX GDSC is driven from the GPUCC words ------------
+    check(code.count('if (fwKey == 46u) {') == 1,
+          'R199 there is exactly one GX GDSC block')
+    _k46 = (code.split('if (fwKey == 46u) {', 1)[1]
+            .split('if (fwKey == 47u) {', 1)[0])
+    check(_k46 != '', 'R199 the block is delimited by the doorbell ladder')
+    check('ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u' in _k46,
+          'R199 the CFG_GDSCR status word is derived from the pinned GDSCR offset')
+    check('(0x05091508ull - ADRENO_BOARD_GMU_BASE) / 4u' in _k46,
+          'R199 the clamp register is derived as a dword index inside the mapping')
+    check('(ADRENO_DOMAIN_CX_STATUS - ADRENO_BOARD_GMU_BASE) / 4u' in _k46,
+          'R199 the CX status word is derived, never typed')
+    check('armcpu_map_physical_rw(0x00000000179e0000ULL, 0x00010000u)' in _k46,
+          'R199 the rail vote reuses the writable APPS RSC window')
+    check('quiet_cmd_db_levels(sGxDbVa, "gfx.lvl"' in _k46,
+          'R199 the vote level comes from the command database')
+    check('0x00010108u' in _k46 and '0x00010000u' in _k46 and '0x01010000u' in _k46,
+          'R199 the request uses the pinned message id and the arm/trigger pair')
+    check(_k46.count('gmuW[gxClampWord] = gxClPre | 0x00000010u;') == 1 and
+          _k46.count('gmuW[gxClampWord] = gxClPre & 0xffffffefu;') == 1 and
+          _k46.count('gmuW[gxClampWord] = gxClPre & 0xfffffffeu;') == 1 and
+          _k46.count('gmuW[gxGdscrWord] = gxGdPre & 0xfffffffeu;') == 1,
+          'R199 the AON reset pulse, the clamp deassert and the collapse clear are each written once')
+    check('(gxCfgPost & 0x00010000u) != 0u' in _k46 and 'gxOnPolls < 20000u' in _k46,
+          'R199 the power-up poll is bounded and tests the pinned status bit')
+    check('HFI_CTRL_INIT' not in _k46 and 'CM3_SYSRESET' not in _k46,
+          'R199 the block never touches the two known lethal registers')
+    check('GMU2HOST_INTR_SET' not in _k46 and 'GMU2HOST_INTR_CLR' not in _k46,
+          'R199 no doorbell is rung from this block')
+    check('char gxRowA[352];' in _k46 and 'char gxRowB[352];' in _k46 and
+          'char gxRowC[352];' in _k46,
+          'R199 the three rows fit their buffers')
+    check('gmugx2=vote_a=%08x vote_top=%04x tcs=%u st=%08x en=%08x polls=%u' in code and
+          'gmugx3=pre_gdscr=%08x pre_cfg=%08x pre_clamp=%08x pre_cx=%08x' in code and
+          'gmugx4=gdscr=%08x cfg=%08x clamp=%08x cx=%08x gx_on=%d polls=%u' in code,
+          'R199 the three rows carry the pinned field order')
+    _i46 = code.find('if (fwKey == 46u) {')
+    check(0 < _i45 < _i46 < _i18,
+          'R199 key 46 sits after key 45 and before the doorbell ladder')
+
+    # ---- ROUND 200: the same GDSC stores, with the CM3 alive ---------------
+    check(code.count('if (fwKey == 47u) {') == 1,
+          'R200 there is exactly one CM3-alive GDSC block')
+    _k47 = (code.split('if (fwKey == 47u) {', 1)[1]
+            .split('if (fwKey == 48u) {', 1)[0])
+    check(_k47 != '', 'R200 the block is delimited by the doorbell ladder')
+    check('gmugx5=vote_a=%08x vote_top=%04x tcs=%u st=%08x en=%08x polls=%u' in code and
+          'gmugx6=pre_gdscr=%08x pre_cfg=%08x pre_clamp=%08x pre_cx=%08x' in code and
+          'gmugx7=gdscr=%08x cfg=%08x clamp=%08x cx=%08x gx_on=%d polls=%u' in code,
+          'R200 the three rows are retagged so they cannot be confused with key 46')
+    check(_k47.count('gmuW[gxClampWord] = gxClPre | 0x00000010u;') == 1 and
+          _k47.count('gmuW[gxClampWord] = gxClPre & 0xffffffefu;') == 1 and
+          _k47.count('gmuW[gxClampWord] = gxClPre & 0xfffffffeu;') == 1 and
+          _k47.count('gmuW[gxGdscrWord] = gxGdPre & 0xfffffffeu;') == 1,
+          'R200 the four GDSC stores are identical to key 46, one each')
+    check('(gxCfgPost & 0x00010000u) != 0u' in _k47 and 'gxOnPolls < 20000u' in _k47,
+          'R200 the power-up poll keeps the pinned bit and its bound')
+    check('HFI_CTRL_INIT' not in _k47 and 'CM3_SYSRESET' not in _k47,
+          'R200 key 47 still never writes the two lethal registers')
+    check('armcpu_map_physical_rw(0x00000000179e0000ULL, 0x00010000u)' in _k47,
+          'R200 the rail vote half is unchanged')
+    _i47 = code.find('if (fwKey == 47u) {')
+    check(0 < _i46 < _i47 < _i18,
+          'R200 key 47 sits directly after key 46 and before the doorbell ladder')
+
+    # ---- ROUND 201: the CX control and a ten-times longer bound -----------
+    check(code.count('if (fwKey == 48u) {') == 1,
+          'R201 there is exactly one CX-control block')
+    _k48 = (code.split('if (fwKey == 48u) {', 1)[1]
+            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0])
+    check(_k48 != '', 'R201 the block is delimited by the doorbell ladder')
+    check('(0x0509106cull - ADRENO_BOARD_GMU_BASE) / 4u' in _k48 and
+          '(0x05091070ull - ADRENO_BOARD_GMU_BASE) / 4u' in _k48,
+          'R201 the CX control reads the pinned CX GDSCR and its CFG companion')
+    check('gmugx8=cx_gdscr=%08x cx_cfg=%08x cx_bit16=%d' in code,
+          'R201 the control row reports CX completion separately')
+    check('gyPolls < 200000u' in _k48,
+          'R201 the GX bound is ten times the R199/R200 one, so slowness is excluded')
+    check(_k48.count('gmuW[gyClampWord] = gyClPre | 0x00000010u;') == 1 and
+          _k48.count('gmuW[gyClampWord] = gyClPre & 0xffffffefu;') == 1 and
+          _k48.count('gmuW[gyClampWord] = gyClPre & 0xfffffffeu;') == 1 and
+          _k48.count('gmuW[gyGdscrWord] = gyGdPre & 0xfffffffeu;') == 1,
+          'R201 the four stores are the same pinned sequence, once each')
+    check('gmugx9=pre=%08x gdscr=%08x cfg=%08x clamp=%08x gx_on=%d polls=%u' in code,
+          'R201 the result row keeps the before/after contrast')
+    check('HFI_CTRL_INIT' not in _k48 and 'CM3_SYSRESET' not in _k48,
+          'R201 the block touches neither lethal register')
+    _i48 = code.find('if (fwKey == 48u) {')
+    check(0 < _i47 < _i48 < _i18,
+          'R201 key 48 sits after key 47 and before the doorbell ladder')
 
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the
