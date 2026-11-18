@@ -1207,7 +1207,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 33u' in _fw,
+    check('fwKey >= 7u && fwKey <= 34u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1669,7 +1669,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 33u)' in code,
+    check('(fwKey >= 7u && fwKey <= 34u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -1916,7 +1916,7 @@ def main():
     check('char rail2Row[320]' in _k32, 'R186 the rail row has a declared bound')
 
     _k33 = code.split('if (fwKey == 33u) {', 1)[1]
-    _k33 = _k33.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
+    _k33 = _k33.split('if (fwKey == 34u) {', 1)[0]
     check(_k33 != '', 'R186 key 33 exists as its own block after the rail step')
     check(_k33.count('gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] =') == 1 and
           '1u << ADRENO_GMU_BOOT_V1_OOB_BOOT_SLUMBER_SET' in _k33,
@@ -1942,6 +1942,60 @@ def main():
           'R186 the rail block and the doorbell key sit between key 31 and the '
           'doorbell ladder, so both inherit the full write set')
 
+
+    # ---- ROUND 187: a read-only look at the APPS RSC the CPU side can reach --
+    # The touch driver's own RAIL row (`RAIL rc0 db85fe0000 w85fe0000 tcs0
+    # drv00010100 a00042100 ctl00000000 st00000001 n36`) is the only proof on
+    # this machine that an RPMh request ever left the CPU; every GMU-side RSCC
+    # read has come back zero.  Before anything is written through the APPS RSC,
+    # this key says what the DRV id, the four TCS banks and the command database
+    # header at 0x85fe0000 actually contain.
+    check(code.count('if (fwKey == 34u) {') == 1,
+          'R187 key 34 is its own block, so nothing earlier in the file decides '
+          'what it reads')
+    _k34 = code.split('if (fwKey == 34u) {', 1)[1]
+    _k34 = _k34.split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
+    check(_k34 != '', 'R187 the APPS RSC block exists ahead of the doorbell ladder')
+    check('0x00000000179e0000ULL' in _k34 and '0x00010000u' in _k34,
+          'R187 the block maps the whole 0x179e0000 window once, the same window '
+          'the touch driver maps, instead of assuming where the TCS banks sit')
+    check('0x0000000085fe0000ULL' in _k34 and '0x00000000c3f00000ULL' in _k34,
+          'R187 the block also reads the command database the touch driver '
+          'reported and the AOSS pointer word key 29 could not make sense of')
+    check('gmuW[' not in _k34 and 'dsb sy' not in _k34 and 'write32' not in _k34,
+          'R187 the block is read-only: no GMU store, no barrier, no helper write')
+    check('rd32(' in _k34 and 'wr32(' not in _k34,
+          'R187 every access goes through the read helper only')
+    check('gmursc2=va=%lx drv=%08x v3=%d ctl=%08x/%08x/%08x/%08x' in _k34,
+          'R187 the first row reports the DRV id that picks the register layout, '
+          'plus all four TCS control words')
+    check('gmursc3=en=%08x/%08x/%08x/%08x st=%08x/%08x/%08x/%08x' in _k34,
+          'R187 the second row reports enable and status for the same four TCS '
+          'banks, which is what says whether any of them is still in use')
+    check('gmursc4=db=%lx h0=%08x h1=%08x magic=%d pgw=%08x ' in _k34 and
+          'wait=%08x/%08x/%08x/%08x' in _k34,
+          'R187 the third row asks whether the reported address really carries a '
+          'command-database header, repeats the AOSS pointer word read-only, and '
+          'carries the four wait masks')
+    check('0x0c0330dbu' in _k34,
+          'R187 the header check compares against the pinned database magic')
+    check('(rscDrv / 0x10000u) % 256u' in _k34,
+          'R187 the DRV major version is decoded arithmetically, so neither a mask '
+          'nor a shift spelling can be mistaken for an ID1 field decode')
+    check('rscV3 ? 0x24u : 0x14u' in _k34 and 'rscV3 ? 0x2cu : 0x1cu' in _k34 and
+          'rscV3 ? 0x28u : 0x18u' in _k34 and 'rscV3 ? 0x20u : 0x10u' in _k34,
+          'R187 both register layouts from the touch header are carried, selected '
+          'by the measured major version rather than assumed')
+    check('672u * rscI' in _k34 and '0x0d00u + 672u * rscI' in _k34,
+          'R187 the four TCS banks are walked at the pinned 672-byte stride from '
+          'the pinned TCS base')
+    check('char rscRowA[240]' in _k34 and 'char rscRowB[240]' in _k34 and
+          'char rscRowC[352]' in _k34,
+          'R187 each of the three rows has a declared bound')
+    _i34 = code.find('if (fwKey == 34u) {')
+    check(0 < _i33 < _i34 < _i18,
+          'R187 key 34 sits after the rail keys and before the doorbell ladder, so '
+          'it inherits the full pre-start write set and adds none of its own')
 
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the

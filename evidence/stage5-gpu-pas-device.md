@@ -2151,3 +2151,97 @@ boot-slumber 门铃照旧不应答，CM3 照旧 `post=00800000`（FAULT）。
   其余位（`00222001` 里的 13/17/21）**不作解读**。
 - 本轮**没有**验证 `HOST2GMU_INTR_SET` 的其他 OOB 位（GPU_SET/DCVS），
   只验证了上游 `gfx_rail_on()` 实际使用的 boot-slumber 位（22）。
+
+## 三十五、ROUND 187：APPS RSC 可读、命令数据库在 `0x85fe0000` —— R182 的判决被推翻
+
+**一句话**：CPU 侧的 APPS RSC 窗口（`0x179e0000`，`qcom,tcs-drv`）从这支内核里
+**是可读的**，读回的 `drv=00010100` 与触摸驱动自己的 `RAIL` 行逐位相同；顺着这条
+通道能读到一个**带 magic 的命令数据库头**，基址 `0x85fe0000`。因此 R182 的
+「这台机器引导器没有灌 cmd-db」**只对当时试过的那两个地址成立**，不是机器事实。
+
+### 35.1 为什么值得先做这一轮（而不是继续猜 GMU）
+
+- §三十四把四条独立读数合成一条链：RSC `ack=0`、SPTPRAC 时钟不就绪、
+  GX 不上电、门铃只换来 `CM3_FAULT`。但这四条**全是 GMU 侧的窗口**
+  （`gmu mmio + 0x23000`）。
+- 同机同窗里另有一行不属于 GPU 的读数，来自触摸探针：
+
+      RAIL rc0 db85fe0000 w85fe0000 tcs0 drv00010100 a00042100 ctl00000000 st00000001 n36
+
+  `rc=0` 表示触摸驱动对 RPMh 的请求**成功了**。也就是说：
+  - 这台机器上 **CPU 侧** 的 RSC/RPMh 通道是通的；
+  - 命令数据库在这个驱动看来位于 `0x85fe0000`；
+  - 这与 GPU 侧 `gmursc=ack=00000000 busy=00000000 mem0=00000000` 形成直接对照。
+- 所以本轮只做一件事：**用只读方式确认这两条读数在 GPU 探针里也成立**。
+  不写任何寄存器，不碰 TCS。
+
+### 35.2 键 34 的形状（只读）
+
+- 构建：#295 / run `44256735543`（分支 `r187-apps-rsc`，commit
+  `d173e44435cd4eb8577ddfe8d386adba8ff32d6e`，tree
+  `f29cae3dc9cd99a89cd2569d962dd3a077ad2405`）。
+- 工件：kernel `7eba2bc0414dbb5283fe972f39183e3d4e59da55793255edd97f9cec26df6117`，
+  payload `3faab15e3ae5b0975b85f5ad0a922f8d725810d4bbadb2e2e6f2f563b72ad9b0`；
+  `r187_static.py` PASS（required 33 / forbidden 12 / 固件头两处都在）。
+- rekey `=2 -> =34`：`ebc18943c3e22266241def0a2e4a3472a11f5af7bb267a09ff3a333b174c62fe`。
+- 块内容：
+  - 一次 `armcpu_map_physical(0x00000000179e0000ULL, 0x00010000u)`——整个窗口，
+    与触摸驱动 `mapRegion(FTB_APPS_RSC_BASE, FTB_APPS_RSC_SIZE)` 相同范围；
+  - `rscDrv = rd32(rscVa, 0x00u)`，由 `(rscDrv / 0x10000u) % 256u` 得 major 版本，
+    据此在 v3 与 legacy 两套偏移之间选择（**用除/模而不是移位或掩码**：stage-6
+    验证器有一条「不得重新推导 ID1 字段」的守卫，会拦住 `>> 16` 这类写法）；
+  - 四个 TCS（`0x0d00u + 672u * i`）各读 `control`/`cmd_enable`/`status`/`wait_for_cmpl`；
+  - 再读 `0x85fe0000` 的头两字与 `0xc3f00000` 页 `+0x0c` 的那个字。
+  - 整个块**只有一个 API：`rd32`**。无 `gmuW[`、无 `wr32`、无 `dsb sy`。
+
+### 35.3 判决：三条读数全部成立（DEVICE-VERIFIED）
+
+- 上机（`r187_s34_device_run.py`，15:36）：`flash readback matches: True`
+  （system_b 头 `c634af16…` == payload 头）；窗口
+  **`896719d3ea9914bfa713b0f241c413f7ec49da05f783a40e03fc15165e61425b`**、
+  boot_id **553864669**（新）、msg_bytes 30560、slots_written 8、
+  uptime_s 3、write_errors 0。
+- 逐字三行：
+
+      gmursc2=va=fffffffa48820000 drv=00010100 v3=0 ctl=00000000/00000000/00000000/00000000
+      gmursc3=en=00000000/00000000/00000000/00000000 st=00000001/00000001/00000001/00000001
+      gmursc4=db=fffffffa48830000 h0=00000001 h1=0c0330db magic=1 pgw=10c11c22 wait=00000000/00000000/00000000/00000000
+
+- 解读：
+  1. **`drv=00010100`** 与触摸驱动的 `drv00010100` 逐位相同 ⇒ 探针读到的就是
+     同一个 APPS RSC，且版本 major = 1 ⇒ 走 legacy 布局（`v3=0`），
+     与触摸驱动实际使用的那套偏移一致。
+  2. **`magic=1`**（`h1=0c0330db`，`h0=00000001` 是 version）⇒ 命令数据库
+     确实在 **`0x85fe0000`**。R182 试过的 `0x861e0000`（全 0）与 AOSS 指针页
+     读到的 `0x10c11c22`（不是 RAM 地址）**两个候选都是错的地址**，
+     不是「机器没有数据库」。
+  3. **`pgw=10c11c22`** 与 R182 键 29 在那张页上读到的字**完全相同** ⇒ 那张页
+     确实是 AOSS 消息 RAM，里面装的是 RPMh 命令字，不是指向数据库的指针；
+     触摸驱动之所以能成功，是因为它另有一条路径（候选二在它那里命中）。
+  4. 四个 TCS 的 `ctl`/`en` 全 0、`st` 全 1 ⇒ **全部空闲**，没有被写死或残留
+     占用；这与 GMU 侧 RSCC 的「有背衬但从不应答」不同。
+
+### 35.4 这条判决改变了什么
+
+- R181 想用命令数据库算 `arc vote` 的路子当时被自己否掉（键 27 读
+  `0x861e0000` 拿不到 magic）。现在这条路**重新成立**：
+  - 基址 `0x85fe0000` 已知且已验证；
+  - 探针里已有现成的解析器 `quiet_cmd_db_levels()`（magic 校验在 `+4`、
+    8 条 slave 记录、条目 24 B、地址在 `+16`、level 表是零填充 u16）；
+  - 上游 `a6xx_gmu_rpmh_arc_votes_init()` 的公式只需 `pindex`/`sindex`，
+    即「表中最大 level 首次出现的下标」，不需要 OPP 表（见 §三十一）。
+- 仍未解决的不是数据来源，而是**通道**：GPU 侧 `RSC_CONTROL_ACK` 依旧为 0
+  （§三十四）。CPU 侧的 APPS RSC 通、GMU 侧的 RSCC 不通——两者是两条不同的路。
+  下一轮要回答的问题是：拿到真实 `gfx.lvl`/`cx.lvl` 之后，把这两笔 vote 写进
+  `GX_VOTE_IDX`/`MX_VOTE_IDX`，GMU 侧的 `ack` 会不会变。
+
+### 35.5 诚实边界
+
+- 本轮只读，**没有**向任何 TCS 写过一笔，因此「TCS 空闲」只证明寄存器状态，
+  不证明从这支内核写进去会被接受。
+- `magic=1` 只验证到数据库头的前两字；**没有**解析 slave 记录，
+  因此「`gfx.lvl` 和 `cx.lvl` 两张表能读出来」仍是假设。
+- `drv` 版本 major 只用来选偏移；`0x00010100` 里的低 16 位（`0x0100`）
+  **不作解读**。
+- 本轮没有重新验证 R182 的 `0x861e0000`：那是另一支镜像的读数，本轮只测了
+  `0x85fe0000` 与 `0xc3f00000` 页。

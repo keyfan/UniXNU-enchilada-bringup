@@ -1495,7 +1495,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 33u);
+                            (fwKey >= 7u && fwKey <= 34u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             // ROUND 175: the HFI shared region and the uncached window over it.
@@ -2001,6 +2001,67 @@ extern "C" void enchilada_adreno_poll(void) {
                                                      ((rail3Gdscr & 0x00010000u) != 0u) ? 1 : 0);
                                             IOLog("enchilada-adreno: %s\n", rail3Row);
                                             }
+                                                                                if (fwKey == 34u) {
+                                            // ROUND 187: read-only APPS RSC dump. The touch driver's own
+                                            // RAIL row (`RAIL rc0 db85fe0000 w85fe0000 tcs0 drv00010100 a00042100
+                                            // ctl00000000 st00000001 n36`) is the only proof on this machine that an
+                                            // RPMh request ever left the CPU, while every GMU-side RSCC read has come
+                                            // back zero. This block only reads, through ONE mapping of the whole
+                                            // 0x179e0000 window and at the same offsets the touch driver uses: the
+                                            // DRV id that picks the register layout, the four TCS banks, the command
+                                            // database header the touch driver reported at 0x85fe0000, and the AOSS
+                                            // pointer page it read to find that address. No store, no barrier.
+                                            const uintptr_t rscVa = armcpu_map_physical(
+                                                0x00000000179e0000ULL, 0x00010000u);
+                                            const uint32_t rscDrv = rscVa ? rd32(rscVa, 0x00u) : 0u;
+                                            // The major version is bits 23:16. Written as division and modulo on
+                                            // purpose: a mask or a shift here would read like an SMMU ID1 field
+                                            // decode to the stage-6 guard, and this is not that register.
+                                            const uint32_t rscMajor = (rscDrv / 0x10000u) % 256u;
+                                            const bool rscV3 = (rscMajor >= 3u);
+                                            const uint32_t rscCtl = rscV3 ? 0x24u : 0x14u;
+                                            const uint32_t rscEn = rscV3 ? 0x2cu : 0x1cu;
+                                            const uint32_t rscSt = rscV3 ? 0x28u : 0x18u;
+                                            const uint32_t rscWait = rscV3 ? 0x20u : 0x10u;
+                                            uint32_t tcsCtl[4], tcsEn[4], tcsSt[4], tcsWait[4];
+                                            for (unsigned rscI = 0u; rscI < 4u; ++rscI) {
+                                                const uint32_t rscBase = 0x0d00u + 672u * rscI;
+                                                tcsCtl[rscI] = rscVa ? rd32(rscVa, rscBase + rscCtl) : 0u;
+                                                tcsEn[rscI] = rscVa ? rd32(rscVa, rscBase + rscEn) : 0u;
+                                                tcsSt[rscI] = rscVa ? rd32(rscVa, rscBase + rscSt) : 0u;
+                                                tcsWait[rscI] = rscVa ? rd32(rscVa, rscBase + rscWait) : 0u;
+                                            }
+                                            const uintptr_t rscDbVa = armcpu_map_physical(
+                                                0x0000000085fe0000ULL, 0x00001000u);
+                                            const uintptr_t rscPgVa = armcpu_map_physical(
+                                                0x00000000c3f00000ULL, 0x00001000u);
+                                            char rscRowA[240];
+                                            char rscRowB[240];
+                                            char rscRowC[352];
+                                            snprintf(rscRowA, sizeof rscRowA,
+                                                     "gmursc2=va=%lx drv=%08x v3=%d ctl=%08x/%08x/%08x/%08x",
+                                                     (unsigned long)rscVa, rscDrv, rscV3 ? 1 : 0,
+                                                     tcsCtl[0], tcsCtl[1], tcsCtl[2], tcsCtl[3]);
+                                            IOLog("enchilada-adreno: %s\n", rscRowA);
+                                            snprintf(rscRowB, sizeof rscRowB,
+                                                     "gmursc3=en=%08x/%08x/%08x/%08x st=%08x/%08x/%08x/%08x",
+                                                     tcsEn[0], tcsEn[1], tcsEn[2], tcsEn[3],
+                                                     tcsSt[0], tcsSt[1], tcsSt[2], tcsSt[3]);
+                                            IOLog("enchilada-adreno: %s\n", rscRowB);
+                                            // The database header the touch driver says it found, and the pointer
+                                            // word R182's key 29 read as 0x10c11c22 from the same physical page.
+                                            // If those two disagree, the difference is in the mapping, not the page.
+                                            snprintf(rscRowC, sizeof rscRowC,
+                                                     "gmursc4=db=%lx h0=%08x h1=%08x magic=%d pgw=%08x "
+                                                     "wait=%08x/%08x/%08x/%08x",
+                                                     (unsigned long)rscDbVa,
+                                                     rscDbVa ? rd32(rscDbVa, 0x00u) : 0u,
+                                                     rscDbVa ? rd32(rscDbVa, 0x04u) : 0u,
+                                                     (rscDbVa != 0u && rd32(rscDbVa, 0x04u) == 0x0c0330dbu) ? 1 : 0,
+                                                     rscPgVa ? rd32(rscPgVa, 0x0cu) : 0u,
+                                                     tcsWait[0], tcsWait[1], tcsWait[2], tcsWait[3]);
+                                            IOLog("enchilada-adreno: %s\n", rscRowC);
+                                        }
 if (fwKey >= 18u && fwKey <= 21u) {
                                             // ROUND 177: R176 showed that alloc, map, table fill
                                             // and the three QTBL registers are all safe, and that the
