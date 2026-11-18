@@ -1207,7 +1207,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 23u' in _fw,
+    check('fwKey >= 7u && fwKey <= 25u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1268,7 +1268,11 @@ def main():
               'ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR',
               'ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO',
               'ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG',
-              'ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT'])),
+              'ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT',
+              # ROUND 179: a6xx_rpmh_start() and a6xx_sptprac_enable(), the two
+              # steps upstream runs that this probe had been skipping.
+              'ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ',
+              'ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL'])),
           'R168+R170+R171+R175 the register write set is exactly the named words (%r)'
           % sorted(set(_stores)))
     # ==== ROUND 175 (slice 4): the HFI queue table, at a PHYSICAL address ====
@@ -1398,6 +1402,59 @@ def main():
     check(0 <= _i22 < _i23,
           'R178 key 23 is a strict extension of key 22, so one surviving run '
           'separates the handshake from the status poll')
+    # ==== ROUND 179 (slice 3, step 4): the two steps upstream runs that this ===
+    # ==== probe skipped -- a6xx_rpmh_start() and a6xx_sptprac_enable()     ===
+    # R178 proved the doorbell store is survivable once the rail-on handshake
+    # shape runs first, but the CM3 still raised GMU2HOST_INTR_INFO_CM3_FAULT
+    # (bit 23) and never answered the doorbell. a6xx_gmu_fw_start() also runs
+    # a6xx_rpmh_start() right after GENERAL_7 and, because gmu->legacy is true
+    # and idle_level is GMU_IDLE_STATE_ACTIVE on this board, a6xx_sptprac_enable()
+    # between gfx_rail_on and hfi_start. Keys 24 and 25 add exactly those.
+    _k24 = (code.split('if (fwKey >= 24u) {', 1)[1]
+            .split('gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;', 1)[0]
+            if 'if (fwKey >= 24u) {' in code else '')
+    _k25 = (code.split('if (fwKey >= 25u) {', 1)[1]
+            .split('if (sHfiWin) {', 1)[0]
+            if 'if (fwKey >= 25u) {' in code else '')
+    check('gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 2u;' in _k24 and
+          'gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 0u;' in _k24,
+          'R179 key 24 asks the GPU RSC to come up and then releases it, exactly '
+          'the two writes a6xx_rpmh_start() makes around its two polls')
+    check('rpmhPolls < 400000u' in _k24 and 'rpmhBusyPolls < 400000u' in _k24,
+          'R179 both RSC waits are bounded, so a silent RSC cannot spin the boot')
+    check('ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +' in _k24 and
+          'ADRENO_GMU_BOOT_V1_RSCC_SEQ_BUSY_DRV0 * 4u' in _k24,
+          'R179 RSCC_SEQ_BUSY is read through the derived +0x23000 slice, which is '
+          'where a6xx_gmu_init() puts gmu->rscc for a non-a650/a7xx chip')
+    check('gmurpmh=pre=%08x ack=%08x apolls=%u busy=%08x bpolls=%u ok=%d' in _k24,
+          'R179 key 24 prints its own row, so a surviving run separates the RSC '
+          'from everything that follows')
+    check('gmuW[ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL] =' in _k25 and
+          'ADRENO_GMU_BOOT_V1_SPTPRAC_ON_VALUE' in _k25,
+          'R179 key 25 writes SPTPRAC_POWER_CONTROL with the ON value 0x778000, '
+          'the same literal a6xx_sptprac_enable() writes')
+    check('ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_MASK) ==' in _k25 and
+          'ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_PATTERN' in _k25 and
+          'sptpPolls < 400000u' in _k25,
+          'R179 the SPTPRAC wait looks for (status & 0x38) == 0x28 and is bounded')
+    check('gmusptp=pre=%08x stat=%08x polls=%u ok=%d' in _k25,
+          'R179 key 25 prints its own row')
+    check('ADRENO_GMU_BOOT_V1_GX_VOTE_IDX]' not in code and
+          'ADRENO_GMU_BOOT_V1_MX_VOTE_IDX]' not in code,
+          'R179 still NEITHER rail vote is written anywhere: the vote is an RPMh '
+          'command-db arc index and this board ships no opp-hz/arc-level data')
+    _g7 = code.find('gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;')
+    _i24 = code.find('if (fwKey >= 24u) {')
+    _fwinit = code.find('gmuW[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;')
+    _i25 = code.find('if (fwKey >= 25u) {')
+    _i22r = code.find('if (fwKey >= 22u) {')
+    check(0 <= _g7 < _i24 < _fwinit,
+          'R179 key 24 sits where upstream puts a6xx_rpmh_start(): after '
+          'GENERAL_7 and before the firmware words')
+    check(0 <= _i25 and 0 <= _i22r and _i25 > _i22r,
+          'R179 key 25 sits after the rail-on handshake, i.e. between '
+          'gfx_rail_on and the doorbell, as upstream orders it')
+
     check('postSig <= 0x20010004u' in _k8 and '0xbabefaceu' in _k8 and
           '0x1ffu' in _k8 and '0x100u' in _k8,
           'R168 the expected FW_INIT_RESULT is SELECTED from the just-loaded DTCM '

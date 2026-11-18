@@ -1444,7 +1444,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 23u);
+                            (fwKey >= 7u && fwKey <= 25u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             // ROUND 175: the HFI shared region and the uncached window over it.
@@ -1572,6 +1572,42 @@ extern "C" void enchilada_adreno_poll(void) {
                                         // Pre-start writes in upstream order
                                         // (a6xx_gmu_fw_start, cold branch).
                                         gmuW[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;
+                                        // ROUND 179: upstream a6xx_gmu_fw_start() calls a6xx_rpmh_start() right
+                                        // after GENERAL_7: it asks the GPU RSC to come up and waits for the
+                                        // acknowledgement before the CM3 is released.  Keys 22/23 skipped that step
+                                        // and the CM3 still raised GMU2HOST_INTR_INFO_CM3_FAULT (bit 23) instead of
+                                        // answering the boot-slumber doorbell, so this key runs exactly those four
+                                        // steps -- REQ=BIT(1), poll ACK bit 1, poll RSCC SEQ_BUSY == 0, REQ=0 -- and
+                                        // nothing else.
+                                        if (fwKey >= 24u) {
+                                            const uint32_t rpmhPre = rd32(
+                                                sGmuFwVa, ADRENO_GMU_BOOT_V1_RSCC_CONTROL_ACK * 4u);
+                                            gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 2u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            uint32_t rpmhAck = 0u;
+                                            unsigned rpmhPolls = 0u;
+                                            for (; rpmhPolls < 400000u; ++rpmhPolls) {
+                                                rpmhAck = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_RSCC_CONTROL_ACK * 4u);
+                                                if ((rpmhAck & 2u) != 0u) break;
+                                            }
+                                            uint32_t rpmhBusy = 0u;
+                                            unsigned rpmhBusyPolls = 0u;
+                                            for (; rpmhBusyPolls < 400000u; ++rpmhBusyPolls) {
+                                                rpmhBusy = rd32(
+                                                    sGmuFwVa,
+                                                    ADRENO_GMU_BOOT_V1_GMU_RSCC_DELTA +
+                                                        ADRENO_GMU_BOOT_V1_RSCC_SEQ_BUSY_DRV0 * 4u);
+                                                if (rpmhBusy == 0u) break;
+                                            }
+                                            gmuW[ADRENO_GMU_BOOT_V1_RSCC_CONTROL_REQ] = 0u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            char rpmhRow[248];
+                                            snprintf(rpmhRow, sizeof rpmhRow,
+                                                     "gmurpmh=pre=%08x ack=%08x apolls=%u busy=%08x bpolls=%u ok=%d",
+                                                     rpmhPre, rpmhAck, rpmhPolls, rpmhBusy, rpmhBusyPolls,
+                                                     (((rpmhAck & 2u) != 0u) && (rpmhBusy == 0u)) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", rpmhRow);
+                                        }
                                         gmuW[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;
                                         gmuW[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] =
                                                 ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
@@ -1878,6 +1914,34 @@ extern "C" void enchilada_adreno_poll(void) {
                                                 sGmuFwVa, ADRENO_GMU_BOOT_V1_BOOT_SLUMBER_OPTION * 4u);
                                             const uint32_t railHfiPre = rd32(
                                                 sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            // ROUND 179: a6xx_sptprac_enable() is what upstream runs between
+                                            // gfx_rail_on and hfi_start once the CPU owns SPTP collapse.  Key 25 adds it
+                                            // with the same value (0x778000) and the same expectation
+                                            // ((status & 0x38) == 0x28), still before the HFI doorbell.
+                                            if (fwKey >= 25u) {
+                                                const uint32_t sptpPre = rd32(
+                                                    sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                                gmuW[ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL] =
+                                                    ADRENO_GMU_BOOT_V1_SPTPRAC_ON_VALUE;
+                                                __asm__ volatile("dsb sy" ::: "memory");
+                                                uint32_t sptpNow = 0u;
+                                                unsigned sptpPolls = 0u;
+                                                for (; sptpPolls < 400000u; ++sptpPolls) {
+                                                    sptpNow = rd32(
+                                                        sGmuFwVa, ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                                    if ((sptpNow & ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_MASK) ==
+                                                        ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_PATTERN) {
+                                                        break;
+                                                    }
+                                                }
+                                                char sptpRow[208];
+                                                snprintf(sptpRow, sizeof sptpRow,
+                                                         "gmusptp=pre=%08x stat=%08x polls=%u ok=%d",
+                                                         sptpPre, sptpNow, sptpPolls,
+                                                         ((sptpNow & ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_MASK) ==
+                                                          ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_PATTERN) ? 1 : 0);
+                                                IOLog("enchilada-adreno: %s\n", sptpRow);
+                                            }
                                             if (sHfiWin) {
                                                 gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
                                             }
