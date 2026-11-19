@@ -1207,7 +1207,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 68u' in _fw,
+    check('fwKey >= 7u && fwKey <= 70u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1672,7 +1672,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 68u)' in code,
+    check('(fwKey >= 7u && fwKey <= 70u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3086,6 +3086,20 @@ def main():
           'R218 it does not repeat R214 s mistake either')
     check('IOSleep' not in _k64 and 'IODelay' not in _k64 and 'for (' not in _k64,
           'R218 no wait of any kind')
+    # ---- ROUND 222: the start word moves INTO key 66, so the key value stops being a variable.
+    # R221 gave a full writer round of margin and still lost every row, including the one
+    # printed before the store, so "not enough time to flush" is not the explanation. Every
+    # zero-byte result so far also changed the key value, and the arm window has been widened
+    # by hand each round; this key keeps 66 and changes only the body.
+    _i66b = code.find('if (fwKey == 66u) {')
+    _k66b = (code.split('if (fwKey == 66u) {', 1)[1]
+             .split('if (fwKey == 67u) {', 1)[0]) if _i66b >= 0 else ''
+    check(_k66b.find('gmu223a=') < _k66b.find('HFI_CTRL_INIT] = 0u;') <
+          _k66b.find('gmu223c='),
+          'R223 the rows bracket the store')
+    check('IOSleep' not in _k66b and 'IODelay' not in _k66b and 'for (' not in _k66b,
+          'R223 no wait of any kind: this key isolates the value, not the pacing')
+
     # ---- ROUND 219: three single-variable branches that split R218's three stores.
     # R218 lost even the unconditional echo row when the body grew the stores, so at
     # least one write stops the machine; these keys differ by exactly one thing each.
@@ -3099,12 +3113,15 @@ def main():
     _k67 = (code.split('if (fwKey == 67u) {', 1)[1]
             .split('if (fwKey == 68u) {', 1)[0]) if _i67 >= 0 else ''
     _k68 = (code.split('if (fwKey == 68u) {', 1)[1]
-            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]) if _i68 >= 0 else ''
-    check(_k66.count('gmu219a=') == 1 and _k66.count('gmu219b=') == 1 and
-          _k66.count('gmu219c=') == 1,
-          'R219 key 66 prints three rows as the no-store control')
-    check('gmuW[' not in _k66,
-          'R219 key 66 stores NOTHING: it decides whether a verdict is available here')
+            .split('if (fwKey == 69u) {', 1)[0]) if _i68 >= 0 else ''
+    check(_k66b.count('gmu223a=') == 1 and _k66b.count('gmu223b=') == 1 and
+          _k66b.count('gmu223c=') == 1,
+          'R223 key 66 prints three rows around the store')
+    check(_k66b.count('gmuW[') == 1,
+          'R223 key 66 carries exactly one store')
+    check(_k66b.count('HFI_CTRL_INIT] = 0u;') == 1,
+          'R223 that store writes 0, so the access is held constant and only the value '
+          'differs from R222')
     check(_k67.count('gmuW[') == 2,
           'R219 key 67 writes exactly the two table words')
     check('HFI_CTRL_INIT' not in _k67,
@@ -3116,6 +3133,44 @@ def main():
     for _name, _body in (('66', _k66), ('67', _k67), ('68', _k68)):
         check('IOSleep' not in _body and 'IODelay' not in _body and 'for (' not in _body,
               'R219 key %s waits for nothing' % _name)
+    # ---- ROUND 220: key 69 exists to make the bark/panic-flush channel test visible.
+    # R219 could not say WHERE HFI_CTRL_INIT=1 kills, because no [panic] text survives.
+    # ArmCpu's enchilada-wdog-stop + -stop-panic switch makes the timer interrupt call
+    # barkCapture() on demand, so the channel can be validated before trusting it.
+    _i69 = code.find('if (fwKey == 69u) {')
+    _k69 = (code.split('if (fwKey == 69u) {', 1)[1]
+            .split('if (fwKey == 70u) {', 1)[0]) if _i69 >= 0 else ''
+    check(_i69 > 0 and _k69 != '', 'R220 key 69 exists and sits before the doorbell ladder')
+    check(_i69 > _i68, 'R220 key 69 follows the R219 branches')
+    check(_k69.count('gmu220a=') == 1, 'R220 the key prints exactly one row')
+    check('gmuW[' not in _k69,
+          'R220 key 69 stores NOTHING: it is a channel probe, not a store test')
+    check('IOSleep' not in _k69 and 'IODelay' not in _k69 and 'for (' not in _k69,
+          'R220 it waits for nothing')
+    # ---- ROUND 221: key 70 pauses a full writer round BEFORE the start word.
+    # The measured margin at this point in boot is 107 ms against a ~500 ms round, so
+    # R219's zero bytes could not separate "died instantly" from "survived, never flushed".
+    _i70 = code.find('if (fwKey == 70u) {')
+    _k70 = (code.split('if (fwKey == 70u) {', 1)[1]
+            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]) if _i70 >= 0 else ''
+    check(_i70 > 0 and _k70 != '', 'R221 key 70 exists and sits before the doorbell ladder')
+    check(_i70 > _i69, 'R221 key 70 follows key 69')
+    check(_k70.count('gmu221a=') == 1 and _k70.count('gmu221b=') == 1 and
+          _k70.count('gmu221c=') == 1,
+          'R221 the block prints exactly three rows')
+    check(_k70.count('gmuW[') == 3,
+          'R221 exactly three stores: the two table words and the start word')
+    check('r221Wait < 200000u' in _k70,
+          'R221 the pause is the bounded read loop R201 timed, not a sleep')
+    check(_k70.count('IODelay(1u);') == 1,
+          'R221 the pause yields with IODelay, so the writer can run')
+    check(_k70.find('gmu221b=') < _k70.find('r221Wait <') < _k70.find('HFI_CTRL_INIT] = 1u;'),
+          'R221 the pause sits between the durable row B and the start word')
+    check('IOSleep' not in _k70, 'R221 it never blocks')
+
+
+
+
 
 
     # ---- ROUND 216: key 65 finally brackets the store with durable rows.

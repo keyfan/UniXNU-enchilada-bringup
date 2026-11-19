@@ -330,7 +330,7 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 162,
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 166,
               'R168+R170+R171+R175+R178+R181+R186+R205 the pointer writes are exactly '
               'the ITCM loop, the pulse words, the three handshake words, the '
               'nine pre-start configuration words, the four HFI words (QTBL_ADDR, '
@@ -376,7 +376,13 @@ def main():
               'key 65 died before even an unconditional echo row reached the medium; and the '
               'R219 split adds three more in two of the three branches: key 67 writes the two '
               'table words and key 68 writes the start word, while key 66 is the no-store '
-              'control that decides whether a verdict is available at this position at all')
+              'control that decides whether a verdict is available at this position at all; and '
+              'the R221 margin key adds the same three once more on key 70, which pauses a full '
+              'writer round BEFORE the start word, because the measured gap at that point was '
+              '107 ms against a ~500 ms round and no post-store row could ever land; and the '
+              'R222 attribution test moves that single store into key 66, the value already '
+              'proven to write its window, so the key value stops being a variable: one store '
+              'net, three rows around it')
         check('volatile uint32_t *const gmuW' in text,
               'R168 every one of those writes goes through a volatile mapping')
 

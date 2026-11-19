@@ -1530,7 +1530,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 68u);
+                            (fwKey >= 7u && fwKey <= 70u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -4163,28 +4163,42 @@ if (fwKey == 65u) {
 }
 
 if (fwKey == 66u) {
-    // ROUND 219 branch 1: the three rows, and NOT ONE store. This is the control
-    // for keys 67 and 68: if these rows are not readable, then no store verdict is
-    // available at this point in boot and the bracket has to move elsewhere.
-    char r219RowA[320];
-    snprintf(r219RowA, sizeof r219RowA,
-             "gmu219a=no_store=1 stat=%08x addr=%08x info=%08x",
+    // ROUND 223: R222 showed that adding HFI_CTRL_INIT=1 to this very key makes the
+    // whole window vanish (3/3 -> 0/3), with the key value held constant. This round
+    // writes the SAME offset with value 0 to separate "touching the register is fatal"
+    // from "the start request is fatal". Same access, same moment, different value.
+    // ROUND 222 context: R221 gave a full writer round of margin and still lost every row --
+    // including the one printed BEFORE the store -- so "not enough time to flush" is
+    // not the explanation. At the same time every zero-byte result so far also changed
+    // the key value, and the arm window has been widened by hand each round. Key 66 is
+    // the one key proven to write its window (3/3, no store). This edit keeps the key
+    // value untouched and adds exactly one store, so the key value stops being a
+    // variable: row A -> the start word -> row B -> row C.
+    char r222RowA[320];
+    snprintf(r222RowA, sizeof r222RowA,
+             "gmu223a=before=1 stat=%08x addr=%08x info=%08x win=%d",
              rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
              rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
-             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u));
-    IOLog("enchilada-adreno: %s\n", r219RowA);
-    char r219RowB[320];
-    snprintf(r219RowB, sizeof r219RowB,
-             "gmu219b=no_store=1 stat=%08x fwinit=%08x",
-             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
-             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
-    IOLog("enchilada-adreno: %s\n", r219RowB);
-    char r219RowC[320];
-    snprintf(r219RowC, sizeof r219RowC,
-             "gmu219c=no_store=1 stat=%08x intr=%08x",
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+             (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r222RowA);
+
+    gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 0u;
+    __asm__ volatile("dsb sy" ::: "memory");
+
+    char r222RowB[320];
+    snprintf(r222RowB, sizeof r222RowB,
+             "gmu223b=start_written=1 stat=%08x intr=%08x",
              rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
              rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u));
-    IOLog("enchilada-adreno: %s\n", r219RowC);
+    IOLog("enchilada-adreno: %s\n", r222RowB);
+
+    char r222RowC[352];
+    snprintf(r222RowC, sizeof r222RowC,
+             "gmu223c=after=1 stat=%08x fwinit=%08x survived=1",
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
+    IOLog("enchilada-adreno: %s\n", r222RowC);
 }
 
 if (fwKey == 67u) {
@@ -4241,6 +4255,71 @@ if (fwKey == 68u) {
              "gmu219i=after=1 stat=%08x survived=1",
              rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u));
     IOLog("enchilada-adreno: %s\n", r219cRowC);
+}
+
+if (fwKey == 69u) {
+    // ROUND 220: this key exists only to make the channel test visible. The real work
+    // is driven by boot args (enchilada-wdog-stop=<s> enchilada-wdog-stop-panic=1):
+    // at the stop time the timer interrupt calls barkCapture(), which panics with
+    // "ENCHILADA BARK ..." and lets the panic screen flush the log. That separates
+    // "the machine took no interrupt at all" from "it panicked but the flush failed",
+    // which R219 could not distinguish. Nothing is stored and nothing is called here.
+    char r220Row[320];
+    snprintf(r220Row, sizeof r220Row,
+             "gmu220a=channel_probe=1 stat=%08x addr=%08x info=%08x win=%d",
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+             (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r220Row);
+}
+
+if (fwKey == 70u) {
+    // ROUND 221: R219 said HFI_CTRL_INIT=1 alone stops the machine, but its zero-byte
+    // window could not separate "died instantly" from "survived but never flushed".
+    // Measured margin at that point: the probe rows sit at 30.118 and the window's last
+    // content is 30.225, i.e. 107 ms, while one writer round needs about 500 ms. So a
+    // post-store row could never land there. This key inserts one full round's worth of
+    // pause BEFORE the start word, using the only pacing method that has never killed a
+    // boot (bounded read loop with IODelay: R201 3.17 s, R211 3.18 s, R212 6.43 s).
+    char r221RowA[320];
+    snprintf(r221RowA, sizeof r221RowA,
+             "gmu221a=before=1 stat=%08x addr=%08x info=%08x win=%d",
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+             (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r221RowA);
+
+    gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;
+    gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+    __asm__ volatile("dsb sy" ::: "memory");
+
+    char r221RowB[320];
+    snprintf(r221RowB, sizeof r221RowB,
+             "gmu221b=table_written=1 addr=%08x info=%08x stat=%08x",
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u));
+    IOLog("enchilada-adreno: %s\n", r221RowB);
+
+    // One full writer round (about 500 ms observed) plus a wide margin, so row B is
+    // guaranteed to be on the medium before the start word is written.
+    for (unsigned r221Wait = 0u; r221Wait < 200000u; ++r221Wait) {
+        (void)rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+        IODelay(1u);
+    }
+
+    gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+    __asm__ volatile("dsb sy" ::: "memory");
+
+    char r221RowC[352];
+    snprintf(r221RowC, sizeof r221RowC,
+             "gmu221c=start_written=1 stat=%08x intr=%08x fwinit=%08x survived=1",
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
+    IOLog("enchilada-adreno: %s\n", r221RowC);
 }
 
 if (fwKey >= 18u && fwKey <= 21u) {
