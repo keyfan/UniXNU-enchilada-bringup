@@ -108,6 +108,7 @@ def main():
         (c_rec, GPU / 'AdrenoSmmuAsidV1.c', ['-mgeneral-regs-only']),  # round 102
         (c_rec, GPU / 'AdrenoSmmuId1V1.c', ['-mgeneral-regs-only']),  # round 227
         (c_rec, GPU / 'AdrenoSmmuLpaeV1.c', ['-mgeneral-regs-only']),  # round 229
+        (c_rec, GPU / 'AdrenoSmmuTableV1.c', ['-mgeneral-regs-only']),  # round 230
         (c_rec, GPU / 'AdrenoIommuProbeV1.c', ['-mgeneral-regs-only']),  # round 86
     ]
     objects, commands = [], {}
