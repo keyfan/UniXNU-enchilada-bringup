@@ -330,7 +330,7 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 150,
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 162,
               'R168+R170+R171+R175+R178+R181+R186+R205 the pointer writes are exactly '
               'the ITCM loop, the pulse words, the three handshake words, the '
               'nine pre-start configuration words, the four HFI words (QTBL_ADDR, '
@@ -367,7 +367,16 @@ def main():
               'adds the same three once more, because it needs one row either '
               'side of each store step and cannot pace at all; and the R210 '
               'paced key adds the same three again, because it repeats the '
-              'store under the yielding read loop R201 timed')
+              'store under the yielding read loop R201 timed; and the R214 flush key '
+              'adds the same three a fourth time, because it syncs the medium after '
+              'every row instead of waiting for a flush; and the R216 bracket key adds the '
+              'same three a fifth time, because it needs a durable row either side of each '
+              'store step; and the R218 bracket adds the same three a sixth time, on the key '
+              'value R217 s control proved is actually reached, because R216 s attempts on '
+              'key 65 died before even an unconditional echo row reached the medium; and the '
+              'R219 split adds three more in two of the three branches: key 67 writes the two '
+              'table words and key 68 writes the start word, while key 66 is the no-store '
+              'control that decides whether a verdict is available at this position at all')
         check('volatile uint32_t *const gmuW' in text,
               'R168 every one of those writes goes through a volatile mapping')
 

@@ -1207,7 +1207,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 62u' in _fw,
+    check('fwKey >= 7u && fwKey <= 68u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1672,7 +1672,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 62u)' in code,
+    check('(fwKey >= 7u && fwKey <= 68u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3020,7 +3020,7 @@ def main():
     # ---- a lost window can be told apart from a lost row.
     _i62 = code.find('if (fwKey == 62u) {')
     _k62 = (code.split('if (fwKey == 62u) {', 1)[1]
-            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]) if _i62 >= 0 else ''
+            .split('if (fwKey == 63u) {', 1)[0]) if _i62 >= 0 else ''
     check(_i62 > 0 and _k62 != '', 'R213 key 62 exists and sits before the doorbell ladder')
     check(_k62.count('gmu213a=') == 1 and _k62.count('gmu213b=') == 1 and
           _k62.count('gmu213c=') == 1,
@@ -3034,6 +3034,117 @@ def main():
           'R213 exactly one start store')
     check(_k62.find('gmu213b=') < _k62.find('HFI_CTRL_INIT] = 1u;'),
           'R213 the second row is printed before the store, so a lost window names the store')
+    # ---- ROUND 214: key 63 makes each row durable at once.
+    # Ten rounds of zero-byte windows were unreadable because the writer commits a
+    # whole round before it updates the header naming it, so a death mid-round
+    # erases the rows that did print.  Key 63 calls native_ufs_log_sync() after
+    # every row, which issues SYNCHRONIZE CACHE and costs the CPU nothing.
+    _i63 = code.find('if (fwKey == 63u) {')
+    _k63 = (code.split('if (fwKey == 63u) {', 1)[1]
+            .split('if (fwKey == 64u) {', 1)[0]) if _i63 >= 0 else ''
+    check(_i63 > 0 and _k63 != '', 'R214 key 63 exists and sits before the doorbell ladder')
+    check(_i63 > _i62, 'R214 key 63 follows key 62, so key 62 s slice ends before it')
+    check(_k63.count('gmu214a=') == 1 and _k63.count('gmu214b=') == 1 and
+          _k63.count('gmu214c=') == 1,
+          'R214 the block prints exactly three rows')
+    _k63_syncs = _k63.count('if (&native_ufs_log_sync) (void)native_ufs_log_sync();')
+    check(_k63_syncs == 3,
+          'R214 each of the three rows is followed by a guarded sync')
+    check(_k63.count('__attribute__((weak_import))') == 1,
+          'R214 the symbol is declared weak, so an image without it still links')
+    check('IOSleep' not in _k63, 'R214 the block never blocks')
+    check('IODelay' not in _k63 and 'for (' not in _k63,
+          'R214 the block issues no wait loop at all: durability comes from the sync')
+    check(_k63.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1,
+          'R214 exactly one start store')
+    check(_k63.find('gmu214b=') < _k63.find('HFI_CTRL_INIT] = 1u;') <
+          _k63.find('gmu214c='),
+          'R214 the rows bracket the start store, so the medium names which side it died on')
+    # ---- ROUND 218: key 64 now carries the store bracket.
+    # R217's control proved key 64 boots and its rows reach the medium, while key 65
+    # died before even an unconditional echo row appeared -- so the store question had
+    # to move onto the key that is known to run. Key 64 keeps its value and changes
+    # its body: row A, the two table words, row B, the start word, row C.
+    _i64 = code.find('if (fwKey == 64u) {')
+    _k64 = (code.split('if (fwKey == 64u) {', 1)[1]
+            .split('if (fwKey == 65u) {', 1)[0]) if _i64 >= 0 else ''
+    check(_i64 > 0 and _k64 != '', 'R218 key 64 exists, before key 65 and the doorbell ladder')
+    check(_k64.count('gmu218a=') == 1 and _k64.count('gmu218b=') == 1 and
+          _k64.count('gmu218c=') == 1,
+          'R218 the block prints exactly three rows')
+    check(_k64.count('gmuW[') == 3,
+          'R218 exactly three stores: the two table words and the start word')
+    check(_k64.find('gmu218a=') < _k64.find('HFI_CTRL_INIT] = 1u;') <
+          _k64.find('gmu218c='),
+          'R218 the rows bracket the start store')
+    check(_k64.find('gmu218b=') < _k64.find('HFI_CTRL_INIT] = 1u;'),
+          'R218 the second row precedes the start store, so a missing C names it')
+    check('boot_log_panic_flush' not in _k64,
+          'R218 it does not call the flush primitive: R215 s window has no [panic] '
+          'round text, so that primitive never committed anything')
+    check('native_ufs_log_sync' not in _k64,
+          'R218 it does not repeat R214 s mistake either')
+    check('IOSleep' not in _k64 and 'IODelay' not in _k64 and 'for (' not in _k64,
+          'R218 no wait of any kind')
+    # ---- ROUND 219: three single-variable branches that split R218's three stores.
+    # R218 lost even the unconditional echo row when the body grew the stores, so at
+    # least one write stops the machine; these keys differ by exactly one thing each.
+    _i66 = code.find('if (fwKey == 66u) {')
+    _i67 = code.find('if (fwKey == 67u) {')
+    _i68 = code.find('if (fwKey == 68u) {')
+    check(_i66 > 0 and _i67 > _i66 and _i68 > _i67,
+          'R219 keys 66, 67 and 68 exist in that order')
+    _k66 = (code.split('if (fwKey == 66u) {', 1)[1]
+            .split('if (fwKey == 67u) {', 1)[0]) if _i66 >= 0 else ''
+    _k67 = (code.split('if (fwKey == 67u) {', 1)[1]
+            .split('if (fwKey == 68u) {', 1)[0]) if _i67 >= 0 else ''
+    _k68 = (code.split('if (fwKey == 68u) {', 1)[1]
+            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]) if _i68 >= 0 else ''
+    check(_k66.count('gmu219a=') == 1 and _k66.count('gmu219b=') == 1 and
+          _k66.count('gmu219c=') == 1,
+          'R219 key 66 prints three rows as the no-store control')
+    check('gmuW[' not in _k66,
+          'R219 key 66 stores NOTHING: it decides whether a verdict is available here')
+    check(_k67.count('gmuW[') == 2,
+          'R219 key 67 writes exactly the two table words')
+    check('HFI_CTRL_INIT' not in _k67,
+          'R219 key 67 never touches the start word')
+    check(_k68.count('gmuW[') == 1,
+          'R219 key 68 writes exactly the start word')
+    check('HFI_QTBL_ADDR' not in _k68.split('gmuW[')[1] if _k68.count('gmuW[') == 1 else True,
+          'R219 key 68 leaves the queue table exactly as the firmware block built it')
+    for _name, _body in (('66', _k66), ('67', _k67), ('68', _k68)):
+        check('IOSleep' not in _body and 'IODelay' not in _body and 'for (' not in _body,
+              'R219 key %s waits for nothing' % _name)
+
+
+    # ---- ROUND 216: key 65 finally brackets the store with durable rows.
+    # R215 proved boot_log_panic_flush() commits a fresh row, so the bracket is now
+    # readable: row A, the two queue-table words, row B, the start store, row C.
+    _i65 = code.find('if (fwKey == 65u) {')
+    _k65 = (code.split('if (fwKey == 65u) {', 1)[1]
+            .split('if (fwKey == 66u) {', 1)[0]) if _i65 >= 0 else ''
+    check(_i65 > 0 and _k65 != '', 'R216 key 65 exists and sits before the doorbell ladder')
+    check(_i65 > _i64, 'R216 key 65 follows key 64')
+    check(_k65.count('gmu216a=') == 1 and _k65.count('gmu216b=') == 1 and
+          _k65.count('gmu216c=') == 1,
+          'R216 the block prints exactly three rows')
+    check(_k65.count('if (&boot_log_panic_flush) boot_log_panic_flush();') == 3,
+          'R216 every row is committed by the primitive R215 proved')
+    check('native_ufs_log_sync' not in _k65,
+          'R216 it does not repeat R214 s mistake: no bare cache sync')
+    check(_k65.count('gmuW[') == 3,
+          'R216 exactly three stores: the two table words and the start word')
+    check(_k65.find('gmu216a=') < _k65.find('HFI_CTRL_INIT] = 1u;') <
+          _k65.find('gmu216c='),
+          'R216 the rows bracket the start store')
+    check(_k65.find('gmu216b=') < _k65.find('HFI_CTRL_INIT] = 1u;'),
+          'R216 the second row precedes the start store, so a missing C names it')
+    check('IOSleep' not in _k65 and 'IODelay' not in _k65 and 'for (' not in _k65,
+          'R216 no wait of any kind: durability comes from the flush')
+
+
+
     check('CM3_SYSRESET' not in _k62, 'R213 the block never pulses the CM3 reset')
     check('char r213RowA[320];' in _k62 and 'char r213RowB[320];' in _k62 and
           'char r213RowC[352];' in _k62,
