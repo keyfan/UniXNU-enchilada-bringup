@@ -39,3 +39,4 @@ int PE_parse_boot_argn(const char *arg_string, void *arg_ptr, int max_len);
 #endif
 
 #endif  // ENCHILADA_IOKIT_STUB_H
+void IOSleep(unsigned int ms);

@@ -602,6 +602,32 @@ uint32_t zapFnv1a(const unsigned char *data, uint32_t bytes)
 // IODelay() is the kernel's own busy-wait; it is a FUNCTION CALL, not a spin
 // loop calibrated by guesswork, which is the distinction the window header
 // draws. Bounded so a 2 s plan cannot become a 20 s stall.
+// ---- ROUND 205: a wall clock the probe can read with no IOKit service ------
+// R204 measured how wrong IODelay() is here: 20000 x IODelay(1000) moved the
+// log clock 0.3187 s (gmugx3 -> gmugx4 in R199) and 200000 x moved it 3.17 s
+// (gmugx8 -> gmugx9 in R201), i.e. about 16 us per call rather than the
+// millisecond the argument claims. A delay built on it cannot separate two log
+// flushes, so an experiment designed around one proves nothing about timing.
+// These two read the architectural counter directly -- BootLog.c:428 reads the
+// same register to stamp the window's boot_id -- so one second is one second.
+static uint64_t probeCntpct(void) {
+    uint64_t v = 0ull;
+    __asm__ volatile("isb\n\tmrs %0, cntpct_el0" : "=r"(v));
+    return v;
+}
+
+static void probeSpinSeconds(unsigned seconds) {
+    uint64_t freq = 0ull;
+    __asm__ volatile("isb\n\tmrs %0, cntfrq_el0" : "=r"(freq));
+    if (freq == 0ull) {
+        return;
+    }
+    const uint64_t target = probeCntpct() + freq * (uint64_t)seconds;
+    while (probeCntpct() < target) {
+    }
+}
+
+
 int gpucc_udelay(void *, uint32_t usec) {
     if (usec > 2000000u) return 1;      // refuse an absurd delay rather than block
     IODelay(usec);
@@ -1504,7 +1530,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 50u);
+                            (fwKey >= 7u && fwKey <= 62u);
                         if (fwArmed) {
                             static uintptr_t sGmuFwVa = 0;
                             // ROUND 175: the HFI shared region and the uncached window over it.
@@ -3387,6 +3413,608 @@ if (fwKey == 50u) {
                                                      ((iaStat & 1u) == 1u) ? 1 : 0);
                                             IOLog("enchilada-adreno: %s\n", iaRowB);
                                         }
+if (fwKey == 51u) {
+                                            // ROUND 204: keys 17/31/50 all died on the HFI
+                                            // start store issued at ~29.5 s, before the log
+                                            // writer had flushed anything, so the failure left
+                                            // a byte-identical window and no evidence at all.
+                                            // The writer's first flush lands near 30.7 s, so a
+                                            // twenty-second wait puts the pre-store row on
+                                            // disk before the store runs: a death now leaves a
+                                            // NEW boot_id plus that row.
+                                            const uint32_t dlAddrPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u);
+                                            const uint32_t dlInfoPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u);
+                                            const uint32_t dlStatPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            const uint32_t dlSptpPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS * 4u);
+                                            char dlRowA[320];
+                                            snprintf(dlRowA, sizeof dlRowA,
+                                                     "gmudly1=addr_pre=%08x info_pre=%08x "
+                                                     "stat_pre=%08x sptp_pre=%08x win=%d",
+                                                     dlAddrPre, dlInfoPre, dlStatPre,
+                                                     dlSptpPre, (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", dlRowA);
+                                            for (unsigned dlWait = 0u; dlWait < 20000u; ++dlWait) {
+                                                IODelay(1000u);
+                                            }
+                                            const uint32_t dlStatLate = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            char dlRowB[320];
+                                            snprintf(dlRowB, sizeof dlRowB,
+                                                     "gmudly2=waited=1 stat_late=%08x win=%d "
+                                                     "about_to_start=1",
+                                                     dlStatLate, (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", dlRowB);
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            for (unsigned dlSettle = 0u; dlSettle < 10000u;
+                                                 ++dlSettle) {
+                                                IODelay(1000u);
+                                            }
+                                            const uint32_t dlStatPost = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            const uint32_t dlIntrPost = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            const uint32_t dlFwPost = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            char dlRowC[320];
+                                            snprintf(dlRowC, sizeof dlRowC,
+                                                     "gmudly3=stat_post=%08x intr=%08x "
+                                                     "fwinit=%08x survived=%d",
+                                                     dlStatPost, dlIntrPost, dlFwPost,
+                                                     ((dlStatPost & 1u) == 1u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", dlRowC);
+                                        }
+
+if (fwKey == 52u) {
+                                            // ROUND 205: the fatal store needs a trail that
+                                            // survives it. R204 proved the store is fatal but
+                                            // its "twenty second" lead-in was really 0.32 s
+                                            // (IODelay returns ~60x early on this SoC), so its
+                                            // second row never reached a flush. This key prints
+                                            // at three instants three seconds apart -- longer
+                                            // than the writer's 500 ms period, so each row lands
+                                            // in its own slot -- and only then issues the same
+                                            // three stores. A death now leaves a new boot_id and
+                                            // every row up to the last one printed.
+                                            const uint32_t dzAddrPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u);
+                                            const uint32_t dzInfoPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u);
+                                            const uint32_t dzStatPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            const uint64_t dzT0 = probeCntpct();
+                                            char dzRowA[320];
+                                            snprintf(dzRowA, sizeof dzRowA,
+                                                     "gmudlz1=addr_pre=%08x info_pre=%08x "
+                                                     "stat_pre=%08x t0=%llx win=%d",
+                                                     dzAddrPre, dzInfoPre, dzStatPre,
+                                                     (unsigned long long)dzT0,
+                                                     (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", dzRowA);
+                                            probeSpinSeconds(3u);
+                                            char dzRowB[320];
+                                            snprintf(dzRowB, sizeof dzRowB,
+                                                     "gmudlz2=ticks=%llx stat=%08x alive=1",
+                                                     (unsigned long long)probeCntpct(),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u));
+                                            IOLog("enchilada-adreno: %s\n", dzRowB);
+                                            probeSpinSeconds(3u);
+                                            char dzRowC[320];
+                                            snprintf(dzRowC, sizeof dzRowC,
+                                                     "gmudlz3=ticks=%llx stat=%08x "
+                                                     "about_to_store=1",
+                                                     (unsigned long long)probeCntpct(),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u));
+                                            IOLog("enchilada-adreno: %s\n", dzRowC);
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            probeSpinSeconds(3u);
+                                            const uint32_t dzStatPost = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            const uint32_t dzIntrPost = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            const uint32_t dzFwPost = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            char dzRowD[320];
+                                            snprintf(dzRowD, sizeof dzRowD,
+                                                     "gmudlz4=ticks=%llx stat_post=%08x "
+                                                     "intr=%08x fwinit=%08x survived=%d",
+                                                     (unsigned long long)probeCntpct(),
+                                                     dzStatPost, dzIntrPost, dzFwPost,
+                                                     ((dzStatPost & 1u) == 1u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", dzRowD);
+                                        }
+
+if (fwKey == 53u) {
+                                            // ROUND 206: R205 proved a busy spin is
+                                            // the wrong tool here. Its window came
+                                            // back byte-identical to R204's, so the
+                                            // kernel wrote nothing at all even though
+                                            // the first row prints before any wait --
+                                            // six seconds of CNTPCT polling starved
+                                            // the log writer, which between flushes
+                                            // does nothing but sleep. IOSleep() goes
+                                            // through assert_wait_timeout, the same
+                                            // call BootLog's writer makes, so the
+                                            // writer gets the CPU while this waits.
+                                            const uint32_t dyAddrPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u);
+                                            const uint32_t dyInfoPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u);
+                                            const uint32_t dyStatPre = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            char dyRowA[320];
+                                            snprintf(dyRowA, sizeof dyRowA,
+                                                     "gmudly5=addr_pre=%08x info_pre=%08x "
+                                                     "stat_pre=%08x win=%d",
+                                                     dyAddrPre, dyInfoPre, dyStatPre,
+                                                     (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", dyRowA);
+                                            IOSleep(3000u);
+                                            char dyRowB[320];
+                                            snprintf(dyRowB, sizeof dyRowB,
+                                                     "gmudly6=slept=3000 stat=%08x alive=1",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u));
+                                            IOLog("enchilada-adreno: %s\n", dyRowB);
+                                            IOSleep(3000u);
+                                            char dyRowC[320];
+                                            snprintf(dyRowC, sizeof dyRowC,
+                                                     "gmudly7=slept=6000 stat=%08x "
+                                                     "about_to_store=1",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u));
+                                            IOLog("enchilada-adreno: %s\n", dyRowC);
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            IOSleep(2000u);
+                                            const uint32_t dyStatPost = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            const uint32_t dyIntrPost = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+                                            const uint32_t dyFwPost = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+                                            char dyRowD[320];
+                                            snprintf(dyRowD, sizeof dyRowD,
+                                                     "gmudly8=stat_post=%08x intr=%08x "
+                                                     "fwinit=%08x survived=%d",
+                                                     dyStatPost, dyIntrPost, dyFwPost,
+                                                     ((dyStatPost & 1u) == 1u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", dyRowD);
+                                        }
+
+if (fwKey == 54u) {
+                                            // ROUND 207: a control for R206, which
+                                            // stopped 26 ms after its first row and
+                                            // before the store it was built around.
+                                            // Nothing is written here: the key only
+                                            // paces, six yielding sleeps with a row
+                                            // after each, so the answer is whether a
+                                            // sleep is legal at this point in boot.
+                                            const uint32_t pwStat =
+                                                rd32(sGmuFwVa,
+                                                     ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            for (unsigned pwStep = 0u; pwStep < 6u; ++pwStep) {
+                                                IOSleep(250u);
+                                                char pwRow[256];
+                                                snprintf(pwRow, sizeof pwRow,
+                                                         "gmuwake=step=%u stat=%08x alive=1",
+                                                         pwStep, pwStat);
+                                                IOLog("enchilada-adreno: %s\n", pwRow);
+                                            }
+                                        }
+
+if (fwKey == 55u) {
+                                            // ROUND 208: R207 showed that a key which
+                                            // only sleeps, and writes nothing, still
+                                            // loses the machine inside its first
+                                            // blocking sleep; R201 showed a 200000-pass
+                                            // read loop costs a measured 3.17 s and both
+                                            // of its rows reached the disk. So pace with
+                                            // that loop three times: two before the
+                                            // store and one after it.
+                                            char pc8RowA[320];
+                                            snprintf(pc8RowA, sizeof pc8RowA,
+                                                     "gmupace1=stat=%08x win=%d",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                                                     (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", pc8RowA);
+                                            for (unsigned pc8A = 0u; pc8A < 200000u; ++pc8A) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            }
+                                            char pc8RowB[320];
+                                            snprintf(pc8RowB, sizeof pc8RowB,
+                                                     "gmupace2=stat=%08x after=3s",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u));
+                                            IOLog("enchilada-adreno: %s\n", pc8RowB);
+                                            for (unsigned pc8B = 0u; pc8B < 200000u; ++pc8B) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            }
+                                            char pc8RowC[320];
+                                            snprintf(pc8RowC, sizeof pc8RowC,
+                                                     "gmupace3=stat=%08x after=6s "
+                                                     "about_to_store=1",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u));
+                                            IOLog("enchilada-adreno: %s\n", pc8RowC);
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            for (unsigned pc8C = 0u; pc8C < 200000u; ++pc8C) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            }
+                                            const uint32_t pc8Stat = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            char pc8RowD[352];
+                                            snprintf(pc8RowD, sizeof pc8RowD,
+                                                     "gmupace4=stat=%08x intr=%08x "
+                                                     "fwinit=%08x survived=%d",
+                                                     pc8Stat,
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u),
+                                                     ((pc8Stat & 1u) == 1u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", pc8RowD);
+                                        }
+
+if (fwKey == 56u) {
+                                            // ROUND 209: R204 proved a row printed
+                                            // at 29.95 s reaches the disk, so the
+                                            // store can be bracketed by rows instead
+                                            // of paced. R205 (six second spin),
+                                            // R206 and R207 (IOSleep) and R208 (three
+                                            // 3.17 s read loops) all lost the machine,
+                                            // so every pacing device the probe owns
+                                            // is unusable. Rows A, B and C sit either
+                                            // side of the two store steps; the last
+                                            // one that lands names the store that
+                                            // kills.
+                                            char fkRowA[320];
+                                            snprintf(fkRowA, sizeof fkRowA,
+                                                     "gmufine1=addr_pre=%08x info_pre=%08x "
+                                                     "stat_pre=%08x win=%d",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                                                     (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", fkRowA);
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            char fkRowB[320];
+                                            snprintf(fkRowB, sizeof fkRowB,
+                                                     "gmufine2=table_written=1 addr=%08x "
+                                                     "info=%08x",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u));
+                                            IOLog("enchilada-adreno: %s\n", fkRowB);
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            const uint32_t fkStat = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            char fkRowC[352];
+                                            snprintf(fkRowC, sizeof fkRowC,
+                                                     "gmufine3=start_written=1 stat=%08x "
+                                                     "intr=%08x fwinit=%08x survived=%d",
+                                                     fkStat,
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u),
+                                                     ((fkStat & 1u) == 1u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", fkRowC);
+                                        }
+
+if (fwKey == 57u) {
+                                            // ROUND 210: R209 printed three rows
+                                            // and landed none, because with no
+                                            // pacing the kernel dies inside
+                                            // microseconds of the first store and
+                                            // the writer only flushes every 500 ms.
+                                            // R201's `rd32 + IODelay(1u)` loop is
+                                            // the delay that works here: 200000
+                                            // passes, 3.17 s measured, both rows
+                                            // landed. So every step below is followed
+                                            // by that wait, which flushes its row
+                                            // before the next store can kill.
+                                            char fwRowA[320];
+                                            snprintf(fwRowA, sizeof fwRowA,
+                                                     "gmupace5=addr_pre=%08x info_pre=%08x "
+                                                     "stat_pre=%08x win=%d",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                                                     (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", fwRowA);
+                                            for (unsigned fwWaitA = 0u; fwWaitA < 200000u;
+                                                 ++fwWaitA) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                IODelay(1u);
+                                            }
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            for (unsigned fwWaitB = 0u; fwWaitB < 200000u;
+                                                 ++fwWaitB) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                IODelay(1u);
+                                            }
+                                            char fwRowB[320];
+                                            snprintf(fwRowB, sizeof fwRowB,
+                                                     "gmupace6=table_written=1 addr=%08x "
+                                                     "info=%08x",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u));
+                                            IOLog("enchilada-adreno: %s\n", fwRowB);
+                                            for (unsigned fwWaitC = 0u; fwWaitC < 200000u;
+                                                 ++fwWaitC) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                IODelay(1u);
+                                            }
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            for (unsigned fwWaitD = 0u; fwWaitD < 200000u;
+                                                 ++fwWaitD) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                IODelay(1u);
+                                            }
+                                            const uint32_t fwStat = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            char fwRowC[352];
+                                            snprintf(fwRowC, sizeof fwRowC,
+                                                     "gmupace7=start_written=1 stat=%08x "
+                                                     "intr=%08x fwinit=%08x survived=%d",
+                                                     fwStat,
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u),
+                                                     ((fwStat & 1u) == 1u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", fwRowC);
+                                        }
+
+if (fwKey == 58u) {
+                                            // ROUND 211: keys 56 and 57 both
+                                            // printed rows before their first store
+                                            // and both lost the entire window,
+                                            // while key 48 on the same image runs
+                                            // the identical guard set and writes
+                                            // normally. So the difference lives
+                                            // inside the block. This key keeps the
+                                            // rows and R201's paced wait and drops
+                                            // every store: rows landing means the
+                                            // wait works and the stores are what
+                                            // kills; no rows means the wait itself
+                                            // is what breaks here.
+                                            char fwRowP[320];
+                                            snprintf(fwRowP, sizeof fwRowP,
+                                                     "gmupure1=addr_pre=%08x info_pre=%08x "
+                                                     "stat_pre=%08x win=%d",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                                                     (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", fwRowP);
+                                            for (unsigned fwPureWait = 0u; fwPureWait < 200000u;
+                                                 ++fwPureWait) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                IODelay(1u);
+                                            }
+                                            char fwRowQ[320];
+                                            snprintf(fwRowQ, sizeof fwRowQ,
+                                                     "gmupure2=waited=1 stat=%08x "
+                                                     "wrote_nothing=1",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u));
+                                            IOLog("enchilada-adreno: %s\n", fwRowQ);
+                                        }
+
+if (fwKey == 59u) {
+                                            // ROUND 212: key 58 proved the paced
+                                            // wait is safe with no store at all, so
+                                            // this key adds back only the two
+                                            // queue-table words and never starts.
+                                            char sp59RowA[320];
+                                            snprintf(sp59RowA, sizeof sp59RowA,
+                                                     "gmusp59=addr_pre=%08x "
+                                                     "info_pre=%08x stat_pre=%08x win=%d",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                                                     (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", sp59RowA);
+                                            for (unsigned sp59WaitA = 0u;
+                                                 sp59WaitA < 200000u; ++sp59WaitA) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                IODelay(1u);
+                                            }
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            for (unsigned sp59WaitB = 0u;
+                                                 sp59WaitB < 200000u; ++sp59WaitB) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                IODelay(1u);
+                                            }
+                                            char sp59RowB[320];
+                                            snprintf(sp59RowB, sizeof sp59RowB,
+                                                     "gmusp59b=table_written=1 addr=%08x "
+                                                     "info=%08x no_start=1",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u));
+                                            IOLog("enchilada-adreno: %s\n", sp59RowB);
+                                        }
+
+if (fwKey == 60u) {
+                                            // ROUND 212: the complement of key 59 --
+                                            // the start word alone, with the table
+                                            // left exactly as the firmware block
+                                            // built it, so no table write precedes it.
+                                            char sp60RowA[320];
+                                            snprintf(sp60RowA, sizeof sp60RowA,
+                                                     "gmusp60=addr_pre=%08x "
+                                                     "info_pre=%08x stat_pre=%08x win=%d",
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                                                     (sHfiWin != 0u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", sp60RowA);
+                                            for (unsigned sp60WaitA = 0u;
+                                                 sp60WaitA < 200000u; ++sp60WaitA) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                IODelay(1u);
+                                            }
+                                            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                                            __asm__ volatile("dsb sy" ::: "memory");
+                                            for (unsigned sp60WaitB = 0u;
+                                                 sp60WaitB < 200000u; ++sp60WaitB) {
+                                                (void)rd32(sGmuFwVa,
+                                                           ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                                IODelay(1u);
+                                            }
+                                            const uint32_t sp60Stat = rd32(
+                                                sGmuFwVa,
+                                                ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                                            char sp60RowB[352];
+                                            snprintf(sp60RowB, sizeof sp60RowB,
+                                                     "gmusp60b=start_written=1 stat=%08x "
+                                                     "intr=%08x survived=%d",
+                                                     sp60Stat,
+                                                     rd32(sGmuFwVa,
+                                                          ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                                                     ((sp60Stat & 1u) == 1u) ? 1 : 0);
+                                            IOLog("enchilada-adreno: %s\n", sp60RowB);
+                                        }
+
+if (fwKey == 62u) {
+    // ROUND 213: key 59 kept its window after writing the two queue-table
+    // words, and key 60 lost it after writing the start word alone. Key 60's
+    // first row is printed before any store and is followed by a 3.17 s paced
+    // wait, so that row had six writer flushes to land on the medium and did
+    // not. Either the store kills sooner than the wait, or the block is never
+    // reached. This key separates the two: one row, a wait three times longer
+    // than R201's, a second row printed immediately before the store, and a
+    // third after it.
+    //
+    // Readings, decided in advance:
+    //   gmu213a alone        -> the machine stops inside the long wait, which
+    //                           contradicts key 58 and needs a different probe.
+    //   gmu213a and gmu213b  -> the start word is the killer and the death is
+    //                           faster than one writer period.
+    //   all three            -> the paced start completes at this point in boot,
+    //                           and the earlier losses were a timing artefact.
+    char r213RowA[320];
+    snprintf(r213RowA, sizeof r213RowA,
+             "gmu213a=addr_pre=%08x info_pre=%08x stat_pre=%08x win=%d",
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+             (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r213RowA);
+    for (unsigned r213WaitA = 0u; r213WaitA < 600000u; ++r213WaitA) {
+        (void)rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+        IODelay(1u);
+    }
+    char r213RowB[320];
+    snprintf(r213RowB, sizeof r213RowB,
+             "gmu213b=still_alive=1 stat=%08x about_to_start=1",
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u));
+    IOLog("enchilada-adreno: %s\n", r213RowB);
+    for (unsigned r213WaitB = 0u; r213WaitB < 200000u; ++r213WaitB) {
+        (void)rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+        IODelay(1u);
+    }
+    gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+    __asm__ volatile("dsb sy" ::: "memory");
+    for (unsigned r213WaitC = 0u; r213WaitC < 200000u; ++r213WaitC) {
+        (void)rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+        IODelay(1u);
+    }
+    const uint32_t r213Stat = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+    char r213RowC[352];
+    snprintf(r213RowC, sizeof r213RowC,
+             "gmu213c=start_written=1 stat=%08x intr=%08x survived=%d",
+             r213Stat,
+             rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+             ((r213Stat & 1u) == 1u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r213RowC);
+}
+
 if (fwKey >= 18u && fwKey <= 21u) {
                                             // ROUND 177: R176 showed that alloc, map, table fill
                                             // and the three QTBL registers are all safe, and that the

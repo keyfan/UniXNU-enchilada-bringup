@@ -1207,7 +1207,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 50u' in _fw,
+    check('fwKey >= 7u && fwKey <= 62u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1672,7 +1672,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 50u)' in code,
+    check('(fwKey >= 7u && fwKey <= 62u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -2673,7 +2673,7 @@ def main():
     _i50 = code.find('if (fwKey == 50u) {')
     _i18r203 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
     _k50 = (code.split('if (fwKey == 50u) {', 1)[1]
-            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0])
+            .split('if (fwKey == 51u) {', 1)[0])
     check(_k50 != '', 'R203 key 50 sits before the doorbell ladder')
     check(_k50.count('ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = 0u;') == 1,
           'R203 only the table address is zeroed')
@@ -2695,6 +2695,351 @@ def main():
     check('CM3_SYSRESET' not in _k50, 'R203 the block never pulses the CM3 reset')
     check(0 < _i50 < _i18r203,
           'R203 key 50 sits after key 49 and before the doorbell ladder')
+
+    # ---- R204: the fatal store, issued late enough to leave a trail -------
+    _i51 = code.find('if (fwKey == 51u) {')
+    _i18r204 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    _k51 = (code.split('if (fwKey == 51u) {', 1)[1]
+            .split('if (fwKey == 52u) {', 1)[0])
+    check(_k51 != '', 'R204 key 51 sits before the doorbell ladder')
+    check('for (unsigned dlWait = 0u; dlWait < 20000u; ++dlWait)' in _k51 and
+          'IODelay(1000u);' in _k51,
+          'R204 the store is preceded by a bounded twenty-second wait, so the '
+          'pre-store row reaches the disk before a death can hide it')
+    check(_k51.index('gmudly2=') < _k51.index('HFI_CTRL_INIT'),
+          'R204 the second row is printed BEFORE the store that has killed the '
+          'machine three times')
+    check(_k51.count('gmudly1=') == 1 and _k51.count('gmudly2=') == 1 and
+          _k51.count('gmudly3=') == 1,
+          'R204 three rows: the pre snapshot, the late pre-store snapshot and '
+          'the post store snapshot')
+    check('HFI_QTBL_ADDR) = 0u;' not in _k51,
+          'R204 the block does not use a call-shaped address store')
+    check('HFI_QTBL_ADDR] = 0u;' in _k51 and 'HFI_QTBL_INFO] = 1u;' in _k51 and
+          'HFI_CTRL_INIT] = 1u;' in _k51,
+          'R204 the store set is the one that died in R203: null address, live '
+          'info word, then the start')
+    check('char dlRowA[320];' in _k51 and 'char dlRowB[320];' in _k51 and
+          'char dlRowC[320];' in _k51,
+          'R204 each row has its own oversized buffer')
+    check('CM3_SYSRESET' not in _k51,
+          'R204 the block never pulses the CM3 reset')
+    check(0 < _i50 < _i51 < _i18r204,
+          'R204 key 51 sits after key 50 and before the doorbell ladder')
+
+    # ---- R205: a real wall clock, so three rows land in three flushes ------
+    # R204's "twenty second" lead-in moved the log clock 0.32 s: IODelay() runs
+    # roughly sixty times faster than the microsecond count it is given, so the
+    # second row could never reach a 500 ms flush. Key 52 spins on the
+    # architectural counter instead and prints three times.
+    _i52 = code.find('if (fwKey == 52u) {')
+    _i18r205 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    _k52 = (code.split('if (fwKey == 52u) {', 1)[1]
+            .split('if (fwKey == 53u) {', 1)[0])
+    check(_k52 != '', 'R205 key 52 sits before the doorbell ladder')
+    check('static uint64_t probeCntpct(void)' in code and
+          'static void probeSpinSeconds(unsigned seconds)' in code,
+          'R205 the probe has a counter reader and a second-granularity spin')
+    check('mrs %0, cntpct_el0' in code and 'mrs %0, cntfrq_el0' in code,
+          'R205 both helpers read the architectural counter and its frequency, '
+          'the same registers BootLog stamps the window boot_id with')
+    check(code.count('probeSpinSeconds(3u);') == 3,
+          'R205 three three-second spins: one before each of the three rows and '
+          'one after the store, so no two rows share a flush')
+    check(_k52.count('gmudlz1=') == 1 and _k52.count('gmudlz2=') == 1 and
+          _k52.count('gmudlz3=') == 1 and _k52.count('gmudlz4=') == 1,
+          'R205 four rows: the pre snapshot, two timed heartbeats and the post '
+          'store snapshot')
+    check(_k52.index('gmudlz3=') < _k52.index('HFI_CTRL_INIT'),
+          'R205 the last pre-store row is printed BEFORE the store that has '
+          'killed the machine four times')
+    check('HFI_QTBL_ADDR] = 0u;' in _k52 and 'HFI_QTBL_INFO] = 1u;' in _k52 and
+          'HFI_CTRL_INIT] = 1u;' in _k52,
+          'R205 the store set is unchanged from R203: null address, live info '
+          'word, then the start')
+    check('char dzRowA[320];' in _k52 and 'char dzRowB[320];' in _k52 and
+          'char dzRowC[320];' in _k52 and 'char dzRowD[320];' in _k52,
+          'R205 each of the four rows has its own oversized buffer')
+    check('CM3_SYSRESET' not in _k52,
+          'R205 the block never pulses the CM3 reset')
+    check('IODelay(' not in _k52,
+          'R205 the block does not build its timing on IODelay, whose real cost '
+          'R204 measured at about sixteen microseconds')
+    check(0 < _i51 < _i52 < _i18r205,
+          'R205 key 52 sits after key 51 and before the doorbell ladder')
+
+    # ---- ROUND 206: pace the fatal store with a yielding sleep ----
+    # R205 spun on CNTPCT for six seconds and the window came back
+    # byte-identical: a busy spin cannot be preempted, so the log writer -- which
+    # between flushes does nothing but sleep -- never got a slot and the death
+    # erased the whole trail. IOSleep goes through assert_wait_timeout, the same
+    # call BootLog's own writer makes, so the writer runs while key 53 waits.
+    _i53 = code.find('if (fwKey == 53u) {')
+    _i18r206 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    _k53 = (code.split('if (fwKey == 53u) {', 1)[1]
+            .split('if (fwKey == 54u) {', 1)[0])
+    check(_k53 != '', 'R206 key 53 sits before the doorbell ladder')
+    check(_k53.count('IOSleep(3000u);') == 2 and _k53.count('IOSleep(2000u);') == 1,
+          'R206 three yielding sleeps: two three-second ones before the store and '
+          'one two-second one after it, each longer than a 500 ms flush')
+    check('probeSpinSeconds' not in _k53 and 'IODelay(' not in _k53,
+          'R206 the block never spins and never calls IODelay: R205 proved a busy '
+          'wait starves the log writer')
+    check(_k53.count('gmudly5=') == 1 and _k53.count('gmudly6=') == 1 and
+          _k53.count('gmudly7=') == 1 and _k53.count('gmudly8=') == 1,
+          'R206 four rows: the pre snapshot, two heartbeats and the post snapshot')
+    check(_k53.index('gmudly7=') < _k53.index('HFI_CTRL_INIT'),
+          'R206 the last pre-store row is printed BEFORE the store that has killed '
+          'the machine five times')
+    check(_k53.index('IOSleep(3000u);') < _k53.index('gmudly6=') <
+          _k53.index('IOSleep(3000u);', _k53.index('IOSleep(3000u);') + 1),
+          'R206 the heartbeats are separated by a full sleep, so no two rows share '
+          'a flush')
+    check('HFI_QTBL_ADDR] = 0u;' in _k53 and 'HFI_QTBL_INFO] = 1u;' in _k53 and
+          'HFI_CTRL_INIT] = 1u;' in _k53,
+          'R206 the store set is unchanged from R203: null address, live info '
+          'word, then the start')
+    check('char dyRowA[320];' in _k53 and 'char dyRowB[320];' in _k53 and
+          'char dyRowC[320];' in _k53 and 'char dyRowD[320];' in _k53,
+          'R206 each of the four rows has its own oversized buffer')
+    check('CM3_SYSRESET' not in _k53,
+          'R206 the block never pulses the CM3 reset')
+    check(0 < _i52 < _i53 < _i18r206,
+          'R206 key 53 sits after key 52 and before the doorbell ladder')
+
+    # ---- ROUND 207: is a yielding sleep legal here at all? ----
+    # R206 slept between two rows and the machine stopped 26 ms after the first
+    # one, before the store it was built around. So key 54 writes nothing and
+    # only paces: six short sleeps with a row after each. If all six land, the
+    # sleep primitive is fine and R206's death had another cause; if it dies after
+    # the first row, blocking is illegal at this point and no sleep-based pacing
+    # can be used to observe the fatal store.
+    _i54 = code.find('if (fwKey == 54u) {')
+    _i18r207 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    _k54 = (code.split('if (fwKey == 54u) {', 1)[1]
+            .split('if (fwKey == 55u) {', 1)[0])
+    check(_k54 != '', 'R207 key 54 sits before the doorbell ladder')
+    check(_k54.count('IOSleep(250u);') == 1,
+          'R207 the pacing loop sleeps 250 ms per step')
+    check('pwStep < 6u' in _k54,
+          'R207 six steps, so the last row lands at least a full second after the '
+          'first one and every step crosses a flush')
+    check(_k54.count('gmuwake=') == 1,
+          'R207 one row format for every step, carrying the step index')
+    check('HFI_CTRL_INIT' not in _k54 and 'HFI_QTBL_ADDR] =' not in _k54 and
+          'HFI_QTBL_INFO] =' not in _k54,
+          'R207 the block starts nothing: no table store and no HFI start, so it '
+          'is a clean control for R206')
+    check('gmuW[' not in _k54,
+          'R207 the block performs no register store at all')
+    check('probeSpinSeconds' not in _k54 and 'IODelay(' not in _k54,
+          'R207 the block never spins and never calls IODelay')
+    check('char pwRow[256];' in _k54,
+          'R207 the row has its own buffer declared inside the loop')
+    check('CM3_SYSRESET' not in _k54,
+          'R207 the block never pulses the CM3 reset')
+    check(0 < _i53 < _i54 < _i18r207,
+          'R207 key 54 sits after key 53 and before the doorbell ladder')
+
+    # ---- ROUND 208: pace the fatal store with the read loop R201 timed ----
+    # R207 wrote nothing at all and still lost the machine inside its first
+    # blocking sleep, so the sleep is what kills, not the store four rounds
+    # blamed. R201 is the counter-example: 200000 passes of a pure read loop took
+    # a measured 3.17 s and both of its stamped rows reached the disk. Key 55
+    # therefore paces with that loop and prints a row between passes.
+    _i55 = code.find('if (fwKey == 55u) {')
+    _i18r208 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    _k55 = (code.split('if (fwKey == 55u) {', 1)[1]
+            .split('if (fwKey == 56u) {', 1)[0])
+    check(_k55 != '', 'R208 key 55 sits before the doorbell ladder')
+    check(_k55.count('gmupace1=') == 1 and _k55.count('gmupace2=') == 1 and
+          _k55.count('gmupace3=') == 1 and _k55.count('gmupace4=') == 1,
+          'R208 four rows: two heartbeats before the store, the about-to-store row, '
+          'and the post snapshot')
+    check(_k55.count('< 200000u') == 3,
+          'R208 three 200000-pass read loops, the exact count R201 measured at 3.17 s')
+    check('IOSleep' not in _k55,
+          'R208 the block never blocks: R206 and R207 both died inside IOSleep')
+    check('probeSpinSeconds' not in _k55 and 'IODelay(' not in _k55,
+          'R208 the block neither spins nor calls IODelay')
+    check(_k55.index('gmupace3=') < _k55.index('HFI_CTRL_INIT'),
+          'R208 the about-to-store row is printed BEFORE the store')
+    check('HFI_QTBL_ADDR] = 0u;' in _k55 and 'HFI_QTBL_INFO] = 1u;' in _k55 and
+          'HFI_CTRL_INIT] = 1u;' in _k55,
+          'R208 the store set is unchanged from R203: null address, live info word, '
+          'then the start')
+    check('char pc8RowA[320];' in _k55 and 'char pc8RowB[320];' in _k55 and
+          'char pc8RowC[320];' in _k55 and 'char pc8RowD[352];' in _k55,
+          'R208 each row has its own oversized buffer')
+    check('CM3_SYSRESET' not in _k55,
+          'R208 the block never pulses the CM3 reset')
+    check(0 < _i54 < _i55 < _i18r208,
+          'R208 key 55 sits after key 54 and before the doorbell ladder')
+
+    # ---- ROUND 209: bracket the two store steps with rows and pace nothing ----
+    # R204 proved a row printed at 29.95 s reaches the disk. R205 lost the machine
+    # to a six second spin, R206 and R207 to IOSleep, R208 to three 3.17 s read
+    # loops -- every pacing device the probe owns is either fatal or enough to
+    # starve the writer. So the brackets need no pacing: one row before the
+    # queue-table stores, one straight after them, one straight after the start.
+    _i56 = code.find('if (fwKey == 56u) {')
+    _i18r209 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    _k56 = (code.split('if (fwKey == 56u) {', 1)[1]
+            .split('if (fwKey == 57u) {', 1)[0])
+    check(_k56 != '', 'R209 key 56 sits before the doorbell ladder')
+    check(_k56.count('gmufine1=') == 1 and _k56.count('gmufine2=') == 1 and
+          _k56.count('gmufine3=') == 1,
+          'R209 three bracket rows around the two store steps')
+    check('IOSleep' not in _k56 and 'IODelay(' not in _k56 and
+          'probeSpinSeconds' not in _k56 and '< 200000u' not in _k56,
+          'R209 the block paces nothing: no sleep, no delay, no spin, no read loop')
+    check(_k56.count('gmuW[') == 3,
+          'R209 exactly three stores, one pointer, the same set as R203')
+    check('HFI_QTBL_ADDR] = 0u;' in _k56 and 'HFI_QTBL_INFO] = 1u;' in _k56 and
+          'HFI_CTRL_INIT] = 1u;' in _k56,
+          'R209 the store set is unchanged: null address, live info word, then the start')
+    check(_k56.index('gmufine1=') < _k56.index('HFI_QTBL_ADDR] = 0u;'),
+          'R209 row A is printed BEFORE the queue-table stores')
+    check(_k56.index('HFI_CTRL_INIT] = 1u;') < _k56.index('gmufine3='),
+          'R209 row C is printed AFTER the start store')
+    check(_k56.index('HFI_QTBL_INFO] = 1u;') < _k56.index('gmufine2=') <
+          _k56.index('HFI_CTRL_INIT] = 1u;'),
+          'R209 row B sits between the queue-table stores and the start store')
+    check('char fkRowA[320];' in _k56 and 'char fkRowB[320];' in _k56 and
+          'char fkRowC[352];' in _k56,
+          'R209 each row has its own oversized buffer')
+    check('CM3_SYSRESET' not in _k56,
+          'R209 the block never pulses the CM3 reset')
+    check(0 < _i55 < _i56 < _i18r209,
+          'R209 key 56 sits after key 55 and before the doorbell ladder')
+
+    # ---- ROUND 210: pace every step with R201's yielding read loop ----
+    # R209 printed three rows and landed none: with no pacing the kernel dies within
+    # microseconds of the first store and the writer only flushes every 500 ms, so
+    # nothing in the buffer reaches the disk. R201's `rd32 + IODelay(1u)` loop is the
+    # delay that works here (200000 passes, 3.17 s measured, both rows landed), while
+    # R208's loop of the same read count without the IODelay starved the writer.
+    _i57 = code.find('if (fwKey == 57u) {')
+    _i18r210 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    _k57 = (code.split('if (fwKey == 57u) {', 1)[1]
+            .split('if (fwKey == 58u) {', 1)[0])
+    check(_k57 != '', 'R210 key 57 sits before the doorbell ladder')
+    check(_k57.count('gmupace5=') == 1 and _k57.count('gmupace6=') == 1 and
+          _k57.count('gmupace7=') == 1,
+          'R210 three rows: the pre snapshot, the table-written witness, the post snapshot')
+    check(_k57.count('gmuW[') == 3,
+          'R210 exactly three stores, one pointer, the same set as R203')
+    check('HFI_QTBL_ADDR] = 0u;' in _k57 and 'HFI_QTBL_INFO] = 1u;' in _k57 and
+          'HFI_CTRL_INIT] = 1u;' in _k57,
+          'R210 the store set is unchanged: null address, live info word, then the start')
+    check(_k57.count('IODelay(1u);') == 4,
+          'R210 four yielding waits, one after each step, the exact body R201 timed')
+    check(_k57.count('< 200000u') == 4,
+          'R210 every wait is a 200000-pass loop, the count R201 measured at 3.17 s')
+    check('IOSleep' not in _k57 and 'probeSpinSeconds' not in _k57,
+          'R210 the block never blocks and never spins: both were proven fatal')
+    check(_k57.index('gmupace5=') < _k57.index('HFI_QTBL_ADDR] = 0u;'),
+          'R210 the pre snapshot is printed BEFORE the queue-table stores')
+    check(_k57.index('HFI_CTRL_INIT] = 1u;') < _k57.index('gmupace7='),
+          'R210 the post snapshot is printed AFTER the start store')
+    check('char fwRowA[320];' in _k57 and 'char fwRowB[320];' in _k57 and
+          'char fwRowC[352];' in _k57,
+          'R210 each row has its own oversized buffer')
+    check('CM3_SYSRESET' not in _k57,
+          'R210 the block never pulses the CM3 reset')
+    check(0 < _i56 < _i57 < _i18r210,
+          'R210 key 57 sits after key 56 and before the doorbell ladder')
+
+    # ---- ROUND 211: rows and a paced wait, and no store at all ----
+    # Keys 56 and 57 both printed rows before their first store and both lost the whole
+    # window, while key 48 on the same image executes the identical guard set and writes
+    # normally. Key 58 keeps the rows and R201's paced wait and drops every store, which
+    # separates the two remaining mechanisms.
+    _i58 = code.find('if (fwKey == 58u) {')
+    _i18r211 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    _k58 = (code.split('if (fwKey == 58u) {', 1)[1]
+            .split('if (fwKey == 59u) {', 1)[0])
+    check(_k58 != '', 'R211 key 58 sits before the doorbell ladder')
+    check(_k58.count('gmuW[') == 0,
+          'R211 the block writes no register at all: that is the whole point')
+    check(_k58.count('gmupure1=') == 1 and _k58.count('gmupure2=') == 1,
+          'R211 two rows: the pre snapshot and the after-the-wait witness')
+    check(_k58.count('IODelay(1u);') == 1 and _k58.count('< 200000u') == 1,
+          'R211 one paced wait, the exact body R201 measured at 3.17 s')
+    check('IOSleep' not in _k58 and 'probeSpinSeconds' not in _k58,
+          'R211 the block neither blocks nor spins')
+    check(_k58.index('gmupure1=') < _k58.index('IODelay(1u);'),
+          'R211 the first row is printed BEFORE the paced wait')
+    check(_k58.index('IODelay(1u);') < _k58.index('gmupure2='),
+          'R211 the second row is printed AFTER the paced wait')
+    check('char fwRowP[320];' in _k58 and 'char fwRowQ[320];' in _k58,
+          'R211 each row has its own oversized buffer')
+    check('CM3_SYSRESET' not in _k58 and 'HFI_CTRL_INIT' not in _k58,
+          'R211 the block never touches the reset or the start register')
+    check(0 < _i57 < _i58 < _i18r211,
+          'R211 key 58 sits after key 57 and before the doorbell ladder')
+
+    # ---- ROUND 212: split the store set, each half paced ----
+    # Key 58 landed both rows around a 3.17 s paced wait with no store at all, so the
+    # wait is transplantable and R210's loss is attributable to its stores. Keys 59 and
+    # 60 split that store set, each paced before and after the write.
+    _i59 = code.find('if (fwKey == 59u) {')
+    _i60 = code.find('if (fwKey == 60u) {')
+    _i18r212 = code.find('if (fwKey >= 18u && fwKey <= 21u) {')
+    _k59 = (code.split('if (fwKey == 59u) {', 1)[1]
+            .split('if (fwKey == 60u) {', 1)[0])
+    _k60 = (code.split('if (fwKey == 60u) {', 1)[1]
+            .split('if (fwKey == 62u) {', 1)[0])
+    check(_k59 != '' and _k60 != '', 'R212 both halves sit before the doorbell ladder')
+    check(_k59.count('gmuW[') == 2,
+          'R212 key 59 writes exactly the two queue-table words')
+    check('HFI_QTBL_ADDR] = 0u;' in _k59 and 'HFI_QTBL_INFO] = 1u;' in _k59 and
+          'HFI_CTRL_INIT' not in _k59,
+          'R212 key 59 nulls the address, raises the info word, and never starts')
+    check(_k60.count('gmuW[') == 1 and 'HFI_CTRL_INIT] = 1u;' in _k60,
+          'R212 key 60 writes exactly the start word')
+    check('HFI_QTBL_ADDR]' not in _k60 and 'HFI_QTBL_INFO]' not in _k60,
+          'R212 key 60 leaves the table exactly as the firmware block built it')
+    check(_k59.count('IODelay(1u);') == 2 and _k60.count('IODelay(1u);') == 2,
+          'R212 each half is paced before and after its store')
+    check(_k59.count('< 200000u') == 2 and _k60.count('< 200000u') == 2,
+          'R212 every wait is a 200000-pass loop, the count measured at 3.17 s')
+    check('IOSleep' not in _k59 and 'IOSleep' not in _k60,
+          'R212 neither half blocks')
+    check(_k59.count('gmusp59=') == 1 and _k59.count('gmusp59b=') == 1,
+          'R212 key 59 brackets its two stores with rows')
+    check(_k60.count('gmusp60=') == 1 and _k60.count('gmusp60b=') == 1,
+          'R212 key 60 brackets its single store with rows')
+    check('CM3_SYSRESET' not in _k59 and 'CM3_SYSRESET' not in _k60,
+          'R212 neither half pulses the CM3 reset')
+    check(0 < _i58 < _i59 < _i60 < _i18r212,
+          'R212 keys 59 and 60 sit after key 58 and before the doorbell ladder')
+
+    # ---- ROUND 213: key 62 keeps the rows, stretches the wait three times past
+    # ---- R201 s measurement, and prints a row immediately before the store, so
+    # ---- a lost window can be told apart from a lost row.
+    _i62 = code.find('if (fwKey == 62u) {')
+    _k62 = (code.split('if (fwKey == 62u) {', 1)[1]
+            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]) if _i62 >= 0 else ''
+    check(_i62 > 0 and _k62 != '', 'R213 key 62 exists and sits before the doorbell ladder')
+    check(_k62.count('gmu213a=') == 1 and _k62.count('gmu213b=') == 1 and
+          _k62.count('gmu213c=') == 1,
+          'R213 the block brackets its store with three rows')
+    check('r213WaitA < 600000u' in _k62,
+          'R213 the first wait is three times the 200000 passes R201 timed')
+    check(_k62.count('IODelay(1u);') == 3,
+          'R213 all three waits are the yielding read loop, none is a bare spin')
+    check('IOSleep' not in _k62, 'R213 the block never blocks')
+    check(_k62.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1,
+          'R213 exactly one start store')
+    check(_k62.find('gmu213b=') < _k62.find('HFI_CTRL_INIT] = 1u;'),
+          'R213 the second row is printed before the store, so a lost window names the store')
+    check('CM3_SYSRESET' not in _k62, 'R213 the block never pulses the CM3 reset')
+    check('char r213RowA[320];' in _k62 and 'char r213RowB[320];' in _k62 and
+          'char r213RowC[352];' in _k62,
+          'R213 the three row buffers keep their sizes')
+    check(0 < _i60 < _i62 < _i18r212,
+          'R213 key 62 sits after key 60 and before the doorbell ladder')
 
     # ---- the row must FIT its buffer ----
     # r129 added three fields; the recomputed reachable worst case exceeds the

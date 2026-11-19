@@ -65,8 +65,11 @@ def main():
     check(sorted(p.name for p in STUB.rglob('*.h')) == ['IOLib.h', 'pexpert.h'], 'stub has exactly the two expected headers')
     # IOLog + snprintf + PE_parse_boot_argn: exactly the kernel surface the shim uses, and nothing else.
     check(stub_text.count('void IOLog') == 1 and stub_text.count('int snprintf') == 1
-          and stub_text.count('int PE_parse_boot_argn') == 2,
-          'stub declares exactly IOLog + snprintf + PE_parse_boot_argn')
+          and stub_text.count('int PE_parse_boot_argn') == 2
+          and stub_text.count('void IOSleep') == 1,
+          'stub declares exactly IOLog + snprintf + PE_parse_boot_argn + '
+          'IOSleep: the last one is R206, because a busy spin starves the '
+          'log writer and a yielding sleep does not')
 
     for stem in C_MODULES:
         src = GPU / f'{stem}.c'
@@ -327,8 +330,8 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 128,
-              'R168+R170+R171+R175+R178+R181+R186 the pointer writes are exactly '
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 150,
+              'R168+R170+R171+R175+R178+R181+R186+R205 the pointer writes are exactly '
               'the ITCM loop, the pulse words, the three handshake words, the '
               'nine pre-start configuration words, the four HFI words (QTBL_ADDR, '
               'QTBL_INFO, CP_MSG, CTRL_INIT), the four rail-on words of keys '
@@ -356,7 +359,15 @@ def main():
               'and the R200 repeat adds the same four once more, because that '
               'key runs with the CM3 alive and the budget counts source sites; '
               'and the R201 measurement adds the same four a third time, since '
-              'it repeats the sequence to time it against a CX control')
+              'it repeats the sequence to time it against a CX control; '
+              'and the R208 pacing key adds the same three HFI stores once '
+              'more, because it re-runs the store under a read loop R201 '
+              'timed at 3.17 s per 200000 passes, instead of under a sleep '
+              'that R206 and R207 both died inside; and the R209 bracket key '
+              'adds the same three once more, because it needs one row either '
+              'side of each store step and cannot pace at all; and the R210 '
+              'paced key adds the same three again, because it repeats the '
+              'store under the yielding read loop R201 timed')
         check('volatile uint32_t *const gmuW' in text,
               'R168 every one of those writes goes through a volatile mapping')
 
