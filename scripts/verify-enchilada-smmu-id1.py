@@ -85,9 +85,16 @@ def main():
     for word in forbidden:
         check(word not in src,
               "module performs no MMIO of its own (found %r)" % word)
-    check("nobody has read ID1" in hdr or "Nobody has read ID1" in hdr,
-          "header states the value is not measured yet")
-    check("NOT known" in hdr, "header carries the modelled/NOT-known split")
+    # The value IS measured: id1=0x20008005 -> NUMCB=5 across 103 retained windows.
+    # An earlier version of this verifier demanded the opposite wording, which was the
+    # retracted claim; it now demands the measured one, so the false story cannot return
+    # without failing here.
+    check("MEASURED" in hdr, "header records the value as measured")
+    check("0x20008005" in hdr, "header names the measured word")
+    check("NUMCB=5" in hdr or "NUMCB = 5" in hdr, "header names the decoded count")
+    check("section 28" in hdr, "header points at the correction that retracted the old claim")
+    check("nobody has read ID1" not in hdr and "Nobody has read ID1" not in hdr,
+          "header no longer claims ID1 was never read")
 
     # ---- compile and run the self-check ----------------------------------
     if CLANG.exists():

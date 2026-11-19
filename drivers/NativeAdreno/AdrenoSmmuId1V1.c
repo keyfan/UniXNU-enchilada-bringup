@@ -51,7 +51,10 @@ uint32_t adreno_smmu_id1_decode(uint32_t id1, struct adreno_smmu_id1 *out)
     /* A device must report at least one bank, or the port cannot allocate an
      * ASID at all. Zero is not a value to work around quietly: it means either
      * the read did not land or the block is not the SMMU. (P2:1866-1870 treats
-     * an impossible count the same way -- refuse rather than clamp.) */
+     * an impossible count the same way -- refuse rather than clamp.)
+     *
+     * This device reports 5 (id1=0x20008005 in 103 retained windows), so the
+     * refusal branch is the fail-closed path, not the expected one. */
     if (out->num_context_banks == 0u) {
         out->plausible = 0u;
         out->reason = "ID1.NUMCB is 0: no context bank reported";

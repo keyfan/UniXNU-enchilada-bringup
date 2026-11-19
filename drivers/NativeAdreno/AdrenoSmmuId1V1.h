@@ -10,12 +10,16 @@
 //
 //   modelled : the offset (P1:59 0x24), the field (P1:63 GENMASK(7,0)), the
 //              zero-refusal and the capacity derivation.
-//   NOT known: the value this device actually reports. Nobody has read ID1 on
-//              hardware yet. Until a device row carries it, num_context_banks
-//              stays an ARGUMENT here, exactly as `ias` was before round 101.
+//   MEASURED : the value this device reports. `stage6=id1` rows in 103 retained
+//              windows all carry id1=0x20008005, i.e. NUMCB=5 and NUMS2CB=0, and
+//              the allocator already ran on it (init=0 alloc=0 cbndx=0).
 //
-// That distinction is the point: round 101 turned `ias` from an argument into a
-// measurement, and this module is the decode half of the same move for ID1.
+// So this module is NOT the first reader -- adreno_asid_capacity_from_id1() got
+// there first and is already device-verified. What this file adds is an
+// INDEPENDENT second decode of the same word, so the field positions can be
+// re-derived by something that does not share the first implementation's code.
+// An earlier version of this header claimed nobody had read ID1; that was wrong
+// and is recorded in HANDOFF section 28.
 
 #ifndef ADRENO_SMMU_ID1_V1_H
 #define ADRENO_SMMU_ID1_V1_H
