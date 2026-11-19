@@ -12,7 +12,13 @@ static uint32_t missing_inputs(void)
     uint32_t mask = 0u;
     /* I1: no page table exists anywhere in this port. */
     mask |= kAdrenoSmmuInputPageTable;
-    /* I2: no ASID allocator exists. */
+    /* I2: the ASID ALLOCATOR exists -- AdrenoSmmuAsidV1 (round 101) implements
+     * adreno_asid_init/alloc/free/is_owned and its own verifier passes. What is
+     * still missing is the one input it cannot derive: num_context_banks comes
+     * from a probe-time read of GR0_ID1 (P2:1866), and no run has read ID1 yet.
+     * AdrenoSmmuId1V1 decodes such a word, but the value remains an argument,
+     * exactly as `ias` did before round 101. So the bit stays set for a precise
+     * reason, not for the old "no allocator exists" one. */
     mask |= kAdrenoSmmuInputAsid;
     /* I3: round 53 measured the target streams still in the firmware BYPASS
      * handoff (Busy=10, id0=4c017e4c), so they do not fault yet. */

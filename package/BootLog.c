@@ -113,6 +113,8 @@ extern volatile uint32_t native_dwc3_gadget_ep0_ctl __attribute__((weak_import))
 // stage so a status the host never consumed is visible.
 extern volatile uint32_t native_dwc3_gadget_cmd_last_fail __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_arm_fail __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gadget_arm_attempts_last;
+extern volatile uint32_t native_dwc3_gadget_arm_retries;
 extern volatile uint32_t native_dwc3_gadget_notready __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_notready_last __attribute__((weak_import));
 extern volatile uint32_t native_dwc3_gadget_status_armed __attribute__((weak_import));
@@ -667,11 +669,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       // STARTTRANSFERs that never made it, nr is how often the controller asked for a TRB
       // (last = ep<<8 | status), sa/sd bracket the status stage, and stuck counts a
       // completion that arrived with no stage outstanding.
-      snprintf(row, sizeof row, "C dbg fail=%08x armf=%u nr=%u/%04x sa=%u sd=%u stuck=%u out=%u",
+      // ROUND 225: sec = STARTTRANSFER attempts the last start needed, ret = total
+      // retries. Without them a run cannot tell "first try worked" from "the third did"
+      // from "all three failed", which is the point of the retry.
+      snprintf(row, sizeof row,
+               "C dbg fail=%08x armf=%u nr=%u/%04x sa=%u sd=%u stuck=%u out=%u sec=%u ret=%u",
                native_dwc3_gadget_cmd_last_fail, native_dwc3_gadget_arm_fail,
                native_dwc3_gadget_notready, native_dwc3_gadget_notready_last,
                native_dwc3_gadget_status_armed, native_dwc3_gadget_status_done,
-               native_dwc3_gadget_stuck_setups, native_dwc3_gadget_ep0_out_bytes);
+               native_dwc3_gadget_stuck_setups, native_dwc3_gadget_ep0_out_bytes,
+               native_dwc3_gadget_arm_attempts_last, native_dwc3_gadget_arm_retries);
       at = put(out, at, cap, row, sizeof row);
       // The last eight requests the host made, newest last, and how the status phases
       // arrived. Three runs in a row ended on a class request and the single `last` field

@@ -271,8 +271,8 @@ check("GPU / 'AdrenoMdtV1.c', ['-mgeneral-regs-only']" in build,
 check("'AdrenoMdtV1': GPU / 'AdrenoMdtV1.c'," in host, 'B11 host SOURCES entry')
 check("('adreno-mdt-v1-test'" in host, 'B11 host TESTS entry')
 check('/mdt-v1' in host, 'B11 PASS enumeration updated')
-check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 30,
-      'B11 30 C archive units declared')
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 31,
+      'B11 31 C archive units declared')
 check('a630_zap.mdt' in host, 'B11 the real blob path is passed to the test')
 
 # ===================== ROUND 106: the LOAD PLAN ===============================

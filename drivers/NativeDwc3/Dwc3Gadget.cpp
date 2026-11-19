@@ -81,6 +81,8 @@ volatile uint32_t native_dwc3_gadget_configured = 0;
 // cmd frozen at 8: every re-arm bailed out silently. arm_ok counts the TRBs actually
 // handed to the controller, arm_hwo the refusals, and ep0_ctl keeps what EP0-OUT's
 // control TRB held at the last refusal -- bit0 is HWO, so a stuck 1 explains it.
+volatile uint32_t native_dwc3_gadget_arm_attempts_last = 0;  // attempts used by the last STARTTRANSFER
+volatile uint32_t native_dwc3_gadget_arm_retries = 0;        // total retries across all starts
 volatile uint32_t native_dwc3_gadget_arm_ok = 0;
 volatile uint32_t native_dwc3_gadget_arm_hwo = 0;
 volatile uint32_t native_dwc3_gadget_ep0_ctl = 0;
@@ -160,6 +162,10 @@ const char *volatile native_dwc3_gadget_error = nullptr;
 }
 
 namespace {
+
+// The firmware reference retries a STARTTRANSFER three times before
+// declaring the endpoint unusable (UsbfnDwc3Dxe.h DWC3_START_XFER_ATTEMPTS).
+constexpr unsigned kStartTransferAttempts = 3;
 
 // Event buffer: one 4 KiB page is the size Mu-Silicium uses and the granularity
 // the controller documents. TRB rings are one page each, with the last entry a
@@ -495,17 +501,48 @@ bool startTransfer(unsigned ep, uint64_t bufferPhys, unsigned length, unsigned t
   cleanDma(trb, kTrbBytes);
 
   uint32_t result = 0;
-  // PAR2 stays zero: STARTTRANSFER reads the buffer and length out of the TRB, and the
-  // firmware passes 0 here too (Dwc3Endpoint.c:318-323). PAR0/PAR1 carry ringPhys -- the
-  // ring, not bufferPhys -- which is the whole point of the note above.
-  if (!endpointCommand(gGadget.core, ep, kDwc3DepCmdStartTransfer, uint32_t(ringPhys >> 32),
-                       uint32_t(ringPhys & 0xffffffffu), 0, &result)) {
+  // ROUND 225: Mu-Silicium's Dwc3StartTransfer retries DWC3_START_XFER_ATTEMPTS (3)
+  // times and, before every retry, calls Dwc3EndTransfer and rebuilds the TRB
+  // (Dwc3Endpoint.c, Dwc3StartTransfer). Ours issued the command once and gave up, so a
+  // single transient refusal aborted the whole control transfer -- which is exactly the
+  // shape the R224 log shows: one unanswered SETUP, then the host abandons enumeration
+  // before SET_CONFIG(1). Mirror the reference here.
+  unsigned attempt = 0;
+  for (;;) {
+    ++attempt;
+    result = 0;
+    // PAR2 stays zero: STARTTRANSFER reads the buffer and length out of the TRB, and the
+    // firmware passes 0 here too (Dwc3Endpoint.c:318-323). PAR0/PAR1 carry ringPhys -- the
+    // ring, not bufferPhys -- which is the whole point of the note above.
+    if (endpointCommand(gGadget.core, ep, kDwc3DepCmdStartTransfer, uint32_t(ringPhys >> 32),
+                        uint32_t(ringPhys & 0xffffffffu), 0, &result)) {
+      break;
+    }
+    if (attempt >= kStartTransferAttempts) {
+      gGadget.resourceIndex[ep] = 0;
+      native_dwc3_gadget_arm_fail = native_dwc3_gadget_arm_fail + 1;
+      native_dwc3_gadget_arm_attempts_last = attempt;
+      return false;
+    }
+    // Stop whatever the refused command left behind, then rebuild the TRB, exactly as
+    // the reference does before each retry.
+    (void)endpointCommand(gGadget.core, ep, kDwc3DepCmdEndTransfer,
+                          gGadget.resourceIndex[ep] ? uint32_t(gGadget.resourceIndex[ep]) : 0u,
+                          0, 0, nullptr);
     gGadget.resourceIndex[ep] = 0;
-    native_dwc3_gadget_arm_fail = native_dwc3_gadget_arm_fail + 1;
-    return false;
+    trb->bufferLow = uint32_t(bufferPhys & 0xffffffffu);
+    trb->bufferHigh = uint32_t(bufferPhys >> 32);
+    trb->size = dwc3TrbSizeLength(length);
+    trb->control = dwc3TrbCtrlType(trbType) | kDwc3TrbCtrlHwo | kDwc3TrbCtrlIspImi |
+                   kDwc3TrbCtrlIoc | kDwc3TrbCtrlLst;
+    cleanDma(trb, kTrbBytes);
   }
   gGadget.resourceIndex[ep] = dwc3DepCmdResourceIndex(result);
   native_dwc3_gadget_arm_ok = native_dwc3_gadget_arm_ok + 1;
+  native_dwc3_gadget_arm_attempts_last = attempt;
+  if (attempt > 1) {
+    native_dwc3_gadget_arm_retries = native_dwc3_gadget_arm_retries + (attempt - 1u);
+  }
   return true;
 }
 
