@@ -50,6 +50,7 @@ TESTS = [
     ('adreno-smmu-ctx-word-v1-test', [GPU / 'tests/adreno-smmu-ctx-word-v1-test.cpp'], ['AdrenoSmmuCtxWordV1']),
     ('adreno-smmu-asid-v1-test', [GPU / 'tests/adreno-smmu-asid-v1-test.cpp'], ['AdrenoSmmuAsidV1']),
     ('adreno-smmu-id1-v1-test', [GPU / 'tests/adreno-smmu-id1-v1-test.cpp'], ['AdrenoSmmuId1V1']),
+    ('adreno-smmu-lpae-v1-test', [GPU / 'tests/adreno-smmu-lpae-v1-test.cpp'], ['AdrenoSmmuLpaeV1']),
     ('adreno-iommu-probe-v1-test', [GPU / 'tests/adreno-iommu-probe-v1-test.cpp'], ['AdrenoIommuProbeV1', 'AdrenoSmmuCtxWordV1']),
 ]
 SOURCES = {
@@ -83,6 +84,7 @@ SOURCES = {
     'AdrenoSmmuCtxWordV1': GPU / 'AdrenoSmmuCtxWordV1.c',
     'AdrenoSmmuAsidV1': GPU / 'AdrenoSmmuAsidV1.c',
     'AdrenoSmmuId1V1': GPU / 'AdrenoSmmuId1V1.c',
+    'AdrenoSmmuLpaeV1': GPU / 'AdrenoSmmuLpaeV1.c',
     'AdrenoIommuProbeV1': GPU / 'AdrenoIommuProbeV1.c',
 }
 
