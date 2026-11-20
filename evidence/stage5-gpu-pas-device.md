@@ -3882,7 +3882,7 @@ this boot reached the writer / survived the start word (new boot_id) but the row
 
 ### 62.3 构建与静态门
 
-- CI 分支 `r238-last-store`，run **44709686730（#348）`completed/success`**，job `build` 09:19:11Z → 09:40:33Z，28 个构建步骤全 success。
+- CI 分支 `r238-last-action`，run **44709686730（#348）`completed/success`**，job `build` 09:19:11Z → 09:40:33Z，28 个构建步骤全 success。
 - 取件（16 连接）：`r238-kernel/kernel.macho` **126,234,624 B** sha256 `669ff547ca129c3bb4d5ef350610115ea3e27dfbc19478dca43be8ef814ec63c`；`r238-payload/payload.img` **150,994,944 B** sha256 `f6163823dc938f3f828691bf33e80652dc92ce5140ff91a8d7432828a945a1df`。
 - 静态门 `r238_static.py`：9 条 required（`gmu80a/b/c` 三条格式串 + 两条拒绝分支 + `enchilada-pas-exec` + R237 的 `gmu78b` / `gmu78c=about_to_start` / `gmu79d` 存活行）+ 3 条 forbidden（`gmu80d=` / `gmu80e=` / `gmu81a=`：启动字之后不允许再有行，键 81 不单独拥有自己的行）+ 固件钉 `b07f9029...`（32,768 B，按摘要扫描，不靠偏移）。
 - **门自证区分能力**（`r238_gatecheck.py`，把同一份 `r238_static.py` 的路径指向上一轮）：对 `r237-kernel/payload` 五条 `gmu80*` 全为 0 并 `FAIL`，对 `r238-kernel/payload` 全为 1 并 `PASS`。即这一轮的门不是空转。
