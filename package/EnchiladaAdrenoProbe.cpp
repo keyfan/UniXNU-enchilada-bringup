@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 88u);
+                            (fwKey >= 7u && fwKey <= 91u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -5544,6 +5544,141 @@ if (fwKey == 86u || fwKey == 87u || fwKey == 88u) {
                      rd32(gSmmuVa, 0x000u), rd32(gSmmuVa, 0x800u),
                      rd32(gSmmuVa, 0x048u));
             IOLog("enchilada-adreno: %s\n", r86RowE);
+        }
+    }
+}
+
+if (fwKey == 89u || fwKey == 90u || fwKey == 91u) {
+    // ROUND 242: R241 proved the SMMU routing registers are reachable -- SMR0 takes
+    // VALID | SID and keeps it, S2CR0 at 0xC00 takes a store without killing the boot -- but
+    // S2CR0 reads back FAULT (0x00020000) whatever was written, so whether the store has any
+    // effect at all is still open. This round settles the storage question first (keys 89 and
+    // 91, no GMU writes) and then spends one boot on the decisive test (key 90).
+    //
+    // The hypothesis key 90 tests: the two HFI bits (descriptor + start) turn the GMU into an
+    // AHB master, and its first read of the queue table crosses the GPU SMMU. That path has no
+    // valid SMR (R174: smr0 = smr1 = 0) and sCR0.USFCFG = 1, so an unmatched stream FAULTS
+    // rather than bypasses -- a read that never completes, which looks exactly like every fatal
+    // round so far: the AP stops inside the store and commits nothing for a writer round.
+    // Key 90 routes SID 4 (the GMU user stream) to BYPASS. If the boot then lands rows, the
+    // routing took effect and the fault hypothesis is confirmed. If it leaves only the previous
+    // window, either the S2CR store has no effect on this SMMU or the fault is not the cause.
+    //
+    // Judgement, fixed before the first boot:
+    //   key 89 rows landed                    -> reads at 0xC00 are safe, R173/R174's record is
+    //                                            wrong (or was about a different access)
+    //   key 89 only the announce row          -> reads at 0xC00 abort, R173/R174 stand
+    //   key 91 landed=1                       -> a same-value write sticks; R241's 0x00020000
+    //                                            means the field really is clamped to FAULT
+    //   key 91 landed=0                       -> the store is dropped and the readback shows
+    //                                            whatever the hardware always shows
+    //   key 90 rows landed                    -> SMMU routing changed the outcome: the fault
+    //                                            hypothesis is confirmed and the fatality is
+    //                                            the GMU's queue-table read
+    //   key 90 only rows above the start word -> the routing had no effect; zero bytes at the
+    //                                            start word is the same result as R238 key 81
+    const int r89which = (fwKey >= 91u) ? 91 : ((fwKey >= 90u) ? 90 : 89);
+    char r89RowA[320];
+    char r89RowB[320];
+    char r89RowC[320];
+    char r89RowD[320];
+    char r89RowE[320];
+    const uint32_t r89cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r89cxOn = adreno_domain_cx_is_on(r89cx);
+    snprintf(r89RowA, sizeof r89RowA,
+             "gmu89a=cx=%08x cx_on=%d smmu=%d key=%u win=%d",
+             r89cx, r89cxOn, (gSmmuVa != 0) ? 1 : 0,
+             (unsigned)fwKey, (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r89RowA);
+
+    if (!r89cxOn) {
+        IOLog("enchilada-adreno: gmu89b=refused-cx-down cx=%08x\n", r89cx);
+    } else if (!gSmmuVa) {
+        IOLog("enchilada-adreno: gmu89b=refused-unmapped\n");
+    } else {
+        const uint32_t r89scr  = rd32(gSmmuVa, 0x000u);
+        const uint32_t r89id0  = rd32(gSmmuVa, 0x020u);
+        const uint32_t r89smr0 = rd32(gSmmuVa, 0x800u);
+        const uint32_t r89smr1 = rd32(gSmmuVa, 0x804u);
+        __asm__ volatile("dsb sy" ::: "memory");
+        snprintf(r89RowB, sizeof r89RowB,
+                 "gmu89b=scr0=%08x usfcfg=%u clientpd=%u id0=%08x numsmrg=%u smr0=%08x smr1=%08x",
+                 r89scr, (unsigned)((r89scr >> 10) & 1u), (unsigned)(r89scr & 1u),
+                 r89id0, (unsigned)(r89id0 & 0xffu), r89smr0, r89smr1);
+        IOLog("enchilada-adreno: %s\n", r89RowB);
+
+        if (r89which == 89) {
+            // Reads only. The announce row is separate so that a boot which ends here cannot be
+            // read as "the block refused": it got as far as announcing the read.
+            snprintf(r89RowC, sizeof r89RowC,
+                     "gmu89c=about_to_read_s2cr0 offs=c00c04c08 no_store=1 win=%d",
+                     (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r89RowC);
+            const uint32_t r89s2a = rd32(gSmmuVa, 0xc00u);
+            const uint32_t r89s2b = rd32(gSmmuVa, 0xc04u);
+            const uint32_t r89s2c = rd32(gSmmuVa, 0xc08u);
+            __asm__ volatile("dsb sy" ::: "memory");
+            snprintf(r89RowD, sizeof r89RowD,
+                     "gmu89d=s2cr_reads c00=%08x c04=%08x c08=%08x survived=1",
+                     r89s2a, r89s2b, r89s2c);
+            IOLog("enchilada-adreno: %s\n", r89RowD);
+        } else if (r89which == 91) {
+            // Read, write the same value back, read again. The only thing that changes is that a
+            // store happened, so a difference between the two reads is the store's doing.
+            snprintf(r89RowC, sizeof r89RowC,
+                     "gmu91c=about_to_read_s2cr0 off=c00 no_store_yet=1 win=%d",
+                     (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r89RowC);
+            const uint32_t r89same = rd32(gSmmuVa, 0xc00u);
+            snprintf(r89RowD, sizeof r89RowD,
+                     "gmu91d=s2cr_orig c00=%08x about_to_write_same=1", r89same);
+            IOLog("enchilada-adreno: %s\n", r89RowD);
+            *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0xc00u) = r89same;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r89after = rd32(gSmmuVa, 0xc00u);
+            snprintf(r89RowE, sizeof r89RowE,
+                     "gmu91e=s2cr_same wrote=%08x back=%08x landed=%u survived=1",
+                     r89same, r89after, (r89after == r89same) ? 1u : 0u);
+            IOLog("enchilada-adreno: %s\n", r89RowE);
+        } else {
+            // key 90: route the GMU user stream to BYPASS, then ask for the start word.
+            const uint32_t r89smrWant = 0x80000000u | 0x00000004u;   // VALID | SID 4
+            const uint32_t r89s2Want  = 0x00010000u;                 // S2CR TYPE = BYPASS << 16
+            snprintf(r89RowC, sizeof r89RowC,
+                     "gmu90c=about_to_route smr_want=%08x s2cr_want=%08x sid=4 type=bypass win=%d",
+                     r89smrWant, r89s2Want, (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r89RowC);
+
+            *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x800u) = r89smrWant;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r89smrBack = rd32(gSmmuVa, 0x800u);
+            snprintf(r89RowD, sizeof r89RowD,
+                     "gmu90d=smr_set wanted=%08x back=%08x valid=%u sid=%u landed=%u",
+                     r89smrWant, r89smrBack,
+                     (unsigned)((r89smrBack >> 31) & 1u), (unsigned)(r89smrBack & 0xffffu),
+                     (r89smrBack == r89smrWant) ? 1u : 0u);
+            IOLog("enchilada-adreno: %s\n", r89RowD);
+
+            *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0xc00u) = r89s2Want;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r89s2Back = rd32(gSmmuVa, 0xc00u);
+            snprintf(r89RowE, sizeof r89RowE,
+                     "gmu90e=s2cr_set wanted=%08x back=%08x typew=%08x landed=%u",
+                     r89s2Want, r89s2Back, r89s2Back & 0x00030000u,
+                     (r89s2Back == r89s2Want) ? 1u : 0u);
+            IOLog("enchilada-adreno: %s\n", r89RowE);
+
+            // Last printed row. Everything above it is already asked for; the store below is the
+            // only action after it, so a window that ends here means the store itself stopped
+            // the machine -- the same shape R239 key 83 landed with.
+            snprintf(r89RowC, sizeof r89RowC,
+                     "gmu90f=last_row=1 about_to_start=1 smr=%08x s2cr=%08x win=%d",
+                     rd32(gSmmuVa, 0x800u), rd32(gSmmuVa, 0xc00u), (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r89RowC);
+
+            // The only GMU store in this block, and the last action of the round.
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
         }
     }
 }

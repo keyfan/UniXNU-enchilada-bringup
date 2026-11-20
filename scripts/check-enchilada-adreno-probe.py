@@ -330,7 +330,7 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 201,
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 202,
               'R168+R170+R171+R175+R178+R181+R186+R205 the pointer writes are exactly '
               'the ITCM loop, the pulse words, the three handshake words, the '
               'R234 bypass key adds one more (HFI_CTRL_INIT under key 74), the R239 shape-control and table-clear keys add seven more (keys 82/83 each repeat the four masks, and key 83 adds QTBL_INFO = 0 before the start word while key 82 writes the same store with value 0), the R240 zero-page and positive-control keys add eight more (keys 84/85 each repeat the four masks, key 84 adds QTBL_ADDR pointing at a fresh zero page and QTBL_INFO = 1 before the start word, and both keys add the start word itself), the '
@@ -390,7 +390,7 @@ def main():
               'the two clears and the two masks and then returns without ever touching '
               'the start word, while key 79 repeats those four, adds the start word and '
               'the same two restores, so that one store is the only difference between '
-              'them')
+              'them, and the R242 routing key adds exactly one more: key 90 repeats the two SMMU routing stores and then adds a single store, HFI_CTRL_INIT, as the last action of the round, while keys 89 and 91 keep that round free of every GMU write')
         check('volatile uint32_t *const gmuW' in text,
               'R168 every one of those writes goes through a volatile mapping')
 

@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 88u' in _fw,
+    check('fwKey >= 7u && fwKey <= 91u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1694,7 +1694,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 88u)' in code,
+    check('(fwKey >= 7u && fwKey <= 91u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3536,7 +3536,8 @@ def main():
     if _i8687 >= 0:
         check(_i8485 >= 0 and _i8687 > _i8485,
               'R241 the new block follows the R240 block it builds on')
-        _k8687 = code[_i8687:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        _k8687 = code[_i8687:].split(
+            '\nif (fwKey == 89u || fwKey == 90u || fwKey == 91u) {\n', 1)[0]
         check(_k8687 != '', 'R241 the block is delimited by the doorbell ladder')
 
         # The whole round is read-only with respect to the GMU: no HFI register at all.
@@ -3585,6 +3586,78 @@ def main():
         # No sleeping and no waiting loop: this round must not buy observation time.
         check('IOSleep' not in _k8687, 'R241 the block never sleeps')
         check('for (' not in _k8687, 'R241 the block never spins')
+
+    # ---- ROUND 242 ----------------------------------------------------------------
+    # key 89 reads 0xC00 / 0xC04 / 0xC08 and writes nothing; key 91 reads 0xC00, writes the same
+    # value back and reads again; key 90 routes SID 4 to BYPASS and then writes the start word as
+    # the last action of the round. The point of the split is that only key 90 can die.
+    _i8991 = code.find('if (fwKey == 89u || fwKey == 90u || fwKey == 91u) {')
+    check(_i8991 >= 0, 'R242 the s2cr storage block exists')
+    if _i8991 >= 0:
+        check(_i8687 >= 0 and _i8991 > _i8687,
+              'R242 the new block follows the R241 block it builds on')
+        _k8991 = code[_i8991:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        check(_k8991 != '', 'R242 the block is delimited by the doorbell ladder')
+
+        # Exactly one GMU store in the whole round, and it is the start word in key 90.
+        _g242 = _k8991.count('gmuW[')
+        check(_g242 == 1, 'R242 exactly one GMU store in the block (got %d)' % _g242)
+        check('HFI_CTRL_INIT' in _k8991, 'R242 the block does write the start word')
+        check('HFI_QTBL_INFO' not in _k8991 and 'HFI_QTBL_ADDR' not in _k8991,
+              'R242 nothing in this round touches the table descriptor')
+
+        # Rows that must exist for the three keys to be readable at all.
+        for _row in ('gmu89a=', 'gmu89b=refused-cx-down', 'gmu89b=refused-unmapped',
+                     'gmu89b=scr0=', 'gmu89c=about_to_read_s2cr0', 'gmu89d=s2cr_reads',
+                     'gmu91c=about_to_read_s2cr0', 'gmu91d=s2cr_orig', 'gmu91e=s2cr_same',
+                     'gmu90c=about_to_route', 'gmu90d=smr_set', 'gmu90e=s2cr_set',
+                     'gmu90f=last_row=1'):
+            check(_row in _k8991, 'R242 the row %s is emitted' % _row)
+
+        # key 89: announce, then three reads, and not one store anywhere in that body.
+        _k89 = _k8991.split('if (r89which == 89) {', 1)[1].split(
+            '} else if (r89which == 91) {', 1)[0]
+        check(_k89.count('reinterpret_cast<volatile uint32_t *>') == 0,
+              'R242 key 89 stores nothing at all (got %d)'
+              % _k89.count('reinterpret_cast<volatile uint32_t *>'))
+        # Key 89 READS the group instead of storing to it, so these anchors are the read
+        # helper rather than the store form the later keys use.
+        check('rd32(gSmmuVa, 0xc04u)' in _k89 and 'rd32(gSmmuVa, 0xc08u)' in _k89,
+              'R242 key 89 reads the whole 0xC00 group it announces')
+        check(_k89.index('gmu89c=about_to_read_s2cr0') < _k89.index('rd32(gSmmuVa, 0xc00u)'),
+              'R242 key 89 announces the 0xC00 read before making it')
+
+        # key 91: exactly one store, and it is the value that was just read.
+        _tail = _k8991.split('} else if (r89which == 91) {', 1)[1]
+        _k91, _k90 = _tail.split('\n        } else {\n', 1)
+        check(_k91.count('reinterpret_cast<volatile uint32_t *>') == 1,
+              'R242 key 91 stores exactly once (got %d)'
+              % _k91.count('reinterpret_cast<volatile uint32_t *>'))
+        check('= r89same;' in _k91,
+              'R242 key 91 writes back the value it just read')
+
+        # key 90: SMR0 then S2CR0 then the start word, and nothing at all after the start word.
+        check(_k90.count('reinterpret_cast<volatile uint32_t *>') == 2,
+              'R242 key 90 stores SMR0 and S2CR0 (got %d)'
+              % _k90.count('reinterpret_cast<volatile uint32_t *>'))
+        check('0x80000000u | 0x00000004u' in _k90,
+              'R242 key 90 routes the GMU user stream SID 4 with VALID set')
+        check('0x00010000u' in _k90, 'R242 key 90 routes it to BYPASS')
+        check('IOSleep' not in _k90 and 'for (' not in _k90,
+              'R242 key 90 neither sleeps nor spins')
+        _iSmr = _k90.index('gSmmuVa + 0x800u) = ')
+        _iS2 = _k90.index('gSmmuVa + 0xc00u) = ')
+        _iLast = _k90.index('gmu90f=last_row=1')
+        _iStart = _k90.index('HFI_CTRL_INIT] = 1u;')
+        check(_iSmr < _iS2 < _iLast < _iStart,
+              'R242 key 90 routes first, prints last_row, and only then starts')
+        _afterStart = _k90[_iStart + len('HFI_CTRL_INIT] = 1u;'):]
+        check('IOLog' not in _afterStart,
+              'R242 nothing is printed after the start word')
+        check('rd32' not in _afterStart,
+              'R242 nothing is read back after the start word')
+        check(_afterStart.count('= 1u') == 0 and _afterStart.count('= r89') == 0,
+              'R242 no further store is made after the start word')
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))
