@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 85u);
+                            (fwKey >= 7u && fwKey <= 88u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -5417,6 +5417,133 @@ if (fwKey == 84u || fwKey == 85u) {
             __asm__ volatile("dsb sy" ::: "memory");
             gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
             __asm__ volatile("dsb sy" ::: "memory");
+        }
+    }
+}
+
+if (fwKey == 86u || fwKey == 87u || fwKey == 88u) {
+    // ROUND 241: R240 showed the fatality needs BOTH the descriptor bit and the start bit
+    // and does not care what the descriptor points at (a freshly zeroed page killed the
+    // boot exactly like the real table). So the next question is what those two bits turn
+    // on: if they are the latch that makes the GMU an AHB master, its first read of the
+    // queue table crosses the GPU SMMU. That path has no valid SMR at all (R174: smr0 =
+    // smr1 = 0) and sCR0.USFCFG = 1 (bit 10, R164/R235), which makes unmatched streams
+    // fault instead of bypass. A read that can never complete would look exactly like what
+    // every fatal round has measured: the AP stops inside the MMIO store and commits
+    // nothing for a whole writer round.
+    //
+    // Nothing here writes HFI_CTRL_INIT. Three keys, one question each:
+    //
+    //   key 86 -- control. Same preamble and row C as the others, but no SMMU write at
+    //             all. If this key leaves rows, the shape lands and any other key's
+    //             silence is attributable to its own store rather than to the shape.
+    //   key 88 -- run second. SMR0 at GR0 + 0x800 accepts a write of VALID | SID 4
+    //             (0x80000004). SID 4 is the GMU user stream this port already names
+    //             (AdrenoBoardInputs.c, kAdrenoBoardCtxGmuUser). The entry is restored
+    //             byte for byte before the block returns, so the routing that existed
+    //             before the key ran is what runs after it.
+    //   key 87 -- run last. S2CR0 at GR0 + 0xC00. Reading that group aborted the boot in
+    //             R173/R174, and ID0.S2TS reads 0, so stage 2 looks unimplemented on this
+    //             SMMU; writing is a different operation from reading, which is the whole
+    //             question. The write is announced on its own row: if a boot ever ends
+    //             right after gmu87c=, the store itself is the suspect.
+    //
+    // Judgement, fixed before the boot:
+    //   key 86 rows landed                     -> the shape lands; 87 and 88 are readable
+    //   key 86 fresh, key 88 rows landed valid=1 -> SMR accepts VALID from this CPU
+    //   key 86 fresh, key 88 landed valid=0      -> the value stores but bit 31 does not
+    //                                              stick, so SMR cannot identify a stream
+    //   key 86+88 fresh, key 87 rows landed      -> 0xC00 accepts writes; key 89 may route
+    //                                              a stream and then try the start word
+    //   key 86+88 fresh, key 87 zero bytes       -> the 0xC00 wall covers writes too, the
+    //                                              SMR half is the only routing available
+    const int r86which = (fwKey >= 88u) ? 88 : ((fwKey >= 87u) ? 87 : 86);
+    char r86RowA[320];
+    char r86RowB[320];
+    char r86RowC[320];
+    char r86RowD[320];
+    char r86RowE[320];
+    const uint32_t r86cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r86cxOn = adreno_domain_cx_is_on(r86cx);
+    snprintf(r86RowA, sizeof r86RowA,
+             "gmu86a=cx=%08x cx_on=%d smmu=%d key=%u win=%d",
+             r86cx, r86cxOn, (gSmmuVa != 0) ? 1 : 0,
+             (unsigned)fwKey, (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r86RowA);
+
+    if (!r86cxOn) {
+        IOLog("enchilada-adreno: gmu86b=refused-cx-down cx=%08x\n", r86cx);
+    } else if (!gSmmuVa) {
+        IOLog("enchilada-adreno: gmu86b=refused-unmapped\n");
+    } else {
+        const uint32_t r86scr  = rd32(gSmmuVa, 0x000u);
+        const uint32_t r86id0  = rd32(gSmmuVa, 0x020u);
+        const uint32_t r86smr0 = rd32(gSmmuVa, 0x800u);
+        const uint32_t r86smr1 = rd32(gSmmuVa, 0x804u);
+        __asm__ volatile("dsb sy" ::: "memory");
+        snprintf(r86RowB, sizeof r86RowB,
+                 "gmu86b=scr0=%08x usfcfg=%u clientpd=%u id0=%08x numsmrg=%u smr0=%08x smr1=%08x",
+                 r86scr, (unsigned)((r86scr >> 10) & 1u), (unsigned)(r86scr & 1u),
+                 r86id0, (unsigned)(r86id0 & 0xffu), r86smr0, r86smr1);
+        IOLog("enchilada-adreno: %s\n", r86RowB);
+
+        if (r86which == 86) {
+            // Control: everything above, nothing below. No SMMU write of any kind, so a
+            // landed window here proves the shape and not the SMMU.
+            snprintf(r86RowC, sizeof r86RowC,
+                     "gmu86c=control_no_smmu_write=1 scr0=%08x smr0=%08x key=%u win=%d",
+                     r86scr, r86smr0, (unsigned)fwKey, (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r86RowC);
+        } else if (r86which == 88) {
+            // key 88: does SMR0 accept VALID (bit 31) together with the GMU user SID?
+            const uint32_t r86want = 0x80000000u | 0x00000004u;
+            snprintf(r86RowC, sizeof r86RowC,
+                     "gmu88c=about_to_set_smr0 wanted=%08x old=%08x win=%d",
+                     r86want, r86smr0, (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r86RowC);
+            *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x800u) = r86want;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r86back = rd32(gSmmuVa, 0x800u);
+            snprintf(r86RowD, sizeof r86RowD,
+                     "gmu88d=smr_valid wrote=1 wanted=%08x back=%08x valid=%u sid=%u landed=%u",
+                     r86want, r86back,
+                     (unsigned)((r86back >> 31) & 1u), (unsigned)(r86back & 0xffffu),
+                     (r86back == r86want) ? 1u : 0u);
+            IOLog("enchilada-adreno: %s\n", r86RowD);
+            // Whatever stream 4 was routed to before this key ran is restored before the
+            // block returns, so the next boot starts from the same state either way.
+            *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x800u) = r86smr0;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r86rest = rd32(gSmmuVa, 0x800u);
+            snprintf(r86RowE, sizeof r86RowE,
+                     "gmu88e=smr_restored wanted=%08x back=%08x restored=%u after=1 scr0=%08x",
+                     r86smr0, r86rest, (r86rest == r86smr0) ? 1u : 0u,
+                     rd32(gSmmuVa, 0x000u));
+            IOLog("enchilada-adreno: %s\n", r86RowE);
+        } else {
+            // key 87: the 0xC00 group, writes instead of reads. Announced on its own row
+            // because a fatal store here would leave only the rows above it.
+            const uint32_t r86s2want = 0x00010000u;  // S2CR TYPE = BYPASS (1) << 16
+            snprintf(r86RowC, sizeof r86RowC,
+                     "gmu87c=about_to_write_s2cr0 off=c00 want=%08x old_unreadable=1 win=%d",
+                     r86s2want, (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r86RowC);
+            *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0xc00u) = r86s2want;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r86s2back = rd32(gSmmuVa, 0xc00u);
+            // TYPE lives in bits 17:16, printed as the masked word rather than shifted:
+            // stage 6 forbids re-deriving an ID1 field with ">> 16" anywhere in this file,
+            // and BYPASS is readable straight off as typew=00010000.
+            snprintf(r86RowD, sizeof r86RowD,
+                     "gmu87d=s2cr0 wrote=1 wanted=%08x back=%08x typew=%08x landed=%u",
+                     r86s2want, r86s2back, r86s2back & 0x00030000u,
+                     (r86s2back == r86s2want) ? 1u : 0u);
+            IOLog("enchilada-adreno: %s\n", r86RowD);
+            snprintf(r86RowE, sizeof r86RowE,
+                     "gmu87e=after=1 scr0=%08x smr0=%08x gfsr=%08x survived=1",
+                     rd32(gSmmuVa, 0x000u), rd32(gSmmuVa, 0x800u),
+                     rd32(gSmmuVa, 0x048u));
+            IOLog("enchilada-adreno: %s\n", r86RowE);
         }
     }
 }

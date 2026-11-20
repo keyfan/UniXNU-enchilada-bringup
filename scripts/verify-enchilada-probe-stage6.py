@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 85u' in _fw,
+    check('fwKey >= 7u && fwKey <= 88u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1694,7 +1694,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 85u)' in code,
+    check('(fwKey >= 7u && fwKey <= 88u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3460,7 +3460,7 @@ def main():
     if _i8485 >= 0:
         check(_i8283 >= 0 and _i8485 > _i8283,
               'R240 the new block follows the R239 block it builds on')
-        _k8485 = code[_i8485:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        _k8485 = code[_i8485:].split('\nif (fwKey == 86u || fwKey == 87u || fwKey == 88u) {\n', 1)[0]
         check(_k8485 != '', 'R240 the block is delimited by the doorbell ladder')
         _k84pre = _k8485.split('if (r84is85) {', 1)[0]  # code-only anchor: stage6 strips comments
         check(_k84pre != '', 'R240 the preamble is found')
@@ -3524,6 +3524,67 @@ def main():
             check(_post == '',
                   'R240 nothing follows the last store of key %s; got %r'
                   % (_name, _post[:120]))
+
+    # --- R241 stream-routing keys ---------------------------------------------
+    # R240 pinned the fatality to "descriptor bit set AND start bit set", independent of
+    # what the descriptor points at. R241 touches no start word at all and asks only
+    # whether the stream-routing registers exist and accept writes: key 86 is a control
+    # with no SMMU write, key 88 writes SMR0 (VALID | SID 4) and restores it, key 87
+    # writes S2CR0 (TYPE = BYPASS) at the offset whose reads aborted the boot twice.
+    _i8687 = code.find('if (fwKey == 86u || fwKey == 87u || fwKey == 88u) {')
+    check(_i8687 >= 0, 'R241 the stream-routing block exists')
+    if _i8687 >= 0:
+        check(_i8485 >= 0 and _i8687 > _i8485,
+              'R241 the new block follows the R240 block it builds on')
+        _k8687 = code[_i8687:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        check(_k8687 != '', 'R241 the block is delimited by the doorbell ladder')
+
+        # The whole round is read-only with respect to the GMU: no HFI register at all.
+        check(_k8687.count('gmuW[') == 0,
+              'R241 the block stores no GMU register (got %d)'
+              % _k8687.count('gmuW['))
+        check('HFI_CTRL_INIT' not in _k8687,
+              'R241 nothing in this round writes the start word')
+        check('HFI_QTBL_INFO' not in _k8687 and 'HFI_QTBL_ADDR' not in _k8687,
+              'R241 nothing in this round touches the table descriptor')
+
+        # Rows that must exist for the three keys to be readable at all.
+        for _row in ('gmu86a=', 'gmu86b=refused-cx-down', 'gmu86b=refused-unmapped',
+                     'gmu86b=scr0=', 'gmu86c=control_no_smmu_write=1',
+                     'gmu87c=about_to_write_s2cr0', 'gmu87d=s2cr0',
+                     'gmu88c=about_to_set_smr0', 'gmu88d=smr_valid',
+                     'gmu88e=smr_restored'):
+            check(_row in _k8687, 'R241 the row %s is emitted' % _row)
+
+        # key 88: SMR0 written with VALID | SID 4 and then put back exactly.
+        _w800 = _k8687.count('gSmmuVa + 0x800u) = ')
+        check(_w800 == 2, 'R241 key 88 writes SMR0 and then restores it (got %d)' % _w800)
+        check('0x80000000u | 0x00000004u' in _k8687,
+              'R241 the SMR value is VALID | SID 4, the GMU user stream')
+        _i800want = _k8687.index('gSmmuVa + 0x800u) = r86want;')
+        _i800back = _k8687.index('gSmmuVa + 0x800u) = r86smr0;')
+        check(_i800want < _i800back,
+              'R241 the SMR entry is restored only after it was set')
+
+        # key 87: one store to the 0xC00 group, announced before it is made.
+        _wC00 = _k8687.count('gSmmuVa + 0xc00u) = ')
+        check(_wC00 == 1, 'R241 key 87 writes S2CR0 exactly once (got %d)' % _wC00)
+        check('0x00010000u' in _k8687, 'R241 the S2CR value is TYPE = BYPASS')
+        _iC00row = _k8687.index('gmu87c=about_to_write_s2cr0')
+        _iC00st = _k8687.index('gSmmuVa + 0xc00u) = ')
+        check(_iC00row < _iC00st,
+              'R241 the 0xC00 store is announced on a row before it is made')
+
+        # The control key must not write the SMMU at all: gate the whole round on the two
+        # stores above and assert the control body carries none.
+        _k86ctl = _k8687.split('if (r86which == 86) {', 1)[1].split(
+            '} else if (r86which == 88) {', 1)[0]
+        check('0x800u) = ' not in _k86ctl and '0xc00u) = ' not in _k86ctl,
+              'R241 the control key writes neither SMR0 nor S2CR0')
+
+        # No sleeping and no waiting loop: this round must not buy observation time.
+        check('IOSleep' not in _k8687, 'R241 the block never sleeps')
+        check('for (' not in _k8687, 'R241 the block never spins')
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))

@@ -4160,3 +4160,138 @@ rekey 到 85（`r240-s85-payload/payload.img` sha256 `173cec17564e344165b56ffa8f
   - 两行都落 ⇒ `S2CR` 可写，下一轮才谈把 GMU 的 SID 路由到 CB0。
 - **键 87**（无启动字）：写 `SMR0 = VALID | SID`，读回，打印。判 `SMR` 的 `VALID` 位能不能被立住。
 - 只有 86/87 都落盘，才有资格在键 88 里把"路由 + 启动"合起来试。
+
+## 六十五、ROUND 241：不碰启动字，只问流路由寄存器存不存在 —— SMR 接受 VALID，S2CR 收了写但不留值
+
+R240 把致死钉在「描述符位为真 + 启动位为真」同时成立上，而且与表指向哪里、内容是什么无关（一页全零和真表一样致死）。本轮换一个问题：**那两位到底打开了什么**。一个一直没被排除的可能是——它们让 GMU 变成 AHB 主设备，于是它读队列表的第一次访问要穿过 GPU SMMU；而那条路上**一条有效 SMR 都没有**（R174：`smr0 = smr1 = 0`），`sCR0.USFCFG = 1`（bit 10，R164/R235）让未匹配的流**直接 fault 而不是旁路**。一次永远完不成的读，看起来正好就是每一轮致死都测到的那样：AP 在 store 里停住，一整个 writer 轮什么都没提交。
+
+所以本轮**一个启动字都不写**，只问三件事：形状能不能落盘、`SMR0` 接不接受 `VALID`、`S2CR0` 接不接受写。
+
+### 65.1 一句话
+
+键 86（控制，不做任何 SMMU 写）：3/3 行落盘、新 boot_id、新窗口 ⇒ 形状无罪。键 88（写 `SMR0 = VALID | SID 4` 再复原）：5/5 行落盘、`wanted=80000004 back=80000004 valid=1 sid=4 landed=1 restored=1` ⇒ **`SMR0` 接受 `VALID`，本移植第一次把一条流的识别位立住**。键 87（写 `S2CR0` @ `0xC00` = `BYPASS`）：5/5 行落盘、**没有致死**，但 `wanted=00010000 back=00020000 typew=00020000 landed=0` ⇒ **写被收下、值没留下**，读回的是 `TYPE = 2`（FAULT）。
+
+### 65.2 代码形状
+
+新块 `if (fwKey == 86u || fwKey == 87u || fwKey == 88u) {`，插在 `if (fwKey >= 18u && fwKey <= 21u) {` 之前，`const int r86which = (fwKey >= 88u) ? 88 : ((fwKey >= 87u) ? 87 : 86);`。三键共享：
+
+1. 行 A `gmu86a=cx=%08x cx_on=%d smmu=%d key=%u win=%d`
+2. CX 未上电 / SMMU 未映射 ⇒ `gmu86b=refused-cx-down cx=%08x`、`gmu86b=refused-unmapped`（**都不做任何写**）
+3. 读 `sCR0`、`ID0`、`SMR0`、`SMR1`，`dsb sy`，行 B `gmu86b=scr0=%08x usfcfg=%u clientpd=%u id0=%08x numsmrg=%u smr0=%08x smr1=%08x`
+4. 分叉：
+
+| 键 | 行 C | store | 行 D | 行 E |
+|---|---|---|---|---|
+| 86（控制） | `gmu86c=control_no_smmu_write=1 scr0=… smr0=…` | **无** | — | — |
+| 88（SMR0） | `gmu88c=about_to_set_smr0 wanted=%08x old=%08x` | `(gSmmuVa + 0x800u) = 0x80000000u \| 4u` → 读回 → 写回 `old` | `gmu88d=smr_valid wrote=1 wanted=… back=… valid=%u sid=%u landed=%u` | `gmu88e=smr_restored wanted=… back=… restored=%u after=1 scr0=…` |
+| 87（S2CR0） | `gmu87c=about_to_write_s2cr0 off=c00 want=%08x old_unreadable=1` | `(gSmmuVa + 0xc00u) = 0x00010000u` → 读回 | `gmu87d=s2cr0 wrote=1 wanted=… back=… typew=%08x landed=%u` | `gmu87e=after=1 scr0=… smr0=… gfsr=… survived=1` |
+
+- 键 87 的 store 前**单独一行预告**：`0xC00` 组的读在 R173/R174 里两次 abort 过，所以先让「我马上要写它」上盘；如果某次启动只落预告行，那笔 store 就是嫌疑人。
+- 三键都没有 `IOSleep`、没有 `for (` 轮询、**没有任何 `gmuW[...]` 写**（整块对 GMU 寄存器只读）—— stage6 对这三点都有源码级断言（`_k8687.count('gmuW[') == 0`、`'HFI_CTRL_INIT' not in _k8687`、`'IOSleep' not in`、`'for (' not in`）。
+- 键 88 复原那一笔是本轮设计的硬要求：不管 `VALID` 立不立得住，块返回时 `SMR0` 与进来时逐位相同。
+
+### 65.3 构建与门禁
+
+- 探针 491,998 字符 / 6,930 行（写入后 492,016 字符 / 6,932 行——`typew` 那处改动），`gmuW[...] =` 写点仍 **201**（本轮不加任何 GMU 写），arm 窗口 `(fwKey >= 7u && fwKey <= 88u)`。
+- host 门 → **28/28 checks passed** + `PASS: enchilada adreno probe shim + modules type-check (host stub, arm64 Mach-O)`；`verify-enchilada-probe-stage6.py` → **1069/1069**；全量 `verify-enchilada-*.py` → **ran 46 of 48, FAILING: 0**（跳过 `-gmu-caller-v1-record.py` 需 40-hex rev、`-ias-measured.py` 需真机）。
+- stage6 的两处必须同步：arm 窗口 2 处（`<= 85u` → `<= 88u`），以及 **R240 切片终止符从 doorbell ladder 改成 R241 的开头**（`code[_i8485:].split('\nif (fwKey == 86u || fwKey == 87u || fwKey == 88u) {\n', 1)[0]`）——不换的话 R241 的 store 会落进 R240 的切片，R240 的断言就开始描述错块。
+- 分支 `r241-routing-regs`，commit **`c766474791b03b1be255f53d068d7af2442a2f5d`**，run **44741746816（#351）`completed/success`，28/28 步**（13:08:51Z 创建，13:26:00Z 完成）。
+- 取件：`r241-kernel/kernel.macho` **126,251,008 B** sha256 `462e51ac89ecee9a58894b0551df30f4cb8e850db913d79fae13aedf0320cbc9`；`r241-payload/payload.img` **150,994,944 B** sha256 `5a269d2f4868ea86e6261d351ab3039454a7cc86680f812a7c0f9e14f669de8d`。
+- 静态门 `r241_static.py` → `required+survivors: 18 checked`、`key marker 'enchilada-pas-exec': kernel=1 payload=2`、`forbidden: 2 checked`、固件钉 `b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f`（32,768 B）→ **`PASS: R241 static gate`**。
+- **门的区分能力自证**：同一个门指向上轮 `r240-kernel` / `r240-payload` → 七条 `gmu87*/gmu88*` 全 `kernel=0 payload=0`，**`FAIL: R241 static gate (11 problems)`**。
+
+### 65.4 键 86（控制，DEVICE-VERIFIED）
+
+窗口 sha256 **`fad5753af77ddfae86913d765b6c0c93ed99caf6d9d2691777f6dc52a80eeeac`**、`boot_id 587123969`、`msg_bytes=30565 slots_written=8 write_errors=0 uptime_s=3 rounds=8`、**3/3 行**：
+
+```
+gmu86a=cx=80001fe0 cx_on=1 smmu=1 key=86 win=1
+gmu86b=scr0=00200626 usfcfg=1 clientpd=0 id0=48016605 numsmrg=5 smr0=00000000 smr1=00000000
+gmu86c=control_no_smmu_write=1 scr0=00200626 smr0=00000000 key=86 win=1
+```
+
+判决：**形状无罪**。这条块在完全不做 SMMU 写的情况下把三行提交进窗口、boot_id 与 sha 都是新的 ⇒ 键 88/87 的行一旦落盘，就能归因到它们自己那笔 store。
+
+### 65.5 键 88（`SMR0`，DEVICE-VERIFIED）
+
+窗口 sha256 **`b4f00131219114345d9e00426c4c3c393c24a4fa6009dbbd9a8bdb97999f98e0`**、`boot_id 585520255`、`msg_bytes=30782 slots_written=8 write_errors=0`、**5/5 行**：
+
+```
+gmu86a=cx=80001fe0 cx_on=1 smmu=1 key=88 win=1
+gmu86b=scr0=00200626 usfcfg=1 clientpd=0 id0=48016605 numsmrg=5 smr0=00000000 smr1=00000000
+gmu88c=about_to_set_smr0 wanted=80000004 old=00000000 win=1
+gmu88d=smr_valid wrote=1 wanted=80000004 back=80000004 valid=1 sid=4 landed=1
+gmu88e=smr_restored wanted=00000000 back=00000000 restored=1 after=1 scr0=00200626
+```
+
+判决：**`SMR0` 接受 `VALID | SID 4`**。`back` 与 `wanted` 逐位相同（`landed=1`）、bit31 立住（`valid=1`）、SID 读回 4，随后写回 `00000000` 并读回一致（`restored=1`）。这是本移植第一次把一条流的识别位真正立起来又撤掉。
+
+SID 4 的依据：`drivers/NativeAdreno/AdrenoBoardInputs.c` 的 `kAdrenoBoardCtxGmuUser`（GMU 用户流），与本仓库一贯使用的 SID 表一致。
+
+### 65.6 键 87（`S2CR0` @ `0xC00`，DEVICE-VERIFIED）
+
+窗口 sha256 **`fed0228719cfbd3cedcedb80a07c83c5cb64eb385394bfc2f9c46fc3b24f0ab6`**、`boot_id 586132469`、`msg_bytes=30777 slots_written=8 write_errors=0`、**5/5 行**：
+
+```
+gmu86a=cx=80001fe0 cx_on=1 smmu=1 key=87 win=1
+gmu86b=scr0=00200626 usfcfg=1 clientpd=0 id0=48016605 numsmrg=5 smr0=00000000 smr1=00000000
+gmu87c=about_to_write_s2cr0 off=c00 want=00010000 old_unreadable=1 win=1
+gmu87d=s2cr0 wrote=1 wanted=00010000 back=00020000 typew=00020000 landed=0
+gmu87e=after=1 scr0=00200626 smr0=00000000 gfsr=00000000 survived=1
+```
+
+判决分两半，都必须保留：
+
+1. **写 `0xC00` 不致死**：预告行、行 D、行 E 全部落盘，`survived=1`。R235 里「`0xC00` 是墙」的说法只对**读**成立过，本轮证明了**不是墙挡写**。
+2. **值没留下**：`wanted=00010000`（`TYPE = BYPASS`），`back=00020000`（`TYPE = 2`，即 FAULT）。`landed=0`。所以在这个 SMMU 上，`S2CR0` 的 `TYPE` 字段**读回恒为 FAULT**；两种解释都还活着——要么这笔写被无声丢弃、寄存器本来就读 `00020000`，要么硬件按 `ID0.S2TS = 0`（stage-2 不支持）把该字段钳在 FAULT。**本轮没有做「先读原值再写」的对照**（行 C 写的是 `old_unreadable=1`，即沿用了 R173/R174「读必 abort」的旧认识），因此不能分辨这两种解释。
+
+顺带读数：`gfsr=00000000` —— 全局 fault 状态寄存器在整个块执行后仍是 0，即**没有任何一次流被记录为 routed/faulted**。
+
+### 65.7 与 R173/R174 的旧结论出现矛盾（登记，不改旧账）
+
+R173/R174 记录的是「`0xC00` 起 `S2CR` 区**每次读都 external abort**」。本轮行 D 对同一个偏移做了一次 `rd32`，**读回 `00020000` 且整机存活**。两次读数都来自本设备，所以其中至少一条需要重新确认：
+
+- 若 R173/R174 那次 abort 其实来自该轮块里**别的**访问（例如同时读了未实现的 CB 偏移），那么「`0xC00` 读必 abort」就是从别的现象推出来的错误结论；
+- 若 `0xC00` 的读在某些条件下（比如 CX/GX 电源域状态、或 AXID/时钟未开）才 abort，那么本轮的条件与那时不同。
+
+这条写入 §65.9 的「没有证明什么」，并由 R242 的键 89 用**只读、不写**的独立测量重新确认。
+
+### 65.8 判决
+
+| 轮次/键 | 形状（store 是最后动作） | 写了什么 | 结果 |
+|---|---|---|---|
+| R219 键 66 | 是 | 什么都不写 | 3/3，boot 582344900 |
+| R222 键 66 | 是 | `HFI_CTRL_INIT = 1` | 0/3 |
+| R223 键 66 | 是 | `HFI_CTRL_INIT = 0` | 3/3，boot 583170095 |
+| R238 键 80 | 是 | 四笔中断掩码 | 3/3，boot 586963994 |
+| R238 键 81 | 是 | 四掩码 + `INIT = 1`（真表、`INFO = 1`） | 0/3 |
+| R239 键 82 | 是 | 四掩码 + `INIT = 0` | 3/3，boot 586092751 |
+| R239 键 83 | 是 | 四掩码 + `INFO = 0` + `INIT = 1` | 4/4，boot 585892346 |
+| R240 键 84 | 是 | 零页 + `INFO = 1` + `INIT = 1` | 0/4 |
+| R240 键 85 | 是 | 四掩码 + `INIT = 1`（阳性对照） | 0/3 |
+| **R241 键 86** | **否（无 store）** | 无 | 3/3，boot 587123969 |
+| **R241 键 88** | **否（SMR0 + 复原）** | `SMR0 = VALID \| SID 4` | 5/5，boot 585520255 |
+| **R241 键 87** | **否（S2CR0）** | `S2CR0 = BYPASS` | 5/5，boot 586132469，值未留下 |
+
+本轮给这条表加的三行说明：**在完全不碰 GMU 寄存器的前提下，SMMU 一侧的两组寄存器都是「可访问」的**——`SMR` 可写可留值，`S2CR` 可写但 `TYPE` 读回恒为 FAULT。
+
+### 65.9 没有证明什么
+
+1. **没有证明 GMU 的访问真的穿过 SMMU。** 本轮只证明「路由寄存器可以碰」，没有做任何一次「让 GMU 当主设备去读表」的测量。真正的检验是 R242 的键 90（先把 SID 4 路由到已编程的 CB0，再写启动字）。
+2. **没有分辨 `S2CR0` 的 `00020000` 是「写被丢弃」还是「被钳成 FAULT」。** 行 C 沿用了旧结论，没有先读原值，所以少了对照。
+3. **没有解释与 R173/R174 的读 abort 记录的矛盾**（§65.7）。
+4. **没有证明 `SMR0` 的 `VALID` 能参与任何实际路由。** 因为 `S2CR0` 的值没留下，SID 4 现在即使被识别，其 `TYPE` 仍是 FAULT。
+5. **不改变 R240 的结论**：致死仍与表内容无关；本轮也没再试启动字。
+6. **没有证明 `USFCFG` 能被清掉** —— R234/R235 已经两次测到那笔 store 被忽略，本轮没有重试。
+
+### 65.10 三条边界
+
+- 不改 `sCR0`（`USFCFG`/`CLIENTPD` 都不写）；与 R234/R235 的结论不冲突。
+- 不碰 panic 路径，不用空转买观测时间；三键都是「打完就返回」。
+- 与 §64.9 的设计有**编号偏差**：那里写的是「键 87 = `S2CR0`、键 88 = 路由 + 启动」。实际实现是「键 86 控制、**键 88 = `SMR0`**、键 87 = `S2CR0`」，把「路由 + 启动」推到 R242 的键 90。原因：`SMR` 的写必须单独一轮测干净，否则键 90 一死就分不清是 `SMR` 还是启动字。
+
+### 65.11 R242 设计（三个键，同一构建）
+
+- **键 89（只读 `0xC00`）**：预告行 → 读 `0xC00`、`0xC04`、`0xC08` → 打印 → 返回，**一笔 store 都不做**。判读：三行都落 ⇒ 旧 abort 记录需要改写；只落预告行 ⇒ 「读 `0xC00` 必 abort」成立，本轮行 D 的读要另找解释（例如写之后寄存器状态变了）。
+- **键 90（路由 + 启动）**：`SMR0 = VALID | SID 4`（不立即复原）→ 读回 → `S2CR0 = TRANS(0) << 16 | CBNDX 0` → 读回（预期仍可能读回 FAULT）→ 行 D 打印路由后的 `smr0`/`s2cr0`/`scr0` → **最后写 `HFI_CTRL_INIT = 1`**，之后不再有任何动作。判读：落盘 ⇒ **SMMU fault 假设被推翻**，GMU 读表并不是致死原因，必须回去看 HFI 启动序列本身；零字节 ⇒ 在这个 SMMU 上 `S2CR` 不可编程，只能靠「让整个 SMMU 旁路」（`USFCFG=0`，已知被忽略）或改由引导器代劳上电。
+- **键 91（`0xC00` 原值对照）**：只读 `0xC00` → 打印 → **写回原值**（`back` 那一笔，值相同）→ 读回 → 打印。若 `wanted == back` 且 `landed=1`，说明「写相同值会读回相同值」，从而把键 87 的 `00020000` 解释成「寄存器本来就那样」（写被丢弃）；若写相同值都读回不同，那问题在读路径。
