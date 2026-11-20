@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 81u);
+                            (fwKey >= 7u && fwKey <= 83u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -5180,6 +5180,109 @@ if (fwKey == 80u || fwKey == 81u) {
             // The final action of this round. No readback, no poll, no print, no
             // mask restore: the writer's next normal round carries the rows above.
             gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
+        }
+    }
+}
+
+if (fwKey == 82u || fwKey == 83u) {
+    // ROUND 239: keep R238's proven shape (the store is the last action of the round)
+    // and vary the only two things left in it -- the value, and the table descriptor.
+    //
+    // R238 key 80 landed three rows and left a new boot_id: the preamble plus "return
+    // without a start store" survives. Key 81 repeated it with ONE trailing store of
+    // HFI_CTRL_INIT = 1 and left the key 80 window byte for byte. That narrows the
+    // range to a single store, but it does not say WHICH property of the store does
+    // the killing: the value, the offset, or the fact that the firmware then has a
+    // table to open.
+    //
+    //   key 82 -- the same store, value 0. If the shape is what kills (a store to this
+    //             dispatch block after the last row), key 82 must also leave the
+    //             previous window untouched. R223 already showed a 0 written to this
+    //             offset survives, but in a shape that printed a row between the store
+    //             and the return, so this key isolates the shape from the value.
+    //   key 83 -- QTBL_INFO = 0 and then the start word = 1, both after the last row.
+    //             R202/R203 showed that ADDR = 0 + INFO = 0 survives, so clearing the
+    //             descriptor is not itself fatal; the question is whether the start
+    //             word still kills when the firmware has no table to open.
+    //
+    // Judgement rules, fixed before the boot, using fields the device writes itself:
+    //   key 82 lands (its own key= in the window, boot_id advanced, new sha256)
+    //       -> the trailing-store shape is innocent, and R238's finding becomes "the
+    //          value 1 kills". If key 82 leaves the previous window byte for byte, the
+    //          shape itself is implicated and R238's conclusion must be re-read.
+    //   key 83 lands
+    //       -> the kill needs the firmware to actually try to start HFI, so the next
+    //          variable is what the table and PWR_COL_CP_MSG point at.
+    //   key 83 leaves the previous window byte for byte
+    //       -> the store at this offset with value 1 kills regardless of the table.
+    char r82RowA[320];
+    char r82RowB[320];
+    char r82RowC[320];
+    char r82RowD[320];
+    const uint32_t r82cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r82cxOn = adreno_domain_cx_is_on(r82cx);
+    const bool r82is83 = (fwKey >= 83u);
+    const uint32_t r82start = r82is83 ? 1u : 0u;
+
+    snprintf(r82RowA, sizeof r82RowA,
+             "gmu82a=cx=%08x cx_on=%d gmu=%d key=%u win=%d",
+             r82cx, r82cxOn, (sGmuFwVa != 0) ? 1 : 0, (unsigned)fwKey,
+             (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r82RowA);
+
+    if (!r82cxOn) {
+        IOLog("enchilada-adreno: gmu82b=refused-cx-down cx=%08x\n", r82cx);
+    } else if (!sGmuFwVa) {
+        IOLog("enchilada-adreno: gmu82b=refused-nogmu\n");
+    } else {
+        const uint32_t r82aoMaskBefore = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+        const uint32_t r82hfiMaskBefore = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+        gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_CLR] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xffffffffu;
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t r82aoMask = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+        const uint32_t r82hfiMask = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+        snprintf(r82RowB, sizeof r82RowB,
+                 "gmu82b=masked ao_mask=%08x hfi_mask=%08x both_masked=%d was=%08x/%08x",
+                 r82aoMask, r82hfiMask,
+                 (((r82aoMask & 0x3fu) == 0x3fu) && (r82hfiMask == 0xffffffffu)) ? 1 : 0,
+                 r82aoMaskBefore, r82hfiMaskBefore);
+        IOLog("enchilada-adreno: %s\n", r82RowB);
+
+        // Key 83 reads the descriptor BEFORE clearing it, so the row that carries the
+        // pre-state is on the platter even if the clear is the fatal action.
+        if (r82is83) {
+            snprintf(r82RowD, sizeof r82RowD,
+                     "gmu83d=qtbl_before addr=%08x info=%08x about_to_clear_info=1 win=%d",
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+                     (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r82RowD);
+        }
+
+        // Everything this round will ever print is printed here, BEFORE the stores.
+        snprintf(r82RowC, sizeof r82RowC,
+                 "gmu82c=last_row=1 start_next=%u qtbl_clear=%d stat=%08x intr=%08x ao=%08x fwinit=%08x",
+                 r82start, r82is83 ? 1 : 0,
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS * 4u),
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
+        IOLog("enchilada-adreno: %s\n", r82RowC);
+
+        if (r82is83) {
+            // Drop the table descriptor first, then ask the firmware to start. No
+            // readback, no poll, no print, no mask restore after either store.
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 0u;
+            __asm__ volatile("dsb sy" ::: "memory");
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
+        } else {
+            // Key 82: the same store position, value 0. Shape control for R238.
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 0u;
             __asm__ volatile("dsb sy" ::: "memory");
         }
     }

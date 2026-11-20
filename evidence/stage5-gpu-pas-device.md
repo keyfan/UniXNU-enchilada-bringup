@@ -3954,3 +3954,101 @@ gmu80c=last_row=1 start_next=0 stat=00000000 intr=00000000 ao=00000000 fwinit=ba
 1. 不要再在“启动字之后再做任何事”的形状下试图拿读数（R221/R236 键 77/R237 键 79/R238 键 81 四次同一结果）。
 2. 下一个能分辨的问题不是“它会不会死”（已答），而是**“这笔写本身致死，还是固件真的开始 HFI 之后才致死”**。最小的分辨实验：在同一形状下把 `HFI_QTBL_INFO` 先清零再写启动字——固件看不到表就无法真正建立 HFI；若仍零字节 ⇒ 致死是这个偏移上这个值的写本身。
 3. 同一构建里要带一个“形状对照”：同样把 store 放在最后，但写 `HFI_CTRL_INIT = 0u`。若它落盘 ⇒ dispatch 的形状无罪，只有值 1 有罪；若它也零字节 ⇒ 则“最后一个动作是这个偏移的 store”这个形状本身就不成立，需要重新设计观测链。
+
+## 六十三、ROUND 239：保持唯一能落盘的形状，只改启动字的值和表描述符 —— 第一次把启动写落进窗口
+
+本节记录两个键：82（形状对照：同一位置、同一形状，值为 0）和 83（先清 `HFI_QTBL_INFO`，再写启动字 1）。两个键都把 store 作为本轮**最后一个动作** —— 这是 R238 用键 80/81 证明唯一能把行交给介质、同时让写真正执行的形状。
+
+### 63.1 一句话
+
+在这条形状下：同位置写 0 落盘（键 82，3/3，新 boot_id 586092751）；**先清表描述符再写 1 也落盘**（键 83，4 行全部落盘，新 boot_id 585892346）；而 R238 的键 81 —— 同形状、表描述符仍是 1、写 1 —— 零字节。⇒ 致死既不是"这个形状"，也不是"这个偏移上任何一笔写"，而是**在表描述符声称表存在的情况下要求固件启动 HFI**。
+
+### 63.2 代码形状
+
+两个键共享同一段 preamble（与 R238 键 80/81 逐条相同）：
+
+1. 行 A `gmu82a=cx=… cx_on=… gmu=… key=… win=…`（CX 门禁之前的总述）
+2. CX 未上电 / GMU 未映射 ⇒ `gmu82b=refused-cx-down`、`gmu82b=refused-nogmu`，然后返回
+3. 四笔中断掩码（两笔 CLR、两笔 MASK）+ `dsb sy`，行 B `gmu82b=masked ao_mask=… hfi_mask=… both_masked=… was=…/…`
+4. 键 83 另有行 D `gmu83d=qtbl_before addr=… info=… about_to_clear_info=1 win=…` —— 在清描述符**之前**读，这样"清之前是什么"也有证词
+5. 行 C `gmu82c=last_row=1 start_next=… qtbl_clear=… stat=… intr=… ao=… fwinit=…` —— 本轮最后一次打印
+6. 最后动作：
+   - 键 82：`gmuW[HFI_CTRL_INIT] = 0u; dsb sy;` 返回
+   - 键 83：`gmuW[HFI_QTBL_INFO] = 0u; dsb sy;` 然后 `gmuW[HFI_CTRL_INIT] = 1u; dsb sy;` 返回
+
+两句之后没有回读、没有轮询、没有打印、没有掩码恢复。stage6 有两条断言专门守这一点（"nothing follows the last store of key 82 / key 83"），实测两边余量都是空串。
+
+### 63.3 构建与门禁
+
+- CI：分支 `r239-value-and-table`，提交 `47f4725ab7958b6e1d9628011b336796215e3974`，run **44720339530（#349）`completed/success`**，28/28 步 success（step 16 Build kernel 是瓶颈）。
+- 工件：`work/tmp/r239-kernel/kernel.macho` 126,234,624 B sha256 `9ae0777487dddb3bec8c45170019ca0f737a085adc0770364206b424d8165eae`；`work/tmp/r239-payload/payload.img` 150,994,944 B sha256 `751eb8d4ef847a596f73ac9baeb0343932c6e26470451f610b7c3678b2d1216c`。
+- 静态门 `work/tmp/r239_static.py`：12 条 required+survivors（`gmu82a/b/c`、`gmu83d`、两条 refused 行、R237 的 `gmu78b/gmu78c/gmu79d`、R238 的 `gmu80a/b/c`）+ 2 条 forbidden + 固件钉 `b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f`（32,768 B，kernel 与 payload 都在）→ `PASS: R239 static gate`；key marker `enchilada-pas-exec` kernel=1 payload=2（payload 里该串出现在两处，故判"存在"而不是"恰好一次"）。
+- **门自证区分能力**：把同一份脚本指向上一轮 `r238-kernel/kernel.macho` + `r238-payload/payload.img` ⇒ 六条 `gmu82*`/`gmu83d` 全 0、`FAIL: R239 static gate (6 problems)`。这是 R232d 那次事故（门对着旧镜像通过）之后每轮固定要做的一步。
+- host 门 `check-enchilada-adreno-probe.py --cc … --cxx …` → **28/28 checks passed** + `PASS: enchilada adreno probe shim + modules type-check (host stub, arm64 Mach-O)`；`gmuW[...] =` 计数 186 → **193**（键 82 的四笔掩码 + 一笔 0；键 83 的四笔掩码 + 一笔 QTBL_INFO + 一笔 1）。
+- `verify-enchilada-*.py` 全量：48 个脚本里跑 46（`-gmu-caller-v1-record.py` 需 40-hex 版本号、`-ias-measured.py` 需真机），**FAILING: 0**；stage6 1017/1017。
+- 探针：**477,241 字符 / 6,673 行**，arm 窗口 `(fwKey >= 7u && fwKey <= 83u)`。
+
+### 63.4 键 82（形状对照：同位置写 0）
+
+- payload：`work/tmp/r239-s82-payload/payload.img`，rekey `enchilada-pas-exec=2 -> =82`，config 1377 → 1378 B，sha256 `b66044f4cab3f32472006a03396ac4d1c0d0deda3bdf6b8203a01f42a7f5ba6f`。
+- 刷写核验：`key block says: enchilada-pas-exec=82 -no_slto_p`、`key verified: this boot will run key 82`、`system_b head 8 MiB sha256 1f7c5d640ac646e10d29551b43536e08518f4c7c6c1477637946a1335b43d8d5 / payload head`（一致）、`flash readback matches: True`。
+- 窗口：`work/tmp/r239_s82_window.bin` 33,554,432 B，sha256 **`0c000d8943fdd6fad816d5542fd787ff5d132527fbe5271fff47ee50f4ffc228`**，header `magic=SHLOG001 ver=4 hdr=152 boot_id=586092751 first_lba=14809083 msg_bytes=30585 slots_written=8 uptime_s=3 rounds=8 write_errors=0`。
+- **3/3 行落盘**：
+  ```
+  gmu82a=cx=80001fe0 cx_on=1 gmu=1 key=82 win=1
+  gmu82b=masked ao_mask=0000003f hfi_mask=ffffffff both_masked=1 was=00000000/00000000
+  gmu82c=last_row=1 start_next=0 qtbl_clear=0 stat=00000000 intr=00000000 ao=00000000 fwinit=babeface
+  ```
+- `both_masked=1` 是 R237 那个假阴性的修正版判据（`(aoMask & 0x3f) == 0x3f`），同一读数在 R237/238 是 `both_masked=0`。
+
+### 63.5 键 83（清描述符，然后写 1）
+
+- payload：`work/tmp/r239-s83-payload/payload.img`，rekey `2 -> 83`，sha256 `cb849d8480e54a8390de4286e2510d2e8e68be37a55fc6edd4b9abb5c455ff3e`。
+- 刷写核验：`key block says: enchilada-pas-exec=83 -no_slto_p`、`key verified: this boot will run key 83`、`system_b head 8 MiB sha256` 与 payload 头一致、`flash readback matches: True`。
+- 窗口：`work/tmp/r239_s83_window.bin`，sha256 **`3b7d37b4d4f7ca98aeb92ce9016781d8659cb8e345cb69012351d3c38da2e9c0`**，header `boot_id=585892346 msg_bytes=30694 slots_written=8 uptime_s=3 rounds=8 write_errors=0`。
+- **4 行全部落盘**：
+  ```
+  gmu82a=cx=80001fe0 cx_on=1 gmu=1 key=83 win=1
+  gmu82b=masked ao_mask=0000003f hfi_mask=ffffffff both_masked=1 was=00000000/00000000
+  gmu82c=last_row=1 start_next=1 qtbl_clear=1 stat=00000000 intr=00000000 ao=00000000 fwinit=babeface
+  gmu83d=qtbl_before addr=ad932000 info=00000001 about_to_clear_info=1 win=1
+  ```
+- 设备在 38–40 s 后自己回到 TWRP（armed BCB 生效，无需按键）。
+
+### 63.6 判决与单变量表
+
+| 轮次 / 键 | 形状（store 相对最后一行） | 写的是什么 | 结果 |
+|---|---|---|---|
+| R219 键 66 | 之后还有行 | 不写 | 3/3 落盘（`eff8caa2…`） |
+| R222 键 66 | 之后还有行 | `HFI_CTRL_INIT = 1` | 0/3，窗口不动 |
+| R223 键 66 | 之后还有行 | `HFI_CTRL_INIT = 0` | 3/3 落盘（`d60bb6e3…`） |
+| R238 键 80 | **最后一个动作** | 不写 | 3/3 落盘（`4b1a5525…`，boot 586963994） |
+| R238 键 81 | **最后一个动作** | `HFI_CTRL_INIT = 1`（表描述符=1） | 0/3，窗口与键 80 逐字节相同 |
+| R239 键 82 | **最后一个动作** | `HFI_CTRL_INIT = 0` | 3/3 落盘（`0c000d89…`，boot 586092751） |
+| R239 键 83 | **最后一个动作** | 先 `QTBL_INFO = 0`，再 `HFI_CTRL_INIT = 1` | **4/4 落盘**（`3b7d37b4…`，boot 585892346） |
+
+结论：在"store 是最后一个动作"这个形状下，致死与否取决于**表描述符**（键 81 与键 83 唯一的不同），而不是形状本身（键 82）、也不是该偏移的任何写（键 82/键 83 都写了）。这是本移植第一次在**写启动字之后**拿到新窗口。
+
+### 63.7 没有证明什么
+
+1. 没有证明固件"看见"过 `QTBL_INFO = 0`。我们只证明"先写它、再写 1"这条序列不死；两笔之间没有回读，也没有任何证据说明固件在这段时间里读了描述符。
+2. 没有证明 HFI 真的启动过。行 C 里的 `fwinit=babeface`、`stat=00000000`、`intr=00000000` 全是**写之前**的读数；本轮之后没有任何回读。
+3. 没有分辨"固件没有启动"与"启动了但随即静默"。要分辨必须有写之后的读数，而写之后的任何动作都会把本轮变回 R238 之前那种"多动作挤在一个 writer 轮里"的形状。
+4. 死因仍未定位到具体动作。已知的只是"描述符=1 且要求启动"这一组合致死；是固件真的去 DMA 读表、还是 CM3 跳进某个 handler 后触发异常，都未测。
+5. 一次读数，未重复。归因靠单变量对照（R238 键 80/81 与 R239 键 82/83 交叉），但键 83 的"存活"只观测了一次。
+6. 键 82 与键 83 的差别不止一个变量（值 0 vs 两笔写）。之所以仍能归因到描述符，是因为键 81/键 83 之间只有描述符这一个差别，而键 82 只用来排除"形状本身"。
+
+### 63.8 三条边界（没有变）
+
+- GPU 仍未渲染任何一帧；`CONFIG_XNU_NATIVE_ADRENO=n`；准入表仍 `modeled=9 / satisfied=0 / BLOCKED`。
+- `sCR0` 的 bit10（USFCFG）仍没有被打开：R234 键 73 与 R235 键 75 两次都测到这笔 store 被忽略。
+- SMMU 的 stage-2 区（`0xC00` 起）仍未编程；GPU 侧仍只有一个哨兵叶子。
+
+### 63.9 下一步（R240 已设计，未执行）
+
+同一构建两键，都保持"store 是最后一个动作"：
+
+- **键 84**：把 `HFI_QTBL_ADDR` 指向一页全零（4 KiB，经 `armcpu_dma_alloc_writable`），`HFI_QTBL_INFO = 1`，最后写 `HFI_CTRL_INIT = 1`。
+  - 落盘 ⇒ 致死跟着**我们那张表的内容**走（固件真的去读它了），下一步是逐字对比表内容与上游 `a6xx_hfi_queue_table`。
+  - 零字节 ⇒ 只要描述符非零且要求启动就死，与表内容无关。
+- **键 85**：R238 键 81 的复现（真表、`INFO = 1`、最后写 1）。**必须再死一次**，用来排除"世界变了、现在什么都不死"这种整轮性解释；这是本轮形状的阳性对照。

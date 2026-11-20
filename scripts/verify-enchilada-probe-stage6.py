@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 81u' in _fw,
+    check('fwKey >= 7u && fwKey <= 83u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1694,7 +1694,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 81u)' in code,
+    check('(fwKey >= 7u && fwKey <= 83u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3346,7 +3346,9 @@ def main():
     _i8081 = code.find('if (fwKey == 80u || fwKey == 81u) {')
     check(_i8081 >= 0, 'R238 the last-action block exists')
     if _i8081 >= 0:
-        _k8081 = code[_i8081:].split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
+        # R239 inserted keys 82/83 directly after this block, so the delimiter is
+        # the new direct successor, not the doorbell ladder further down the file.
+        _k8081 = code[_i8081:].split('if (fwKey == 82u || fwKey == 83u) {', 1)[0]
         _k80head = _k8081.split('if (r80is81) {', 1)[0]
         _k81only = _k8081.split('if (r80is81) {', 1)[1] if 'if (r80is81) {' in _k8081 else ''
 
@@ -3376,6 +3378,73 @@ def main():
 
         check('(r80aoMask & 0x3fu) == 0x3fu' in _k80head,
               'R238 fully-masked is judged on the six implemented AO bits, not strict equality')
+
+    # --- R239 shape-control and table-clear keys ------------------------------
+    # R238 narrowed the kill to one store by varying whether the store exists. R239
+    # varies what the store says: key 82 writes the same word with value 0 in the same
+    # position (so the shape itself is either innocent or implicated), and key 83
+    # drops the table descriptor before writing 1 (so "needs a table to open" is
+    # separated from "the write itself kills"). Both are runtime comparisons, so the
+    # difference is asserted in source, not in an image.
+    _i8283 = code.find('if (fwKey == 82u || fwKey == 83u) {')
+    check(_i8283 >= 0, 'R239 the shape-control block exists')
+    if _i8283 >= 0:
+        check(_i8081 >= 0 and _i8283 > _i8081,
+              'R239 the new block follows the R238 block it is a control for')
+        _k8283 = code[_i8283:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        check(_k8283 != '', 'R239 the block is delimited by the doorbell ladder')
+        _k82head = _k8283.split('if (r82is83) {', 1)[0]
+        check('HFI_CTRL_INIT' not in _k82head,
+              'R239 the shared preamble never touches the start word')
+        check('HFI_QTBL_INFO' not in _k82head,
+              'R239 the shared preamble leaves the table descriptor alone')
+        for _w in ('AO_HOST_INTERRUPT_CLR', 'GMU2HOST_INTR_CLR',
+                   'AO_HOST_INTERRUPT_MASK', 'GMU2HOST_INTR_MASK'):
+            _n = _k82head.count('gmuW[ADRENO_GMU_BOOT_V1_%s] = ' % _w)
+            check(_n == 1, 'R239 the preamble stores %s exactly once (got %d)' % (_w, _n))
+        check('(r82aoMask & 0x3fu) == 0x3fu' in _k82head,
+              'R239 fully-masked is still judged on the six implemented AO bits')
+
+        _tail82 = _k8283.split('if (r82is83) {', 1)[1] if 'if (r82is83) {' in _k8283 else ''
+        check(_tail82 != '', 'R239 the two key bodies are found')
+        _k83only = _tail82.split('} else {', 1)[0]
+        _k82only = _tail82.split('} else {', 1)[1] if '} else {' in _tail82 else ''
+        check(_k83only != '' and _k82only != '', 'R239 both bodies are non-empty')
+
+        # key 83: clear the descriptor, then one start word. Two stores, in that order.
+        check(_k83only.count('gmuW[') == 2,
+              'R239 key 83 stores exactly two words (descriptor, then start word)')
+        check(_k83only.find('gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 0u;') >= 0,
+              'R239 key 83 clears the table descriptor')
+        check(_k83only.find('gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 0u;') <
+              _k83only.find('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;'),
+              'R239 the descriptor is cleared BEFORE the start word')
+        # key 82: the same store site, value 0. Exactly one store.
+        check(_k82only.count('gmuW[') == 1,
+              'R239 key 82 stores exactly one word')
+        check('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 0u;' in _k82only,
+              'R239 that word is HFI_CTRL_INIT = 0, the shape control')
+        check('HFI_CTRL_INIT] = 1u;' not in _k82only,
+              'R239 key 82 never asks the firmware to start')
+
+        # Neither key may buy time, print, read back or restore masks afterwards.
+        check('IOSleep' not in _k8283 and 'for (' not in _k8283,
+              'R239 neither key sleeps, spins or polls')
+        for _name, _body in (('82', _k82only), ('83', _k83only)):
+            _post = _body.split('gmuW[', 1)[1]
+            _post = _post.split(';', 1)[1] if ';' in _post else ''
+            _post = _post.replace('__asm__ volatile("dsb sy" ::: "memory");', '')
+            _post = __import__('re').sub(r'//[^\n]*', '', _post)
+            _post = _post.replace('}', '').replace('else', '').strip()
+            if _name == '83':
+                # key 83 has a second store, so the residual is the start word itself.
+                _post = _post.split('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;', 1)[-1]
+                _post = _post.replace('__asm__ volatile("dsb sy" ::: "memory");', '')
+                _post = __import__('re').sub(r'//[^\n]*', '', _post)
+                _post = _post.replace('}', '').strip()
+            check(_post == '',
+                  'R239 nothing follows the last store of key %s; got %r'
+                  % (_name, _post[:120]))
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))
