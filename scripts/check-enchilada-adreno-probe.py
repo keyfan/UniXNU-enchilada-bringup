@@ -330,9 +330,10 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 166,
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 167,
               'R168+R170+R171+R175+R178+R181+R186+R205 the pointer writes are exactly '
               'the ITCM loop, the pulse words, the three handshake words, the '
+              'R234 bypass key adds one more (HFI_CTRL_INIT under key 74), the '
               'nine pre-start configuration words, the four HFI words (QTBL_ADDR, '
               'QTBL_INFO, CP_MSG, CTRL_INIT), the four rail-on words of keys '
               '22/23 (BOOT_SLUMBER_OPTION, HOST2GMU_INTR_SET, GMU2HOST_INTR_CLR '

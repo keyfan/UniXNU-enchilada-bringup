@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 72u' in _fw,
+    check('fwKey >= 7u && fwKey <= 75u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1687,7 +1687,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 72u)' in code,
+    check('(fwKey >= 7u && fwKey <= 75u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3171,8 +3171,10 @@ def main():
     check(_i71 > 0 and _i72 > _i71, 'R232 keys 71 and 72 exist, in that order')
     _k71 = (code.split('if (fwKey == 71u) {', 1)[1]
             .split('if (fwKey == 72u) {', 1)[0]) if _i71 >= 0 else ''
+    # ROUND 234 puts keys 73/74 between key 72 and the old 18..21 ladder, so key 72's
+    # body is delimited by its OWN successor rather than by the ladder.
     _k72 = (code.split('if (fwKey == 72u) {', 1)[1]
-            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]) if _i72 >= 0 else ''
+            .split('if (fwKey == 73u || fwKey == 74u) {', 1)[0]) if _i72 >= 0 else ''
     check(_k71 != '' and _k72 != '', 'R232 both blocks are non-empty')
     # key 71 must not store anything: it exists to record a PRE-write baseline.
     check('= abs72' not in _k71 and 'armcpu_dma_alloc_writable' not in _k71,
@@ -3199,8 +3201,10 @@ def main():
     # The measured margin at this point in boot is 107 ms against a ~500 ms round, so
     # R219's zero bytes could not separate "died instantly" from "survived, never flushed".
     _i70 = code.find('if (fwKey == 70u) {')
+    # ROUND 234 inserted keys 73/74 (one of which stores) between key 70 and the
+    # doorbell ladder, so key 70's body is delimited by its immediate successor.
     _k70 = (code.split('if (fwKey == 70u) {', 1)[1]
-            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]) if _i70 >= 0 else ''
+            .split('if (fwKey == 71u) {', 1)[0]) if _i70 >= 0 else ''
     check(_i70 > 0 and _k70 != '', 'R221 key 70 exists and sits before the doorbell ladder')
     check(_i70 > _i69, 'R221 key 70 follows key 69')
     check(_k70.count('gmu221a=') == 1 and _k70.count('gmu221b=') == 1 and

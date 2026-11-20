@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 72u);
+                            (fwKey >= 7u && fwKey <= 75u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -4555,6 +4555,233 @@ if (fwKey == 72u) {
                 }
             }
         }
+    }
+}
+
+if (fwKey == 73u || fwKey == 74u) {
+    // ROUND 234: R232c/R232d/R233 programmed context bank 0 word by word and read
+    // every one of the nine back, so the register side of stage 1 now matches what
+    // the pinned upstream headers describe. Nothing can USE it yet, and the reason
+    // is not in the context bank at all:
+    //
+    //   * sCR0 reads 0x00200626, so USFCFG (bit 10) is SET. In arm-smmu.c that bit
+    //     means "unmatched streams fault" -- it is only set when the kernel asked for
+    //     disable_bypass. This port never asked.
+    //   * SMR0..4 have read as zero every time they were sampled, and SMR_VALID is
+    //     bit 31, so the stream-match array recognises no stream whatsoever.
+    //
+    // Fault-on-unmatched plus no match means every GPU and GMU transaction is
+    // rejected before it can reach any context bank. A perfect CB0 behind that pair
+    // is unreachable by construction. This key therefore moves exactly ONE bit --
+    // USFCFG -- and nothing else, so that the next boot can answer whether the
+    // start word's lethality has anything to do with the memory path underneath it.
+    //
+    // The S2CR half of the array starts at 0xC00 and is deliberately NOT touched:
+    // R173 and R174 showed every read from 0xC00 up aborts, and ID0.S2TS reads 0,
+    // i.e. stage 2 is not implemented on this SMMU at all. SMR0..4 at 0x800..0x810
+    // is on the readable side of that wall.
+    //
+    // Key 73 stops after the bit is cleared. Key 74 repeats 73's rows first and only
+    // then writes the HFI start word, so the two runs differ by exactly one store
+    // and the verdict cannot be blamed on a different code path.
+    const bool r73start = (fwKey >= 74u);
+    char r73RowA[320];
+    char r73RowB[320];
+    char r73RowC[320];
+    char r73RowD[320];
+    char r73RowE[320];
+    char r74RowF[320];
+    char r74RowG[320];
+    const uint32_t r73cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r73cxOn = adreno_domain_cx_is_on(r73cx);
+    snprintf(r73RowA, sizeof r73RowA,
+             "gmu73a=cx=%08x cx_on=%d smmu=%d key=%u win=%d",
+             r73cx, r73cxOn, (gSmmuVa != 0) ? 1 : 0,
+             (unsigned)fwKey, (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r73RowA);
+
+    if (!r73cxOn) {
+        IOLog("enchilada-adreno: gmu73b=refused-cx-down cx=%08x\n", r73cx);
+    } else if (!gSmmuVa) {
+        IOLog("enchilada-adreno: gmu73b=refused-unmapped\n");
+    } else {
+        const uint32_t r73scr  = rd32(gSmmuVa, 0x000u);
+        const uint32_t r73id0  = rd32(gSmmuVa, 0x20u);
+        const uint32_t r73smr0 = rd32(gSmmuVa, 0x800u + 0x0u);
+        const uint32_t r73smr1 = rd32(gSmmuVa, 0x800u + 0x4u);
+        const uint32_t r73smr2 = rd32(gSmmuVa, 0x800u + 0x8u);
+        const uint32_t r73smr3 = rd32(gSmmuVa, 0x800u + 0xcu);
+        const uint32_t r73smr4 = rd32(gSmmuVa, 0x800u + 0x10u);
+        __asm__ volatile("dsb sy" ::: "memory");
+        snprintf(r73RowB, sizeof r73RowB,
+                 "gmu73b=scr0=%08x usfcfg=%u clientpd=%u id0=%08x numsmrg=%u",
+                 r73scr, (unsigned)((r73scr >> 10) & 1u),
+                 (unsigned)(r73scr & 1u), r73id0,
+                 (unsigned)(r73id0 & 0xffu));
+        IOLog("enchilada-adreno: %s\n", r73RowB);
+        snprintf(r73RowC, sizeof r73RowC,
+                 "gmu73c=smr0=%08x smr1=%08x smr2=%08x smr3=%08x smr4=%08x",
+                 r73smr0, r73smr1, r73smr2, r73smr3, r73smr4);
+        IOLog("enchilada-adreno: %s\n", r73RowC);
+
+        // The one bit this round moves. Reading it back is the point: a store that
+        // lands somewhere else would leave USFCFG set and the run would prove nothing.
+        const uint32_t r73want = r73scr & ~(1u << 10);
+        if (r73want == r73scr) {
+            snprintf(r73RowD, sizeof r73RowD,
+                     "gmu73d=clear_usfcfg wrote=0 already_bypass=1 scr0=%08x", r73scr);
+            IOLog("enchilada-adreno: %s\n", r73RowD);
+        } else {
+            *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x000u) = r73want;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r73back = rd32(gSmmuVa, 0x000u);
+            snprintf(r73RowD, sizeof r73RowD,
+                     "gmu73d=clear_usfcfg wrote=1 before=%08x after=%08x usfcfg=%u",
+                     r73scr, r73back, (unsigned)((r73back >> 10) & 1u));
+            IOLog("enchilada-adreno: %s\n", r73RowD);
+        }
+
+        // sGFSR (0x48) is the global fault status register: if streams had been
+        // faulting before this key ran, the record survives here instead of being
+        // argued from the arm-smmu.c defaults alone.
+        const uint32_t r73gfsr = rd32(gSmmuVa, 0x048u);
+        const uint32_t r73now  = rd32(gSmmuVa, 0x000u);
+        snprintf(r73RowE, sizeof r73RowE,
+                 "gmu73e=after=1 scr0=%08x gfsr=%08x survived=1", r73now, r73gfsr);
+        IOLog("enchilada-adreno: %s\n", r73RowE);
+
+        if (r73start) {
+            // Key 74 only. Ten attempts have lost the window to this single store;
+            // here the memory path underneath it has been switched to bypass first.
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
+            snprintf(r74RowF, sizeof r74RowF,
+                     "gmu74f=start_written=1 stat=%08x intr=%08x",
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u));
+            IOLog("enchilada-adreno: %s\n", r74RowF);
+            snprintf(r74RowG, sizeof r74RowG,
+                     "gmu74g=after=1 stat=%08x fwinit=%08x scr0=%08x survived=1",
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u),
+                     rd32(gSmmuVa, 0x000u));
+            IOLog("enchilada-adreno: %s\n", r74RowG);
+        }
+    }
+}
+
+if (fwKey == 75u) {
+    // ROUND 235: key 73 wrote sCR0 (GR0 + 0x000) to clear USFCFG (bit 10) and read
+    // back 0x00200626 byte for byte -- the store executed, the bit did not move, and
+    // the kernel lived. Key 75 exists to separate two readings of that result:
+    //
+    //   (a) the whole GR0 block ignores processor writes here, or
+    //   (b) GR0 is writable and it is this particular bit / register that refuses.
+    //
+    // The SMR array is a GR0 register too: ARM_SMMU_GR0_SMR(n) = 0x800 + n*4, well
+    // below the 0xC00 wall that aborts on every access (R173/R174), and the low 16
+    // bits are a plain stream-ID field. Writing 0x0000002a leaves VALID (bit 31)
+    // clear, so the entry still matches no stream whatsoever: what the hardware does
+    // with streams is byte-for-byte identical before and after this write. Only the
+    // stored value differs, which is exactly the question being asked.
+    //
+    // Then, in the same boot, sCR0 is asked the same question with a bit that is
+    // currently clear and has no bearing on any stream that is not already faulting:
+    // GCFGFRE (bit 4) only gates reporting of global config faults. If that bit
+    // sticks and USFCFG still does not, then "writes are ignored" is dead and the
+    // answer is specific to USFCFG. If neither sticks, GR0 is not writable from this
+    // CPU at all and the correct next step is to look for the lock, not to keep
+    // writing.
+    //
+    // Nothing here touches HFI_CTRL_INIT, so this key cannot be confused with the
+    // ten-round question about the start word.
+    char r75RowA[320];
+    char r75RowB[320];
+    char r75RowC[320];
+    char r75RowD[320];
+    char r75RowE[320];
+    char r75RowF[320];
+    char r75RowG[320];
+    const uint32_t r75cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r75cxOn = adreno_domain_cx_is_on(r75cx);
+    snprintf(r75RowA, sizeof r75RowA,
+             "gmu75a=cx=%08x cx_on=%d smmu=%d key=%u win=%d",
+             r75cx, r75cxOn, (gSmmuVa != 0) ? 1 : 0,
+             (unsigned)fwKey, (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r75RowA);
+
+    if (!r75cxOn) {
+        IOLog("enchilada-adreno: gmu75b=refused-cx-down cx=%08x\n", r75cx);
+    } else if (!gSmmuVa) {
+        IOLog("enchilada-adreno: gmu75b=refused-unmapped\n");
+    } else {
+        const uint32_t r75scr  = rd32(gSmmuVa, 0x000u);
+        const uint32_t r75acr  = rd32(gSmmuVa, 0x010u);
+        const uint32_t r75gfsr = rd32(gSmmuVa, 0x048u);
+        const uint32_t r75id0  = rd32(gSmmuVa, 0x020u);
+        const uint32_t r75smr  = rd32(gSmmuVa, 0x800u);
+        __asm__ volatile("dsb sy" ::: "memory");
+        snprintf(r75RowB, sizeof r75RowB,
+                 "gmu75b=scr0=%08x sacr=%08x gfsr=%08x id0=%08x smr0=%08x",
+                 r75scr, r75acr, r75gfsr, r75id0, r75smr);
+        IOLog("enchilada-adreno: %s\n", r75RowB);
+
+        // Probe 1: a GR0 register that is NOT sCR0, with a value that changes no
+        // behaviour because VALID stays clear.
+        *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x800u) = 0x0000002au;
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t r75smrBack = rd32(gSmmuVa, 0x800u);
+        snprintf(r75RowC, sizeof r75RowC,
+                 "gmu75c=smr_probe wrote=1 wanted=%08x back=%08x landed=%d",
+                 0x0000002au, r75smrBack,
+                 (r75smrBack == 0x0000002au) ? 1 : 0);
+        IOLog("enchilada-adreno: %s\n", r75RowC);
+
+        // Put the entry back exactly as it was found, so the next boot starts from
+        // the same state whether or not probe 1 landed.
+        *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x800u) = r75smr;
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t r75smrRestored = rd32(gSmmuVa, 0x800u);
+        snprintf(r75RowD, sizeof r75RowD,
+                 "gmu75d=smr_restore wanted=%08x back=%08x restored=%d",
+                 r75smr, r75smrRestored,
+                 (r75smrRestored == r75smr) ? 1 : 0);
+        IOLog("enchilada-adreno: %s\n", r75RowD);
+
+        // Probe 2: sCR0, but a different bit -- GCFGFRE (bit 4), currently clear and
+        // inert unless a global config fault is raised.
+        const uint32_t r75b4Want = r75scr | (1u << 4);
+        *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x000u) = r75b4Want;
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t r75b4Back = rd32(gSmmuVa, 0x000u);
+        snprintf(r75RowE, sizeof r75RowE,
+                 "gmu75e=scr0_bit4 wrote=1 wanted=%08x back=%08x landed=%d",
+                 r75b4Want, r75b4Back,
+                 ((r75b4Back & (1u << 4)) != 0u) ? 1 : 0);
+        IOLog("enchilada-adreno: %s\n", r75RowE);
+
+        // Undo probe 2 before asking about USFCFG, so the USFCFG test starts from
+        // the same word key 73 started from.
+        *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x000u) = r75scr;
+        __asm__ volatile("dsb sy" ::: "memory");
+
+        // Probe 3: exactly key 73's store, repeated in this boot for the contrast.
+        const uint32_t r75usfWant = r75scr & ~(1u << 10);
+        *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x000u) = r75usfWant;
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t r75usfBack = rd32(gSmmuVa, 0x000u);
+        snprintf(r75RowF, sizeof r75RowF,
+                 "gmu75f=usfcfg_clear wrote=1 wanted=%08x back=%08x landed=%d usfcfg=%u",
+                 r75usfWant, r75usfBack,
+                 ((r75usfBack & (1u << 10)) == 0u) ? 1 : 0,
+                 (unsigned)((r75usfBack >> 10) & 1u));
+        IOLog("enchilada-adreno: %s\n", r75RowF);
+
+        snprintf(r75RowG, sizeof r75RowG,
+                 "gmu75g=after=1 scr0=%08x smr0=%08x gfsr=%08x survived=1",
+                 rd32(gSmmuVa, 0x000u), rd32(gSmmuVa, 0x800u),
+                 rd32(gSmmuVa, 0x048u));
+        IOLog("enchilada-adreno: %s\n", r75RowG);
     }
 }
 
