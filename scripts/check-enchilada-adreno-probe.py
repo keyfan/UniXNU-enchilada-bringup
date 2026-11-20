@@ -330,10 +330,10 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 202,
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 203,
               'R168+R170+R171+R175+R178+R181+R186+R205 the pointer writes are exactly '
               'the ITCM loop, the pulse words, the three handshake words, the '
-              'R234 bypass key adds one more (HFI_CTRL_INIT under key 74), the R239 shape-control and table-clear keys add seven more (keys 82/83 each repeat the four masks, and key 83 adds QTBL_INFO = 0 before the start word while key 82 writes the same store with value 0), the R240 zero-page and positive-control keys add eight more (keys 84/85 each repeat the four masks, key 84 adds QTBL_ADDR pointing at a fresh zero page and QTBL_INFO = 1 before the start word, and both keys add the start word itself), the '
+              'R234 bypass key adds one more (HFI_CTRL_INIT under key 74), the R239 shape-control and table-clear keys add seven more (keys 82/83 each repeat the four masks, and key 83 adds QTBL_INFO = 0 before the start word while key 82 writes the same store with value 0), the R240 zero-page and positive-control keys add eight more (keys 84/85 each repeat the four masks, key 84 adds QTBL_ADDR pointing at a fresh zero page and QTBL_INFO = 1 before the start word, and both keys add the start word itself), the R242 storage keys add one more (key 90 repeats the two SMMU routing stores and then adds the start word once), and the R243 type probe adds one more again (key 94 repeats those two routing stores and adds the start word once), the '
               'nine pre-start configuration words, the four HFI words (QTBL_ADDR, '
               'QTBL_INFO, CP_MSG, CTRL_INIT), the four rail-on words of keys '
               '22/23 (BOOT_SLUMBER_OPTION, HOST2GMU_INTR_SET, GMU2HOST_INTR_CLR '

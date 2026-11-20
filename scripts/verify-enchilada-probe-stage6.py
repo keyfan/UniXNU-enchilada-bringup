@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 91u' in _fw,
+    check('fwKey >= 7u && fwKey <= 94u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1694,7 +1694,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 91u)' in code,
+    check('(fwKey >= 7u && fwKey <= 94u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3596,7 +3596,8 @@ def main():
     if _i8991 >= 0:
         check(_i8687 >= 0 and _i8991 > _i8687,
               'R242 the new block follows the R241 block it builds on')
-        _k8991 = code[_i8991:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        _k8991 = code[_i8991:].split(
+            '\nif (fwKey == 92u || fwKey == 93u || fwKey == 94u) {\n', 1)[0]
         check(_k8991 != '', 'R242 the block is delimited by the doorbell ladder')
 
         # Exactly one GMU store in the whole round, and it is the start word in key 90.
@@ -3658,6 +3659,76 @@ def main():
               'R242 nothing is read back after the start word')
         check(_afterStart.count('= 1u') == 0 and _afterStart.count('= r89') == 0,
               'R242 no further store is made after the start word')
+
+    # ---- ROUND 243 ----------------------------------------------------------------
+    # key 92 reads the whole S2CR group plus sGFSR and writes nothing; key 93 writes a TRANS
+    # value into 0xC00 and does not start; key 94 routes SID 4 through a TRANS entry and only
+    # then writes the start word as the last action. The split exists because R242 probed a
+    # BYPASS store that the hardware clamped, so the routing question was never really asked.
+    _i9294 = code.find('if (fwKey == 92u || fwKey == 93u || fwKey == 94u) {')
+    check(_i9294 >= 0, 'R243 the s2cr type block exists')
+    if _i9294 >= 0:
+        check(_i8991 >= 0 and _i9294 > _i8991,
+              'R243 the new block follows the R242 block it builds on')
+        _k9294 = code[_i9294:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        check(_k9294 != '', 'R243 the block is delimited by the doorbell ladder')
+
+        # Exactly one GMU store in the whole round, and it is the start word in key 94.
+        _g243 = _k9294.count('gmuW[')
+        check(_g243 == 1, 'R243 exactly one GMU store in the block (got %d)' % _g243)
+        check('HFI_CTRL_INIT' in _k9294, 'R243 the block does write the start word')
+        check('HFI_QTBL_INFO' not in _k9294 and 'HFI_QTBL_ADDR' not in _k9294,
+              'R243 nothing in this round touches the table descriptor')
+
+        # Rows that must exist for the three keys to be readable at all.
+        for _row in ('gmu92a=', 'gmu92b=refused-cx-down', 'gmu92b=refused-unmapped',
+                     'gmu92b=scr0=', 'gmu92c=about_to_read_s2cr_group', 'gmu92d=s2cr_group',
+                     'gmu93c=about_to_write_trans', 'gmu93d=trans_wrote',
+                     'gmu94c=about_to_route_trans', 'gmu94d=smr_set', 'gmu94e=s2cr_set',
+                     'gmu94f=last_row=1'):
+            check(_row in _k9294, 'R243 the row %s is emitted' % _row)
+
+        # key 92: announce, then six reads across the group, and not one store anywhere.
+        _k92 = _k9294.split('if (r92which == 92) {', 1)[1].split(
+            '} else if (r92which == 93) {', 1)[0]
+        check(_k92.count('reinterpret_cast<volatile uint32_t *>') == 0,
+              'R243 key 92 stores nothing at all (got %d)'
+              % _k92.count('reinterpret_cast<volatile uint32_t *>'))
+        for _off in ('0xc04u', '0xc08u', '0xc0cu', '0xc10u', '0x048u'):
+            check('rd32(gSmmuVa, ' + _off + ')' in _k92,
+                  'R243 key 92 reads %s as announced' % _off)
+        check(_k92.index('gmu92c=about_to_read_s2cr_group') < _k92.index('rd32(gSmmuVa, 0xc00u)'),
+              'R243 key 92 announces the group read before making it')
+
+        # key 93: exactly one store, it is TRANS, and nothing starts.
+        _tail93 = _k9294.split('} else if (r92which == 93) {', 1)[1]
+        _k93, _k94 = _tail93.split('\n        } else {\n', 1)
+        check(_k93.count('reinterpret_cast<volatile uint32_t *>') == 1,
+              'R243 key 93 stores exactly once (got %d)'
+              % _k93.count('reinterpret_cast<volatile uint32_t *>'))
+        check('r92trans = 0x00000000u' in _k93, 'R243 key 93 writes the TRANS type')
+        check('HFI_CTRL_INIT' not in _k93, 'R243 key 93 starts nothing')
+
+        # key 94: SMR0 then S2CR0 then the start word, and nothing at all after the start word.
+        check(_k94.count('reinterpret_cast<volatile uint32_t *>') == 2,
+              'R243 key 94 stores SMR0 and S2CR0 (got %d)'
+              % _k94.count('reinterpret_cast<volatile uint32_t *>'))
+        check('0x80000000u | 0x00000004u' in _k94,
+              'R243 key 94 routes the GMU user stream SID 4 with VALID set')
+        check('r92s2Want  = 0x00000000u' in _k94, 'R243 key 94 routes it as TRANS')
+        check('IOSleep' not in _k94 and 'for (' not in _k94,
+              'R243 key 94 neither sleeps nor spins')
+        _iSmr4 = _k94.index('gSmmuVa + 0x800u) = ')
+        _iS24 = _k94.index('gSmmuVa + 0xc00u) = ')
+        _iLast4 = _k94.index('gmu94f=last_row=1')
+        _iStart4 = _k94.index('HFI_CTRL_INIT] = 1u;')
+        check(_iSmr4 < _iS24 < _iLast4 < _iStart4,
+              'R243 key 94 routes first, prints last_row, and only then starts')
+        _after4 = _k94[_iStart4 + len('HFI_CTRL_INIT] = 1u;'):]
+        check('IOLog' not in _after4, 'R243 nothing is printed after the start word')
+        check('rd32' not in _after4, 'R243 nothing is read back after the start word')
+        check(_after4.count('= 1u') == 0 and _after4.count('= r92') == 0,
+              'R243 no further store is made after the start word')
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))

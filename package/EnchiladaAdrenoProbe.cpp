@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 91u);
+                            (fwKey >= 7u && fwKey <= 94u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -5683,6 +5683,147 @@ if (fwKey == 89u || fwKey == 90u || fwKey == 91u) {
     }
 }
 
+if (fwKey == 92u || fwKey == 93u || fwKey == 94u) {
+    // ROUND 243: R242 left one question standing. Key 89 read 0xC00 / 0xC04 / 0xC08 with no
+    // store at all and the machine survived (c00 = 000200ff, all three the same), so the wall
+    // there blocks reads only. Key 91 wrote a value back into 0xC00 and read the same value out,
+    // so the field keeps what it is given. That recast R241 key 87's 00020000 as the hardware
+    // clamping TYPE to FAULT for a BYPASS store -- but BYPASS is the only type a working route
+    // could use here (CB0 holds a single sentinel leaf, so a translated queue-table read would
+    // fault anyway), and that means key 90 in R242 probably started with no route at all.
+    //
+    // So the question this round asks is narrower: does TYPE accept TRANS? If it does, the
+    // routing hypothesis can be tested properly. If it clamps TRANS to FAULT as well, this SMMU
+    // will not route a non-secure stream from this CPU and the next question is a different one
+    // (whether the GMU is mastered by this SMMU at all).
+    //
+    // Key 92 reads the whole S2CR group plus sGFSR and writes nothing, to pin the default state.
+    // Key 93 reads 0xC00, stores 0x00000000 (TYPE = TRANS, CBNDX = 0), reads back, and does not
+    // start anything. Key 94 runs only if key 93 shows TRANS sticking: SMR0 = VALID | SID 4 and
+    // S2CR0 = TRANS | CBNDX 0 without restoring, then the start word as the last action.
+    //
+    // Judgement, fixed before the first boot:
+    //   key 92 rows landed                  -> the S2CR group is readable; the group default is
+    //                                          whatever those five words say
+    //   key 92 only the announce row        -> reading five S2CR words is not safe even though
+    //                                          reading three was; R242 key 89 stands as a special
+    //                                          case and gets narrower
+    //   key 93 landed=1 (back == 00000000)  -> TYPE accepts TRANS; key 94 is worth a boot
+    //   key 93 back has TYPE = 2 (FAULT)    -> TYPE is locked to FAULT for this CPU; the routing
+    //                                          hypothesis is dead from here, not disproved
+    //   key 94 rows landed                  -> the route exists and still the start word kills:
+    //                                          the fault-on-queue-read story is dead, the fatality
+    //                                          lives in the HFI start sequence itself
+    //   key 94 zero bytes                   -> the route exists and the start word still kills: the
+    //                                          fault story survives, next step is a real CB0 table
+    const int r92which = (fwKey >= 94u) ? 94 : ((fwKey >= 93u) ? 93 : 92);
+    char r92RowA[320];
+    char r92RowB[320];
+    char r92RowC[320];
+    char r92RowD[320];
+    char r92RowE[320];
+    char r92RowF[320];
+    const uint32_t r92cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r92cxOn = adreno_domain_cx_is_on(r92cx);
+    snprintf(r92RowA, sizeof r92RowA,
+             "gmu92a=cx=%08x cx_on=%d smmu=%d key=%u win=%d",
+             r92cx, r92cxOn, (gSmmuVa != 0) ? 1 : 0,
+             (unsigned)fwKey, (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r92RowA);
+
+    if (!r92cxOn) {
+        IOLog("enchilada-adreno: gmu92b=refused-cx-down cx=%08x\n", r92cx);
+    } else if (!gSmmuVa) {
+        IOLog("enchilada-adreno: gmu92b=refused-unmapped\n");
+    } else {
+        const uint32_t r92scr  = rd32(gSmmuVa, 0x000u);
+        const uint32_t r92id0  = rd32(gSmmuVa, 0x020u);
+        const uint32_t r92smr0 = rd32(gSmmuVa, 0x800u);
+        const uint32_t r92smr1 = rd32(gSmmuVa, 0x804u);
+        __asm__ volatile("dsb sy" ::: "memory");
+        snprintf(r92RowB, sizeof r92RowB,
+                 "gmu92b=scr0=%08x usfcfg=%u clientpd=%u id0=%08x numsmrg=%u smr0=%08x smr1=%08x",
+                 r92scr, (unsigned)((r92scr >> 10) & 1u), (unsigned)(r92scr & 1u),
+                 r92id0, (unsigned)(r92id0 & 0xffu), r92smr0, r92smr1);
+        IOLog("enchilada-adreno: %s\n", r92RowB);
+
+        if (r92which == 92) {
+            // Reads only: five S2CR words and the global fault status register. The announce row
+            // is separate so a boot that ends here cannot be read as "the block refused".
+            snprintf(r92RowC, sizeof r92RowC,
+                     "gmu92c=about_to_read_s2cr_group offs=c00c04c08c0c10 no_store=1 win=%d",
+                     (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r92RowC);
+            const uint32_t r92s0 = rd32(gSmmuVa, 0xc00u);
+            const uint32_t r92s1 = rd32(gSmmuVa, 0xc04u);
+            const uint32_t r92s2 = rd32(gSmmuVa, 0xc08u);
+            const uint32_t r92s3 = rd32(gSmmuVa, 0xc0cu);
+            const uint32_t r92s4 = rd32(gSmmuVa, 0xc10u);
+            const uint32_t r92gfsr = rd32(gSmmuVa, 0x048u);
+            __asm__ volatile("dsb sy" ::: "memory");
+            snprintf(r92RowD, sizeof r92RowD,
+                     "gmu92d=s2cr_group s0=%08x s1=%08x s2=%08x s3=%08x s4=%08x gfsr=%08x survived=1",
+                     r92s0, r92s1, r92s2, r92s3, r92s4, r92gfsr);
+            IOLog("enchilada-adreno: %s\n", r92RowD);
+        } else if (r92which == 93) {
+            // A TRANS store and no start word: the only question is whether the field keeps it.
+            const uint32_t r92trans = 0x00000000u;   // S2CR TYPE = TRANS(0) << 16 | CBNDX = 0
+            const uint32_t r92orig  = rd32(gSmmuVa, 0xc00u);
+            snprintf(r92RowC, sizeof r92RowC,
+                     "gmu93c=about_to_write_trans off=c00 want=%08x old=%08x win=%d",
+                     r92trans, r92orig, (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r92RowC);
+            *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0xc00u) = r92trans;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r92back = rd32(gSmmuVa, 0xc00u);
+            snprintf(r92RowD, sizeof r92RowD,
+                     "gmu93d=trans_wrote wrote=%08x back=%08x typew=%08x landed=%u survived=1",
+                     r92trans, r92back, r92back & 0x00030000u,
+                     (r92back == r92trans) ? 1u : 0u);
+            IOLog("enchilada-adreno: %s\n", r92RowD);
+        } else {
+            // key 94: route the GMU user stream through a TRANS entry, then ask for the start word.
+            // Only meaningful if key 93 showed the TRANS type sticking; it is its own boot so that
+            // a fatal outcome here cannot be blamed on the store that set it up.
+            const uint32_t r92smrWant = 0x80000000u | 0x00000004u;   // VALID | SID 4
+            const uint32_t r92s2Want  = 0x00000000u;                 // TYPE = TRANS(0), CBNDX = 0
+            snprintf(r92RowC, sizeof r92RowC,
+                     "gmu94c=about_to_route_trans smr_want=%08x s2cr_want=%08x sid=4 type=trans win=%d",
+                     r92smrWant, r92s2Want, (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r92RowC);
+
+            *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x800u) = r92smrWant;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r92smrBack = rd32(gSmmuVa, 0x800u);
+            snprintf(r92RowD, sizeof r92RowD,
+                     "gmu94d=smr_set wanted=%08x back=%08x valid=%u sid=%u landed=%u",
+                     r92smrWant, r92smrBack,
+                     (unsigned)((r92smrBack >> 31) & 1u), (unsigned)(r92smrBack & 0xffffu),
+                     (r92smrBack == r92smrWant) ? 1u : 0u);
+            IOLog("enchilada-adreno: %s\n", r92RowD);
+
+            *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0xc00u) = r92s2Want;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r92s2Back = rd32(gSmmuVa, 0xc00u);
+            snprintf(r92RowE, sizeof r92RowE,
+                     "gmu94e=s2cr_set wanted=%08x back=%08x typew=%08x landed=%u",
+                     r92s2Want, r92s2Back, r92s2Back & 0x00030000u,
+                     (r92s2Back == r92s2Want) ? 1u : 0u);
+            IOLog("enchilada-adreno: %s\n", r92RowE);
+
+            // Last printed row. The store below it is the only action after it, so a window that
+            // ends here means the store itself stopped the machine.
+            snprintf(r92RowF, sizeof r92RowF,
+                     "gmu94f=last_row=1 about_to_start=1 smr=%08x s2cr=%08x win=%d",
+                     rd32(gSmmuVa, 0x800u), rd32(gSmmuVa, 0xc00u), (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r92RowF);
+
+            // The only GMU store in this block, and the last action of the round.
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
+        }
+    }
+}
 if (fwKey >= 18u && fwKey <= 21u) {
                                             // ROUND 177: R176 showed that alloc, map, table fill
                                             // and the three QTBL registers are all safe, and that the
