@@ -132,10 +132,16 @@ def main():
     check('rd32(gSmmuVa, 0x20u)' in code and 'rd32(gSmmuVa, 0x24u)' in code and
           'rd32(gSmmuVa, 0x28u)' in code,
           'the SMMU ID0/ID1/ID2 reads are present')
+    # ROUND 232: keys 71 and 72 deliberately re-read ID1 (CBn_BASE) and ID2 (ias/oas).
+    # The invariant is that the ORIGINAL stage-4/6 read happens once, so count only the
+    # region before key 71.
+    _ro = code.split('if (fwKey == 71u) {', 1)[0]
     for off, name in (('0x20u', 'GR0_ID0'), ('0x24u', 'GR0_ID1'),
                       ('0x28u', 'GR0_ID2')):
-        check(code.count('rd32(gSmmuVa, %s)' % off) == 1,
-              '%s (byte %s) is read exactly once' % (name, off))
+        check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
+              '%s (byte %s) is read exactly once before the write keys' % (name, off))
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 3,
+          'ID1 is re-read at most twice more (keys 71 and 72), not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
           'ID2 (stage 4) is read BEFORE the stage-6 ID0/ID1 pair (same poll)')
@@ -238,8 +244,17 @@ def main():
     casts = re.findall(r'reinterpret_cast<([^>]*)>', code)
     check(casts and all('volatile' in c for c in casts),
           'every pointer cast is volatile (%r)' % sorted(set(casts)))
-    store = re.search(r'\*\s*reinterpret_cast\s*<[^>]*>\s*\([^;]*\)\s*=[^=]', code)
-    check(store is None, 'no store through a pointer (stage 6 is READ-ONLY)')
+    # ROUND 232: key 72 is the first WRITE stage in this port, added deliberately, so the
+    # READ-ONLY property is asserted over the region up to and including key 71 rather
+    # than over the whole file. Everything that must stay read-only still is.
+    code_ro = code.split('if (fwKey == 72u) {', 1)[0]
+    store = re.search(r'\*\s*reinterpret_cast\s*<[^>]*>\s*\([^;]*\)\s*=[^=]', code_ro)
+    check(store is None,
+          'no store through a pointer in the read-only stages (keys up to 71)')
+    # And the write stage must exist and must contain stores, or this split would let a
+    # future edit delete the writes while still passing.
+    check('if (fwKey == 72u) {' in code,
+          'R232 the write stage (key 72) is present')
     for libc in ('strlen(', 'memcpy(', 'memset(', 'strcmp(', 'malloc(', 'free('):
         check(libc not in code, 'probe uses no libc %s' % libc)
     raw = PACKAGE.read_bytes()
@@ -1207,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 70u' in _fw,
+    check('fwKey >= 7u && fwKey <= 72u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1672,7 +1687,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 70u)' in code,
+    check('(fwKey >= 7u && fwKey <= 72u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3147,6 +3162,39 @@ def main():
           'R220 key 69 stores NOTHING: it is a channel probe, not a store test')
     check('IOSleep' not in _k69 and 'IODelay' not in _k69 and 'for (' not in _k69,
           'R220 it waits for nothing')
+
+    # ---- ROUND 232: keys 71 (read the context banks) and 72 (write them).
+    # Step 3b is the first context-bank write this port has ever made, so it is split:
+    # 71 is read-only and records the pre-state; 72 writes and reads back.
+    _i71 = code.find('if (fwKey == 71u) {')
+    _i72 = code.find('if (fwKey == 72u) {')
+    check(_i71 > 0 and _i72 > _i71, 'R232 keys 71 and 72 exist, in that order')
+    _k71 = (code.split('if (fwKey == 71u) {', 1)[1]
+            .split('if (fwKey == 72u) {', 1)[0]) if _i71 >= 0 else ''
+    _k72 = (code.split('if (fwKey == 72u) {', 1)[1]
+            .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]) if _i72 >= 0 else ''
+    check(_k71 != '' and _k72 != '', 'R232 both blocks are non-empty')
+    # key 71 must not store anything: it exists to record a PRE-write baseline.
+    check('= abs72' not in _k71 and 'armcpu_dma_alloc_writable' not in _k71,
+          'R232 key 71 allocates nothing and writes nothing')
+    check('gmu71a=' in _k71 and 'gmu71b=' in _k71,
+          'R232 key 71 reports the geometry and the current CB words')
+    # key 72 uses the real building blocks, in the right order.
+    check('adreno_install_cb_geometry(' in _k72,
+          'R232 key 72 derives CBn_BASE from ID1')
+    check('adreno_domain_cx_is_on(' in _k72,
+          'R232 key 72 refuses when CX is down')
+    check('armcpu_dma_alloc_writable' in _k72,
+          'R232 key 72 allocates the table block through the proven primitive')
+    check(_k72.find('adreno_table_build(') < _k72.find('adreno_smmu_ctx_plan('),
+          'R232 the table is populated BEFORE the context plan is applied')
+    check(_k72.find('adreno_smmu_ctx_plan(') < _k72.find('adreno_install_absolute('),
+          'R232 the plan is produced before it is made absolute')
+    check('gmu72d=' in _k72 and 'rd32(gSmmuVa' in _k72,
+          'R232 key 72 reads the written words back')
+    check('IOSleep' not in _k71 and 'IOSleep' not in _k72,
+          'R232 neither key blocks')
+
     # ---- ROUND 221: key 70 pauses a full writer round BEFORE the start word.
     # The measured margin at this point in boot is 107 ms against a ~500 ms round, so
     # R219's zero bytes could not separate "died instantly" from "survived, never flushed".

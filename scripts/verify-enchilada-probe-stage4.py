@@ -143,9 +143,12 @@ def main():
     # R164 on device produced the first `gputate=` row, so this contract now pins
     # their ABSENCE -- otherwise they could come back and the boot would go
     # silent again with no failing check.
+    # ROUND 232: keys 71/72 re-read ID1 (CBn_BASE) and ID2 (ias/oas) on purpose, so the
+    # "exactly once" invariant is scoped to the read-only region that ends at key 71.
+    _ro4 = code.split('if (fwKey == 71u) {', 1)[0]
     for _o in ('0x20u', '0x24u', '0x28u'):
-        check(code.count('rd32(gSmmuVa, %s)' % _o) == 1,
-              'SMMU read at byte %s appears exactly once (no duplicate ID read)' % _o)
+        check(_ro4.count('rd32(gSmmuVa, %s)' % _o) == 1,
+              'SMMU read at byte %s appears exactly once before the write keys' % _o)
     check('0x800u + 0x20u' not in code and '0x800u + 0x28u' not in code,
           'R164 the GR1/CB0-offset TTBR0/TTBR1 reads stay removed (device-verified fatal)')
     check('rd32(gSmmuVa, 0x0u)' in code,
@@ -196,7 +199,7 @@ def main():
     # ROUND 199 drives the GX GDSC through `gxW[...]`; same treatment.
     _outside = re.sub(r'gxW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey >= 7u && fwKey <= 70u' in code and
+          'fwKey >= 7u && fwKey <= 72u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
     check('if (fwKey == 45u) {' in code and

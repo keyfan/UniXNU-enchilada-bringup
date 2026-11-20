@@ -92,6 +92,9 @@ extern "C" {
 #include "AdrenoGmuBootV1.h"
 #include "AdrenoHfiV1.h"   // round 175: legacy HFI v1 queue geometry (host-verified)
 #include "AdrenoPowerUpV1.h"   // round 51: ordered genpd + clock power-up MODEL (pure Plan)
+#include "AdrenoSmmuInstallV1.h"   // round 232: CBn_BASE, absolute CB offsets
+#include "AdrenoSmmuTableV1.h"     // round 232: fill an allocated table block
+#include "AdrenoSmmuLpaeV1.h"      // round 232: the descriptor layout beneath it
 // Round 94 stage 4: the SMMU ID2 probe CONTRACT (round 86). It decodes the ID2
 // word into ias/ipa/pa, and -- the load-bearing part -- refuses the read unless
 // CX is up, the window is the kgsl SMMU and the clocks are known on. This probe
@@ -1530,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 70u);
+                            (fwKey >= 7u && fwKey <= 72u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -4320,6 +4323,239 @@ if (fwKey == 70u) {
              rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
              rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
     IOLog("enchilada-adreno: %s\n", r221RowC);
+}
+
+if (fwKey == 71u) {
+    // ROUND 232 (read-only): can this port SEE the context banks at all?
+    //
+    // Step 3b writes CB_TTBR0 and CB_SCTLR for the first time, and a wrong pointer
+    // there can fault the SMMU. Before that, prove the mapped window actually reaches
+    // the banks and record the pre-write state. CBn_BASE comes from ID1
+    // (arm-smmu.c: numpage = 1 << (NUMPAGENDXB + 1), CB(n) = numpage + n), and this
+    // device reports ID1 = 0x20008005 -> pgshift 12, 8 pages, CB0 at 0x8000.
+    //
+    // Nothing is stored: this key exists so the write round has a documented "before".
+    char r71RowA[300];
+    char r71RowB[300];
+    char r71RowC[300];
+    char r71RowD[300];
+    struct adreno_install_geo r71geo;
+    r71geo.pgshift = 0u;
+    const uint32_t r71cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const uint32_t r71id1 = gSmmuVa ? rd32(gSmmuVa, 0x24u) : 0u;
+    const uint32_t r71geom = adreno_install_cb_geometry(r71id1, &r71geo);
+    uint64_t r71base = 0ull;
+    const uint32_t r71bank = adreno_install_bank_base(&r71geo, 0u, &r71base);
+    snprintf(r71RowA, sizeof r71RowA,
+             "gmu71a=id1=%08x geom=%u pgshift=%u numpage=%u cb_base=%04x numcb=%u bank0=%u bank0_off=%04x cx=%08x",
+             r71id1, (unsigned)r71geom, (unsigned)r71geo.pgshift, (unsigned)r71geo.numpage,
+             (unsigned)r71geo.cb_base, (unsigned)r71geo.num_context_banks,
+             (unsigned)r71bank, (unsigned)r71base, r71cx);
+    IOLog("enchilada-adreno: %s\n", r71RowA);
+    if (gSmmuVa && r71bank == 0u) {
+        // GR0 and GR1 are SEPARATE frame pages: upstream resolves a frame as
+        // `smmu->base + (n << smmu->pgshift)` with ARM_SMMU_GR1 == 1, so on this
+        // device (pgshift 12) GR1 lives at base + 0x1000. Offset 0 in GR0 is sCR0,
+        // NOT CBAR -- R164 made that same mistake and later corrected it.
+        // The frame address MUST stay uintptr_t: gSmmuVa is a 64-bit kernel VA
+        // (the R187 evidence shows 0xfffffffa48820000), so narrowing it to uint32_t
+        // would point rd32 at an unrelated address and silently stale the whole round.
+        const uintptr_t r71g1 =
+            static_cast<uintptr_t>(gSmmuVa) + (static_cast<uintptr_t>(1u) << r71geo.pgshift);
+        // Announce the GR1 address BEFORE touching it. GR1 has never been read
+        // successfully on this device (R172 died reading it alongside two unimplemented
+        // CBs), so a silent death here must still leave a row saying so.
+        snprintf(r71RowB, sizeof r71RowB,
+                 "gmu71b=about_to_read_gr1 gr1=%llx scr0=%08x",
+                 (unsigned long long)r71g1, rd32(gSmmuVa, 0x000u));
+        IOLog("enchilada-adreno: %s\n", r71RowB);
+        const uint32_t r71cbar  = rd32(r71g1, 0x000u);     // GR1 CBAR(n) = 0x0 + (n<<2)
+        const uint32_t r71cba2r = rd32(r71g1, 0x800u);     // GR1 CBA2R(n) = 0x800 + (n<<2)
+        // Bank 0 frame: CB SCTLR 0x00, TTBR0 0x20, TCR 0x30 (P1 arm-smmu.h).
+        const uint32_t r71sctlr = rd32(gSmmuVa, (unsigned)r71base + 0x00u);
+        const uint32_t r71ttbr0 = rd32(gSmmuVa, (unsigned)r71base + 0x20u);
+        const uint32_t r71ttbr0h= rd32(gSmmuVa, (unsigned)r71base + 0x24u);
+        const uint32_t r71tcr   = rd32(gSmmuVa, (unsigned)r71base + 0x30u);
+        __asm__ volatile("dsb sy" ::: "memory");
+        snprintf(r71RowC, sizeof r71RowC,
+                 "gmu71c=gr1_ok=1 cbar=%08x cba2r=%08x sctlr=%08x ttbr0=%08x/%08x tcr=%08x",
+                 r71cbar, r71cba2r, r71sctlr, r71ttbr0, r71ttbr0h, r71tcr);
+        IOLog("enchilada-adreno: %s\n", r71RowC);
+        // The last bank, to prove the window reaches all of them: 0x8000 + 4*0x1000.
+        uint64_t r71last = 0ull;
+        if (adreno_install_bank_base(&r71geo, 4u, &r71last) == 0u) {
+            const uint32_t r71ls = rd32(gSmmuVa, (unsigned)r71last + 0x00u);
+            snprintf(r71RowD, sizeof r71RowD,
+                     "gmu71d=bank4_off=%04x sctlr=%08x win=%d",
+                     (unsigned)r71last, r71ls, (gSmmuVa != 0) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r71RowD);
+        }
+    } else {
+        IOLog("enchilada-adreno: gmu71b=refused bank0=%u win=%d\n",
+              (unsigned)r71bank, (gSmmuVa != 0) ? 1 : 0);
+    }
+}
+
+if (fwKey == 72u) {
+    // ROUND 232 (WRITE): the first context-bank write this port has ever made.
+    //
+    // Order matters twice over. The nine context words go in upstream's order with
+    // CB_SCTLR LAST, because SCTLR is the bit that turns translation on; and the table
+    // pages must be populated before TTBR0 points at them, or the SMMU could walk a
+    // half-built table.
+    //
+    // Every value is read back and printed, so a write that lands elsewhere is visible.
+    // The key refuses when CX is down: a context-bank write with the domain unpowered
+    // would be a bus fault, not a measurement.
+    extern uint64_t armcpu_dma_alloc_writable (uint64_t bytes, uint64_t *out_virt);
+    char r72RowA[300];
+    char r72RowB[300];
+    char r72RowC[300];
+    char r72RowD[300];
+    const uint32_t r72cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r72cxOn = adreno_domain_cx_is_on(r72cx);
+    struct adreno_install_geo g;
+    const uint32_t r72id1 = gSmmuVa ? rd32(gSmmuVa, 0x24u) : 0u;
+    const uint32_t r72geom = adreno_install_cb_geometry(r72id1, &g);
+    snprintf(r72RowA, sizeof r72RowA,
+             "gmu72a=cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d",
+             r72cx, r72cxOn, (unsigned)r72geom, (unsigned)g.pgshift,
+             (unsigned)g.cb_base, (unsigned)g.num_context_banks, (gSmmuVa != 0) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r72RowA);
+
+    if (!r72cxOn) {
+        IOLog("enchilada-adreno: gmu72b=refused-cx-down cx=%08x\n", r72cx);
+    } else if (r72geom != 0u || gSmmuVa == 0u) {
+        IOLog("enchilada-adreno: gmu72b=refused-geometry geom=%u\n", (unsigned)r72geom);
+    } else if (!&armcpu_dma_alloc_writable) {
+        IOLog("enchilada-adreno: gmu72b=no-alloc-symbol\n");
+    } else {
+        // Four 4 KiB tables: a 4 KiB mapping needs one per level (round 230).
+        static uint64_t s72phys = 0;
+        static uint64_t s72virt = 0;
+        if (!s72phys) {
+            s72phys = armcpu_dma_alloc_writable (4ull * 4096ull, &s72virt);
+        }
+        if (!s72phys || !s72virt) {
+            IOLog("enchilada-adreno: gmu72b=alloc-failed phys=%llx virt=%llx\n",
+                  (unsigned long long)s72phys, (unsigned long long)s72virt);
+        } else {
+            // ias/oas measured from ID2 (round 101: ias 48 via ID2.UBS).
+            struct adreno_iommu_id2 d72 = {};
+            const uint32_t id2w = rd32(gSmmuVa, 0x28u);
+            int ok72 = 0;
+            const uint32_t r72ias = (adreno_iommu_id2_decode(id2w, &d72) == 0)
+                ? (adreno_iommu_va_size(id2w, 2u, &ok72)) : 0u;
+            const uint32_t r72oas = adreno_iommu_stage1_oas(id2w);
+            const uint32_t prot72 = kAdrenoLpaePteValid | kAdrenoLpaePteAf;
+            struct adreno_table_result t72 = {};
+            /* adreno_table_build() wants the LPAE layout geometry, which is a DIFFERENT
+             * struct from the CB-base geometry above. Derive it from the same ias. */
+            struct adreno_lpae_geo l72 = {};
+            const uint32_t r72lpaeg = adreno_lpae_geometry(
+                (r72ias >= 32u) ? r72ias : 36u, 12u, &l72);
+            // Map the first 4 KiB of the GPU aperture at a fixed IOVA, so the leaf
+            // descriptor carries a value that can be read back and compared.
+            const uint64_t r72iova = 0x40000000ull;
+            const uint32_t r72build = (r72lpaeg != 0u) ? 99u : adreno_table_build(
+                &l72, (uint64_t)s72virt, s72phys, r72iova, 0x90000000ull,
+                0x1000ull, prot72, &t72);
+            snprintf(r72RowB, sizeof r72RowB,
+                     "gmu72b=build=%u root=%llx tables=%u writes=%u ias=%u oas=%u ok=%d",
+                     (unsigned)r72build, (unsigned long long)t72.root_paddr,
+                     (unsigned)t72.tables, (unsigned)t72.writes,
+                     (unsigned)r72ias, (unsigned)r72oas, ok72);
+            IOLog("enchilada-adreno: %s\n", r72RowB);
+
+            if (r72build != 0u) {
+                IOLog("enchilada-adreno: gmu72c=refused-build=%u\n", (unsigned)r72build);
+            } else {
+                struct adreno_smmu_ctx_params p72 = {};
+                p72.cbndx = 0u;                       // bank 0, the one key 71 read
+                p72.asid = 0u;                        // P2:795 cfg->asid = cfg->cbndx
+                p72.ttbr = t72.root_paddr;
+                p72.ias = (r72ias >= 32u) ? r72ias : 36u;
+                p72.oas = (r72oas >= 32u) ? r72oas : 36u;
+                // R232d wrote cw=0 because this call passed a LITERAL ZERO as ID0.
+                // The window prints id0=48016605 cttw=1 in its stage6 row, so the
+                // register says this SMMU walks coherently; feeding it 0 selected the
+                // non-coherent walk (outer-shareable, non-cacheable) instead. R233
+                // measures ID0 here rather than asserting it, and prints both the raw
+                // word and the bit, so the TCR it produces can be checked against it.
+                const uint32_t r72id0 = rd32(gSmmuVa, 0x20u);
+                p72.coherent_walk = adreno_iommu_coherent_walk(r72id0, 0u);
+                p72.ttbr1 = 0u;
+                p72.aarch64 = 1u;
+                p72.vmid16 = 0u;
+                p72.vmid = 0u;
+                struct adreno_smmu_ctx_write plan72[12];
+                struct adreno_install_write abs72[12];
+                uint32_t nplan = 0u, nabs = 0u;
+                const int r72plan = adreno_smmu_ctx_plan(&p72, plan72, 12u, &nplan);
+                const uint32_t r72abs = adreno_install_absolute(
+                    &g, 0u, plan72, nplan, abs72, 12u, &nabs);
+                snprintf(r72RowC, sizeof r72RowC,
+                         "gmu72c=plan=%d n=%u abs=%u nab=%u cbndx=%u asid=%u ttbr=%llx cw=%u id0=%08x",
+                         r72plan, (unsigned)nplan, (unsigned)r72abs, (unsigned)nabs,
+                         (unsigned)p72.cbndx, (unsigned)p72.asid,
+                         (unsigned long long)p72.ttbr, (unsigned)p72.coherent_walk,
+                         r72id0);
+                IOLog("enchilada-adreno: %s\n", r72RowC);
+
+                if (r72plan != 0 || r72abs != 0u) {
+                    IOLog("enchilada-adreno: gmu72d=refused-plan\n");
+                } else {
+                    // Issue them in plan order. SCTLR is LAST because it is what turns
+                    // translation on; writing it earlier would enable a context whose
+                    // TTBR already points at a table (harmless here) but whose TCR may
+                    // still be the reset value.
+                    uint32_t k72;
+                    for (k72 = 0u; k72 < nabs; ++k72) {
+                        // The address is summed in integer space and cast straight to a
+                        // volatile pointer: the shim gate requires every pointer cast here
+                        // to be volatile, so no bare uintptr_t intermediate is introduced.
+                        // A GR1 offset must be added to the GR1 FRAME, not to the
+                        // GR0 base: upstream resolves a frame as base + (n << pgshift)
+                        // with GR1 == 1. Writing CBAR into GR0 would clobber sCR0.
+                        const uintptr_t r72frame =
+                            (abs72[k72].gr1 != 0u)
+                            ? static_cast<uintptr_t>(gSmmuVa) + (1u << g.pgshift)
+                            : static_cast<uintptr_t>(gSmmuVa);
+                        if (abs72[k72].is_64bit) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                r72frame + static_cast<uintptr_t>(abs72[k72].offset)) =
+                                abs72[k72].value;
+                            *reinterpret_cast<volatile uint32_t *>(
+                                r72frame + static_cast<uintptr_t>(abs72[k72].offset) + 4u) =
+                                abs72[k72].value_hi;
+                        } else {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                r72frame + static_cast<uintptr_t>(abs72[k72].offset)) =
+                                abs72[k72].value;
+                        }
+                    }
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    // Read back the two words that matter: TTBR0 (did the root land?)
+                    // and SCTLR (is translation now on?).
+                    const uint32_t r72t0l = rd32(gSmmuVa, (unsigned)g.cb_base + 0x20u);
+                    const uint32_t r72t0h = rd32(gSmmuVa, (unsigned)g.cb_base + 0x24u);
+                    const uint32_t r72sct = rd32(gSmmuVa, (unsigned)g.cb_base + 0x00u);
+                    const uint32_t r72tcr = rd32(gSmmuVa, (unsigned)g.cb_base + 0x30u);
+                    // The GR1 frame address is a 64-bit kernel VA: narrowing it to
+                    // uint32_t truncated it in R232b and turned a readable frame into a
+                    // bus fault, so it is built as uintptr_t and the read goes through rd32.
+                    const uintptr_t r72gr1 =
+                        static_cast<uintptr_t>(gSmmuVa) + (static_cast<uintptr_t>(1u) << g.pgshift);
+                    const uint32_t r72bar = rd32(r72gr1, 0x000u);
+                    snprintf(r72RowD, sizeof r72RowD,
+                             "gmu72d=wrote=%u ttbr0=%08x/%08x sctlr=%08x tcr=%08x cbar=%08x root=%llx",
+                             (unsigned)nabs, r72t0l, r72t0h, r72sct, r72tcr, r72bar,
+                             (unsigned long long)t72.root_paddr);
+                    IOLog("enchilada-adreno: %s\n", r72RowD);
+                }
+            }
+        }
+    }
 }
 
 if (fwKey >= 18u && fwKey <= 21u) {

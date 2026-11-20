@@ -3255,3 +3255,255 @@ gmu223c=after=1 stat=00000000 fwinit=babeface survived=1
 * 「立刻停住」与 R222 里「store 之前的行 A 也丢」一致，但没有独立证据（bark 未取到，§23.8）。
 * GPU 渲染本身未推进。
 
+## 五十六、ROUND 232-232c：把 context bank 读了一次，并因此发现写路径上的地址错误
+
+### 56.1 第一次上机（R232）读到的不是 CBAR
+
+键 71 的设计目标是「只读，证明 frame 可达」。R232 首跑读到：
+
+```
+gmu71a=id1=20008005 geom=0 pgshift=12 numpage=8 cb_base=8000 numcb=5 bank0=0 bank0_off=8000 cx=80001fe0
+gmu71b=cbar=00200626 cba2r=00000000 sctlr=00000000 ttbr0=00000000/00000000 tcr=00000000
+gmu71c=bank4_off=c000 sctlr=00000000 win=1
+```
+
+`cbar=00200626` 是**假的**：那个值正是 GR0 的 `sCR0`（`scr0=00200626`，同一窗口的键 74 预读行给了对照），
+不是 CBAR。原因在帧寻址：上游 `#define ARM_SMMU_GR0 0` / `ARM_SMMU_GR1 1` 与
+`return smmu->base + (n << smmu->pgshift);` 合起来意味着 **GR1 在 `base + (1 << pgshift)`**，
+本机 `pgshift=12`，即 `0x05041000`，而不是 `base + 0`。
+
+这条错误的代价本来会很大：键 72 若照 R232 的写法跑，会把 `CBAR`、`CBA2R` 写进 **GR0**，
+即覆写 `sCR0`（含 `SMMUEN` 与 `CLIENTPD`），在还没开始测 context bank 之前就改掉全局状态。
+
+### 56.2 帧地址修好之后，又踩了自己的截断
+
+R232b 把帧改成 `base + (1 << pgshift)`，但把算出来的地址存进了 `uint32_t`。
+内核 VA 是 `0xfffffff8b194f000` 这个量级，截断后读的是另一个地址：窗口不更新，启动耗时 70 s。
+R232c 改回 `uintptr_t`，并在**触碰 GR1 之前**先打印一行 —— 这一行是 R209/R210 的教训：
+静默死也必须先留下可读证词，否则「零字节」无法区分「没执行」与「执行后死」。
+
+### 56.3 R232c 读数（DEVICE-VERIFIED）
+
+boot_id **580749766**、窗口 `60513f32e90c894444fb8cf73298b189ffce2d5020b36050aecbbd1f957e43fc`、4 行全部落盘：
+
+```
+[   30.024144]: gmu71a=id1=20008005 geom=0 pgshift=12 numpage=8 cb_base=8000 numcb=5 bank0=0 bank0_off=8000 cx=80001fe0
+[   30.024179]: gmu71b=about_to_read_gr1 gr1=fffffff8b194f000 scr0=00200626
+[   30.024250]: gmu71c=gr1_ok=1 cbar=00000000 cba2r=00000000 sctlr=00000000 ttbr0=00000000/00000000 tcr=00000000
+[   30.024264]: gmu71d=bank4_off=c000 sctlr=00000000 win=1
+```
+
+`gr1=fffffff8b194f000` 是 64 位内核 VA，证明截断已修。
+
+### 56.4 判决
+
+**GR1 可读。预读行与 `gr1_ok=1` 同时落盘，且读取没有导致任何故障。**
+同时读出：五个 context bank 的九个字**当前全部为 0**，即这台设备此前从未编程过任何 context bank
+（与 §28 的 `init=0 alloc=0 cbndx=0` 一致）。这正是键 72 可以安全动手的前提：
+写之前的状态是已知的零，写完再读，任何非零都必然来自这一轮。
+
+### 56.5 边界
+
+* 本轮只证明「地址可达、读不炸」，不证明写入会生效（那是 R232d）。
+* `scr0=00200626` 说明 `SMMUEN`（bit0）**当前为 0**：SMMU 全局未使能。
+  本轮没有动它，也不该动 —— 它属于「等 context bank 齐全之后再开」的那一步。
+
+## 五十七、ROUND 232d：本移植第一次真正写 SMMU context bank（9/9 笔）
+
+### 57.1 设计：一次上机，四行证词，判据先固定
+
+键 72 在写之前先算表、再排计划、再逐笔 MMIO，每段一行：
+
+| 行 | 内容 | 若只有这一行 |
+|---|---|---|
+| A `gmu72a` | CX 状态、几何、SMMU 映射是否存在 | 拒绝路径（无写） |
+| B `gmu72b` | `adreno_table_build` 结果：root 物理地址、表数、写入数 | 建表失败 |
+| C `gmu72c` | 九笔计划与绝对化结果（`n`、`nab`、cbndx、asid、ttbr、cw） | 计划失败 |
+| D `gmu72d` | 九笔全部发出后的回读 | 死在 MMIO 里 |
+
+判读规则在任何写入之前写进 runner 并原样打印（防止读窗口后改口径）：
+`refused-*` 或只有 A → 拒绝，没写；只有 A+B → 建表/计划失败；A+B+C 无 D → 九笔写把内核打死；四行全有 → 写完成。
+
+### 57.2 读数（DEVICE-VERIFIED）
+
+boot_id **583041945**（新）、窗口 `2ceda7cb2ff69cecc67f40307fb35e7ba012bb122d35e9c0110c47fd410a37bf`、**4/4 行落盘**：
+
+```
+[   30.144678]: gmu72a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1
+[   30.144795]: gmu72b=build=0 root=ad934000 tables=4 writes=4 ias=48 oas=36 ok=1
+[   30.144812]: gmu72c=plan=0 n=9 abs=0 nab=9 cbndx=0 asid=0 ttbr=ad934000 cw=0
+[   30.144937]: gmu72d=wrote=9 ttbr0=ad934000/00000000 sctlr=00001067 tcr=00802010 cbar=0001f300 root=ad934000
+```
+
+四行跨 **259 微秒**（`30.144678` → `30.144937`），期间没有任何停顿、没有任何异常。
+
+### 57.3 回读与模型逐位比对（六个字，六次 match）
+
+| 字 | 设备 | 模型 | 说明 |
+|---|---|---|---|
+| TTBR0[31:0] | `ad934000` | `ad934000` | root 物理地址，与 `gmu72b` 的 `root=` 一致 |
+| TTBR0[63:32] | `00000000` | `00000000` | ASID=0 在 63:48，故高半字为 0 |
+| SCTLR | `00001067` | `00001067` | CFIE\|CFRE\|AFE\|TRE\|M\|S1_ASIDPNE = 0x40\|0x20\|0x4\|0x2\|0x1\|0x1000 |
+| TCR | `00802010` | `00802010` | T0SZ=64-48=16、TG0=4K、SH=OS、RGN=NC、EPD1=1 |
+| CBAR | `0001f300` | `0001f300` | TYPE=S1_TRANS_S2_BYPASS(1)<<16 \| WB(0xF)<<12 \| NSH(3)<<8 \| VMID 0 |
+| 写入笔数 | `9` | `9` | `nab=9`、`wrote=9` |
+
+比对由脚本 `work\tmp\r232d_verify.py` 完成，不是心算：它按 `AdrenoSmmuCtxWordV1.h/.c`
+里的同一批常量重算，逐位比对后打印 `RESULT: all words match the model`。
+
+**判决：SMMU context bank 0 已被本移植真正编程，九个字全部按计划落地，内核存活。**
+
+### 57.4 本轮自己暴露的缺陷：`coherent_walk` 用的是字面零，不是测到的 ID0
+
+`gmu72c` 的 `cw=0` 让 TCR 走了**非一致**分支（outer-shareable、non-cacheable）。
+原因不是算错，是**输入没测**：探针里写的是 `adreno_iommu_coherent_walk(0u, 0u)`，
+把 ID0 当作 0 传进去。
+
+而同一份窗口的 `stage6=` 行明确打印：
+
+```
+stage6=id1 id0=48016605 id1=20008005 cttw=1 numcb=5 nums2cb=0 ...
+```
+
+`id0=48016605` 的 bit14（`kAdrenoIommuId0Cttw = 0x00004000`）为 1，所以这台 SMMU 的一致走表是开着的。
+把它当 0 传进去，选中的是与硬件不符的那一支。
+
+这条**不是**笔误级别的措辞问题：TCR 决定走表的内存属性，若后续真的让硬件用它走表，
+非一致属性在一致 SMMU 上是可观测的错误。R233 因此只改这一件事：在键 72 里真的读 ID0（`0x20`），
+把它和 `cw` 一起打印，让 TCR 与它自洽。
+
+（同一段代码里 `p72.ttbr1 = 0u` 也是写死的。`adreno_iommu_ttbr1_for_gpu()` 这个模块里存在，
+但键 72 没有调用它。本轮不把它算作新发现，只登记为**已知未测输入**，与 `coherent_walk` 同类。）
+
+### 57.5 工具缺陷：静态门查的是上一轮的镜像
+
+`r232_static.py` 的 `KERNEL`/`PAYLOAD` 指向 `r232-kernel/`、`r232-payload/`，
+而当时实际要刷的是 `r232c-*`。它要求的 `gmu71b=cbar=` 这一行在 R232c 里**已经被改名**（成了 `about_to_read_gr1`）。
+也就是说：**它会对着一个不含本轮改动的旧镜像报 PASS**。实测两份镜像的差异：
+
+| 目录 | kernel sha256（前 16） | `gmu71b=cbar=` | `about_to_read_gr1` |
+|---|---|---|---|
+| `r232-kernel` | `36850deb06d4a8f2` | 1 | 0 |
+| `r232c-kernel` | `476fd3f9748fd8a6` | 0 | 1 |
+
+而它当时确实报了 `PASS: R232 static gate`。这是**门禁失效**，不是运气问题：
+一个会对着旧镜像通过的门，比没有门更坏，因为它给出的是虚假保证。
+
+修正：`work\tmp\r232d_static.py` 把路径钉到本轮目录、缺文件直接 FAIL，
+并要求 `gmu72a/b/c/d` 四行、五条拒绝行、以及 `about_to_read_gr1` 同时存在。
+R232d 的 PASS 是它第一次真正描述「要刷的那一份」。
+
+### 57.6 这一轮**没有**证明什么（边界）
+
+* **没有**编程 stage-2（`S2CR` 区，`0xC00` 起）。本轮只动 stage-1。
+* **没有**置 `sCR0.SMMUEN`（bit0）。SMMU 全局仍未使能，所以「写进去的字」目前**不会被任何走表使用**。
+* **没有**让 GPU 渲染任何一帧。准入表仍是 `modeled=9 / satisfied=0`，`CONFIG_XNU_NATIVE_ADRENO=n`。
+* **没有**验证映射正确性：表里只放了一个 4 KiB 叶子（IOVA `0x40000000` → 物理 `0x90000000`），
+  那是一个「能读回来做比对」的哨兵值，不是真实 GPU VA 布局。
+* 因此本轮的正确说法是：**寄存器编程路径打通了**，而不是「SMMU 能用了」。
+
+## 五十八、ROUND 233：把 `coherent_walk` 从字面零换成实测 ID0 —— 一致走表分支被真正选中
+
+### 58.1 上一轮留下的是什么
+
+R232d 把 context bank 0 的九个字写下去并读回，六项与模型逐位一致。但同一行里 `cw=0`：
+TCR 走的是**非一致**分支（outer-shareable、non-cacheable）。这不是算错，是**输入没测** ——
+探针直接写了 `adreno_iommu_coherent_walk(0u, 0u)`，而 `IDR0.CTTW`（`0x00004000`，BIT(14)）
+在同一窗口的 `stage6=` 行里明明白白是 1：
+
+```
+stage6=id1 id0=48016605 id1=20008005 cttw=1 numcb=5 nums2cb=0 cap=5 init=0 alloc=0 cbndx=0 ...
+```
+
+`0x48016605 & 0x4000 = 0x4000`。也就是说，硬件声称自己能做一致走表，而驱动按不能做来配。
+这类错误不会让机器报错，只会让 SMMU 在真正开始走表之后从缓存里读到旧描述符 ——
+所以必须在启用之前修，而不是等它表现为偶发错误之后再查。
+
+### 58.2 改了什么
+
+只改一个输入来源，不碰编码器：
+
+```c
+const uint32_t r72id0 = rd32(gSmmuVa, 0x20u);
+p72.coherent_walk = adreno_iommu_coherent_walk(r72id0, 0u);
+```
+
+行 C 的格式串同时加上 `id0=%08x`：
+
+```c
+"gmu72c=plan=%d n=%u abs=%u nab=%u cbndx=%u asid=%u ttbr=%llx cw=%u id0=%08x"
+```
+
+加这个字段不是装饰：如果只在注释里说「改成实测了」，镜像里没有任何可检查的痕迹，
+静态门就只能相信提交信息。格式串里带着 ID0，静态门就能要求「新行存在、旧行不存在」。
+
+### 58.3 读数（DEVICE-VERIFIED）
+
+boot_id **580946231**（新）、窗口 `work\tmp\r233_s72_window.bin` 33,554,432 B
+sha256 **`c1626ba0bb3e7e943f5eb6ef92f2acfcfbdf33a3cac03b2ec0d1303c457af529`**、**4/4 行落盘**：
+
+```
+[   30.036147]: gmu72a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1
+[   30.036264]: gmu72b=build=0 root=ad940000 tables=4 writes=4 ias=48 oas=36 ok=1
+[   30.036303]: gmu72c=plan=0 n=9 abs=0 nab=9 cbndx=0 asid=0 ttbr=ad940000 cw=1 id0=48016605
+[   30.036427]: gmu72d=wrote=9 ttbr0=ad940000/00000000 sctlr=00001067 tcr=00803510 cbar=0001f300 root=ad940000
+```
+
+四行跨 **280 微秒**（30.036147 → 30.036427）。
+
+### 58.4 逐位比对：`cw` 从 ID0 推导，而不是从第二个字面量
+
+`work\tmp\r233_verify.py` 用与驱动同一批常量复算，且 `coherent_walk` 由设备打印的 ID0 现算：
+
+```
+id0=48016605 CTTW(BIT14)=set -> derived coherent_walk=1
+word       device     model  verdict
+ttbr0_lo   0xad940000 0xad940000 match
+ttbr0_hi   0x00000000 0x00000000 match
+sctlr      0x00001067 0x00001067 match
+tcr        0x00803510 0x00803510 match
+cbar       0x0001f300 0x0001f300 match
+wrote      9          9          match
+PASS: R233 readback matches the model (6 of 6 words, coherent branch verified)
+```
+
+TCR 的内部字段（脚本另做四项断言）：
+
+| 字段 | 位 | 值 | 含义 |
+|---|---|---|---|
+| SH0 | 13:12 | `11` = IS | inner-shareable（一致走表分支） |
+| ORGN0 | 11:10 | `01` = WBWA | write-back write-allocate |
+| IRGN0 | 9:8 | `01` = WBWA | 同上，内层 |
+| T0SZ | 5:0 | `16` = 64−48 | 48 位 IAS |
+| EPD1 | 23 | 1 | TTBR1 关闭（几何选的是 TG0） |
+| TG0 | 15:14 | `00` | 4 KiB granule |
+
+与 R232d 的 `00802010` 相比：SH 由 `10`(OS) 变 `11`(IS)、RGN 由 `00`(NC) 变 `01`(WBWA)，
+其余每一字段逐位未动。**这正是本轮唯一变量应有的形状。**
+
+### 58.5 判决
+
+**SMMU context bank 0 的九个字按「硬件声明支持一致走表」这一事实重新编程，读回与模型逐位一致，
+内核存活 4/4 行。** 本移植的 stage-1 寄存器编程路径至此同时覆盖了两条分支中的正确那一条。
+
+### 58.6 本轮没有证明什么（必须与上一条同等显眼）
+
+1. **`sCR0.SMMUEN` 仍是 0**。R232c 读到 `scr0=00200626`，bit0 = 0。写进 context bank 的字
+   **不会被任何走表使用** —— 它们只是躺在寄存器里。所以本轮的正确说法是
+   「寄存器内容与硬件能力一致了」，不是「SMMU 开始工作了」。
+2. **stage-2 未编程**。`0xC00` 起的 S2CR 区一笔未写；CBAR 里 TYPE 字段选的是
+   `S1_TRANS_S2_BYPASS`，即有意让 stage-2 旁路，不是遗漏。
+3. **表里只有一个 4 KiB 哨兵叶子**：IOVA `0x40000000` → 物理 `0x90000000`。这不是 GPU 的地址空间，
+   只是一个用来证明「表能被构建」的占位。
+4. **GPU 没有渲染任何一帧**。同窗口的 `gmucfg=... sfr=06030100`、`rc=0 GPUCC=5090000 ...
+   cx=00005ff4 gx=00088400 cx_on=0 gx_on=0 gx_off=1 verdict=cx-DOWN`：GX 域仍是关的，
+   屏上画面全部由 CPU 合成。
+5. **`ttbr1` 仍是写死的 0**。模块里有 `adreno_iommu_ttbr1_for_gpu()`，键 72 没调用它。
+   这是已知未测输入，不是本轮新发现。
+
+### 58.7 一条与 SMMU 无关、但本轮再次确认的事实
+
+同一窗口里 `stage4=id2 id2=00007511 ver=2 ias_ok=1 ias=48 ipa=36 pa=36 oas2=36 ptfs4k=1
+vmid16=0 words_ok=1 plan_ok=1 tcr=a0100080 tcr2=00038011` —— 这是 **stage-2 的 id2 自检**，
+与 context bank 0 实际写入的 `tcr=00803510` / `tcr2` 是两套不同的字，别把两者混为一谈
+（`a0100080` 是 id2 计划模板的输出，不是 CB 寄存器里的值）。

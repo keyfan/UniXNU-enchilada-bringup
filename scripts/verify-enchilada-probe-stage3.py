@@ -84,8 +84,14 @@ def main():
     # of device memory exist.
     check(len(loads) >= 1 and all('volatile' in x for x in loads),
           f'every pointer cast is volatile (the rd32 load and the window base): {loads}')
-    stores = re.findall(r'\*\s*reinterpret_cast\s*<[^>]*>\s*\([^;]*\)\s*=[^=]', code)
-    check(not stores, f'no store through any pointer ({stores})')
+    # ROUND 232: key 72 is the first write stage in this port. The stage-3 property is
+    # that the READ-ONLY stages store nothing, so the scan is scoped to the region before
+    # key 72. The write stage's own stores are covered by the stage-6 contract instead.
+    code_ro3 = code.split('if (fwKey == 72u) {', 1)[0]
+    stores = re.findall(r'\*\s*reinterpret_cast\s*<[^>]*>\s*\([^;]*\)\s*=[^=]', code_ro3)
+    check(not stores, f'no store through any pointer in the read-only stages ({stores})')
+    check('if (fwKey == 72u) {' in code,
+          'R232 the write stage exists, so the scoping above is not vacuous')
 
     # --- D. the five PURE helpers ARE called ---------------------------------
     pure_calls = (
