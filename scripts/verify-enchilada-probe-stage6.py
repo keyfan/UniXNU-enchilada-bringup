@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 83u' in _fw,
+    check('fwKey >= 7u && fwKey <= 85u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1694,7 +1694,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 83u)' in code,
+    check('(fwKey >= 7u && fwKey <= 85u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3391,7 +3391,9 @@ def main():
     if _i8283 >= 0:
         check(_i8081 >= 0 and _i8283 > _i8081,
               'R239 the new block follows the R238 block it is a control for')
-        _k8283 = code[_i8283:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        # R240 inserted keys 84/85 directly after this block, so the delimiter is the
+        # new direct successor, not the doorbell ladder further down the file.
+        _k8283 = code[_i8283:].split('if (fwKey == 84u || fwKey == 85u) {', 1)[0]
         check(_k8283 != '', 'R239 the block is delimited by the doorbell ladder')
         _k82head = _k8283.split('if (r82is83) {', 1)[0]
         check('HFI_CTRL_INIT' not in _k82head,
@@ -3444,6 +3446,83 @@ def main():
                 _post = _post.replace('}', '').strip()
             check(_post == '',
                   'R239 nothing follows the last store of key %s; got %r'
+                  % (_name, _post[:120]))
+
+    # --- R240 zero-page and positive-control keys -----------------------------
+    # R239 left "descriptor non-zero AND firmware told to start" as the correlated
+    # pair, but never showed the firmware reading the table. Key 84 points QTBL_ADDR
+    # at a page it has just zeroed (and verifies, printing nz=), keeps INFO = 1, and
+    # writes the start word last in upstream order; key 85 repeats R238 key 81 as a
+    # positive control. Both differences are runtime comparisons, so they are
+    # asserted in source, not in an image.
+    _i8485 = code.find('if (fwKey == 84u || fwKey == 85u) {')
+    check(_i8485 >= 0, 'R240 the zero-page block exists')
+    if _i8485 >= 0:
+        check(_i8283 >= 0 and _i8485 > _i8283,
+              'R240 the new block follows the R239 block it builds on')
+        _k8485 = code[_i8485:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        check(_k8485 != '', 'R240 the block is delimited by the doorbell ladder')
+        _k84pre = _k8485.split('if (r84is85) {', 1)[0]  # code-only anchor: stage6 strips comments
+        check(_k84pre != '', 'R240 the preamble is found')
+        # Everything printed (rows A, B and E) comes before the last row; the only stores
+        # that early are the four interrupt masks.
+        check(_k84pre.count('gmuW[') == 4,
+              'R240 only the four masks are stored before the last row (got %d)'
+              % _k84pre.count('gmuW['))
+        check('HFI_CTRL_INIT' not in _k84pre,
+              'R240 the preamble never touches the start word')
+        check('HFI_QTBL_ADDR] =' not in _k84pre and 'HFI_QTBL_INFO] =' not in _k84pre,
+              'R240 the preamble never touches the table descriptor')
+        for _w in ('AO_HOST_INTERRUPT_CLR', 'GMU2HOST_INTR_CLR',
+                   'AO_HOST_INTERRUPT_MASK', 'GMU2HOST_INTR_MASK'):
+            _n = _k84pre.count('gmuW[ADRENO_GMU_BOOT_V1_%s] = ' % _w)
+            check(_n == 1, 'R240 the preamble stores %s exactly once (got %d)' % (_w, _n))
+        check('(r84aoMask & 0x3fu) == 0x3fu' in _k84pre,
+              'R240 fully-masked is still judged on the six implemented AO bits')
+        # The zero page must be zeroed AND verified before any row claims it.
+        check('r84pg[r84i] = 0u;' in _k84pre,
+              'R240 the fresh page is written with zeros')
+        _zloops = _k84pre.count('for (uint32_t r84i = 0u; r84i < 1024u; ++r84i)')
+        check(_zloops == 2,
+              'R240 the page is zeroed and then re-scanned (got %d loops)' % _zloops)
+        check('gmu84e=zero_page pa=%08x nz=%u' in _k84pre,
+              'R240 the row that carries nz= is emitted before the install')
+
+        _k84tail = _k8485.split('if (r84is85) {', 1)[1] if 'if (r84is85) {' in _k8485 else ''
+        check(_k84tail != '', 'R240 the two key bodies are found')
+        _t85 = _k84tail.split('} else if (r84pa != 0u) {', 1)[0]
+        _t84 = _k84tail.split('} else if (r84pa != 0u) {', 1)[1] if \
+            '} else if (r84pa != 0u) {' in _k84tail else ''
+        check(_t85 != '' and _t84 != '', 'R240 both bodies are non-empty')
+
+        # key 85: exactly R238 key 81 -- one store, the start word.
+        check(_t85.count('gmuW[') == 1, 'R240 key 85 stores exactly one word')
+        check('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;' in _t85,
+              'R240 that word is the start word (positive control)')
+        check('HFI_QTBL_ADDR' not in _t85 and 'HFI_QTBL_INFO' not in _t85,
+              'R240 key 85 leaves the real descriptor untouched')
+
+        # key 84: ADDR -> INFO -> start word, upstream order, three stores.
+        check(_t84.count('gmuW[') == 3, 'R240 key 84 stores exactly three words')
+        _a = _t84.find('gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = r84pa;')
+        _b = _t84.find('gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;')
+        _c = _t84.find('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;')
+        check(_a >= 0 and _b >= 0 and _c >= 0,
+              'R240 key 84 writes QTBL_ADDR, QTBL_INFO and the start word')
+        check(_a < _b < _c, 'R240 key 84 follows a6xx_hfi_start order (ADDR, INFO, start)')
+        check('HFI_QTBL_ADDR] = r84pa;' in _t84,
+              'R240 key 84 points the descriptor at the zero page, not at the real table')
+
+        # Neither key may buy time, print, read back or restore masks afterwards.
+        check('IOSleep' not in _k8485, 'R240 neither key sleeps')
+        _tailstore84 = _t84.split('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;', 1)[1]
+        _tailstore85 = _t85.split('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;', 1)[1]
+        for _name, _post in (('84', _tailstore84), ('85', _tailstore85)):
+            _post = _post.replace('__asm__ volatile("dsb sy" ::: "memory");', '')
+            _post = __import__('re').sub(r'//[^\n]*', '', _post)
+            _post = _post.replace('}', '').replace('else', '').strip()
+            check(_post == '',
+                  'R240 nothing follows the last store of key %s; got %r'
                   % (_name, _post[:120]))
 
     print()

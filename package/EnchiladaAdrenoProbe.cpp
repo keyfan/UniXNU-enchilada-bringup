@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 83u);
+                            (fwKey >= 7u && fwKey <= 85u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -5283,6 +5283,139 @@ if (fwKey == 82u || fwKey == 83u) {
         } else {
             // Key 82: the same store position, value 0. Shape control for R238.
             gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 0u;
+            __asm__ volatile("dsb sy" ::: "memory");
+        }
+    }
+}
+
+if (fwKey == 84u || fwKey == 85u) {
+    // ROUND 240: does the fatality follow the table's CONTENTS, or only the fact that the
+    // descriptor reads non-zero when the start word is written?
+    //
+    // R239 established both halves of the premise: the store-last shape lands rows (key 82,
+    // 3/3, new boot_id) and clearing HFI_QTBL_INFO before writing the start word lands rows
+    // too (key 83, 4/4, new boot_id). R238 key 81 -- same shape, descriptor = 1, real table
+    // already installed by the window-open path -- left a byte-identical older window. So the
+    // pair "descriptor non-zero AND firmware told to start HFI" correlates with death. What is
+    // still unknown is whether the firmware actually WALKS the table.
+    //
+    //   key 84 -- point HFI_QTBL_ADDR at a freshly zeroed 4 KiB page, keep HFI_QTBL_INFO = 1,
+    //             then the start word, all three stores after the last row, in upstream order
+    //             (a6xx_hfi_start writes QTBL_ADDR, then QTBL_INFO, then HFI_CTRL_INIT).
+    //             PWR_COL_CP_MSG is left alone; only the table pointer differs from key 85.
+    //   key 85 -- R238 key 81 repeated verbatim: nothing touched except the trailing start
+    //             word. Positive control.
+    //
+    // Judgement rules, fixed before the boot, using fields the device writes itself (key=
+    // inside the window, boot_id, window sha256):
+    //   key 85 lands rows  -> the world changed; R238/R239 conclusions must be re-read before
+    //                         key 84 can be interpreted.
+    //   key 85 leaves the previous window byte for byte
+    //                      -> the death reproduces; key 84 is interpretable.
+    //   key 84 lands rows -> the firmware really walks the table, so the fatality follows the
+    //                        CONTENTS; next look is what the table and PWR_COL_CP_MSG address.
+    //   key 84 leaves the previous window byte for byte
+    //                      -> any non-zero descriptor plus a start request is enough,
+    //                         content irrelevant.
+    extern uint64_t armcpu_dma_alloc_writable (uint64_t bytes, uint64_t *out_virt);
+    char r84RowA[320];
+    char r84RowB[320];
+    char r84RowC[320];
+    char r84RowE[320];
+    const uint32_t r84cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r84cxOn = adreno_domain_cx_is_on(r84cx);
+    const bool r84is85 = (fwKey >= 85u);
+
+    snprintf(r84RowA, sizeof r84RowA,
+             "gmu84a=cx=%08x cx_on=%d gmu=%d key=%u win=%d",
+             r84cx, r84cxOn, (sGmuFwVa != 0) ? 1 : 0, (unsigned)fwKey,
+             (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r84RowA);
+
+    if (!r84cxOn) {
+        IOLog("enchilada-adreno: gmu84b=refused-cx-down cx=%08x\n", r84cx);
+    } else if (!sGmuFwVa) {
+        IOLog("enchilada-adreno: gmu84b=refused-nogmu\n");
+    } else {
+        const uint32_t r84aoBefore = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+        const uint32_t r84hfiBefore = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+        gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_CLR] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xffffffffu;
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t r84aoMask = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+        const uint32_t r84hfiMask = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+        snprintf(r84RowB, sizeof r84RowB,
+                 "gmu84b=masked ao_mask=%08x hfi_mask=%08x both_masked=%d was=%08x/%08x",
+                 r84aoMask, r84hfiMask,
+                 (((r84aoMask & 0x3fu) == 0x3fu) && (r84hfiMask == 0xffffffffu)) ? 1 : 0,
+                 r84aoBefore, r84hfiBefore);
+        IOLog("enchilada-adreno: %s\n", r84RowB);
+
+        // The zero page is prepared and verified BEFORE the last row, so a row saying nz=0
+        // is on the platter before anything the firmware could look at is installed.
+        uint32_t r84nz = 0xffffffffu;
+        uint32_t r84pa = 0u;
+        if (!r84is85) {
+            static uint64_t s84phys = 0;
+            static uint64_t s84virt = 0;
+            if (!s84phys) {
+                s84phys = armcpu_dma_alloc_writable (4096ull, &s84virt);
+            }
+            if (!s84phys || !s84virt) {
+                IOLog("enchilada-adreno: gmu84e=alloc-failed phys=%llx virt=%llx\n",
+                      (unsigned long long)s84phys, (unsigned long long)s84virt);
+            } else {
+                volatile uint32_t *r84pg =
+                    reinterpret_cast<volatile uint32_t *>(static_cast<uintptr_t>(s84virt));
+                for (uint32_t r84i = 0u; r84i < 1024u; ++r84i) {
+                    r84pg[r84i] = 0u;
+                }
+                __asm__ volatile("dsb sy" ::: "memory");
+                uint32_t r84nzCount = 0u;
+                for (uint32_t r84i = 0u; r84i < 1024u; ++r84i) {
+                    if (r84pg[r84i] != 0u) {
+                        ++r84nzCount;
+                    }
+                }
+                r84nz = r84nzCount;
+                r84pa = static_cast<uint32_t>(s84phys);
+            }
+        }
+
+        if (!r84is85) {
+            snprintf(r84RowE, sizeof r84RowE,
+                     "gmu84e=zero_page pa=%08x nz=%u addr_before=%08x info_before=%08x win=%d",
+                     r84pa, r84nz,
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u),
+                     (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r84RowE);
+        }
+
+        // Everything this round will ever print is printed here.
+        snprintf(r84RowC, sizeof r84RowC,
+                 "gmu84c=last_row=1 start_next=1 qtbl_zero=%d stat=%08x intr=%08x ao=%08x fwinit=%08x",
+                 r84is85 ? 0 : 1,
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS * 4u),
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
+        IOLog("enchilada-adreno: %s\n", r84RowC);
+
+        if (r84is85) {
+            // Positive control: exactly R238 key 81.
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
+        } else if (r84pa != 0u) {
+            // Upstream order (a6xx_hfi_start): ADDR, INFO, then the start word. No readback,
+            // no poll, no print after any of them.
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = r84pa;
+            __asm__ volatile("dsb sy" ::: "memory");
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
             __asm__ volatile("dsb sy" ::: "memory");
         }
     }

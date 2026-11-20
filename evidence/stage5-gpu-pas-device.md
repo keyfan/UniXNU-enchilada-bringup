@@ -4052,3 +4052,111 @@ gmu80c=last_row=1 start_next=0 stat=00000000 intr=00000000 ao=00000000 fwinit=ba
   - 落盘 ⇒ 致死跟着**我们那张表的内容**走（固件真的去读它了），下一步是逐字对比表内容与上游 `a6xx_hfi_queue_table`。
   - 零字节 ⇒ 只要描述符非零且要求启动就死，与表内容无关。
 - **键 85**：R238 键 81 的复现（真表、`INFO = 1`、最后写 1）。**必须再死一次**，用来排除"世界变了、现在什么都不死"这种整轮性解释；这是本轮形状的阳性对照。
+
+## 六十四、ROUND 240：致死与表的内容无关 —— 把描述符指向一页全零，仍然零字节
+
+本轮问的是 R239 留下的那一半：致死是跟着表的**内容**走，还是只要描述符读数非零且要求启动就够。两个键都保持"store 是本轮最后一个动作"这条唯一被证明能落盘的形状。
+
+### 64.1 一句话
+
+键 84（`HFI_QTBL_ADDR` 指向一页全零、`HFI_QTBL_INFO = 1`、最后写 `HFI_CTRL_INIT = 1`）**零字节**（0/4 行，窗口仍是上一轮）；键 85（R238 键 81 逐字复现：真表已由开窗路径装好、`INFO = 1`、最后写 1）**同样零字节**（0/3）。⇒ 表指向哪里、内容是什么，都不影响；致死只需要"描述符位为真"和"启动位为真"同时成立。
+
+### 64.2 代码形状
+
+两键共享同一段 preamble（与 R238 键 80/81、R239 键 82/83 逐条相同）：
+
+1. 行 A `gmu84a=cx=%08x cx_on=%d gmu=%d key=%u win=%d`
+2. CX 未上电 / GMU 未映射 ⇒ `gmu84b=refused-cx-down cx=%08x`、`gmu84b=refused-nogmu`
+3. 四笔中断掩码（两笔 CLR、两笔 MASK）+ `dsb sy`；行 B `gmu84b=masked ao_mask=%08x hfi_mask=%08x both_masked=%d was=%08x/%08x`，其中 `both_masked` 判 `(aoMask & 0x3f) == 0x3f`（R237 的假阴性已按此修正）
+4. **只有键 84**：`armcpu_dma_alloc_writable(4096, &virt)`，把 1024 个字写 0，`dsb sy`，再扫一遍数非零得 `nz`；行 E `gmu84e=zero_page pa=%08x nz=%u addr_before=%08x info_before=%08x win=%d`
+5. 行 C `gmu84c=last_row=1 start_next=1 qtbl_zero=%u stat=… intr=… ao=… fwinit=…`
+6. 最后动作，之后无回读、无轮询、无打印、无掩码恢复：
+   - 键 85：`HFI_CTRL_INIT = 1`（一笔）
+   - 键 84：`HFI_QTBL_ADDR = pa` → `HFI_QTBL_INFO = 1` → `HFI_CTRL_INIT = 1`（三笔，各带 `dsb sy`，顺序照上游 `a6xx_hfi_start`）
+
+两键之间唯一的差别是第 4 步和最后一个动作里的头两笔；第 6 步的启动字本身逐字相同。
+
+### 64.3 构建与门禁
+
+- 探针 484,335 字符 / 6,805 行，`gmuW[...] =` 写点 **201**；arm 窗口 `(fwKey >= 7u && fwKey <= 85u)`。
+- host 门 `check-enchilada-adreno-probe.py` → **28/28 checks passed** + `PASS: enchilada adreno probe shim + modules type-check (host stub, arm64 Mach-O)`。
+- `verify-enchilada-probe-stage6.py` → **1044/1044**；全量 `verify-enchilada-*.py` → **ran 46 of 48, FAILING: 0**（跳过的两个是 `-gmu-caller-v1-record.py` 需 40-hex rev、`-ias-measured.py` 需真机）。
+- CI：分支 `r240-zero-page`，commit `15df899231cf90459fdd25fdd32daf4a1cef66aa`，run **44726641344（#350）`completed/success`，28/28 步**（step 16 Build kernel 11:19:26Z → 约 11:39Z）。
+- 取件：`r240-kernel/kernel.macho` 126,234,624 B sha256 `6da1867ac169e07c78f4c3b0cf96a1e71420ec5c7b7448152b5a2bb17c09f757`；`r240-payload/payload.img` 150,994,944 B sha256 `2a4604a1c249205ea9bc8ac4d2805212d91ebb130105700276a50d4937af72aa`。
+- 静态门 `r240_static.py` → `required+survivors: 17 checked`、`forbidden: 2 checked`、固件钉 `b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f`（32,768 B）、**`PASS: R240 static gate`**。
+- **门的区分能力自证**：把同一个 `r240_static.py` 指向上一轮 `r239-kernel` / `r239-payload` → 七条 `gmu84*` 全为 `kernel=0 payload=0`、**`FAIL: R240 static gate (7 problems)`**。这一步是 R232c 事故（一个会对着旧镜像通过的门）之后每轮必做的。
+
+### 64.4 键 84 读数（DEVICE-VERIFIED）
+
+rekey `enchilada-pas-exec=2 -> =84`（`r240-s84-payload/payload.img` sha256 `dc21db2b2ed08fb51791c8796906ce5b38b469b433030dc92b03915759267ae0`），刷写核验全过：`key block 31059: device == payload -> True`、`key block says: enchilada-pas-exec=84 -no_slto_p`、`key verified: this boot will run key 84`、`system_b head 8 MiB sha256 764613d1f5d5227d1de718ba4834563e43d9d58e913f8b716e5f4ded6f9baf42`（与 payload 头一致）、`flash readback matches: True`。
+
+时间线：`19:55:35 flash system_b` → `19:55:40 flash OK` → `19:55:41 boot sent` → `19:56:19 back in recovery`（38 秒，武装 BCB 生效，无需按键）。
+
+窗口读数：
+
+| 项 | 值 |
+|---|---|
+| 窗口 sha256 | `3b7d37b4d4f7ca98aeb92ce9016781d8659cb8e345cb69012351d3c38da2e9c0`（**与 R239 键 83 那轮逐字节相同**） |
+| header `boot_id` | 585892346（＝上一轮） |
+| `msg_bytes` / `slots_written` / `write_errors` | 30694 / 8 / 0（全部来自上一轮） |
+| `gmu84a/b/c/e` 计数 | 0 / 0 / 0 / 0（**0 of 4 行**） |
+
+### 64.5 键 85 读数（阳性对照，DEVICE-VERIFIED）
+
+rekey 到 85（`r240-s85-payload/payload.img` sha256 `173cec17564e344165b56ffa8ff1d873dd74009ddc75136e2104f52531d8b2fc`），刷写核验同样全过：`key block says: enchilada-pas-exec=85 -no_slto_p`、`key verified: this boot will run key 85`、`flash readback matches: True`。
+
+时间线：`19:57:02 boot sent` → `19:57:40 back in recovery`（38 秒）。
+
+窗口：sha256 仍 `3b7d37b4d4f7ca98aeb92ce9016781d8659cb8e345cb69012351d3c38da2e9c0`、`boot_id` 仍 585892346、**0 of 3 行**。
+
+### 64.6 判决
+
+**阳性对照成立，键 84 可解释**：键 85 是 R238 键 81 的逐字复现，它仍然零字节 ⇒ 这台机器没有"世界变了、现在什么都不死"这种整轮性变化；在这个前提下，键 84（描述符指向一页全零）同样零字节 ⇒ **致死与表指向哪里、内容是什么无关**。
+
+把 R219 以来所有同形状读数并排：
+
+| 轮次 / 键 | 这一轮在行 C 之后写的最后动作 | 读数 |
+|---|---|---|
+| R219 键 66 | 什么都不写 | 3/3，boot 582344900，窗口 `eff8caa2…` |
+| R222 键 66 | `HFI_CTRL_INIT = 1` | 0/3，窗口不变 |
+| R223 键 66 | `HFI_CTRL_INIT = 0` | 3/3，boot 583170095，窗口 `d60bb6e3…` |
+| R238 键 80 | 四掩码，`start_next = 0` | 3/3，boot 586963994，窗口 `4b1a5525…` |
+| R238 键 81 | 四掩码 + `INIT = 1`（真表、`INFO = 1`） | 0/3，窗口不变 |
+| R239 键 82 | 四掩码 + `INIT = 0`（同一位置、最后动作） | 3/3，boot 586092751，窗口 `0c000d89…` |
+| R239 键 83 | 四掩码 + `INFO = 0` + `INIT = 1` | 4/4，boot 585892346，窗口 `3b7d37b4…` |
+| R240 键 84 | 四掩码 + `QTBL_ADDR = 全零页` + `INFO = 1` + `INIT = 1` | 0/4，窗口不变 |
+| R240 键 85 | 四掩码 + `INIT = 1`（键 81 复现） | 0/3，窗口不变 |
+
+三行关键对照给出的条件式：
+
+- `INFO = 1` 而**不**写 `INIT`（R219 键 67）⇒ 存活；
+- `INIT = 1` 而 `INFO = 0`（R239 键 83）⇒ 存活；
+- 两者同时为真（R238 键 81、R240 键 84）⇒ 死，且**与 `QTBL_ADDR` 指向的真实内容无关**。
+
+所以致死条件可以写成：**"描述符位为真" ∧ "启动位为真"**。
+
+### 64.7 没有证明什么
+
+1. **零页的"零"没有设备侧证据**。行 E（`gmu84e=zero_page pa=… nz=…`）与其它三行一起没落盘，所以"装进 `QTBL_ADDR` 的那一页在被写入时确实是零"只由代码路径保证（写 1024 个字 + `dsb sy` + 复查计数），**不是 DEVICE-VERIFIED**。这一轮能确定的是"哪怕它非零也不改变结论"这个方向的证据并不存在 —— 只能确定键 84 死了。
+2. **没有直接观测死亡**。观测到的是"这一轮什么都没提交"，把区间压到"两笔描述符写 + 一笔启动写"与一个 writer 轮（约 500 ms）之内，不是看到 CPU 停在哪条指令。
+3. **没有分辨"寄存器写挂住总线"与"GMU 侧动作把系统弄坏"**。两者与观测一致。
+4. **没有证明固件真的读过那张表**。相反，本轮证据**降低**了这个说法的必要性：既然表内容无关，就没有理由认为致死发生在"读过表之后"。
+5. **一次读数，未重复**。键 84/85 各一次。归因靠与 R219/R223/R238/R239 的交叉，不靠重复。
+
+### 64.8 三条边界（没有变）
+
+- GPU 仍未渲染任何一帧；`CONFIG_XNU_NATIVE_ADRENO=n`；准入表仍 `modeled=9 / satisfied=0 / BLOCKED`。
+- `sCR0` 的 bit10（USFCFG）仍未被打开：R234 键 73 与 R235 键 75 两次都测到那笔 store 被忽略。
+- SMMU 的 stage-2 区（`0xC00` 起）仍未编程；GPU 侧仍只有一个哨兵叶子。
+
+### 64.9 下一步（R241 已设计，未执行）
+
+现在致死条件清楚了：`INFO = 1` ∧ `INIT = 1`，与表内容无关。剩下最值得问的是：**这两笔是"GMU 开始做 AHB 主设备访问"的门闩吗**。若是，则它第一次读表就会经过 GPU SMMU，而这条通路上一个有效 SMR 都没有（R174：`smr0=smr1=0`），加上 `sCR0` 的 `USFCFG = 1`（未识别流不旁路、直接 fault）⇒ 一次穿不过去的读，正好与"AP 在 MMIO 写里停住、一个 writer 轮内什么都不留下"相符。
+
+第一刀不碰启动字，只问"流路由寄存器到底存不存在"：
+
+- **键 86**（无启动字）：四掩码 → 行 A/B → 读 `sCR0`/`ID0`/`ID1` → 读 `SMR0..4` → 打印"即将触碰 `S2CR0`（`0xC00`）"的预告行 → **写** `S2CR0` → 读回 → 行 D。
+  - 只落预告行、不落行 D ⇒ `S2CR` 区连写都 abort，这条路走不通（与 R173/R174 的读 abort 一致），必须换别的解释。
+  - 两行都落 ⇒ `S2CR` 可写，下一轮才谈把 GMU 的 SID 路由到 CB0。
+- **键 87**（无启动字）：写 `SMR0 = VALID | SID`，读回，打印。判 `SMR` 的 `VALID` 位能不能被立住。
+- 只有 86/87 都落盘，才有资格在键 88 里把"路由 + 启动"合起来试。
