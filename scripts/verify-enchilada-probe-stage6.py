@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 77u' in _fw,
+    check('fwKey >= 7u && fwKey <= 79u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1694,7 +1694,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 77u)' in code,
+    check('(fwKey >= 7u && fwKey <= 79u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3203,6 +3203,62 @@ def main():
           'R232 key 72 reads the written words back')
     check('IOSleep' not in _k71 and 'IOSleep' not in _k72,
           'R232 neither key blocks')
+
+    # ---- ROUND 237: keys 78 (mask only) and 79 (mask, then one start store).
+    # R236 measured both GMU interrupt masks at zero but could not tell "masking
+    # killed it" from "the start word killed it" from "the 0.63 s spin starved the
+    # writer": four stores, a spin and the start word inside one writer period.
+    # R237 splits the actions and puts nothing between them, so the only difference
+    # between the two keys is that single store. That difference lives in a runtime
+    # comparison, which is why it is asserted here in source and not in an image.
+    _i7879 = code.find('if (fwKey == 78u || fwKey == 79u) {')
+    # Key 70 is only located further down this file, so the ordering anchor here is
+    # key 72, which the R232 section above has already found.
+    check(_i7879 > _i72,
+          'R237 keys 78/79 follow the R232 write key in source order')
+    _k7879 = (code.split('if (fwKey == 78u || fwKey == 79u) {', 1)[1]
+              .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]) if _i7879 >= 0 else ''
+    check(_k7879 != '', 'R237 the key 78/79 block is delimited by its own successor')
+    # The shared prologue: both keys write the two clears and the two masks.
+    # Counted as STORE forms, not as bare names: the register names also appear on
+    # the read-back lines that saved the previous mask values.
+    _k78head = _k7879.split('if (!r78is79) {', 1)[0] if 'if (!r78is79) {' in _k7879 else ''
+    check(_k78head != '', 'R237 the shared mask prologue is found')
+    check('HFI_CTRL_INIT' not in _k78head,
+          'R237 the shared prologue never touches the start word')
+    for _word, _label in (('AO_HOST_INTERRUPT_CLR', 'the AO clear'),
+                          ('AO_HOST_INTERRUPT_MASK', 'the AO mask'),
+                          ('GMU2HOST_INTR_CLR', 'the HFI clear'),
+                          ('GMU2HOST_INTR_MASK', 'the HFI mask')):
+        _store = 'gmuW[ADRENO_GMU_BOOT_V1_%s] = ' % _word
+        check(_k78head.count(_store) == 1,
+              'R237 the prologue stores %s exactly once' % _label)
+    # Key 78 must return without storing anything at all.
+    _tail = _k7879.split('if (!r78is79) {', 1)[1] if 'if (!r78is79) {' in _k7879 else ''
+    _k78only = _tail.split('} else {', 1)[0] if _tail else ''
+    check(_k78only != '', 'R237 key 78 has a body of its own')
+    check('HFI_CTRL_INIT' not in _k78only,
+          'R237 key 78 never stores the start word: it is the control')
+    check(_k78only.count('gmuW[') == 0,
+          'R237 key 78 stores nothing beyond the shared prologue')
+    check('gmu78c=no_start=1' in _k78only,
+          'R237 key 78 says explicitly that it did not start the firmware')
+    # Key 79 must differ by exactly one store, and by nothing else.
+    _k79only = _tail.split('} else {', 1)[1] if '} else {' in _tail else ''
+    check(_k79only != '', 'R237 key 79 has a body of its own')
+    check(_k79only.count('HFI_CTRL_INIT') == 1,
+          'R237 key 79 stores the start word exactly once')
+    check(_k79only.count('gmuW[') == 3,
+          'R237 key 79 stores exactly three words: the start word and the two '
+          'restores that put both masks back as they were found')
+    # Neither key may buy observation time: that is the failure R221/R236 repeated.
+    for _name, _body in (('78', _k78only), ('79', _k79only)):
+        check('IOSleep' not in _body,
+              'R237 key %s does not sleep' % _name)
+    check(_k79only.find('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') <
+          _k79only.find('for ('),
+          'R237 key 79 stores the start word BEFORE its bounded poll, so no spin '
+          'sits between the last row and the store')
 
     # ---- ROUND 221: key 70 pauses a full writer round BEFORE the start word.
     # The measured margin at this point in boot is 107 ms against a ~500 ms round, so

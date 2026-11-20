@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 77u);
+                            (fwKey >= 7u && fwKey <= 79u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -4960,6 +4960,134 @@ if (fwKey == 76u || fwKey == 77u) {
                      r77aoBack, r77hfiBack,
                      ((r77aoBack == r76aoMask) && (r77hfiBack == r76hfiMask)) ? 1 : 0);
             IOLog("enchilada-adreno: %s\n", r77RowG);
+        }
+    }
+}
+
+if (fwKey == 78u || fwKey == 79u) {
+    // ROUND 237: round 236 measured both GMU interrupt masks at zero, so any
+    // interrupt the GMU raises on HFI start has no handler and no mask either --
+    // but key 77 could not be read, because four stores, a 0.63 s IODelay spin and
+    // the start word all happened inside one writer period (~500 ms). A zero-byte
+    // window is compatible with any of the three, so that round attributed nothing.
+    //
+    // These two keys separate the actions and put nothing between them:
+    //
+    //   key 78 -- clear what is pending, mask both blocks, print, return.
+    //             No start word, no spin. This is the control: it must leave a new
+    //             boot_id, which proves the four mask stores are harmless here.
+    //   key 79 -- the same four stores and the same prints, then ONE store of
+    //             HFI_CTRL_INIT = 1. That store is the only difference.
+    //
+    // The signal is boot_id, not row count: the writer stamps the header of a new
+    // boot on its first committed round, so a boot that reaches the writer keeps
+    // producing new ids and a boot that stops instantly keeps the previous one.
+    // Row counts are still recorded, because they say how far the writer got.
+    //
+    // Judgement rules, fixed before the boot:
+    //   key 78 new boot_id          -> the mask stores are harmless; key 79 is the
+    //                                  only remaining variable.
+    //   key 78 no new boot_id       -> the mask stores themselves stop the machine
+    //                                  and this whole path is closed.
+    //   key 79 new boot_id          -> masking was what the start word needed.
+    //   key 79 no new boot_id       -> the start word stops the machine even with
+    //                                  every source masked; the fault is below the
+    //                                  interrupt layer and the masks are not it.
+    char r78RowA[320];
+    char r78RowB[320];
+    char r78RowC[320];
+    char r79RowD[320];
+    char r79RowE[320];
+    char r79RowF[320];
+    const uint32_t r78cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r78cxOn = adreno_domain_cx_is_on(r78cx);
+    const bool r78is79 = (fwKey >= 79u);
+
+    snprintf(r78RowA, sizeof r78RowA,
+             "gmu78a=cx=%08x cx_on=%d gmu=%d key=%u win=%d",
+             r78cx, r78cxOn, (sGmuFwVa != 0) ? 1 : 0, (unsigned)fwKey,
+             (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r78RowA);
+
+    if (!r78cxOn) {
+        IOLog("enchilada-adreno: gmu78b=refused-cx-down cx=%08x\n", r78cx);
+    } else if (!sGmuFwVa) {
+        IOLog("enchilada-adreno: gmu78b=refused-nogmu\n");
+    } else {
+        // Same four words, in the same order, as a6xx_gmu_irq_disable() leaves
+        // behind: clear both pending registers, then mask both blocks entirely.
+        const uint32_t r78aoMaskBefore = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+        const uint32_t r78hfiMaskBefore = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+        gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_CLR] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xffffffffu;
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t r78aoMask = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+        const uint32_t r78hfiMask = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+        snprintf(r78RowB, sizeof r78RowB,
+                 "gmu78b=masked ao_mask=%08x hfi_mask=%08x both_masked=%d was=%08x/%08x",
+                 r78aoMask, r78hfiMask,
+                 ((r78aoMask == 0xffffffffu) && (r78hfiMask == 0xffffffffu)) ? 1 : 0,
+                 r78aoMaskBefore, r78hfiMaskBefore);
+        IOLog("enchilada-adreno: %s\n", r78RowB);
+
+        if (!r78is79) {
+            // Key 78 stops here. Nothing else is stored, so whatever this boot
+            // leaves behind was caused by the four mask stores above and nothing
+            // else. The writer's next round carries these rows to the flash.
+            snprintf(r78RowC, sizeof r78RowC,
+                     "gmu78c=no_start=1 stat=%08x intr=%08x ao=%08x survived=1",
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS * 4u));
+            IOLog("enchilada-adreno: %s\n", r78RowC);
+        } else {
+            snprintf(r78RowC, sizeof r78RowC,
+                     "gmu78c=about_to_start stat=%08x intr=%08x ao=%08x fwinit=%08x",
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
+            IOLog("enchilada-adreno: %s\n", r78RowC);
+
+            // The one and only difference from key 78.
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r79stat = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+            const uint32_t r79intr = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+            snprintf(r79RowD, sizeof r79RowD,
+                     "gmu79d=start_written=1 stat=%08x intr=%08x ao=%08x",
+                     r79stat, r79intr,
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS * 4u));
+            IOLog("enchilada-adreno: %s\n", r79RowD);
+
+            // No spin: the poll below is the one upstream does, and it is bounded by
+            // the read loop itself rather than by a separate wait.
+            uint32_t r79poll = r79stat;
+            unsigned r79polls = 0u;
+            for (; r79polls < 400000u; ++r79polls) {
+                r79poll = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                if ((r79poll & 1u) != 0u) break;
+                IODelay(1u);
+            }
+            snprintf(r79RowE, sizeof r79RowE,
+                     "gmu79e=hfi_poll stat=%08x bit0=%u polls=%u fwinit=%08x intr=%08x",
+                     r79poll, (unsigned)(r79poll & 1u), r79polls,
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u));
+            IOLog("enchilada-adreno: %s\n", r79RowE);
+
+            gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK] = r78aoMaskBefore;
+            gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = r78hfiMaskBefore;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r79aoBack = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+            const uint32_t r79hfiBack = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+            snprintf(r79RowF, sizeof r79RowF,
+                     "gmu79f=unmask_back ao_mask=%08x hfi_mask=%08x restored=%d survived=1",
+                     r79aoBack, r79hfiBack,
+                     ((r79aoBack == r78aoMaskBefore) && (r79hfiBack == r78hfiMaskBefore)) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r79RowF);
         }
     }
 }
