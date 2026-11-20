@@ -303,8 +303,8 @@ check("'AdrenoZapAuthV1': GPU / 'AdrenoZapAuthV1.c'," in host,
 check("('adreno-zap-auth-v1-test', [GPU / 'tests/adreno-zap-auth-v1-test.cpp'], ['AdrenoZapAuthV1'])"
       in host, 'B9 host checker TESTS entry')
 check('/zap-auth-v1' in host, 'B9 PASS enumeration updated')
-check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 33,
-      'B9 33 C archive units declared')
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 34,
+      'B9 34 C archive units declared')
 
 # B10: the admission row moved
 adm = (GPU / 'AdrenoGen1BackendV1.c').read_text(encoding='utf-8')
@@ -602,8 +602,9 @@ check('CONTRACT AND TRANSPORT ARE SEPARATED' in h,
       'B14 the header names the separation as the design rule')
 
 # B14g: no new C unit, no ArmCpu edit, no CI-verifier edit by this round.
-check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 33,
-      'B14 32 C archive units: round 229 added the LPAE layout unit')
+check(len(re.findall(r"\(c_rec, GPU / '[^']+'", build)) == 34,
+      'B14 34 C archive units: rounds 229-231 added the LPAE layout, table builder and '
+      'context install')
 check('armcpu_scm_call' not in c and 'armcpu_scm_call' not in h,
       'B14 the contract layer names no ArmCpu symbol (ArmCpu.cpp is untouched)')
 
