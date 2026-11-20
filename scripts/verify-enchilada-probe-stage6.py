@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 75u' in _fw,
+    check('fwKey >= 7u && fwKey <= 77u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1292,7 +1292,14 @@ def main():
               # safe; key 28 now supplies a real index read out of the RPMh
               # command database instead of a guess.
               'ADRENO_GMU_BOOT_V1_GX_VOTE_IDX',
-              'ADRENO_GMU_BOOT_V1_MX_VOTE_IDX'])),
+              'ADRENO_GMU_BOOT_V1_MX_VOTE_IDX',
+              # ROUND 236: the two interrupt mask registers and the AO clear.
+              # Upstream masks both blocks around a6xx_gmu_hfi_start(); this port
+              # had never written either mask, and its keys died at the start
+              # word. GMU2HOST_INTR_CLR was already in the set above.
+              'ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_CLR',
+              'ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK',
+              'ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK'])),
           'R168+R170+R171+R175 the register write set is exactly the named words (%r)'
           % sorted(set(_stores)))
     # ==== ROUND 175 (slice 4): the HFI queue table, at a PHYSICAL address ====
@@ -1687,7 +1694,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 75u)' in code,
+    check('(fwKey >= 7u && fwKey <= 77u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3174,7 +3181,7 @@ def main():
     # ROUND 234 puts keys 73/74 between key 72 and the old 18..21 ladder, so key 72's
     # body is delimited by its OWN successor rather than by the ladder.
     _k72 = (code.split('if (fwKey == 72u) {', 1)[1]
-            .split('if (fwKey == 73u || fwKey == 74u) {', 1)[0]) if _i72 >= 0 else ''
+            .split('if (fwKey == 76u || fwKey == 77u) {', 1)[0]) if _i72 >= 0 else ''
     check(_k71 != '' and _k72 != '', 'R232 both blocks are non-empty')
     # key 71 must not store anything: it exists to record a PRE-write baseline.
     check('= abs72' not in _k71 and 'armcpu_dma_alloc_writable' not in _k71,

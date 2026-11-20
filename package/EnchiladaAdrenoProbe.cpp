@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 75u);
+                            (fwKey >= 7u && fwKey <= 77u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -4782,6 +4782,185 @@ if (fwKey == 75u) {
                  rd32(gSmmuVa, 0x000u), rd32(gSmmuVa, 0x800u),
                  rd32(gSmmuVa, 0x048u));
         IOLog("enchilada-adreno: %s\n", r75RowG);
+    }
+}
+
+if (fwKey == 76u || fwKey == 77u) {
+    // ROUND 236: every earlier round that wrote HFI_CTRL_INIT = 1 died before the
+    // next log writer round, and rounds 68/222 showed the rows printed BEFORE the
+    // store did not land either, so the whole machine stopped rather than one
+    // thread. Round 219/223 pinned the fatality to the value 1 and nothing else.
+    //
+    // Two upstream facts had never been reproduced here, and both involve the same
+    // thing: the GMU's two interrupt mask registers.
+    //
+    //   a6xx_gmu_resume():  AO_HOST_INTERRUPT_CLR   = ~0
+    //                       AO_HOST_INTERRUPT_MASK  = ~A6XX_GMU_IRQ_MASK   (before fw_start)
+    //   a6xx_gmu_resume():  GMU2HOST_INTR_CLR       = ~0
+    //                       GMU2HOST_INTR_MASK      = ~A6XX_HFI_IRQ_MASK  (after hfi_start)
+    //
+    // Neither register has ever been written by this port, and XNU has never taken
+    // IRQ 304 or 305, so any interrupt the GMU raises on HFI start has no handler
+    // anywhere. Key 76 reads both masks and both pending words WITHOUT writing
+    // anything, which is the only way to learn whether they sit at their reset
+    // values here. Key 77 then masks everything, prints a row, and only then writes
+    // the start word, so the same boot answers whether masking changes the outcome.
+    //
+    // Judgement rules, fixed before the boot:
+    //   key 77 lands row E and dies  -> the start store still kills the machine
+    //                                   with interrupts masked; the interrupt
+    //                                   reading is dead and the fault is below it.
+    //   key 77 lands rows F and G    -> the ten-round mystery was the unmasked GMU
+    //                                   interrupt; HFI start works once nothing is
+    //                                   delivered.
+    //   key 77 lands nothing         -> the machine stops even earlier than the
+    //                                   store, and the whole key is unreadable.
+    // Key 76 cannot distinguish anything by itself; it only measures the masks.
+    char r76RowA[320];
+    char r76RowB[320];
+    char r76RowC[320];
+    char r76RowD[320];
+    char r77RowA[320];
+    char r77RowB[320];
+    char r77RowC[320];
+    char r77RowD[320];
+    char r77RowE[320];
+    char r77RowF[320];
+    char r77RowG[320];
+    const uint32_t r76cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r76cxOn = adreno_domain_cx_is_on(r76cx);
+    const bool r76is77 = (fwKey >= 77u);
+
+    snprintf(r76RowA, sizeof r76RowA,
+             "gmu76a=cx=%08x cx_on=%d gmu=%d key=%u win=%d",
+             r76cx, r76cxOn, (sGmuFwVa != 0) ? 1 : 0, (unsigned)fwKey,
+             (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r76RowA);
+
+    if (!r76cxOn) {
+        IOLog("enchilada-adreno: gmu76b=refused-cx-down cx=%08x\n", r76cx);
+    } else if (!sGmuFwVa) {
+        IOLog("enchilada-adreno: gmu76b=refused-nogmu\n");
+    } else {
+        const uint32_t r76aoStatus = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS * 4u);
+        const uint32_t r76aoMask   = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+        const uint32_t r76hfiInfo  = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+        const uint32_t r76hfiMask  = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+        const uint32_t r76fwInit   = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u);
+        const uint32_t r76hfistat  = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+        __asm__ volatile("dsb sy" ::: "memory");
+        snprintf(r76RowB, sizeof r76RowB,
+                 "gmu76b=ao_status=%08x ao_mask=%08x hfi_info=%08x hfi_mask=%08x "
+                 "fwinit=%08x hfistat=%08x",
+                 r76aoStatus, r76aoMask, r76hfiInfo, r76hfiMask, r76fwInit,
+                 r76hfistat);
+        IOLog("enchilada-adreno: %s\n", r76RowB);
+        // A mask bit of 1 means masked, so "everything unmasked" reads as zero.
+        // The pending words say whether something is already waiting: ao_status
+        // bits are WDOG_BITE 0, RSCC_COMP 1, VDROOP 2, FENCE_ERR 3, DBD_WAKEUP 4,
+        // HOST_AHB_BUS_ERROR 5; hfi_info bits are MSGQ 0 and CM3_FAULT 23.
+        snprintf(r76RowC, sizeof r76RowC,
+                 "gmu76c=ao_none_masked=%d hfi_none_masked=%d ao_pending=%u hfi_pending=%u",
+                 (r76aoMask == 0u) ? 1 : 0, (r76hfiMask == 0u) ? 1 : 0,
+                 (unsigned)(r76aoStatus & 0x3fu),
+                 (unsigned)(((r76hfiInfo & 1u) != 0u ? 1u : 0u) |
+                            (((r76hfiInfo >> 23) & 1u) != 0u ? 2u : 0u)));
+        IOLog("enchilada-adreno: %s\n", r76RowC);
+        snprintf(r76RowD, sizeof r76RowD,
+                 "gmu76d=after=1 ao_status=%08x hfi_info=%08x survived=1",
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS * 4u),
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u));
+        IOLog("enchilada-adreno: %s\n", r76RowD);
+
+        if (r76is77) {
+            snprintf(r77RowA, sizeof r77RowA,
+                     "gmu77a=cx=%08x key=%u win=%d about_to_mask=1",
+                     r76cx, (unsigned)fwKey, (sHfiWin != 0u) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r77RowA);
+
+            // Clear what is pending, then mask every source: the AO block, the
+            // HFI block. ~0 is what a6xx_gmu_irq_disable() leaves behind, so the
+            // resulting state is one upstream itself considers "nothing will be
+            // delivered". Only after that is the start word written.
+            gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_CLR] = 0xffffffffu;
+            gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK] = 0xffffffffu;
+            gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] = 0xffffffffu;
+            gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xffffffffu;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r77aoMaskBack = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+            const uint32_t r77hfiMaskBack = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+            snprintf(r77RowB, sizeof r77RowB,
+                     "gmu77b=masked ao_mask=%08x hfi_mask=%08x both_masked=%d "
+                     "ao_clr=%08x hfi_clr=%08x",
+                     r77aoMaskBack, r77hfiMaskBack,
+                     ((r77aoMaskBack == 0xffffffffu) &&
+                      (r77hfiMaskBack == 0xffffffffu)) ? 1 : 0,
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_CLR * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR * 4u));
+            IOLog("enchilada-adreno: %s\n", r77RowB);
+
+            // The last witness before the store, printed and forced out first.
+            snprintf(r77RowC, sizeof r77RowC,
+                     "gmu77c=about_to_start stat=%08x intr=%08x fwinit=%08x",
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
+            IOLog("enchilada-adreno: %s\n", r77RowC);
+
+            // Give the writer a real chance to reach the flash before the store:
+            // a short IODelay-paced read loop, the only yielding form this port
+            // has ever measured to work in this context (rounds 209/221).
+            for (unsigned r77w = 0u; r77w < 40000u; ++r77w) {
+                (void)rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                IODelay(1u);
+            }
+
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r77stat = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+            const uint32_t r77intr = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u);
+            snprintf(r77RowD, sizeof r77RowD,
+                     "gmu77d=start_written=1 stat=%08x intr=%08x ao=%08x",
+                     r77stat, r77intr,
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS * 4u));
+            IOLog("enchilada-adreno: %s\n", r77RowD);
+
+            // One more paced wait, then the poll upstream actually does: bit 0 of
+            // HFI_CTRL_STATUS is the firmware accepting the queues.
+            uint32_t r77poll = r77stat;
+            unsigned r77polls = 0u;
+            for (; r77polls < 400000u; ++r77polls) {
+                r77poll = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u);
+                if ((r77poll & 1u) != 0u) break;
+                IODelay(1u);
+            }
+            snprintf(r77RowE, sizeof r77RowE,
+                     "gmu77e=hfi_poll stat=%08x bit0=%u polls=%u fwinit=%08x",
+                     r77poll, (unsigned)(r77poll & 1u), r77polls,
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
+            IOLog("enchilada-adreno: %s\n", r77RowE);
+
+            snprintf(r77RowF, sizeof r77RowF,
+                     "gmu77f=after=1 stat=%08x intr=%08x ao=%08x hfi_mask=%08x",
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS * 4u),
+                     rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u));
+            IOLog("enchilada-adreno: %s\n", r77RowF);
+
+            // Put both masks back exactly as they were found, so a boot that
+            // survives leaves the GMU no worse off than a boot that never ran.
+            gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK] = r76aoMask;
+            gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = r76hfiMask;
+            __asm__ volatile("dsb sy" ::: "memory");
+            const uint32_t r77aoBack = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+            const uint32_t r77hfiBack = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+            snprintf(r77RowG, sizeof r77RowG,
+                     "gmu77g=unmask_back ao_mask=%08x hfi_mask=%08x restored=%d",
+                     r77aoBack, r77hfiBack,
+                     ((r77aoBack == r76aoMask) && (r77hfiBack == r76hfiMask)) ? 1 : 0);
+            IOLog("enchilada-adreno: %s\n", r77RowG);
+        }
     }
 }
 
