@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 79u' in _fw,
+    check('fwKey >= 7u && fwKey <= 81u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1694,7 +1694,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 79u)' in code,
+    check('(fwKey >= 7u && fwKey <= 81u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3216,8 +3216,10 @@ def main():
     # key 72, which the R232 section above has already found.
     check(_i7879 > _i72,
           'R237 keys 78/79 follow the R232 write key in source order')
+    # R238 inserted keys 80/81 directly after this block, so the delimiter is the
+    # new direct successor, not the old 18..21 ladder further down the file.
     _k7879 = (code.split('if (fwKey == 78u || fwKey == 79u) {', 1)[1]
-              .split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]) if _i7879 >= 0 else ''
+              .split('if (fwKey == 80u || fwKey == 81u) {', 1)[0]) if _i7879 >= 0 else ''
     check(_k7879 != '', 'R237 the key 78/79 block is delimited by its own successor')
     # The shared prologue: both keys write the two clears and the two masks.
     # Counted as STORE forms, not as bare names: the register names also appear on
@@ -3338,6 +3340,42 @@ def main():
               'R129 the stage-7 replay buffer is at least as large as s7Row, '
               'so the replay cannot truncate what the live row held')
 
+
+
+    # --- R238 last-action assertions -----------------------------------------
+    _i8081 = code.find('if (fwKey == 80u || fwKey == 81u) {')
+    check(_i8081 >= 0, 'R238 the last-action block exists')
+    if _i8081 >= 0:
+        _k8081 = code[_i8081:].split('if (fwKey >= 18u && fwKey <= 21u) {', 1)[0]
+        _k80head = _k8081.split('if (r80is81) {', 1)[0]
+        _k81only = _k8081.split('if (r80is81) {', 1)[1] if 'if (r80is81) {' in _k8081 else ''
+
+        check('HFI_CTRL_INIT' not in _k80head,
+              'R238 the shared preamble never touches the start word')
+        for _w in ('AO_HOST_INTERRUPT_CLR', 'GMU2HOST_INTR_CLR',
+                   'AO_HOST_INTERRUPT_MASK', 'GMU2HOST_INTR_MASK'):
+            _n = _k80head.count('gmuW[ADRENO_GMU_BOOT_V1_%s] = ' % _w)
+            check(_n == 1, 'R238 the preamble stores %s exactly once (got %d)' % (_w, _n))
+
+        check(_k81only.count('gmuW[') == 1,
+              'R238 key 81 adds exactly one store, the start word')
+        check('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;' in _k81only,
+              'R238 that one store is HFI_CTRL_INIT = 1')
+        check('IOSleep' not in _k8081, 'R238 neither key uses IOSleep')
+        check('for (' not in _k8081, 'R238 neither key spins or polls')
+
+        # The store must be the LAST action: after it there may only be a dsb and
+        # closing braces, no read, no print, no restore.
+        _tail = _k81only.split('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;', 1)[1]
+        _tail_stripped = _tail.replace('__asm__ volatile("dsb sy" ::: "memory");', '')
+        _tail_stripped = re.sub(r'//[^\n]*', '', _tail_stripped)
+        _tail_stripped = _tail_stripped.replace('}', '').strip()
+        check(_tail_stripped == '',
+              'R238 nothing follows the start-word store except the barrier and braces; got %r'
+              % _tail_stripped[:120])
+
+        check('(r80aoMask & 0x3fu) == 0x3fu' in _k80head,
+              'R238 fully-masked is judged on the six implemented AO bits, not strict equality')
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))

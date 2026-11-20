@@ -3860,3 +3860,97 @@ this boot reached the writer / survived the start word (new boot_id) but the row
    `key=`、`boot_id`、窗口 `sha256`。
 3. **`ao_mask` 只能读到 `0x3f`**（六十一.3）。任何「掩码是否全屏蔽」的判断必须用
    `(aoMask & 0x3f) == 0x3f`，否则会得到一个恒为假的断言。
+
+## 六十二、ROUND 238：把启动字放到本轮的最后一步 —— 它仍然在一个 writer 轮之内把整机停住
+
+### 62.1 一句话
+
+键 80（前导 + 四笔中断掩码写 + 全部打印 + 返回）给出新 boot_id 与 3/3 行；键 81（完全相同，但在所有打印之后多一笔 `HFI_CTRL_INIT = 1u` 然后立即返回，无回读、无轮询、无恢复）留下与键 80 逐字节相同的窗口，行内 `key=` 仍为 80。即启动字作为本轮最后一个动作，本机仍在下一轮 writer 提交之前就停了。
+
+### 62.2 代码形状（`package/EnchiladaAdrenoProbe.cpp`，`if (fwKey == 80u || fwKey == 81u)`）
+
+两个键共享一段，只有一个运行时比较 `const bool r80is81 = (fwKey >= 81u);` 分岔：
+
+1. 行 A `gmu80a=cx=... key=%u win=%d`
+2. CX/映射门诉（`gmu80b=refused-cx-down` / `gmu80b=refused-nogmu`）
+3. 读两个掩码原值 → 写两笔 CLR + 两笔 MASK（全 `0xffffffff`）→ `dsb sy` → 回读
+4. 行 B `gmu80b=masked ao_mask=... hfi_mask=... both_masked=%d was=%08x/%08x`
+5. 行 C `gmu80c=last_row=1 start_next=%d stat=... intr=... ao=... fwinit=...`（**本轮最后一行打印**）
+6. `if (r80is81) { gmuW[HFI_CTRL_INIT] = 1u; dsb sy; }` —— 之后什么都不做，直接出块。
+
+`both_masked` 这一次用 `((aoMask & 0x3f) == 0x3f) && (hfiMask == 0xffffffff)`，即 R237 那个假阴性已修正（AO 块只实现低六位）。
+
+### 62.3 构建与静态门
+
+- CI 分支 `r238-last-store`，run **44709686730（#348）`completed/success`**，job `build` 09:19:11Z → 09:40:33Z，28 个构建步骤全 success。
+- 取件（16 连接）：`r238-kernel/kernel.macho` **126,234,624 B** sha256 `669ff547ca129c3bb4d5ef350610115ea3e27dfbc19478dca43be8ef814ec63c`；`r238-payload/payload.img` **150,994,944 B** sha256 `f6163823dc938f3f828691bf33e80652dc92ce5140ff91a8d7432828a945a1df`。
+- 静态门 `r238_static.py`：9 条 required（`gmu80a/b/c` 三条格式串 + 两条拒绝分支 + `enchilada-pas-exec` + R237 的 `gmu78b` / `gmu78c=about_to_start` / `gmu79d` 存活行）+ 3 条 forbidden（`gmu80d=` / `gmu80e=` / `gmu81a=`：启动字之后不允许再有行，键 81 不单独拥有自己的行）+ 固件钉 `b07f9029...`（32,768 B，按摘要扫描，不靠偏移）。
+- **门自证区分能力**（`r238_gatecheck.py`，把同一份 `r238_static.py` 的路径指向上一轮）：对 `r237-kernel/payload` 五条 `gmu80*` 全为 0 并 `FAIL`，对 `r238-kernel/payload` 全为 1 并 `PASS`。即这一轮的门不是空转。
+
+### 62.4 键 80（对照）读数 —— DEVICE-VERIFIED
+
+rekey `enchilada-pas-exec=2 -> =80`（`r238-s80-payload` sha256 `7a356dd1279c6e36413b5b5181479d7cec2c1534df2d3ec015cce1410245166d`，config 1377 → 1378 B）；`REBOOT_TO_TWRP_GATE: PASS (3 checks, 0 failures)`。
+
+```
+window 33554432 B sha256 4b1a55257e932520c45a27059c45a80884da367b666bf68e3f00d03d21ede37a
+magic=SHLOG001 ver=4 hdr=152 boot_id=586963994 (unseen boot_id) msg_bytes=30572 slots_written=8
+uptime_s=3 write_errors=0
+
+gmu80a=cx=80001fe0 cx_on=1 gmu=1 key=80 win=1
+gmu80b=masked ao_mask=0000003f hfi_mask=ffffffff both_masked=1 was=00000000/00000000
+gmu80c=last_row=1 start_next=0 stat=00000000 intr=00000000 ao=00000000 fwinit=babeface
+```
+
+判决：`counts: gmu80a=1 b=1 c=1`、3/3 行落盘，**新 boot_id 586963994**，窗口 sha256 与 R237 键 78 那一轮（`68ac7379...`）不同。两个掩码都到位：AO 低六位全 1（读回 `0x3f`）、HFI 读回 `0xffffffff`，`both_masked=1`。
+
+这是本轮的**陈述性控制**：同一段代码、同一批打印，只不写启动字，它能在下一轮 writer 提交里全部落盘。
+
+### 62.5 键 81（开窗口的那一笔）读数 —— DEVICE-VERIFIED
+
+rekey `=2 -> =81`（`r238-s81-payload` sha256 `0c747203fe01d790566f140af043156c254087d9e24063840d51cf9d1fea4a22`）；`REBOOT_TO_TWRP_GATE: PASS`。刷写核验全过：
+
+```
+key block 31059: device == payload -> True
+key block says: enchilada-pas-exec=81 -no_slto_p
+key verified: this boot will run key 81
+system_b head 8 MiB sha256 0cb40ea4dfb8c687f8f7dd72ff75197f3cb948a678753092362219a4f147cbaf / payload head (same)
+flash readback matches: True
+reboot bootloader 18:19:28 -> flash system_b 18:19:39 -> boot sent 18:19:40 -> back in recovery 18:20:18  (38 s)
+```
+
+窗口读数与键 80 那一轮**逐字节相同**：
+
+```
+window sha256 4b1a55257e932520c45a27059c45a80884da367b666bf68e3f00d03d21ede37a   (unchanged)
+boot_id 586963994 (== key 80's boot)   msg_bytes=30572 slots_written=8
+gmu80a=cx=80001fe0 cx_on=1 gmu=1 key=80 win=1
+gmu80b=masked ao_mask=0000003f hfi_mask=ffffffff both_masked=1 was=00000000/00000000
+gmu80c=last_row=1 start_next=0 stat=00000000 intr=00000000 ao=00000000 fwinit=babeface
+```
+
+注意 `start_next=0`：那是键 80 自己写的字。键 81 的行一个也没上盘，所以不存在 `start_next=1` 的证词。
+
+### 62.6 判决
+
+**把启动字放到本轮的最后一个动作，仍然靠不住。**
+
+归因的链条只有两步，两步都是实测：
+
+1. 键 80 证明“前导 + 四笔掩码 + 三行打印 + 返回”这个形状能在一轮 writer 内落盘（新 boot_id + 3/3 行）。
+2. 键 81 与其相差只有一笔 store（且在所有打印之后），它一个字也没留。
+
+因此：从最后一次打印到下一轮 writer 提交的这个窗口（实测不超过一轮，约 500 ms）内，整机停不住地停了，而这个窗口里只有那一笔 `HFI_CTRL_INIT = 1u`。
+
+### 62.7 本轮没有证明什么
+
+1. **没有直接观测到死亡**。观测到的是“这一轮什么都没提交”，不是死在 store 那一条指令上。归因靠的是键 80 那个对照把区间压到一个 store 加一个 writer 轮。
+2. **没有分辨“写发生异常”与“写之后 CM3 把东西弄坏”**。同超时夫误阻断 vs 固件真的开始 HFI 后的下游故障，这两种在本轮的读数上完全一样。
+3. **没有证明 HFI 真的官方启动过**。键 80 的行 C 里 `fwinit=babeface`、`stat=00000000`、`intr=00000000`——那都是**store 之前**的读数。store 之后本轮什么都没读（故意）。
+4. **没有改变 R223 的结论**：同一偏移写 `0u` 能存活、写 `1u` 致死。两边同时成立：偏移可写，值 1 致死。
+5. **没有排除“窗口不更新”的其他原因**——不过刷写核验（key block / readback / head 8 MiB sha）已证实这一轮确实跑的是键 81 的镜像，且 38 s 后自动回到 TWRP（armed BCB 生效，无需按键）。
+
+### 62.8 三条边界（下一轮不要重开）
+
+1. 不要再在“启动字之后再做任何事”的形状下试图拿读数（R221/R236 键 77/R237 键 79/R238 键 81 四次同一结果）。
+2. 下一个能分辨的问题不是“它会不会死”（已答），而是**“这笔写本身致死，还是固件真的开始 HFI 之后才致死”**。最小的分辨实验：在同一形状下把 `HFI_QTBL_INFO` 先清零再写启动字——固件看不到表就无法真正建立 HFI；若仍零字节 ⇒ 致死是这个偏移上这个值的写本身。
+3. 同一构建里要带一个“形状对照”：同样把 store 放在最后，但写 `HFI_CTRL_INIT = 0u`。若它落盘 ⇒ dispatch 的形状无罪，只有值 1 有罪；若它也零字节 ⇒ 则“最后一个动作是这个偏移的 store”这个形状本身就不成立，需要重新设计观测链。

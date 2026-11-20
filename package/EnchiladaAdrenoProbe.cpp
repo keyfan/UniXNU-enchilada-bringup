@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 79u);
+                            (fwKey >= 7u && fwKey <= 81u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -5088,6 +5088,99 @@ if (fwKey == 78u || fwKey == 79u) {
                      r79aoBack, r79hfiBack,
                      ((r79aoBack == r78aoMaskBefore) && (r79hfiBack == r78hfiMaskBefore)) ? 1 : 0);
             IOLog("enchilada-adreno: %s\n", r79RowF);
+        }
+    }
+}
+
+if (fwKey == 80u || fwKey == 81u) {
+    // ROUND 238: the start-word store becomes the LAST action of the round.
+    //
+    // Round 237 established two things by experiment, not by argument:
+    //   key 78 wrote the two clears and the two masks and then RETURNED. It left a
+    //          new boot_id (586031978) and all three rows on the flash. That is the
+    //          first time since R177 that "rows landed + no long wait + the stores
+    //          really executed" was observed together, and it worked because the
+    //          block returned instead of buying observation time.
+    //   key 79 repeated those four stores and added HFI_CTRL_INIT = 1, then read
+    //          back, polled up to 400000 times and restored the masks. Two boots,
+    //          zero bytes both times, and the window on the platter was
+    //          byte-identical to the key 78 window -- its own rows still said key=78.
+    //
+    // A zero-byte window cannot distinguish "died at the store" from "died before
+    // anything could be committed", so key 79 attributed nothing on its own; it was
+    // key 78 that ruled out the four mask stores. To narrow the range to the start
+    // word itself, the store must be the last thing this round does:
+    //
+    //   key 80 -- preamble, four mask stores, all prints, RETURN. No start word.
+    //   key 81 -- exactly the same, then ONE store of HFI_CTRL_INIT = 1 and an
+    //             immediate return. No readback, no poll, no print, no restore.
+    //
+    // Judgement rules, fixed before the boot, using fields the device writes itself
+    // (never a hand-maintained KNOWN table, which missed key 78's own boot_id in R237):
+    //   the window's own key= field names this round AND boot_id advanced AND the
+    //     window sha256 differs from the previous round
+    //       -> the start word does not kill by itself; every attribution since R219
+    //          that rested on "the start word stops the machine" must be re-read.
+    //   the window is still the previous round's bytes
+    //       -> the machine stopped before anything could be committed, and because
+    //          key 80 proves the preamble is survivable, the range narrows to that
+    //          one store.
+    //
+    // The AO interrupt block implements only six bits (a6xx_gmu.xml bitfields
+    // WDOG_BITE 0, RSCC_COMP 1, VDROOP 2, FENCE_ERR 3, DBD_WAKEUP 4,
+    // HOST_AHB_BUS_ERROR 5), so writing 0xffffffff reads back 0x3f. R237 judged
+    // "fully masked" with strict equality and got a false negative; here it is
+    // (aoMask & 0x3f) == 0x3f.
+    char r80RowA[320];
+    char r80RowB[320];
+    char r80RowC[320];
+    const uint32_t r80cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r80cxOn = adreno_domain_cx_is_on(r80cx);
+    const bool r80is81 = (fwKey >= 81u);
+
+    snprintf(r80RowA, sizeof r80RowA,
+             "gmu80a=cx=%08x cx_on=%d gmu=%d key=%u win=%d",
+             r80cx, r80cxOn, (sGmuFwVa != 0) ? 1 : 0, (unsigned)fwKey,
+             (sHfiWin != 0u) ? 1 : 0);
+    IOLog("enchilada-adreno: %s\n", r80RowA);
+
+    if (!r80cxOn) {
+        IOLog("enchilada-adreno: gmu80b=refused-cx-down cx=%08x\n", r80cx);
+    } else if (!sGmuFwVa) {
+        IOLog("enchilada-adreno: gmu80b=refused-nogmu\n");
+    } else {
+        const uint32_t r80aoMaskBefore = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+        const uint32_t r80hfiMaskBefore = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+        gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_CLR] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK] = 0xffffffffu;
+        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xffffffffu;
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t r80aoMask = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK * 4u);
+        const uint32_t r80hfiMask = rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u);
+        snprintf(r80RowB, sizeof r80RowB,
+                 "gmu80b=masked ao_mask=%08x hfi_mask=%08x both_masked=%d was=%08x/%08x",
+                 r80aoMask, r80hfiMask,
+                 (((r80aoMask & 0x3fu) == 0x3fu) && (r80hfiMask == 0xffffffffu)) ? 1 : 0,
+                 r80aoMaskBefore, r80hfiMaskBefore);
+        IOLog("enchilada-adreno: %s\n", r80RowB);
+
+        // Everything that will ever be printed by this round is printed here, BEFORE
+        // the start word. After the store there is nothing left to do but return.
+        snprintf(r80RowC, sizeof r80RowC,
+                 "gmu80c=last_row=1 start_next=%d stat=%08x intr=%08x ao=%08x fwinit=%08x",
+                 r80is81 ? 1 : 0,
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u),
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u),
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS * 4u),
+                 rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u));
+        IOLog("enchilada-adreno: %s\n", r80RowC);
+
+        if (r80is81) {
+            // The final action of this round. No readback, no poll, no print, no
+            // mask restore: the writer's next normal round carries the rows above.
+            gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
         }
     }
 }
