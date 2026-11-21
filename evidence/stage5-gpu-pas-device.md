@@ -4660,3 +4660,104 @@ gmu95g=last_row=1 about_to_start=1 start=1 route=1 smr=80000004 s2cr=00000000 qt
 - `work/tmp/r244_cancel.py` 是取消单个 run 的小工具；取消后 job 的结论是 `cancelled`，不会产生 artifact。
 - stage6 的切片终止符是**位置敏感**的：R244 同步脚本第一次把「门铃梯子」这个终止符替换到了 R242 的切片上（因为 R242 的终止符写法是单独一行），导致 R242/R243 的切片各自吞掉后一个块、报出 16 条假失败。修法见 `work/tmp/r244_fixterm.py`：按 `_kNNNN = code[...]` 的行号定位，而不是按字符串出现顺序替换。教训：**切片锚点要用代码锚点并在替换后核对每块的终止符数量**。
 - 探针块里「不写启动字」的分支必须**写在启动字之前**（`if (!r95start) { IOLog(...) } else { gmuW[...] = 1u; }`），否则 `IOLog` 会出现在启动字之后，stage6 的「启动字之后不打印」断言会正确地失败。
+
+## 六十九、ROUND 245：启动字之后的寄存器终于读到了 —— CB0 没有记下 fault，而固件侧没有报告 HFI 启动
+
+### 69.1 一句话
+
+R244 证明了「给 CB0 一张覆盖队列页的表 + 一条有效路由」之后写启动字不会在一个 writer 轮内停住整机，但那一次**什么都没读回**，所以「启动字到底有没有让固件动起来」仍然悬着。R245 用两个键把它拆开：**键 98** 把 R244 键 95 逐字复现（**7/7 落盘**，可复现性），**键 97** 在同一形状上把启动字写成**文本上的最后一个动作之前的倒数第二个**，紧接着一次性读回五个寄存器并打印 **`gmu97h`**（**8/8 落盘**）。读数：`ctl=00000000`、`fwinit=babeface`、`gfsr=00000000`、`cbfsr=00000402`、`ao=00000000`。
+
+### 69.2 代码形状
+
+| 键 | 前导与 setup | 结束方式 |
+|---|---|---|
+| 98 | 行 A → 读 `HFI_QTBL_ADDR` → 2 MiB 对齐 → `bytes_needed` → `table_build`（identity）→ 九笔 CB0 写 → 回读 → `SMR0 = VALID\|SID 4` → 回读 → `S2CR0 = TRANS\|CB0` → 回读 → 行 G | 该分支**最后**写 `HFI_CTRL_INIT = 1` + `dsb sy`，之后无任何动作（与 R244 键 95 逐字相同） |
+| 97 | 与 98 逐字相同 | 该分支**最后**写 `HFI_CTRL_INIT = 1` + `dsb sy`，然后一次性读 `HFI_CTRL_STATUS`(0x5180)、`CM3_FW_INIT_RESULT`(0x501c)、`sGFSR`(0x048)、CB0 `CB_FSR`(`cb_base + 0x58`)、`AO_HOST_INTERRUPT_STATUS`(0x9305) → 打印 `gmu97h` → 返回 |
+
+- 全文件 `gmuW[...]` 写点 204 → **206**：两个分支各带一笔启动字，所以计数是 2 而不是 1。stage6 对这一块的断言写成「**每个分支恰好一笔**、键 98 的分支里没有 `IOLog` 也没有 `rd32(`」，而不是「整块一笔」——后者会与「两个键共用一个块」的事实冲突。
+- 读回**没有循环、没有 `IOSleep`、没有轮询**：五处 `rd32` 与一次 `snprintf`。stage6 断言这一块里 `for (` 只有一处（九笔写循环），`IOSleep` 一处都没有。
+- 键 97 的读全部发生在启动字**之后**，且只在 CX 已开、`gSmmuVa` 已赋值的前提下（行 A 打印 `smmu=1`）；六条拒绝分支（`refused-cx-down` / `refused-geometry` / `refused-no-queue-table` / `no-alloc-symbol` / `alloc-failed` / `refused-build`）保证「读崩」与「setup 没跑」不会混成同一件事。
+
+### 69.3 构建与门禁
+
+- 分支 `r245-post-start`，commit `f93cbd972c3f`。
+- CI **#356 / run `44843467493`**：`completed / success`，job `build` `2026-11-21T00:23:19Z → 00:39:15Z`，**28/28 步**。
+- 产物：`work/tmp/r245-kernel/kernel.macho` **126,251,008 B** sha256 `d96cf2e989fd99bc…`；`work/tmp/r245-payload/payload.img` **150,994,944 B** sha256 `fe678f9210367ba3…`。取件 78,917,399 B / 96 s / 800 KB/s（16 连接）。
+- 探针 **533,892 字符 / 7,641 行**；arm 窗口 `(fwKey >= 7u && fwKey <= 98u)`。
+- 静态门 `work/tmp/r245_static.py`：`required+survivors: 20 checked in both artefacts`、`key marker 'enchilada-pas-exec': kernel=1 payload=2`、`forbidden: 2 checked`、固件钉 `b07f90299ff2ae…`（32,768 B）→ **`PASS: R245 static gate`**。
+- **门自证区分能力**：同一脚本指向 `r244-kernel`/`r244-payload` → 十五条 required 全 `kernel=0 payload=0`，**`FAIL: R245 static gate (15 problems)`**。
+- 全门禁：`verify-enchilada-probe-stage6.py` **1211/1211**；host 门 **28/28** + `PASS: enchilada adreno probe shim + modules type-check (host stub, arm64 Mach-O)`；`verify-enchilada-*.py` 全量 **46/48 跑过、FAILING: 0**。
+- rekey：`enchilada-pas-exec=2 → =98`（sha256 `ddd4e56474f8d828…`）与 `=2 → =97`（sha256 `eef6f34b3eb55059…`），config 每次 1377 → 1378 B。两次上机前 `check-reboot-to-twrp.py --arm` 都 `PASS (3 checks, 0 failures)`，两次都由武装过的 BCB + 看门狗自己送回 TWRP，**没有一次需要按键**。
+- 锚点：键 97 的 runner 用 `work/tmp/r245_anchor.py r245_s97_run.py 587175491 b5ea6ee7…` 把 `PREV_BOOT`/`PREV_SHA` 锚到键 98 那一轮，并交叉核对「盘上确有窗口的 sha256 等于该值」。
+
+### 69.4 键 98 读数（复现性）
+
+boot_id **587175491**、窗口 `b5ea6ee7eb44e07df3f7b050f230bd45abfcbe3dc7ab2685f4a9bf510c9e8ffd`、**7/7 行**：
+
+```
+gmu97a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 key=98 post=0 qtbl=ad945000
+gmu97b=build=0 need=3 tables=3 writes=3 root=ad949000 base=ad800000 ias=48 oas=36 ok=1
+gmu97c=plan=0 n=9 abs=0 nab=9 cbndx=0 ttbr=ad949000 cw=1 id0=48016605
+gmu97d=wrote=9 ttbr0=ad949000/00000000 sctlr=00001067 tcr=00803510 cbar=0001f300 root=ad949000
+gmu97e=smr_set wanted=80000004 back=80000004 valid=1 sid=4 landed=1
+gmu97f=s2cr_set wanted=00000000 back=00000000 typew=00000000 landed=1
+gmu97g=last_row=1 about_to_start=1 post=0 route=1 smr=80000004 s2cr=00000000 qtbl=ad945000 base=ad800000
+```
+
+判决（runner 原文）：`THE R244 SURVIVAL REPRODUCES`。⇒ 键 95 那一次的存活不是一次性事件：同一份构建、第二次启动、同样的表/路由/启动字，窗口照样推进、行照样落盘。
+
+### 69.5 键 97 读数（启动字之后）
+
+boot_id **586639327**、窗口 `0955a67b8947f90bd7c4901ff66640ffafd8a3f5cbe144a613e857cd417efe33`、**8/8 行**（A–G 与键 98 同形，`key=97 post=1`、`root=ad933000`、`qtbl=ad92f000`），多出的是决定性的一行：
+
+```
+gmu97h=after_start=1 post=1 ctl=00000000 fwinit=babeface gfsr=00000000 cbfsr=00000402 ao=00000000 survived=1
+```
+
+字段含义与逐位读法：
+
+| 字段 | 值 | 读法 |
+|---|---|---|
+| `ctl` | `00000000` | `HFI_CTRL_STATUS`（`0x5180`）bit0 = 0 ⇒ **固件侧从未把 HFI 引擎标记为已启动**，即便启动字已写、路由已活 |
+| `fwinit` | `babeface` | `CM3_FW_INIT_RESULT`（`0x501c`）与写入前完全相同 ⇒ CM3 的「初始化完成」这一刻**早已**发生，本轮没有把它推进到下一阶段 |
+| `gfsr` | `00000000` | 全局 fault 状态寄存器干净：启动字之后没有任何未匹配流被记为全局故障 |
+| `cbfsr` | `00000402` | **`FSR_FAULT`(bit0) = 0**，所以 CB0 没有记下「翻译失败」；但寄存器**不是全零**：置位的是 bit1 与 bit10 |
+| `ao` | `00000000` | AO 侧中断状态无挂起位 |
+
+`cbfsr` 这一点必须如实登记：本轮**不能**只说「CB0 没有 fault」。正确说法是「**bit0（FAULT）为 0；bit1 与 bit10 置位**」。bit1 在 SMMU 里是「未支持的上游翻译（UUT）」一类的状态位，bit10 在钉住的 `arm-smmu.h` 里没有给名字；本轮**没有**去分辨这两位的来源（可能是本次启动里 GMU 早期的读留下的、也可能是 R242/R243 那两次写过启动字的启动留下的），所以它们既不能被算作「本轮成功翻译」的正证，也不能被算作「本轮 fault」的证。这是本节最重要的一条边界。
+
+### 69.6 判决
+
+1. **可复现性成立**：R244 的存活在同一构建的第二次启动上完全复现（键 98，7/7）。
+2. **启动字之后机器活得住**：写入之后紧接着读五个寄存器并打印，窗口照样推进（键 97，8/8）。这推翻了我上一轮写在 §68.11 的担忧（「写入之后仍然活不过一轮，需要换通道」）。
+3. **SMMU 侧不再是可疑点**：`gfsr=0`、`cbfsr` 的 FAULT 位为 0，说明「路由 + 覆盖表」把这条路的翻译问题解决了；「启动字致死」这个从 R219 起追了十几轮的现象，其解释就是「队列表读 fault」，现在有了双向证据（R243 键 94 死 / R244 键 95 活 / R245 键 98 复现）。
+4. **新的缺口在固件侧**：`ctl` bit0 = 0 且 `fwinit` 未变 ⇒ 启动字写进去了，但固件**没有报告 HFI 启动**。所以下一个问题不再是 SMMU，而是「固件为什么没有接受这次启动」（队列表内容是否被读到、`PWR_COL_CP_MSG` 地址是否正确、`HFI_QTBL_INFO` 写入时序是否早于启动字、以及 GMU 是否真的在跑 —— `gmustat` 行里 `intr=00000000 fwinit=babeface` 与 R186 以来的读数一致）。
+
+### 69.7 没有证明什么
+
+1. **没有**证明固件读到过队列表：`ctl=0` 是「固件没有报告启动」，不是「固件没有读表」。要分辨需要读 `PWR_COL_CP_MSG` 那一侧，或者让固件自己写一个字进队列表。
+2. **没有**解释 `cbfsr=0x402` 的 bit1 与 bit10（见 §69.5 的边界）。
+3. **没有**在**同一次启动**内做对照：键 98 与键 97 是两次独立启动，物理页也不同（`root=ad949000` vs `ad933000`）。单变量是按代码形状与判决规则说的。
+4. **没有**解释两次窗口里都出现的 `gmursc=… intr=00800000 …`（CM3_FAULT）。该行由更早的块打印、位置在 `gmu97a` **之前**，因此不可能是本轮那笔启动字造成；与 R244 §45.8 登记的是同一条异常，来源仍未验证。
+5. **没有**动 `sCR0`（`USFCFG=1` 仍在），也没动 stage-2。
+6. GPU 仍未渲染任何一帧。
+
+### 69.8 三条边界
+
+- 键 97 的落盘是**读到了寄存器**的证据，不是「HFI 通了」的证据：五个值里没有一个是「引擎已启动」。
+- 「启动字致死 = 队列表读 fault」现在有三个独立样本支持，但仍是**归因**（用「表覆盖与否」这一个变量分离出来的），不是直接观测到的 fault 注入。
+- identity 映射 `ad800000..ada00000` 仍是探针里的临时做法，不是驱动设计。
+
+### 69.9 R246 设计（据本轮读数改向）
+
+- 方向已从 SMMU 转到**固件侧**。候选三支，优先级按「能分辨多少」排：
+  1. **键 99**：写完启动字之后读 `PWR_COL_CP_MSG`（`0x5100`）与 `PWR_COL_CP_RESP`（`0x5101`），并读队列表头几个字 —— 看固件是否动过它们（若固件读过队列，头部或响应字应被改写）。
+  2. **键 100**：`HFI_QTBL_INFO` 与 `HFI_CTRL_INIT` 之间的 `dsb` 后面加一次 `HFI_CTRL_STATUS` 的**单次**读再写启动字（把「写入时序」这条排除或确认）。
+  3. **键 101**：用**两个不同 SID**（GMU 用户 4 与 GMU 内核 5）各建一条路由，看固件是否只认其中一条。
+- 若三支都落在「固件没有反应」，下一步就进入「GMU 是否真的在跑」这个更基础的问题（共振/时钟/电源域），届时需要换观测通道，而换通道会打破「必须能自动回 TWRP」，必须事先与用户确认。
+
+### 69.10 环境事实（本轮新增）
+
+- `work/tmp/r245_anchor.py` 由 `r244_anchor.py` 机械改名得到（扫 `r245_s\d+_window.bin`）；两个占位形态（`"<64 hex>"` 与 `"0" * 64`）都认，且 `PREV_BOOT`/`PREV_SHA` 分两次 `re.subn`（复用同一 match 的两个偏移会移位）。
+- stage6 里定位「两个键共用一个块」的 post 分支**不能**用 `find('} else {')`：块里的六条拒绝分支本身就有多个 `} else {`，会取到第一个、进而报 4 条假失败。用 `rindex('} else {')` 取最后一个。
+- 静态门的 REQUIRED 里必须带 `key=%u`：没有它，runner 的「行内 `key=` 正则」匹配不到，判决无法把读数绑到具体某一次启动。
