@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 15,
-          'ID1 is re-read at most fourteen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124 and 127), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 16,
+          'ID1 is re-read at most fifteen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127 and 130), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 129u' in _fw,
+    check('fwKey >= 7u && fwKey <= 132u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 129u)' in code,
+    check('(fwKey >= 7u && fwKey <= 132u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4141,7 +4141,13 @@ def main():
         _i127129 = code.find('if (fwKey == 127u || fwKey == 128u || fwKey == 129u) {')
         _k127129 = ''
         if _i127129 > 0:
-            _k127129 = code[_i127129:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+            _k127129 = code[_i127129:].split(
+            '\nif (fwKey == 130u || fwKey == 131u || fwKey == 132u) {\n', 1)[0]
+        _i130132 = code.find('if (fwKey == 130u || fwKey == 131u || fwKey == 132u) {')
+        _k130132 = ''
+        if _i130132 > 0:
+            _k130132 = code[_i130132:].split(
+                '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
               'the three keys (got %d)' % _k111113.count('gmuW['))
@@ -4473,6 +4479,72 @@ def main():
           _b128.rindex('0xc00001feu') < _b128.index('HFI_CTRL_INIT] = 1u;') and
           _b129.rindex('0xc00001feu') < len(_b129),
           'R255 no start word is preceded by a later clear in the wrong order')
+
+    print()
+    check(_k130132 != '', 'R256 the readback block is present after the low-address block')
+    check(_k130132.count('gmuW[') == 12,
+          'R256 the round holds twelve GMU stores: eight in the shared preamble and four across '
+          'the three keys (got %d)' % _k130132.count('gmuW['))
+    check(_k130132.count('HFI_CTRL_INIT] = 1u;') == 1,
+          'R256 only key 131 writes the start word (got %d)'
+          % _k130132.count('HFI_CTRL_INIT] = 1u;'))
+    check(_k130132.count('GMU2HOST_INTR_MASK] = ') == 3 and
+          _k130132.count('0xff7fffffu') == 3,
+          'R256 all three keys open the same single interrupt source (got %d mask stores)'
+          % _k130132.count('GMU2HOST_INTR_MASK] = '))
+    check(_k130132.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 1 and
+          _k130132.count('CM3_FW_INIT_RESULT] = 0u;') == 1,
+          'R256 the preamble still clears the block and the init word exactly once each')
+    check(_k130132.count('HFI_QTBL_ADDR] = r130qtblValue;') == 1 and
+          _k130132.count('HFI_QTBL_INFO] = 1u;') == 1,
+          'R256 the queue-table address is handed over untruncated, exactly once')
+    check(_k130132.count('0xc00001feu') == 3,
+          'R256 every key clears the CB0 fault status word once (got %d)'
+          % _k130132.count('0xc00001feu'))
+    check(_k130132.count('0x58u') == 12 and _k130132.count('0x60u') == 5 and
+          _k130132.count('0x68u') == 3,
+          'R256 the round reads status at 0x58, address at 0x60 and syndrome at 0x68 (got %d/%d/%d)'
+          % (_k130132.count('0x58u'), _k130132.count('0x60u'), _k130132.count('0x68u')))
+    check(_k130132.count('for (') == 6 and _k130132.count('IODelay(1u)') == 4
+          and 'IOSleep' not in _k130132,
+          'R256 three loops in the preamble (write walk, init poll, clean) and one per key (got %d)'
+          % _k130132.count('for ('))
+    check(_k130132.count('dc civac') == 1 and _k130132.count('dsb sy') >= 8,
+          'R256 cleans the table pages once, with a full barrier after it')
+    check(_k130132.index('dc civac') < _k130132.index('HFI_CTRL_INIT] = 1u;'),
+          'R256 the clean happens before the only start word, never after it')
+    check(_k130132.count('kAdrenoLpaePteAddrMask') == 2 and
+          _k130132.count('readback=1') == 1 and 'm0=%u m1=%u m2=%u' in _k130132,
+          'R256 reads the level-0 and level-1 words back and walks to the leaf descriptor')
+    check(_k130132.count('adreno_lpae_table_pte(') == 2 and
+          _k130132.count('adreno_lpae_leaf_pte(') == 1 and
+          _k130132.count('adreno_lpae_lvl_idx(') == 1,
+          'R256 compares the words read back against the plan encodings, not against a constant')
+    check(_k130132.count('0xbabefaceu') == 1, 'R256 the preamble still waits for the init word')
+    _names256 = ['gmu130a=', 'gmu130b=', 'gmu130c=', 'gmu130d=', 'gmu130e=', 'gmu130f=',
+                 'gmu130g=', 'gmu130h=', 'gmu130i=', 'gmu130j=', 'gmu130m=', 'gmu130n=',
+                 'gmu130k=', 'gmu130l=', 'gmu131k=', 'gmu131l=', 'gmu132k=', 'gmu132l=']
+    _missing256 = [n for n in _names256 if n not in _k130132]
+    check(not _missing256, 'R256 every row of the round is present (%s)' % _missing256)
+    _i131m = _k130132.index('} else if (r130mode == 131) {')
+    check(_k130132.index('if (r130mode == 130) {') < _i131m <
+          _k130132.rindex('} else {'),
+          'R256 the three mode branches are ordered 130, 131, 132')
+    _b130 = _k130132[_k130132.index('if (r130mode == 130) {'):_i131m]
+    _b131 = _k130132[_i131m:_k130132.rindex('} else {')]
+    _b132 = _k130132[_k130132.rindex('} else {'):]
+    check(_b130.count('HFI_CTRL_INIT') == 0 and 'no_start=1' in _b130,
+          'R256 key 130 reads the words back and never writes the start word')
+    check(_b131.count('HFI_CTRL_INIT] = 1u;') == 1 and '0xc00001feu' in _b131,
+          'R256 key 131 cleans, clears the status word and then starts the HFI once')
+    check(_b132.count('HFI_CTRL_INIT') == 0 and 'no_start=1' in _b132,
+          'R256 key 132 cleans the same pages and never writes the start word')
+    check('cleaned=1' in _k130132 and 'cleaned=0' in _k130132,
+          'R256 the clean row says whether it ran, so the two controls are distinguishable')
+    check(_b131.rindex('0xc00001feu') < _b131.index('HFI_CTRL_INIT] = 1u;') and
+          len(_store.findall(_b131[_b131.index('HFI_CTRL_INIT] = 1u;'):])) == 0,
+          'R256 the start word comes after the clear and is the last store of the round')
+
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
         print('FAIL: stage-6 kernel ID0/ID1 probe contract (%d failures)' % len(fails))

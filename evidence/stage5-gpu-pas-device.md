@@ -6187,3 +6187,136 @@ gmu129l=low_map_no_start=1 ctl=00000000 bit0=0 polls=200000 info=00000000 fsr=00
 - `r255_static.py` 必须从**仓库根**跑（`PROBE` 是仓库相对路径）；它的 `FORBIDDEN` 三条是下一轮的名字（`gmu130a=`/`gmu128m=`/`gmu129m=`）。
 - runner 若没先 `r179_rekey.py` 就会在动设备之前 `ABORT missing …payload.img`（自检救了一次：R254 键 124 的第一次运行）。
 - `r255_anchor.py <runner> <prev_boot_id> <prev_sha256>` 会回读上一轮窗口并打印 `anchor cross-check: … has that sha256`，然后再改 `PREV_BOOT/PREV_SHA`；键 128 的第二次运行时窗口已被 129 覆盖，所以它报的是 `FRESH WINDOW BUT IT NAMES key=129, NOT 128`，这是正确的警告而不是误判。
+
+## 八十、ROUND 256：把描述符从内存读回来，又把它们刷到一致点 —— fault 一步不动，所以 walk 看的不是这张表
+
+### 80.1 一句话
+
+我们写进内存的三层描述符与 plan 的编码**逐位相同**（两轮、两组不同地址、各三项 match=1/1/1），把它们 `dc civac` 刷到一致点也**不改变**下一帧 fault：`fsr=00000402 far=2d960008 fsynr0=00000021` 与 R255 逐位相同。因此那一帧 walk 用的不是我们建的这张表。
+
+### 80.2 为什么先读回描述符，而不是继续改 store
+
+R254 把 fault 定到了队列表读取上，R255 把 bit 31 被丢掉的地址补进表里，结果 fault 原地不动。两轮都假定了一件事：「我们写进去的描述符就是内存里的描述符」。这一轮把这个假定拆成两步验证：先读回（内存内容），再刷到一致点（可见性）。两步都通过的情况下，「描述符错了」和「cache 看不见」这两条解释同时被排除。
+
+### 80.3 三键设计与单变量表
+
+| 键 | 写入 | 读回 | 问的问题 |
+|---|---|---|---|
+| 130 | 建低位表 + 编程 CB0（八笔前导，不写启动字） | 从内存读 `L0[0]`、`L1[0]`、`L2[0x16C]`，与 `adreno_lpae_table_pte/leaf_pte` 编码逐位比 | 我们写进去的东西是不是就在内存里 |
+| 131 | 同 130，另对三页做 `dc civac` + `dsb sy`，然后清状态字 + 掩码 + 启动字 + 200000 轮 | 读 FSR/FAR/FSYNR0 | 内存正确且可见时，这帧 walk 还 fault 吗 |
+| 132 | 同 131 的清理，**不写启动字** | 读 FSR/FAR/FSYNR0 | 清理本身会不会已经把 fault 弄出来（对照） |
+
+单变量表（从 R219 键 66 延下来，只看「清状态字之后还清不清页、写不写启动字」这一组）：
+
+| 键 | 表 | 清页 | 启动字 | 结果 |
+|---|---|---|---|---|
+| 129（R255） | 低位表 | 无 | 无 | `fsr=00000400 far=00000000`，干净 |
+| 130（R256） | 低位表 | 无 | 无 | 同上，且三层描述符 m0=m1=m2=1 |
+| 132（R256） | 低位表 | 有 | 无 | 仍 `fsr=00000400 far=00000000`，清理不改变任何东西 |
+| 127（R255） | 低位表 | 无 | 有 | `fsr=00000402 far=2d960008 fsynr0=00000021` |
+| 131（R256） | 低位表 | 有 | 有 | **逐位相同的 fault** |
+
+### 80.4 代码形状
+
+- 块 **25,022 字符**，`{}` 平衡为 0；探针 **785,551 字符 / 11,907 行**；全文严格 GMU 写点 **369**（R255 的 357 + 本轮 12）。
+- 块内：`gmuW` **12**（前导 8 + 三个掩码 + 一个 `HFI_CTRL_INIT`）、`for (` **6**（写表、初始化轮询、清页、三个键各一）、`IODelay(1u)` **4**、`IOSleep` **0**、`dc civac` **1**；FSR/FAR/FSYNR0 的字节偏移 `0x58u` **12**、`0x60u` **5**、`0x68u` **3**。
+- 读回用 `*reinterpret_cast<volatile uint64_t *>`（探针首次出现 64 位 volatile 读，stage5 的指针白名单已同步放宽）；越界保护：只在 `root_off + 0x1000 * tables <= span` 时才往下走。
+
+### 80.5 构建与门禁
+
+- host 门 **28/28** + `PASS: enchilada adreno probe shim + modules type-check`；stage4 **61/61**、stage5 **48/48**、stage6 **1517/1517**；全量 `r239_allgates.py` → **ran 46 of 48, FAILING: 0**。
+- CI **#367 run `44908085664`** `completed / success`，`2026-11-21T13:17:09Z → 13:36:29Z`，28/28 步。
+- 取件：`r256-kernel\kernel.macho` **126,320,640 B** sha256 **`6aaeee486f29defc11d2b7d10b1c351b84585c72cf91c21153d749e7b331afb3`**；`r256-payload\payload.img` **150,994,944 B** sha256 **`d75e04ec1fe9b9439987448cee2ef14726b714ae827fe070d43cb2e0bec0e8eb`**。
+- 静态门：**26 条 REQUIRED + 12 条 SURVIVORS = 38 条在两件产物里都出现**，`key marker` kernel=1 payload=2，固件钉 `a630_gmu.bin` 32,768 B → **`PASS: R256 static gate`**；**自证**：指向 `r255-kernel`/`r255-payload` → **`FAIL: R256 static gate (26 problems)`**。
+
+### 80.6 键 130：内存里的三层描述符就是 plan 的描述符
+
+```
+gmu130a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 key=130 mode=130 qtbl=ad912000 qtbl_value=ad912000
+gmu130b=build=0 need=3 tables=3 writes=3 root=ad916000 base=ad800000 iova=2d800000 ias=48 oas=36 ok=1
+gmu130c=plan=0 n=9 abs=0 nab=9 cbndx=0 ttbr=ad916000 cw=1 id0=48016605
+gmu130d=wrote=9 ttbr0=ad916000/00000000 sctlr=00001067 tcr=00803510 cbar=0001f300 root=ad916000
+gmu130m=readback=1 root_off=0 l2_idx=364 l0=00000000ad917003 l1=00000000ad918003 l2=00000000ad800401 m0=1 m1=1 m2=1 pages=3
+gmu130n=cleaned=0 pages=3 span=3000 dsb=0
+gmu130k=no_clean=1 fsr_before=00000400 fsr_clear_back=00000400 far_before=00000000 no_start=1
+gmu130l=no_clean_no_start=1 ctl=00000000 bit0=0 polls=200000 info=00000000 fsr=00000400 far=00000000 fsynr0=00000000 survived=1
+```
+
+（boot_id **645270395**，窗口 `541f66c26cabdefdc99ad4bddce2fb5ace429d252d6f14e7c3848ac32343f462`，14/14 行）
+
+- `l0=00000000ad917003`：有效 + 表描述符（低两位 `11`），指向 L1 页 `ad917000`。
+- `l1=00000000ad918003`：同上，指向 L2 页 `ad918000`。
+- `l2=00000000ad800401`：有效的 **2 MiB block**（低两位 `01`），物理基址 `ad800000`，`AF` 已置（bit10）。
+- `l2_idx=364` = `0x16C` = `(0x2d800000 >> 21) & 0x1ff`，与我们要塔的 IOVA 对得上。
+- `m0=m1=m2=1`：三项与 `adreno_lpae_table_pte(l1pa)` / `adreno_lpae_table_pte(l2pa)` / `adreno_lpae_leaf_pte(prot130, 2u, r130base)` **逐位相同**。
+- 没有启动字时：`fsr=00000400`（TF=0，只剩 FORMAT=2 这个不受 W1C 管的字段）、`far=0`、`info=0`。
+
+**判决**：`THE THREE WORDS IN MEMORY ARE EXACTLY WHAT THE PLAN ENCODED, so the store, the paging and the leaf encoding are all right in memory`。
+
+### 80.7 键 131：清到一致点之后，fault 逐位相同
+
+```
+gmu130b=build=0 need=3 tables=3 writes=3 root=ad965000 base=ad800000 iova=2d800000 ias=48 oas=36 ok=1
+gmu130m=readback=1 root_off=0 l2_idx=364 l0=00000000ad965003 l1=00000000ad966003 l2=00000000ad800401 m0=1 m1=1 m2=1 pages=3
+gmu130n=cleaned=1 pages=3 span=3000 dsb=1
+gmu131k=cleaned_then_started=1 fsr_before=00000400 fsr_clear_back=00000400 far_before=00000000 about_to_start=1
+gmu131l=cleaned_then_started_end=1 ctl=00000000 bit0=0 polls=200000 info=00800000 fsr=00000402 far=2d960008 fsynr0=00000021 qtbl_now=ad960000 survived=1
+```
+
+（boot_id **645823279**，窗口 `ce1e51af03270b18cb50895a659b16b0d36b42559836534b0a4d3788e4b73815`，14/14 行）
+
+- 这一轮的表又是**新地址**（`ad965000/ad966000`，与 130 的 `ad917000/ad918000` 不同），而三项仍然 `m0=m1=m2=1`。
+- 清页已执行：`cleaned=1 pages=3 dsb=1`。
+- 启动字之后：`fsr=00000402`（TF=1, FORMAT=2）、`far=2d960008`、`fsynr0=00000021`（PLVL=1、WNR=0、S1CBNDX=0）、`info=00800000`、`ctl=0`。
+- 与 R255 键 127 的 `fsr=00000402 far=2d960008 fsynr0=00000021` **逐位相同**。
+
+**判决**：`THE WALK STILL FAULTS AFTER THE PAGES WERE CLEANED`，且 `THE WORDS ARE RIGHT, THE CLEAN RAN, AND THE WALK STILL DIES INSIDE THE RANGE THIS ROUND MAPPED`。
+
+### 80.8 键 132：清页本身不产生 fault
+
+```
+gmu130n=cleaned=1 pages=3 span=3000 dsb=1
+gmu132k=cleaned_no_start=1 fsr_before=00000400 fsr_clear_back=00000400 no_start=1
+gmu132l=cleaned_no_start_end=1 ctl=00000000 bit0=0 polls=200000 info=00000000 fsr=00000400 far=00000000 fsynr0=00000000 survived=1
+```
+
+（boot_id **645545880**，窗口 `c862b9be4047b15434c863990ddcb1f59162ddcfb19789e9404d1780826c44cb`，14/14 行）
+
+**判决**：`WITH THE SAME CLEAN AND NO START WORD THE STATUS WORD STAYS CLEAN (fsr=00000400 far=00000000), so cleaning changes nothing until the firmware is asked`。
+
+### 80.9 判决四条
+
+1. **我们写的描述符就是内存里的描述符**：两轮、两组地址、三项逐位 match。「建表写错了」这条解释被排除。
+2. **可见性也被排除**：`dc civac` + `dsb sy` 之后 fault 与未清页时逐位相同。「cache 看不见」这条解释被排除（至少对我们能刷的那三页）。
+3. **fault 仍在我们映射的 2 MiB 里**：`far=2d960008` 位于 `2d800000..2d9fffff`，而那一页的 L2 条目就是我们写的 `l2=ad800401`。
+4. **所以那一帧 walk 用的不是这张表**（或不是这一份 TTBR）。`fsynr0` 的 PLVL=1 说「level-1 描述符无效」，而我们的 L1[0] 就是有效的表描述符 —— 这两件事直接矛盾，矛盾本身就是结论。
+
+### 80.10 必须分开说的三件事
+
+1. **「清到一致点」只能说到 PoC 为止**：`dc civac` 保证的是我们这个核心写的线到一致点，它不能证明 SMMU 自己的 **walk cache / TLB** 里没有旧的「描述符无效」条目。本轮没发任何 SMMU sync / TLB invalidate。
+2. **`far` 仍然是「送进 SMMU 的地址」**，不是我们写进 `HFI_QTBL_ADDR` 的值（本轮已经不截断地交付 `ad960000`，而 fault 地址仍是 `2d960008`）。
+3. **`fsr=00000402` 的 FORMAT=2 不属于 W1C 那组位**，所以「清完回读还是 `00000400`」不代表没清掉；判据是 TF 位。
+
+### 80.11 没证明什么
+
+- 没证明 SMMU walk 完全不用 CB0 的 TTBR0：只证明「在这一套编程顺序下，启动字之后那一帧 walk 没有用到我们刚写的描述符」。
+- 没读到启动字**之后**的 CB0 五字（TTBR0/TTBR1/SCTLR/TCR/CBAR）—— 本轮只在编程后、启动字前读了一次（`gmu130d`）。
+- 没读 `GFSR`，也没读其他 context bank 的 FSR —— 因此无法排除「这帧 walk 落在另一个 CB 里」。
+- 没做「先让一个已知访问成功」的正向对照，所以「CB0 的 stage-1 是否在这个引导上任何时侯真的工作过」本轮仅属于「未证明」。
+
+### 80.12 R257 设计
+
+三键，全部围绕「那帧 walk 到底用的是什么」：
+
+| 键 | 做什么 | 判据 |
+|---|---|---|
+| 133 | 编程 CB0 → 清状态字 → 启动字 → 满轮询 → **再读 CB0 五字**（TTBR0/TTBR1/SCTLR/TCR/CBAR）+ FAR/FSR | 五字仍是我们写的值 ⇒ 表指针没被改；被改 ⇒ 固件或硬件在启动时改写了 CB |
+| 134 | 同 133，另读 `GFSR` 与 CB0..CB4 的 `FSR/FAR` | 若 fault 只在 CB0 ⇒ 流路由正确；若在另一个 CB ⇒ 我们一直读错了窗口 |
+| 135 | 编程 CB0 → **做 SMMU sync + TLB 失效**（GR0 的 sync/tlbi）→ 启动字 → 满轮询 → 读 fault（不做清页，与 127/131 对比） | fault 消失 ⇒ 是 walk cache 旧条目；不消失 ⇒ 不是 TLB 问题 |
+
+### 80.13 工具事实
+
+- `r256_block.py` 里的 `re.subn(...)` **返回 `(new, count)`**，写成 `n, k = re.subn(...)` 会把新字符串丢进 `n`、只拿 `k` 做断言，于是 arm 窗口根本没改而断言还会过（实测：探针里还是 `<= 129u`）。当时是 stage4 的 `'fwKey >= 7u && fwKey <= 132u' in code` 把它抓出来的。
+- 探针的 arm 窗口全文只有一处 `(fwKey >= 7u && fwKey <= 132u)`，在 `EnchiladaAdrenoProbe.cpp:1536`；写新块时要把它一起推到新上限，否则新键**根本不被武装**。
+- stage5 的指针白名单在 `scripts/verify-enchilada-probe-stage5.py:252-254`；R256 首次用到 `volatile uint64_t *`，需加进去（已加）。
+- `r256_static.py` 也必须从**仓库根**跑；它的 REQUIRED 是 26 条，`FORBIDDEN` 三条是下一轮的名字（`gmu133a=`/`gmu131m=`/`gmu132m=`）。
