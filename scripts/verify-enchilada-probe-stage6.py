@@ -140,8 +140,9 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 8,
-          'ID1 is re-read at most seven times more (keys 71, 72, 95, 97, 99 and 102), not in a loop')
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 9,
+          'ID1 is re-read at most eight times more (keys 71, 72, 95, 97, 99, 102 and 108), not '
+          'in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
           'ID2 (stage 4) is read BEFORE the stage-6 ID0/ID1 pair (same poll)')
@@ -1222,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 107u' in _fw,
+    check('fwKey >= 7u && fwKey <= 110u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1694,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 107u)' in code,
+    check('(fwKey >= 7u && fwKey <= 110u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3968,7 +3969,7 @@ def main():
     # interrupt before the start word. Every branch keeps the start word last. -------------------
     _i0507 = code.find('if (fwKey == 105u || fwKey == 106u || fwKey == 107u) {')
     check(_i0507 >= 0, 'stage 6 does NOT find the ROUND 248 block header')
-    _k0507 = code[_i0507:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+    _k0507 = code[_i0507:].split('\nif (fwKey == 108u || fwKey == 109u || fwKey == 110u) {\n', 1)[0]
     check(_k0507 != '', 'stage 6 does NOT slice the ROUND 248 block')
     check(_k0507.count('gmuW[') == 23,
           'stage 6 finds %d GMU stores in the R248 block (expected twenty-three: six per re-boot '
@@ -4049,6 +4050,67 @@ def main():
           'key 107 reads the status back after the start word')
 
     check(_i0507 > _i0204, 'the R248 block follows the R247 block in the source')
+
+    # ---- ROUND 249: the three poll keys -----------------------------------------------------
+    _i0810 = code.find('if (fwKey == 108u || fwKey == 109u || fwKey == 110u) {')
+    check(_i0810 > _i0507, 'the R249 block follows the R248 block in the source')
+    if _i0810 > 0:
+        _k0810 = code[_i0810:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        check(_k0810.count('gmuW[') == 29,
+              'the R249 block holds twenty-nine GMU stores (got %d: nine per key, plus the two '
+              'descriptor writes of key 110)' % _k0810.count('gmuW['))
+        check(_k0810.count('CM3_FW_INIT_RESULT] = 0u;') == 3,
+              'every R249 key clears the init word before the reset (got %d)'
+              % _k0810.count('CM3_FW_INIT_RESULT] = 0u;'))
+        check(_k0810.count('HFI_QTBL_ADDR] = ') == 3,
+              'every R249 key re-arms the queue-table address (got %d)'
+              % _k0810.count('HFI_QTBL_ADDR] = '))
+        check(_k0810.count('HFI_QTBL_INFO] = 1u;') == 4,
+              'three re-arms plus key 110 writing the descriptor back to 1 (got %d)'
+              % _k0810.count('HFI_QTBL_INFO] = 1u;'))
+        check(_k0810.count('HFI_QTBL_INFO] = 0u;') == 1,
+              'only key 110 writes the descriptor to 0 (got %d)'
+              % _k0810.count('HFI_QTBL_INFO] = 0u;'))
+        check(_k0810.count('HFI_CTRL_INIT] = 1u;') == 3,
+              'every R249 key writes the start word exactly once (got %d)'
+              % _k0810.count('HFI_CTRL_INIT] = 1u;'))
+        check(_k0810.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 3 and
+              _k0810.count('AO_HOST_INTERRUPT_CLR] = 0xffffffffu;') == 3,
+              'every R249 key clears both interrupt blocks before the start word')
+        check(_k0810.count('for (') == 7,
+              'the R249 block has one write loop plus one poll per branch after the start word '
+              '(got %d)' % _k0810.count('for ('))
+        check(_k0810.count('IODelay(1u)') == 6,
+              'six polling loops each wait one interval per pass (got %d)'
+              % _k0810.count('IODelay(1u)'))
+        check('IOSleep' not in _k0810, 'no R249 key sleeps')
+        for _row in ('gmu108a=', 'gmu108b=', 'gmu108c=', 'gmu108d=', 'gmu108e=', 'gmu108f=',
+                     'gmu108g=', 'gmu108h=', 'gmu108i=', 'gmu108j=', 'gmu108k=',
+                     'gmu109k=', 'gmu109l=', 'gmu110k=', 'gmu110l='):
+            check(_row in _k0810, 'the R249 block prints %s' % _row)
+        _i108 = _k0810.index('if (r108mode == 108) {')
+        _i109 = _k0810.index('} else if (r108mode == 109) {')
+        # rindex, not index: the rejection ladder in the preamble ends with `} else {` too,
+        # and taking the first one makes every branch slice describe the wrong code.
+        _i110 = _k0810.rindex('} else {')
+        check(_i108 < _i109 < _i110, 'the R249 mode branches are ordered 108, 109, 110')
+        _k108 = _k0810[_i108:_i109]
+        _k109 = _k0810[_i109:_i110]
+        _k110 = _k0810[_i110:]
+        for _name, _br in (('108', _k108), ('109', _k109), ('110', _k110)):
+            _st = _br.index('HFI_CTRL_INIT] = 1u;')
+            check('gmuW[' not in _br[_st:],
+                  'no R249 store follows the start word of key %s' % _name)
+            check(' for (' in _br[_st:] or 'for (' in _br[_st:],
+                  'key %s polls the status only after the start word' % _name)
+        check(_k108.count('for (') == 2 and _k110.count('for (') == 2,
+              'keys 108 and 110 each hold one write loop and one poll loop')
+        check(_k109.count('for (') == 2,
+              'key 109 holds one write loop and one poll loop')
+        check(_k110.index('HFI_QTBL_INFO] = 0u;') < _k110.index('HFI_CTRL_INIT] = 1u;'),
+              'key 110 writes the descriptor to 0 before the start word, not after it')
+        check('cbfsr=' in _k109 and 'gfsr=' in _k109,
+              'key 109 reads the context-bank and global fault registers back')
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))
