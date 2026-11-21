@@ -4547,3 +4547,116 @@ gmu93d=trans_wrote wrote=00000000 back=00000000 typew=00000000 landed=1 survived
 - 键 95/96 都保持「启动字是最后一个动作」这条形状（R238/R239/R240 已证明它是唯一能落盘的形状之一，若存活的话）。
 
 API 依据：`drivers/NativeAdreno/AdrenoSmmuTableV1.h` 的 `adreno_table_build(&geo, virt, phys, iova, paddr, size, prot, &res)` 接受任意 IOVA→PA 与 `size`，`adreno_table_bytes_needed()` 给出所需页数；R232d 已实测 `tables=4 writes=4 ias=48 oas=36`。**本轮未验证**的是「一次 build 能否覆盖 128 KiB 并同时命中两个不连续页」—— 这要在实现时先读 `AdrenoSmmuLpaeV1` 的几何与 `adreno_table_bytes_needed` 的返回值。
+
+## 六十八、ROUND 244：给 CB0 一张真正覆盖队列页的表 —— 启动字第一次活了下来
+
+### 68.1 一句话
+
+R243 留下两个都活着的解释：启动字自己致死，或者路由进 CB0 之后 GMU 读队列表 fault 致死。R244 把 CB0 的表建成 identity 块、覆盖队列表所在的那 2 MiB 窗口，填 `SMR0 = VALID|SID 4`、把 `S2CR0` 写成 `TRANS|CB0`，并让两个键**只差一件事**：键 96 不写启动字（**8/8 落盘**），键 95 写（**7/7 落盘**）。两个键都活了下来 —— **这是本移植第一次在写 `HFI_CTRL_INIT=1` 之后拿到新窗口**。
+
+### 68.2 为什么几何是 2 MiB 而不是 128 KiB
+
+R243 §67.11 / HANDOFF §44.9 写的是「覆盖 128 KiB」。读过 `drivers/NativeAdreno/AdrenoSmmuTableV1.c` 之后这条不成立：`adreno_table_bytes_needed()` 的叶子层由 `adreno_lpae_leaf_level()` 定，而它只接受**合法的 LPAE block size**（4 KiB、2 MiB、1 GiB …），其它尺寸返回 `kAdrenoLpaeMaxLevels`，于是 `bytes_needed` 返回 2、`adreno_table_build()` 一笔都不建。ias=48、4 KiB 粒度下 `adreno_lpae_lvl_shift(level) = (4-level)*9 + 3`，level 2 正好 `1 << 21` = 2 MiB。本轮实测的三页表（`tables=3 writes=3`）与根页 `root=ad947000` / `root=ad949000` 都与这个推导一致。
+
+identity 块 `base=ad800000..ada00000` 严格包住本轮读到的 `qtbl=ad945000`（键 95）/ `ad943000`（键 96），也包住同一窗口里的 `cpmsg=ad948000` 与 `rb=ad945000`。队列表地址**没有写死**，运行时从 `HFI_QTBL_ADDR`（`0x5185`）读回再按 2 MiB 掩码对齐（`& ~0x1fffff`）。
+
+### 68.3 代码形状
+
+| 键 | 前导与 setup | 结束方式 |
+|---|---|---|
+| 96 | 行 A → 读 `HFI_QTBL_ADDR` → 2 MiB 对齐 → `adreno_table_bytes_needed` → `adreno_table_build`（identity）→ 九笔 CB0 写 → 回读 → `SMR0 = 0x80000000 \| 0x4` → 回读 → `S2CR0 = 0x0` → 回读 → 行 G | 打印 `gmu95h=no_start=1`，**不写启动字**，直接返回 |
+| 95 | 与 96 逐字相同 | **最后** `HFI_CTRL_INIT = 1` + `dsb sy`，之后无回读、无轮询、无打印、无恢复 |
+
+- 全文件 `gmuW[...]` 写点 203 → **204**（只多键 95 那一笔）。
+- 六条拒绝分支：`refused-cx-down` / `refused-geometry` / `refused-no-queue-table` / `no-alloc-symbol` / `alloc-failed` / `refused-build` —— 每一条都比「零字节」更具体，因此**没有任何一条被触发时**才谈判决。
+- 唯一的一个 `for (` 是九笔写的循环（`for (k95 = 0u; k95 < nabs95; ++k95)`），stage6 对这一块明确放行且只放行它一个。
+
+### 68.4 构建与门禁
+
+- 分支 `r244-identity-table`，两个 commit：`8e42b224b3ef`（首次推送）与 `5855eeca3800a8`（把 `key=%u` 加回行 A —— 判决要从设备自己写的字段里认出是哪一次启动；没有它，runner 的 `row key=` 正则什么都匹配不到）。
+- CI **#355 / run `44838892288`**：`completed / success`，job `build` `2026-11-20T23:43:48Z → 2026-11-21T00:03:51Z`，**28/28 步**。更早的 **#354 / run `44838580605`** 是在补 `key=` 之前派发的构建，被 `work/tmp/r244_cancel.py` 取消（`202 → job concluded=cancelled`），避免拿错产物。
+- 产物：`work/tmp/r244-kernel/kernel.macho` **126,251,008 B** sha256 `77bbe4068707723a…`；`work/tmp/r244-payload/payload.img` **150,994,944 B** sha256 `d3bbd0e50a233a6f…`。取件 78,916,036 B / 62 s / 1237 KB/s（16 连接）。
+- 探针 **521,469 字符 / 7,421 行**；arm 窗口 `(fwKey >= 7u && fwKey <= 96u)`。
+- 静态门 `work/tmp/r244_static.py`：`required+survivors: 19 checked in both artefacts`、`key marker 'enchilada-pas-exec': kernel=1 payload=2`、`forbidden: 2 checked`、固件钉 `b07f90299ff2ae…`（32,768 B）→ **`PASS: R244 static gate`**。
+- **门自证区分能力**：同一脚本指向 `r243-kernel`/`r243-payload` → 十四条 required 全 `kernel=0 payload=0`，**`FAIL: R244 static gate (14 problems)`**。
+- 全门禁：`verify-enchilada-probe-stage6.py` **1179/1179**；stage4 **61/61**；stage5 **48/48**；host 门 **28/28** + `PASS: enchilada adreno probe shim + modules type-check (host stub, arm64 Mach-O)`；`verify-enchilada-*.py` 全量 **46/48 跑过、FAILING: 0**。
+- rekey：`enchilada-pas-exec=2 → =96`（sha256 `474982fc8964787c…`）与 `=2 → =95`（sha256 `8ab02a119c1820b1…`），config 每次 1377 → 1378 B。两次上机前 `check-reboot-to-twrp.py --arm` 都 `PASS (3 checks, 0 failures)`，两次都由武装过的 BCB + 看门狗在 36–38 秒内自己送回 TWRP，**没有一次需要按键**。
+- 刷写核验（两次都过）：`key block 31063: device == payload -> True`、`key block says: enchilada-pas-exec=NN -no_slto_p`、`system_b head 8 MiB sha256 c69ae873fd… == payload head`、`flash readback matches: True`。
+
+### 68.5 键 96 读数（控制：整套 setup，不写启动字）
+
+boot_id **585220336**、窗口 `a5f088f0c7fca6696b5a8d1985f7a6af7dd745dd6a6c4c7eda7fc73e857622d2`、`msg_bytes=31200 slots_written=8 write_errors=0`、**8/8 行**：
+
+```
+gmu95a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 key=96 start=0 qtbl=ad943000
+gmu95b=build=0 need=3 tables=3 writes=3 root=ad947000 base=ad800000 ias=48 oas=36 ok=1
+gmu95c=plan=0 n=9 abs=0 nab=9 cbndx=0 ttbr=ad947000 cw=1 id0=48016605
+gmu95d=wrote=9 ttbr0=ad947000/00000000 sctlr=00001067 tcr=00803510 cbar=0001f300 root=ad947000
+gmu95e=smr_set wanted=80000004 back=80000004 valid=1 sid=4 landed=1
+gmu95f=s2cr_set wanted=00000000 back=00000000 typew=00000000 landed=1
+gmu95g=last_row=1 about_to_start=0 start=0 route=1 smr=80000004 s2cr=00000000 qtbl=ad943000 base=ad800000
+gmu95h=no_start=1 setup_kept=1 route=1
+```
+
+`plan=0 n=9 abs=0 nab=9`、`wrote=9`、`smr back == wanted`、`s2cr back == wanted` ⇒ 建表、九笔 context-bank 写、`SMR0` 的 `VALID|SID 4`、`S2CR0` 的 `TRANS|CB0` **全部落地且机器存活**。
+
+### 68.6 键 95 读数（决定性：同一套 setup，最后写启动字）
+
+boot_id **585373771**、窗口 `fff4087cd971887e87834075e23c9585cb0fa111ac9066668af002e45358238d`、`msg_bytes=31114 slots_written=8 write_errors=0`、**7/7 行**（键 95 不打印 `gmu95h`）：
+
+```
+gmu95a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 key=95 start=1 qtbl=ad945000
+gmu95b=build=0 need=3 tables=3 writes=3 root=ad949000 base=ad800000 ias=48 oas=36 ok=1
+gmu95c=plan=0 n=9 abs=0 nab=9 cbndx=0 ttbr=ad949000 cw=1 id0=48016605
+gmu95d=wrote=9 ttbr0=ad949000/00000000 sctlr=00001067 tcr=00803510 cbar=0001f300 root=ad949000
+gmu95e=smr_set wanted=80000004 back=80000004 valid=1 sid=4 landed=1
+gmu95f=s2cr_set wanted=00000000 back=00000000 typew=00000000 landed=1
+gmu95g=last_row=1 about_to_start=1 start=1 route=1 smr=80000004 s2cr=00000000 qtbl=ad945000 base=ad800000
+```
+
+窗口是新的（boot_id 推进、sha 变了、行内 `key=` 是 95、七行全在）⇒ **写完 `HFI_CTRL_INIT=1` 之后这一轮照样提交了证词**。
+
+### 68.7 判决：正反两点
+
+| 轮 / 键 | CB0 的表 | 路由 | 启动字 | 结果 |
+|---|---|---|---|---|
+| R243 键 94 | 哨兵叶子（IOVA `0x40000000` → PA `0x90000000`，别处不覆盖） | `SMR0 = VALID\|SID 4`、`S2CR0 = TRANS\|CB0` | **写** | **零字节**（窗口停在键 93 那轮） |
+| R244 键 96 | identity 2 MiB，覆盖队列页 | 同上 | 不写 | **8/8 落盘** |
+| R244 键 95 | identity 2 MiB，覆盖队列页 | 同上 | **写** | **7/7 落盘** |
+
+1. 键 96 关掉「setup 本身致死」这一支。
+2. 键 95 与 R243 键 94 的差别**只有**「CB0 的表是否覆盖 GMU 会读的那一页」。94 死、95 活 ⇒「致死是由队列表读上的 SMMU fault 造成的」第一次得到支持，「启动字在任何配置下都自己致死」这一支被推翻。
+3. 这条故事同时解释了前十几轮的零字节模式：那些轮里 `USFCFG=1`（未匹配流直接 fault）、没有有效 `SMR`，GMU 的流对 SMMU 是未识别流 ⇒ fault；启动字一旦真的让固件去读队列，fault 就把机器停住。R243 键 83（`INFO=0` 时写启动字存活）也在这条故事里：那次固件没有被要求去读表。
+
+### 68.8 一条不能归因的异常
+
+键 95 那次窗口里有一行 `gmursc=… intr=00800000 …`（`CM3_FAULT`），而键 96 那次是 `intr=00000000`。这一行由更早的探针块打印、位置在 `gmu95a` 之前，所以**不可能是本轮那笔启动字造成的**。可能来源（未验证）：上一次开机遗留的硬件状态，或更早的两次写过启动字的启动（R242 键 90、R243 键 94）留下的痕迹。R186 时代见过同样的 `00800000`（键 33）。本轮只登记现象，不做结论。
+
+### 68.9 没有证明什么
+
+1. **没有**证明 GMU 真的走过那张表：`sGFSR` 与 CB0 的 `FSR` 都没有在写入之后读过。
+2. **没有**证明固件启动了：`fwinit=babeface`、`hfistat=00000000` 都是写入**之前**的读数，写入之后没有任何回读。
+3. **没有**解释为什么机器仍在约 36 秒后回到 recovery（`08:09:24 boot sent → 08:10:00 back in recovery`）。本轮只证明「启动字不再在一个 writer 轮内停住整机」。
+4. **没有**动 `sCR0`（`USFCFG=1` 仍在），也没动 stage-2。
+5. **没有**做同一次启动内的对照：键 95 与键 96 是两次独立启动，`root` 的物理页也不同（`ad947000` vs `ad949000`）。单变量是按代码形状与判决规则说的，不是按同一次运行说的。
+6. GPU 仍未渲染任何一帧。
+
+### 68.10 三条边界
+
+- 键 95 的落盘是**存活**证据，不是「HFI 通了」的证据：HFI 是否真的开始、固件是否接受队列表，需要写入之后的回读。
+- identity 映射只是为了「让队列表那几页不 fault」；把 `ad800000..ada00000` identity 交给 GPU 侧是探针里的临时做法，不是驱动设计。
+- `SMR0` 的 `VALID` 在 R241 只被写过、即刻复原；本轮是它**第一次**真的参与路由（`back=80000004`、`sid=4`、`landed=1`）。
+
+### 68.11 R245 设计
+
+- **键 97**：重复键 95 的整套 setup + 启动字，然后**留在原地**读三样东西并打印 —— `HFI_CTRL_STATUS`、`sGFSR`（`0x048`）、CB0 的 `CB_FSR`（`cb_base + 0x58`）。这会重新落入「一个 writer 轮内」，所以只能算尽力而为：落盘就直接给出「fault 有没有被记录」；零字节则说明写入之后仍然活不过一个轮，需要换通道（而换通道会打破「必须能自动回 TWRP」，须先与用户确认）。
+- **键 98**：与键 95 完全相同，第二次启动。可复现性比新信息更值钱 —— 本轮只有一次单点。
+- 若两者都落盘，下一步才是「让固件真的接受队列表」（表内容、`cpmsg` 地址、`PWR_COL_CP_MSG`），以及 `sCR0`/`USFCFG` 与 stage-2 是否还需要动。
+
+### 68.12 环境事实（本轮新增）
+
+- `scripts/push_via_api.py` 会读 `HTTPS_PROXY`：本地代理关掉时必须先清空三个代理变量，否则 `GET /user` 直接 `WinError 10061`。
+- `work/tmp/r168_dispatch.py` 在**已有 run 正在跑**时会 `STOP: a run is active`，此时要么等、要么像本轮一样先 `POST /actions/runs/<id>/cancel`（202）再派发。
+- `work/tmp/r244_cancel.py` 是取消单个 run 的小工具；取消后 job 的结论是 `cancelled`，不会产生 artifact。
+- stage6 的切片终止符是**位置敏感**的：R244 同步脚本第一次把「门铃梯子」这个终止符替换到了 R242 的切片上（因为 R242 的终止符写法是单独一行），导致 R242/R243 的切片各自吞掉后一个块、报出 16 条假失败。修法见 `work/tmp/r244_fixterm.py`：按 `_kNNNN = code[...]` 的行号定位，而不是按字符串出现顺序替换。教训：**切片锚点要用代码锚点并在替换后核对每块的终止符数量**。
+- 探针块里「不写启动字」的分支必须**写在启动字之前**（`if (!r95start) { IOLog(...) } else { gmuW[...] = 1u; }`），否则 `IOLog` 会出现在启动字之后，stage6 的「启动字之后不打印」断言会正确地失败。

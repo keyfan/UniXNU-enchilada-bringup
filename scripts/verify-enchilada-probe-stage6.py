@@ -140,7 +140,7 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 3,
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 4,
           'ID1 is re-read at most twice more (keys 71 and 72), not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 94u' in _fw,
+    check('fwKey >= 7u && fwKey <= 96u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1694,7 +1694,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 94u)' in code,
+    check('(fwKey >= 7u && fwKey <= 96u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3670,7 +3670,7 @@ def main():
     if _i9294 >= 0:
         check(_i8991 >= 0 and _i9294 > _i8991,
               'R243 the new block follows the R242 block it builds on')
-        _k9294 = code[_i9294:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        _k9294 = code[_i9294:].split('\nif (fwKey == 95u || fwKey == 96u) {\n', 1)[0]
         check(_k9294 != '', 'R243 the block is delimited by the doorbell ladder')
 
         # Exactly one GMU store in the whole round, and it is the start word in key 94.
@@ -3730,6 +3730,63 @@ def main():
         check(_after4.count('= 1u') == 0 and _after4.count('= r92') == 0,
               'R243 no further store is made after the start word')
 
+
+    # ------------------------------------------------------------------ ROUND 244
+    # Keys 95 and 96 do the same table work; key 95 then makes the start word the last
+    # action of the round and key 96 stops before it. The write stage is the only one so
+    # far that loops, so exactly one loop is allowed here and it must be the write loop.
+    _i9596 = code.find('if (fwKey == 95u || fwKey == 96u) {')
+    check(_i9596 > _i9294, 'stage 6 does NOT find the ROUND 244 block after the R243 block')
+    _k9596 = ''
+    if _i9596 > 0:
+        _k9596 = code[_i9596:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+    check(_k9596 != '', 'stage 6 does NOT slice the ROUND 244 block')
+    check(_k9596.count('gmuW[') == 1,
+          'stage 6 finds %d GMU stores in the R244 block (expected exactly the start word)'
+          % _k9596.count('gmuW['))
+    check('HFI_CTRL_INIT' in _k9596, 'the R244 block does NOT name the start word')
+    check('HFI_QTBL_INFO]' not in _k9596, 'the R244 block writes the queue-table INFO word')
+    check('HFI_QTBL_ADDR]' not in _k9596, 'the R244 block writes the queue-table ADDR word')
+    check('IOSleep' not in _k9596, 'the R244 block sleeps')
+    check(_k9596.count('for (') == 1,
+          'the R244 block runs %d loops (expected the single write loop)' % _k9596.count('for ('))
+    check('for (k95 = 0u; k95 < nabs95; ++k95)' in _k9596,
+          'the one loop in the R244 block is NOT the nine-word write loop')
+    check(_k9596.count('armcpu_dma_alloc_writable') == 3,
+          'the R244 block does NOT allocate one four-page table block')
+    check(_k9596.count('0x200000ull') >= 2,
+          'the R244 block does NOT build a 2 MiB identity block')
+    check('0x1fffffull' in _k9596, 'the R244 block does NOT align the base to 2 MiB')
+    check(_k9596.count('adreno_table_build(') == 1, 'the R244 block does NOT build one table')
+    check(_k9596.count('adreno_smmu_ctx_plan(') == 1, 'the R244 block does NOT plan one CB')
+    check(_k9596.count('adreno_install_absolute(') == 1, 'the R244 block does NOT place one CB')
+    check('nabs95 != 9u' in _k9596, 'the R244 block does NOT require nine context-bank words')
+    check(_k9596.count('gSmmuVa + 0x800u) = ') == 1, 'the R244 block does NOT set SMR0 once')
+    check(_k9596.count('gSmmuVa + 0xc00u) = ') == 1, 'the R244 block does NOT set S2CR0 once')
+    check('0x80000000u | 0x00000004u' in _k9596, 'the R244 block does NOT seed SMR0 with VALID|SID4')
+    check(_k9596.count('r95s2Want = 0x00000000u') == 1,
+          'the R244 block does NOT route S2CR0 to TRANS|CB0')
+    for _row in ('gmu95a=', 'gmu95b=refused-cx-down', 'gmu95b=refused-geometry',
+                 'gmu95b=refused-no-queue-table', 'gmu95b=no-alloc-symbol',
+                 'gmu95b=alloc-failed', 'gmu95b=refused-build', 'gmu95b=build=',
+                 'gmu95c=plan=', 'gmu95d=wrote=', 'gmu95e=smr_set', 'gmu95f=s2cr_set',
+                 'gmu95g=last_row=1', 'gmu95h=no_start=1'):
+        check(_row in _k9596, 'the R244 block does NOT print %r' % _row)
+    _iSmr95 = _k9596.find('gSmmuVa + 0x800u) = ')
+    _iS295 = _k9596.find('gSmmuVa + 0xc00u) = ')
+    _iLast95 = _k9596.find('gmu95g=last_row=1')
+    _iStart95 = _k9596.find('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u')
+    _iNoStart95 = _k9596.find('gmu95h=no_start=1')
+    check(-1 not in (_iSmr95, _iS295, _iLast95, _iStart95, _iNoStart95),
+          'the R244 block is missing one of its five landmarks')
+    check(_iSmr95 < _iS295, 'the R244 block routes S2CR before SMR')
+    check(_iS295 < _iLast95, 'the R244 block prints the last row before routing')
+    check(_iLast95 < _iStart95, 'the R244 start word comes before the last row')
+    check(_iLast95 < _iNoStart95, 'the R244 no-start row comes before the last row')
+    _tail95 = _k9596[_iStart95:]
+    check('IOLog' not in _tail95, 'the R244 block prints after the start word')
+    check('rd32(' not in _tail95, 'the R244 block reads back after the start word')
+    check(_tail95.count('gmuW[') == 1, 'the R244 block stores again after the start word')
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
