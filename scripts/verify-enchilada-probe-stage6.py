@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 10,
-          'ID1 is re-read at most nine times more (keys 71, 72, 95, 97, 99, 102, 108 and 111), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 11,
+          'ID1 is re-read at most ten times more (keys 71, 72, 95, 97, 99, 102, 108, 111 and 114), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 113u' in _fw,
+    check('fwKey >= 7u && fwKey <= 116u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 113u)' in code,
+    check('(fwKey >= 7u && fwKey <= 116u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4117,7 +4117,12 @@ def main():
     _i111113 = code.find('if (fwKey == 111u || fwKey == 112u || fwKey == 113u) {')
     check(_i111113 > _i0810, 'the R250 block follows the R249 block in the source')
     if _i111113 > 0:
-        _k111113 = code[_i111113:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        _k111113 = code[_i111113:].split(
+            '\nif (fwKey == 114u || fwKey == 115u || fwKey == 116u) {\n', 1)[0]
+    _i114116 = code.find('if (fwKey == 114u || fwKey == 115u || fwKey == 116u) {')
+    _k114116 = ''
+    if _i114116 > 0:
+        _k114116 = code[_i114116:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
               'the three keys (got %d)' % _k111113.count('gmuW['))
@@ -4179,6 +4184,54 @@ def main():
         check('sfr_zero=' in _k113 and 'cpmsg_zero=' in _k113 and 'landed=' in _k113,
               'key 113 reports what the two registers held and whether the re-poke landed')
 
+    # ---- R251: the timing keys ------------------------------------------------------------
+    check(_i114116 > _i111113, 'the R251 block follows the R250 block in the source')
+    _store = re.compile(r'gmuW\[[^\]]*\]\s*=[^=]')
+    check(len(_store.findall(_k114116)) == 14,
+          'R251 fourteen GMU stores share one preamble (got %d)' % len(_store.findall(_k114116)))
+    _b114 = _k114116[_k114116.index('if (r114mode == 114) {'):_k114116.index('} else if (r114mode == 115) {')]
+    _i115 = _k114116.index('} else if (r114mode == 115) {')
+    _b115 = _k114116[_i115:_k114116.index('} else {', _i115 + 1)]
+    _b116 = _k114116[_k114116.rindex('} else {'):]
+    _pre = _k114116[:_k114116.index('if (r114mode == 114) {')]
+    check(_pre.count('HFI_CTRL_INIT] = 1u;') == 0 and
+          _pre.count('GMU2HOST_INTR_CLR] = ') == 1 and
+          _pre.count('GMU2HOST_INTR_MASK] = ') == 0,
+          'R251 the shared preamble clears the interrupts once and never starts the HFI')
+    check(_pre.rstrip().endswith('IOLog("enchilada-adreno: %s\\n", r114RowJ);'),
+          'R251 the preamble ends with its own row, so nothing is stored after the clear')
+    check(len(_store.findall(_b114)) == 2 and _b114.count('GMU2HOST_INTR_CLR] = ') == 1
+          and _b114.count('HFI_CTRL_INIT] = 1u;') == 1
+          and _b114.count('GMU2HOST_INTR_MASK] = ') == 0,
+          'R251 key 114 adds one interrupt clear and one start word, nothing else')
+    check(len(_store.findall(_b115)) == 2 and _b115.count('GMU2HOST_INTR_MASK] = ') == 1
+          and '0xff7fffffu' in _b115 and _b115.count('HFI_CTRL_INIT] = 1u;') == 1
+          and _b115.count('GMU2HOST_INTR_CLR] = ') == 0,
+          'R251 key 115 enables only bit 23 and then writes the start word once')
+    check(len(_store.findall(_b116)) == 2 and _b116.count('HFI_CTRL_INIT') == 0
+          and _b116.count('GMU2HOST_INTR_CLR] = ') == 1
+          and _b116.count('GMU2HOST_INTR_MASK] = ') == 1 and '0xff7fffffu' in _b116,
+          'R251 key 116 does the same clear and the same mask and never writes the start word')
+    check(_k114116.count('for (') == 2 and _k114116.count('IODelay(1u)') == 1
+          and 'IOSleep' not in _k114116,
+          'R251 only the shared preamble loops, and it polls with an IODelay')
+    check(_k114116.count('0xbabefaceu') == 1, 'R251 the preamble still waits for the init word')
+    _names = ['gmu114a=', 'gmu114b=', 'gmu114c=', 'gmu114d=', 'gmu114e=', 'gmu114f=',
+              'gmu114g=', 'gmu114h=', 'gmu114i=', 'gmu114j=', 'gmu114k=', 'gmu114l=',
+              'gmu115k=', 'gmu115l=', 'gmu116k=', 'gmu116l=']
+    _missing = [n for n in _names if n not in _k114116]
+    check(not _missing, 'R251 every row of the round is present (%s)' % _missing)
+    check(_k114116.index('if (r114mode == 114) {') < _i115 <
+          _k114116.rindex('} else {'),
+          'R251 the three mode branches are ordered 114, 115, 116')
+    for _label, _body in (('114', _b114), ('115', _b115)):
+        _st = _body.index('HFI_CTRL_INIT] = 1u;')
+        check(_body.index('gmu' + _label + 'k=') < _st and
+              len(_store.findall(_body[_st:])) == 0 and
+              _body.count('IOLog(') == 2,
+              'R251 key %s prints before the store and exactly one read row after it' % _label)
+    check(len(_store.findall(_b116[_b116.index('gmu116k='):])) == 0,
+          'R251 key 116 stores the mask before its first row and nothing after it')
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
