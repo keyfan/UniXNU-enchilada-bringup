@@ -5930,3 +5930,138 @@ R252 判决第 3 条写的是「留得住的持续状态（只开该源 + 清过
 - 探针的日志是**整轮提交**的：块跑到一半死掉，窗口一个字节都不会变。所以「零字节」≠「块没跑」，要看同一镜像的未武装对照。
 - 分割镜头的办法：`r179_rekey.py` 生成的 payload 与上一轮**只差参数字符串那一个字节**（偏移 `0x7963270`），任何更大的差异都说明 rekey 走错了文件。
 - 上机脚本会**回读并比对** system_b 的关键块（`flash readback matches` / `key block says`），所以「flashed 的到底是哪个 key」永远不是猜测。
+
+## 七十八、ROUND 254：读出 fault 现场 —— CM3 读队列表时地址丢了 bit 31
+
+### 78.1 一句话
+
+在启动字之后读 CB0 的 `FSR/FAR/FSYNR0`，第一次拿到了**地址**：`far = (队列表地址 & 0x7FFFFFFF) + 8`，两次不同分配逐位吻合；而不写启动字的对照键 `fsr` 停在 `00000400`、`far=0`。也就是说 —— **翻译 fault 是启动请求产生的，产生它的那笔读把队列表地址的 bit 31 丢掉了。**
+
+### 78.2 为什么这一轮去读 fault 现场
+
+R245/R249 反复读到 `cbfsr=00000402`，我们只知道「有一次翻译 fault」，不知道它踩的是哪个地址。而 `arm-smmu` 的 context bank 里，`CB_FAR` 记的正是失败那笔访问的输入地址、`CB_FSYNR0` 记的是层级/读写方向/哪个 CB —— 这三样加起来能把「固件不接受启动」这句现象翻译成一个具体的地址。所以本轮不再改任何写序列，只加**读**。
+
+三个键共用同一段前导（表 + 路由 + 复位 + 清中断），只在启动字前后分开：
+
+| 键 | 对 fault 状态字做的事 | 对启动字做的事 | 想分辨什么 |
+|---|---|---|---|
+| 124 | 先读、再写 `0xc00001fe` 清、再读回 | 写 | 清之后再出现的 fault，只能是这一轮启动请求带来的 |
+| 125 | 一次都不清，连读两次 | 写 | 如果 fault 本来就在，说明它属于布置而不是启动 |
+| 126 | 同样清一次 | **不写** | 布置本身会不会自己 fault（对照） |
+
+单变量面貌（R219 键 66 → R254 键 126，同一张表往下推）：
+
+| 轮 | 键 | 与上一格的差别 |
+|---|---|---|
+| R219 | 66 | 不写任何 store |
+| … | … | （见 §74） |
+| R252 | 119 | 无启动字 + 满轮询 |
+| R253 | 120 | 有启动字 + 命中后再清一次 |
+| R254 | 124 | 有启动字 + 清状态字 + 读 FAR/FSYNR0 |
+| R254 | 125 | 同 124，但不清状态字 |
+| R254 | 126 | 清状态字但**不写启动字**（对照） |
+
+### 78.3 代码形状
+
+块 `if (fwKey == 124u || fwKey == 125u || fwKey == 126u) {`，探针 **735,965 字符 / 11,039 行**，块自身 23,504 字符。GMU 写点严格 **13 笔**（前导 8 + 124 的 3 + 125 的 2 + 126 的 2），状态字写 `0xc00001feu` 两笔（124、126），`CB_FSR` 读 11 处、`CB_FAR` 5 处、`CB_FSYNR0` 3 处，`for (` 5 个、`IODelay(1u)` 4 处、无 `IOSleep`。SMMU 的访问沿用既有方式：读 `rd32(gSmmuVa, off)`，写 `*reinterpret_cast<volatile uint32_t *>(gSmmuVa + off)` 后接 `dsb sy`。
+
+### 78.4 构建与门禁
+
+- CI **#365 run `44884866354`**，`2026-11-21T08:26:05Z → 08:43:33Z`，**28/28 步 success**。
+- `kernel.macho` 126,304,256 B sha256 `f7107e05def50342c9e43b5181fbe7c2af3f3e00362794019a0e6faa7e4b5e72`；`payload.img` 150,994,944 B sha256 `ba7c0f52bcb64db1825be0538ea1e37bc9893e7882651f64b4191e4a6fded2b9`。
+- 门禁：host **28/28**（GMU 写点 331 → 344）；stage4 **61/61**；stage5 **48/48**；stage6 **1478/1478**；全量 `ran 46 of 48, FAILING: 0`。
+- 静态门 `PASS: R254 static gate`（23 条 REQUIRED + 12 SURVIVORS = 35 条在两个产物里都在）；**自证**：指向 R253 的产物 → `FAIL: R254 static gate (23 problems)`。
+- 三次 rekey 的 payload sha256：124 = `666f0b8404dd45993844250ea3aca4bb2ac53ad4da41e2ffb25af72fd6531f51`、125 = `7b8a0a141be47ed0b0cc5e57824f5882c1730875335728ccc06adabb5fb22223`、126 = `c77aa7f09161db12c824baaabcf690f6dc9c41311b22913adbb643357790bc09`。
+
+### 78.5 键 124（先清状态字，再写启动字）
+
+`boot_id 604034594`，窗口 `4147719ce03d2b3f38b7db9ef26b05906744b4731aeaaaa9d83eed6a65b94401`，12/12 行。
+
+```
+gmu124a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 key=124 mode=124 qtbl=ad960000
+gmu124b=build=0 need=3 tables=3 writes=3 root=ad964000 base=ad800000 ias=48 oas=36 ok=1
+gmu124c=plan=0 n=9 abs=0 nab=9 cbndx=0 ttbr=ad964000 cw=1 id0=48016605
+gmu124d=wrote=9 ttbr0=ad964000/00000000 sctlr=00001067 tcr=00803510 cbar=0001f300 root=ad964000
+gmu124e=smr_set wanted=80000004 back=80000004 valid=1 sid=4 landed=1
+gmu124f=s2cr_set wanted=00000000 back=00000000 typew=00000000 landed=1
+gmu124g=last_row=1 about_to_start=1 mode=124 route=1 smr=80000004 s2cr=00000000 qtbl=ad960000 base=ad800000
+gmu124h=init_cleared=1 before=babeface after_clear=00000000 about_to_reset=1
+gmu124i=reboot=1 fwinit=babeface polls=4 sysreset=00000000 cfg=00004052 ctl=00000000 win=1 survived=1
+gmu124j=interrupts_cleared=1 info=00000000 mask=00000000 ao=00000000 about_to_start=1
+gmu124k=fsr_cleared=1 fsr_before=00000400 fsr_clear_back=00000400 far_before=00000000 about_to_start=1
+gmu124l=cleared_then_started=1 ctl=00000000 bit0=0 polls=200000 info=00800000 fsr=00000402 far=2d960008 fsynr0=00000021 survived=1
+```
+
+行 L 的三样：`fsr` 从 `00000400` 变成 `00000402`（`TF` bit1 置起），`far=2d960008`，`fsynr0=00000021`。
+
+`fsynr0=0x21` 按钉住的上游位域解出来：`PLVL = 0x21 & 0x3 = 1`（在 level-1 走表时失败）、`WNR = 0`（读）、`S1CBNDX = 0`（本 CB0）。**所以这是一笔读，读的是 CB0 上某个没被映射到的地址。**
+
+### 78.6 键 125（一次都不清，连读两次）
+
+`boot_id 650093298`，窗口 `86b7007b1edfa187d550b7261add5f65c1cea20fedae83fa480289004b7227fe`，12/12 行。
+
+```
+gmu124a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 key=125 mode=125 qtbl=ad90d000
+gmu124b=build=0 need=3 tables=3 writes=3 root=ad911000 base=ad800000 ias=48 oas=36 ok=1
+gmu124g=last_row=1 about_to_start=1 mode=125 route=1 smr=80000004 s2cr=00000000 qtbl=ad90d000 base=ad800000
+gmu125k=un_cleared=1 fsr_before=00000400 fsr_again=00000400 far_before=00000000 about_to_start=1
+gmu125l=un_cleared_then_started=1 ctl=00000000 bit0=0 polls=200000 info=00800000 fsr=00000402 far=2d90d008 fsynr0=00000021 survived=1
+```
+
+两次相邻读都是 `00000400`（稳定，没有 TF），启动字之后变成 `00000402`，`far=2d90d008`。这一轮的队列表是 `ad90d000`，所以：
+
+```
+0xAD90D008 & 0x7FFFFFFF = 0x2D90D008
+```
+
+**与上一轮 `0xAD960008 & 0x7FFFFFFF = 0x2D960008` 逐位同构** —— 两次不同的分配地址、两次不同的 boot，fault 地址都是「队列表 + 8、并去掉 bit 31」。这不是巧合能解释的量级。
+
+### 78.7 键 126（清状态字，不写启动字）
+
+`boot_id 637424232`，窗口 `7f39d67886c1dfdc2cdcd426a55a37a48b5a9214dad0cca6d0e6ca93c1ff3bd4`，12/12 行。
+
+```
+gmu124a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 key=126 mode=126 qtbl=ad90f000
+gmu124g=last_row=1 about_to_start=0 mode=126 route=1 smr=80000004 s2cr=00000000 qtbl=ad90f000 base=ad800000
+gmu126k=fsr_cleared=1 fsr_before=00000400 fsr_clear_back=00000400 no_start=1 about_to_poll=1
+gmu126l=no_start_polled=1 ctl=00000000 bit0=0 polls=200000 info=00000000 fsr=00000400 far=00000000 fsynr0=00000000 survived=1
+```
+
+表、路由、使能、复位全都做完，只差那一笔启动字 —— 状态字从头到尾 `00000400`，`far=00000000`，`info=00000000`。**布置本身一笔 fault 都不产生。**
+
+### 78.8 判决
+
+1. **fault 归属启动请求**：键 124（清了再启动）与键 125（不清就启动）都在启动字之后由 `00000400` 变成 `00000402`；键 126 做了同样的布置、同样的清、同样的 200000 轮轮询，但**不写启动字**，状态字停在 `00000400`。三者唯一差别就是启动字。
+2. **地址可复现**：`far` 两轮分别是 `2d960008` 与 `2d90d008`，各自等于本轮的队列表地址 `+8` 再清掉 bit 31。
+3. **访问类型**：`fsynr0=00000021` 两轮逐位相同 → 读、level-1 走表失败、本 CB0。
+4. **固件仍然没有启动**：三键的 `ctl=00000000 / bit0=0`，键 124/125 的 `info=00800000`、键 126 的 `info=00000000`。
+
+### 78.9 必须分开说的三件事
+
+1. `far` 是**送进 SMMU 的那个地址**，不是我们写进 `HFI_QTBL_ADDR` 的地址。我们在 `gmu124a/g` 读到 `qtbl=ad960000`、`ad90d000`，而 SMMU 看到的是它们的 31 位截断形式。至于截断发生在 CM3 内部、HFI 地址通路、还是 SMMU 的输入装配上，本轮**没有分辨**。
+2. `fsr` 的 `FORMAT` 字段（`GENMASK(10,9)`，此处 = 2）在两轮里**清之前就在**（`fsr_before=00000400`）。所以「清回 `00000400` 而不是 `00000000`」不是清失败 —— 恰恰相反，`0xc00001fe` 这组 W1C 位全被清掉了，只有不受它管的 `FORMAT` 位留着。这一点与上游 Linux 只写 `FSR_FAULT` 而不写 `FORMAT` 一致，也说明我预先写进规则里的「`fsr_clear_back` 不是 0 就是没清掉」这句话**过宽**，真正的判据是 `TF` 位。
+3. 本轮拿到的是**寄存器读数**，不是 HFI 消息。`info` 的 bit 23 仍然只是「有一笔 fault」，我们读的是 SMMU 自己的账本，不是固件的解释。
+
+### 78.10 推论与 R255 设计
+
+如果「地址丢 bit 31」就是原因，那么把那段被截断的地址**映射出来**，那笔读就应该成功。R255 三个键：
+
+- **127**：把 identity 表建成 `base = 0x2D800000`（覆盖 `0x2D800000–0x2D9FFFFF`，正好包含 `0x2D960008`/`0x2D90D008` 所在的 2 MiB），队列表仍在原地，写启动字，满轮询，再读 `FSR/FAR/FSYNR0/ctl/info`。若 `fsr` 干净、`far=0`，而 `info` 或 `ctl` 有变化 —— 截断这条链就被证实是**功能性的**，不只是地址算术。
+- **128**：把 `HFI_QTBL_ADDR` 直接写成截断形式（`qtbl & 0x7FFFFFFF`），读回看重写有没有被保住，再写启动字 —— 分辨固件是「自己会截断」还是「必须我们给截断值」。
+- **129**（对照）：同 127 的映射、但**不写启动字**，确认新映射本身不产生 fault。
+
+### 78.11 没证明什么
+
+- 没证明 CM3 会接受 `0x2D…` 这段地址 —— 只是证明了它会**读**那里。
+- 没证明截断发生在哪一级（CM3 / HFI 地址通路 / SMMU 输入）。
+- 没证明 HFI 队列成功之后固件就会启动：`ctl` bit0 至今每一次都是 0。
+- 没证明那笔读就**是**队列表描述符（`+8` 与描述符首项位置吻合，但寄存器只给地址，不给内容）。
+- 没有解释 `FORMAT=2` 为什么在启动字之前就已置位。
+
+### 78.12 边界与工具事实
+
+- 三个键都是 `check-reboot-to-twrp.py --arm` PASS 之后上机，看门狗把它们带回 TWRP，全程没有按键。
+- 键 125 的两次相邻读都在启动字之前，`00000400` 与 `00000400` 相同 ⇒ 状态字不会自己动，所以「读一次就定论」在本轮是被支持的。
+- 键 124 第一次跑是我忘了先 rekey，runner 在 `ABORT missing …\r254-s124-payload\payload.img` 处自己停下（没有碰设备）—— 上机脚本的「先查文件再动设备」这条自检这一轮救了一次。
+- `r254_static.py` 与门禁的四处同步各自都踩了一次「终止符指向最新块」的老坑：新块插在 R253 与 ladder 之间时，`_k117119` 的终止符要**退回** R253 块头、`_k120122` 要改成 R254 块头。规则不变：**切片终止符永远是「下一个块的块头」。**
+
