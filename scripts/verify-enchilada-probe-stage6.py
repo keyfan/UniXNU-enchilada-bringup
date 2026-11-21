@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 6,
-          'ID1 is re-read at most five times more (keys 71, 72, 95, 97 and 99), not in a loop')
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 7,
+          'ID1 is re-read at most six times more (keys 71, 72, 95, 97, 99 and 102), not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
           'ID2 (stage 4) is read BEFORE the stage-6 ID0/ID1 pair (same poll)')
@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 101u' in _fw,
+    check('fwKey >= 7u && fwKey <= 104u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1694,7 +1694,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 101u)' in code,
+    check('(fwKey >= 7u && fwKey <= 104u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3847,7 +3847,7 @@ def main():
     check(_i99101 > _i9798, 'stage 6 does NOT find the ROUND 246 block after the R245 block')
     _k99101 = ''
     if _i99101 > 0:
-        _k99101 = code[_i99101:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        _k99101 = code[_i99101:].split('\nif (fwKey == 102u || fwKey == 103u || fwKey == 104u) {\n', 1)[0]
     check(_k99101 != '', 'stage 6 does NOT slice the ROUND 246 block')
     check(_k99101.count('gmuW[') == 5,
           'stage 6 finds %d GMU stores in the R246 block (expected five)' % _k99101.count('gmuW['))
@@ -3901,6 +3901,67 @@ def main():
                  'HFI_QTBL_ADDR * 4u', 'HFI_QTBL_INFO * 4u'):
         check(_k99.count(_reg) == 1,
               'key 99 reads %r %d times (expected once)' % (_reg, _k99.count(_reg)))
+
+    # ---- ROUND 247: keys 102, 103 and 104 -------------------------------------------
+    # The descriptor is programmed and the firmware still never answers. Key 102 writes
+    # nothing at all, so the firmware-side registers are on record before any store. Key
+    # 103 releases the CM3 reset again with the queue table already in place and polls the
+    # init word (the poll carries IODelay so the writer keeps running), but writes no start
+    # word. Key 104 repeats that and adds the start word as the last action, then reads the
+    # status once, in the shape R245 key 97 showed is survivable.
+    _i0204 = code.find('if (fwKey == 102u || fwKey == 103u || fwKey == 104u) {')
+    check(_i0204 > _i99101, 'stage 6 does NOT find the ROUND 247 block after the R246 block')
+    _k0204 = ''
+    if _i0204 > 0:
+        _k0204 = code[_i0204:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+    check(_k0204 != '', 'stage 6 does NOT slice the ROUND 247 block')
+    check(_k0204.count('gmuW[') == 11,
+          'stage 6 finds %d GMU stores in the R247 block (expected eleven: five for the '
+          're-boot key, six for the re-boot plus start word)' % _k0204.count('gmuW['))
+    check(_k0204.count('HFI_CTRL_INIT] = ') == 1,
+          'the R247 block carries %d start words (expected only key 104)'
+          % _k0204.count('HFI_CTRL_INIT] = '))
+    check(_k0204.count('HFI_QTBL_ADDR] = ') == 2, 'both re-boot keys re-arm QTBL_ADDR')
+    check(_k0204.count('HFI_QTBL_INFO] = 1u') == 2, 'both re-boot keys re-arm QTBL_INFO')
+    check(_k0204.count('CM3_SYSRESET] = 1u') == 2 and _k0204.count('CM3_SYSRESET] = 0u') == 2,
+          'both re-boot keys release and hold the CM3 reset exactly once each')
+    check(_k0204.count('PWR_COL_CP_RESP] = 0u') == 2,
+          'both re-boot keys clear the response word like a6xx_gmu_start does')
+    check(_k0204.count('for (') == 3,
+          'the R247 block has %d loops (the nine-word write and one poll per re-boot key)'
+          % _k0204.count('for ('))
+    check('IOSleep' not in _k0204, 'the R247 block sleeps')
+    for _row in ('gmu102a=', 'gmu102b=refused-cx-down', 'gmu102b=refused-geometry',
+                 'gmu102b=refused-no-queue-table', 'gmu102b=no-alloc-symbol',
+                 'gmu102b=alloc-failed', 'gmu102b=refused-build', 'gmu102b=build=',
+                 'gmu102c=plan=', 'gmu102d=wrote=', 'gmu102e=smr_set', 'gmu102f=s2cr_set',
+                 'gmu102g=last_row=1', 'gmu102h=pre_start=1',
+                 'gmu103h=cm3_reboot=1 no_start=1', 'gmu104h=cm3_reboot=1 about_to_start=1',
+                 'gmu104i=after_start=1'):
+        check(_row in _k0204, 'the R247 block does NOT print %r' % _row)
+    check('0xbabefaceu' in _k0204, 'the poll does NOT compare against the init word')
+    # Key 104 first, then key 103, then the snapshot key as the else branch.
+    _i104 = _k0204.index('if (r102mode == 104) {')
+    _i103 = _k0204.index('} else if (r102mode == 103) {')
+    _k104 = _k0204[_i104:_i103]
+    _i102 = _k0204.index('} else {', _i103 + 1)
+    _k103 = _k0204[_i103:_i102]
+    _k102 = _k0204[_i102:]
+    check(_i104 < _i103 < _i102, 'the R247 branches are not ordered 104 / 103 / 102')
+    check(_k103.count('gmuW[') == 5, 'key 103 carries %d stores (expected five)' % _k103.count('gmuW['))
+    check('HFI_CTRL_INIT' not in _k103, 'key 103 writes the start word although it says no_start')
+    check('IODelay(1u)' in _k103, 'key 103 polls the init word without letting the writer run')
+    check(_k104.count('gmuW[') == 6, 'key 104 carries %d stores (expected six)' % _k104.count('gmuW['))
+    check(_k104.rindex('HFI_CTRL_INIT] = ') > _k104.index('gmu104h=cm3_reboot=1'),
+          'key 104 starts the HFI before its pre-start row')
+    check(_k104.rindex('HFI_CTRL_INIT] = ') < _k104.index('gmu104i=after_start=1'),
+          'key 104 prints its post-start row before the store')
+    check(_k102.count('gmuW[') == 0, 'key 102 writes %d GMU words although it is read-only'
+          % _k102.count('gmuW['))
+    check(_k102.count('rd32(') >= 12, 'key 102 reads %d registers (expected at least twelve)'
+          % _k102.count('rd32('))
+    check('HFI_SFR_ADDR' in _k102 and 'CM3_BOOT_CONFIG' in _k102 and 'RPMH_CTRL' in _k102,
+          'key 102 does NOT cover the firmware-side identity and configuration registers')
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))
