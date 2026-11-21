@@ -5076,3 +5076,160 @@ gmu104i=after_start=1 ctl=00000000 info=00000000 cpresp=00000000 qtbli=00000001 
 4. **新键块必须追加、不能替换**：`work/tmp/r247_block.py` 初版把 R246 块整块替换掉了，靠 `gmuW` 严格计数只 +6（应为 +11）才发现；恢复用 `git show :package/EnchiladaAdrenoProbe.cpp`（PowerShell 重定向写的是 UTF-16LE，要 `decode("utf-16")`）。
 5. **独立变量要单独核**：派生时带过来的 `r102RowF2` 未被使用，`-Werror,-Wunused-variable` 让 host 门失败；这属于「派生块里凡是没被引用的缓冲都要删」。
 6. **源码级门的上限会随轮次漂移**：`rd32(gSmmuVa, 0x24u)` 从 5 涨到 7 处、`for (` 计数从 1 涨到 3 处，两处断言都要在同步时一起改。
+
+## 七十二、ROUND 248：把 init 字清零再复位 —— babeface 自己回来了，说明固件真的重跑了；而清掉请求位或中断都改变不了沉默
+
+### 72.1 一句话
+
+R247 的 `polls=1` 有两种解释，这一轮把含糊消掉了：先把 `CM3_FW_INIT_RESULT` 写零（读回 `00000000` 证明零立住了），再脉冲复位 —— `babeface` **自己回来了**，而且这次花了 4 次轮询。指令写回来的，不是复位没清掉的旧值。同一轮里清掉 `HFI_CTRL_INIT` 再写回 1（键 106）、清掉两个中断块 CLR 再启动（键 107），`ctl` 的 bit 0 **仍然是 0**：过期的请求位和挂起的中断都不是沉默的原因。
+
+### 72.2 为什么先解决 `polls=1` 这个含糊，而不是去重写 `PWR_COL_CP_MSG`
+
+R247 留下两个可以说清却没说的点。第一，`polls=1` 既可能是「固件真的重跑了」也可能是「复位根本没清 DTCM，旧值还在」。第二，从没有人清过可能残留的请求位与中断。这两条都可以用同一份已经被证明能落盘的形状直接测掉；而「重写 `PWR_COL_CP_MSG`」既没有新的判据，也无法区分它和 R247 已经写过的 CP_MSG。所以 R248 换了三键，而不是照 §71.13 的原案去做 §71.13 的三键。
+
+清零这件事必须**先读回、再复位**，否则 `after_clear` 只由代码路径保证。键 105 的 `gmu105h` 行就是为了把这一步变成设备证词：`before=babeface after_clear=00000000`。
+
+### 72.3 代码形状
+
+三个键共享 R244 的整套 setup（2 MiB identity 块覆盖队列表所在页、九笔 context-bank 字、`SMR0 = VALID|SID 4`、`S2CR0 = TRANS|CB0`），差别只在本轮问的问题：
+
+| 键 | 复位前 | 复位后 | 启动字 | 读回 |
+|---|---|---|---|---|
+| 105 | 把 `CM3_FW_INIT_RESULT` 写 0（并读回） | 五笔 CM3 再启动 + 有界 poll | **不写** | `gmu105h`、`gmu105i` |
+| 106 | 同 105 | 同 105 | 先写 `HFI_CTRL_INIT = 0`，再写 `= 1` 作为**最后动作** | `gmu106j`（清零后）、`gmu106k`（启动后一次读四个字） |
+| 107 | 同 105 | 同 105 | 先清 `GMU2HOST_INTR_CLR` 与 `AO_HOST_INTERRUPT_CLR`，再写启动字 | `gmu107j`、`gmu107k` |
+
+三键都不含 `IOSleep`、都不做轮询式长等待；poll 是 200000 轮上限、每轮 `IODelay(1u)`，而本次实测 4 轮就命中，所以**整轮仍然只有一个 writer 窗口的余量压力**。GMU 写点从 222 增加到 245（+23：每键六笔 = 18，键 106 的请求位两笔、键 107 的两个 CLR 各一笔）。
+
+### 72.4 构建与门禁（CI-VERIFIED / HOST-VERIFIED）
+
+- 分支 `r248-init-word` → commit `d3f4f5ecde8d6cc174aacf5b874c11d2926d429b`（tree `9fb7d6002f68260fce2446bb7d99447edc0ca101`），CI **#359 / run `44857868260`** `completed/success`，`2026-11-21T02:48:37Z → 03:04:41Z`，**28/28 步**。
+- 产物：`kernel.macho` **126,267,392 B** sha256 `ba24da4688bce292c7e2fd3fde4cc52946c33c09150be07cdfd25a311e4a052e`；`payload.img` **150,994,944 B** sha256 `7019acad10a15dcfabf4bb41d156741c2a0b705ea1f3d4f872401b7a41fcc608`。
+- 静态门 `r248_static.py`：24 条 REQUIRED/SURVIVORS 在两份产物里都在、`enchilada-pas-exec` kernel=1 payload=2、2 条禁区为空、固件钉 `b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f`（32,768 B）→ **`PASS: R248 static gate`**。
+- **门自证区分能力**：把同一份门指向 `r247-kernel/kernel.macho` 与 `r247-payload/payload.img` → 24 条全 0、**`FAIL: R248 static gate (24 problems)`**。
+- stage6 **1336/1336**、host 门 **28/28** + `PASS: enchilada adreno probe shim + modules type-check (host stub, arm64 Mach-O)`、全量 `verify-enchilada-*.py` **ran 46 of 48, FAILING: 0**。
+
+### 72.5 键 105 读数（DEVICE-VERIFIED）
+
+`boot_id 583913461`，窗口 sha256 `569d733749aa47c178a7fd731058fb11fd0fc97049efd756b556312994c85512`，**9/9 行**：
+
+```
+gmu105a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 key=105 mode=105 qtbl=ad947000
+gmu105b=build=0 need=3 tables=3 writes=3 root=ad960000 base=ad800000 ias=48 oas=36 ok=1
+gmu105c=plan=0 n=9 abs=0 nab=9 cbndx=0 ttbr=ad960000 cw=1 id0=48016605
+gmu105d=wrote=9 ttbr0=ad960000/00000000 sctlr=00001067 tcr=00803510 cbar=0001f300 root=ad960000
+gmu105e=smr_set wanted=80000004 back=80000004 valid=1 sid=4 landed=1
+gmu105f=s2cr_set wanted=00000000 back=00000000 typew=00000000 landed=1
+gmu105g=last_row=1 about_to_start=0 mode=105 route=1 smr=80000004 s2cr=00000000 qtbl=ad947000 base=ad800000
+gmu105h=init_cleared=1 before=babeface after_clear=00000000 about_to_reset=1
+gmu105i=reboot=1 fwinit=babeface polls=4 sysreset=00000000 cfg=00004052 ctl=00000000 win=1 survived=1
+```
+
+判据命中的是第三条：`after_clear=00000000` 与 `fwinit=babeface` 同时为真 ⇒ **固件在复位之后真的又执行了一遍**，`babeface` 是被指令写回来的。
+
+### 72.6 键 106 读数（DEVICE-VERIFIED）
+
+`boot_id 584210510`，窗口 sha256 `4aca518993611d4d487c28c849c340c9aa79975a722f3352c00836b5bc091b70`，**11/11 行**，关键三行：
+
+```
+gmu106h=init_cleared=1 before=babeface after_clear=00000000 about_to_reset=1
+gmu106i=reboot=1 fwinit=babeface polls=4 sysreset=00000000 cfg=00004052 ctl=00000000 win=1 survived=1
+gmu106j=request_cleared=1 ctl=00000000 fwinit=babeface about_to_start=1
+gmu106k=after_start=1 ctl=00000000 info=00000000 cpresp=00000000 qtbli=00000001 survived=1
+```
+
+`ctl` 在清掉请求位之后仍然是 0，写回 1 之后仍然是 0 ⇒ **过期的请求位不是沉默的原因**。
+
+### 72.7 键 107 读数（DEVICE-VERIFIED）
+
+`boot_id 584625589`，窗口 sha256 `343c6a004bf95eba79f76667fe362726afd500e9f3c3239b4e24554c05296c7a`，**11/11 行**，关键三行：
+
+```
+gmu107h=init_cleared=1 before=babeface after_clear=00000000 about_to_reset=1
+gmu107i=reboot=1 fwinit=babeface polls=4 sysreset=00000000 cfg=00004052 ctl=00000000 win=1 survived=1
+gmu107j=interrupts_cleared=1 info=00000000 mask=00000000 ao=00000000 about_to_start=1
+gmu107k=after_start=1 ctl=00000000 info=00000000 cpresp=00000000 qtbli=00000001 survived=1
+```
+
+清两个中断块之后 `ctl` 仍是 0、`info` 仍是 0 ⇒ **挂起的中断不是沉默的原因**。顺带一个新事实：启动字写下之前 `GMU2HOST_INTR_MASK` 读出来是 **0**，即那一刻该中断块上一个源都没开。
+
+### 72.8 判决
+
+1. **`polls=1` 的含糊结案，且方向是「真的重跑了」**：init 字先被清零并读回确认，复位后又变成 `babeface`，且这次要 4 次轮询。R247 的 `polls=1` 是因为它从没清过这个字，读到的是上一轮留下的值。
+2. **清请求位与清中断都不改变 `ctl` 的 bit 0**：两种「陈旧状态」解释被排除。
+3. **沉默的位置在固件内部**：CM3 复位后重新执行、写入自己的 init 字，但从不置 `HFI_CTRL_STATUS` bit 0、从不写 `PWR_COL_CP_RESP`、从不置 `GMU2HOST_INTR_INFO`。
+4. **形状本身继续免疫**：三键都是 fresh 窗口（新 boot_id + 新 sha256 + 行内 `key=` 与键值一致），本移植第一次在同一轮里既做了复位、又清了两类状态、还写了启动字，并且全部落盘。
+
+### 72.9 必须分开说的三件事
+
+- `gmu107j` 的 `mask=00000000` 是本轮**新读到**的事实，但它描述的是「启动字之前那一刻」，不能反推 R237 那轮把掩码写成 `ffffffff` 之后再启动的情形。
+- `gmursc`/`gmustat` 的 `intr` 在这三份窗口里都是 `00000000`，而 R244–R246 那五轮一直是 `00800000`（CM3_FAULT）。本轮**没有**试图解释这个差异，只登记：它不是稳定的、可复现的开机状态。
+- 本轮**没有**读 `CB_FSR` 与 `sGFSR`（R245 键 97 读过：`cbfsr=00000402`、`gfsr=00000000`）。所以「没有 fault」这句话本轮没有新证据，仍引 R245。
+
+### 72.10 单变量表（R219 键 66 → R248 键 107）
+
+| 轮次/键 | 这一轮只改了什么 | 结果 | boot_id |
+|---|---|---|---|
+| R219 键 66 | 什么都不写（对照） | 3/3 | 582344900 |
+| R222 键 66 | 加一笔 `HFI_CTRL_INIT=1` | 0/3 | — |
+| R223 键 66 | 同一笔写 `0` | 3/3 | 583170095 |
+| R238 键 80 | 四笔掩码，`start_next=0` | 3/3 | 586963994 |
+| R238 键 81 | 四笔掩码 + 启动字（哨兵表） | 0/3 | — |
+| R239 键 82 | 启动字写 `0` | 3/3 | 586092751 |
+| R239 键 83 | 先清 `QTBL_INFO` 再启动 | 4/4 | 585892346 |
+| R240 键 84 | 描述符指向全零页 | 0/4 | — |
+| R240 键 85 | 阳性对照（真表 + 启动字） | 0/3 | — |
+| R241 键 86 | 零 SMMU 写（对照） | 3/3 | 587123969 |
+| R241 键 88 | `SMR0 = VALID\|SID 4` 并复原 | 5/5 | 585520255 |
+| R241 键 87 | 写 `S2CR0 = BYPASS` | 5/5（被钳成 FAULT） | 586132469 |
+| R242 键 89 | 只读 `0xC00/0xC04/0xC08` | 4/4 | 586058586 |
+| R242 键 91 | 同值写回 `S2CR0` | 5/5 | 585960701 |
+| R242 键 90 | 路由 + 启动字 | 0/6 | — |
+| R243 键 92 | 只读 `S2CR0..4` + `sGFSR` | 4/4 | 585424163 |
+| R243 键 93 | 写 `S2CR0 = TRANS` | 4/4 | 585816702 |
+| R243 键 94 | 路由 + 启动字（哨兵表） | 0/6 | — |
+| R244 键 96 | 2 MiB identity 表 + 路由，不启动 | 8/8 | 585220336 |
+| R244 键 95 | 同上 + 启动字 | 7/7 | 585373771 |
+| R245 键 98 | 键 95 逐字复现 | 7/7 | 587175491 |
+| R245 键 97 | 启动后读 `ctl/fwinit/gfsr/cbfsr/ao` | 8/8 | 586639327 |
+| R246 键 99 | 启动后读 `ctl/cpmsg/cpresp/qtbl*` | 8/8 | 584949295 |
+| R246 键 100 | 启动前重新武装描述符并读 `ctl` | 8/8 | 584935029 |
+| R246 键 101 | 双 SID 路由 + 启动字 | 8/8 | 583926476 |
+| R247 键 102 | 零 GMU 写的快照 | 8/8 | 585194661 |
+| R247 键 103 | CM3 复位，不启动 | 8/8 | 586194441 |
+| R247 键 104 | CM3 复位 + 启动字 | 9/9 | 584880976 |
+| **R248 键 105** | **清零 init 字 + CM3 复位，不启动** | **9/9** | **583913461** |
+| **R248 键 106** | **同上 + 清请求位 + 启动字** | **11/11** | **584210510** |
+| **R248 键 107** | **同上 + 清两个中断块 + 启动字** | **11/11** | **584625589** |
+
+### 72.11 没有证明什么
+
+- 没有证明固件**完成了**它的初始化：`babeface` 是「init 结果」字，本轮只证明它被写了一次，不证明写完之后固件继续跑了多远。
+- 没有证明 `ctl` bit 0 是唯一会变的位：本轮只读这一个字，没有把 `HFI_CTRL_STATUS` 的其余位逐位列出来。
+- 没有证明固件真的读了队列表：读表要通过 SMMU，而本轮没有读 `CB_FSR`，也没有在复位后重新对齐 `HFI_QTBL_ADDR` 到固件会用的 IOVA。
+- 没有证明 4 次轮询是「执行时间」而不是轮询粒度的产物：`IODelay(1u)` 的实际长度未知（R204 测到它比参数快约 60 倍）。
+- 没有证明清中断块「没有副作用」：`mask=0` 那一刻的状态只这一次读到。
+- 没有改变 R240 的结论（致死与表的内容无关），因为 R240 用的是哨兵叶子表而 R244 之后用 2 MiB identity 表，两者的死都发生在「表是否覆盖队列页」这一个变量上。
+
+### 72.12 三条边界
+
+- `polls=4` 与 `IODelay(1u)` 的真实时长绑定，任何「固件启动需要多久」的推论都不能引用这个数字。
+- `gmu107j` 的 `mask=0`/`ao=0` 只描述那一刻；不能据此说 GMU 中断块整体是断开的。
+- 本轮所有读数都在**同一个 writer 轮**之内落盘；跨轮的长时序（例如固件在几百毫秒后才置位）本轮**没有**覆盖。
+
+### 72.13 R249 设计
+
+问题已经从「固件受不受理」收窄到「固件受理之后为什么没有任何反应」，而且新证据把方向指向固件内部的时序：
+
+- **键 108**：键 107 的形状 + 启动字之后用 `IODelay(1u)` 有界轮询 `HFI_CTRL_STATUS` 的 bit 0（上限让它最多跑约 3 秒，即 R201 实测过 writer 仍能跑的时长），命中即停，然后一行回读 `ctl/fwinit/cpresp/qtbli`。这会回答「是不是只是需要时间」。
+- **键 109**：同键 108，但轮询的是 `CM3_FW_INIT_RESULT` 与 `HFI_CTRL_STATUS` 两个字的**变化**（打印起始值与结束值），并在最后读 `CB_FSR`（`cb_base + 0x58`）与 `sGFSR`（`0x048`）。这会回答「固件在这 3 秒里有没有动过任何字」。
+- **键 110**：键 108 的形状，但启动字之前把 `HFI_QTBL_ADDR` 再写一次（值不变）并把 `HFI_QTBL_INFO` 写成 0 再写 1，看固件是否只在启动那一刻读描述符。
+
+### 72.14 本轮的工具事实
+
+- `r248_block.py` 从 R247 块文本派生：`reboot_stores()`/`poll()` 首次因字符串拼接漏 `+` 报 `SyntaxError`；`%%08x` 在纯拼接的片段里会原样进 C 源，必须在生成后把 `%%` 折叠成 `%`（否则 `-Werror,-Wformat-extra-args`）。
+- R248 块必须**追加**在 R247 块之后；两次踩过「`t[:i] + new + t[j:]` 把上一块整块替换掉」，所以这次改用 `t[:j] + new + t[j:]`，并在生成后核对 `R247 block still present: True`。
+- stage4/5 的 R247 切片终止符原本是门铃梯子，R248 插在它前面之后 R247 切片把 R248 吞了（复位脉冲从 2 变成 5）；必须把终止符前移到 R248 块头。这已经是同一类错误的第三次。
+- stage6 里「启动字是最后一笔」不能用 `rindex('gmuW[')` 与 `index('HFI_CTRL_INIT] = 1u;')` 比较偏移（前者是 store 起点、后者是寄存器名起点，差二十来个字符），只能用「启动字之后 `gmuW[` 计数为 0」。
+- host 门的预算注释里有很长的一行单引号串，插入新句子时锚点必须选**该串内部的片语**（不带引号），否则会命中 0 次。
+
