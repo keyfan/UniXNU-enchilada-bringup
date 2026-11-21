@@ -5372,3 +5372,109 @@ R249 把「时间」「描述符」「fault」三条都排掉之后，剩下的�
 - stage6 里定位分支切片时**必须用 `rindex('} else {')`**：preamble 的拒绝梯子本身就以 `} else {` 结尾，用 `index` 会让三个分支切片全部描述错误代码。这已经是同一类错误的第四次。
 - `work/tmp/r249_static.py` 的 REQUIRED 列表是从探针源码里用「拼接相邻 C 字面量」的解析器取出来的（`work/tmp/r249_fmt2.py`），不是手抄的；手抄的格式串在长行被拆开时会悄悄失配。
 - 三个 runner 由 `work/tmp/r249_mkrun.py` 从 `r248_s105_run.py` 派生，判决区整段替换、`_ROWS` 用显式行名表、`PREV_BOOT`/`PREV_SHA` 是占位符，随后用 `r249_anchor.py` 锚到上一轮的真实读数。取件、静态门、自证、三次上机全部按这个顺序完成。
+
+## 七十四、ROUND 250：门铃不响，电源字有值，而启动字一写下去 CM3 就报 fault
+
+### 74.1 一句话
+三个键都落盘（键 111 13/13、键 112 12/12、键 113 13/13）；门铃（`HOST2GMU_INTR_SET`）**没有任何回应**，电源与帧控制字**不是零**，CM3 复位**不清** `HFI_SFR_ADDR` 与 `PWR_COL_CP_MSG`；而在写完启动字之后，`GMU2HOST_INTR_INFO` 的 **bit 23（`CM3_FAULT`）在键 111 与键 112 两次都被置起**。这是本移植第一次拿到「固件真的对启动字做了一件事」的直接读数。
+
+### 74.2 为什么是这三个键，而不是 §50.9 的原案
+§50.9 原案是（键 111 给 `HOST2GMU_INTR_SET` 门铃 / 键 112 写电源寄存器 / 键 113 重写两个地址看是否被保留），本轮**保留了三个主题但把形状改成一段共享序**：
+- R249 的三个键各自重复一遍六笔前置（清 init 字 + 五笔 CM3 再启动 + poll + 两笔中断清），导致「每个键到底差了什么」阅读成本很高；
+- 本轮把这八笔放进**一段共享 preamble**，三个键只在启动字周围各自差一处：
+  - **键 111**：读 `GMU2HOST_INTR_INFO`/`AO_HOST_INTERRUPT_STATUS` → 写一笔门铃 → 再读 info/mask/ao → 启动字 + 有界 poll。**目的**：把「GMU 会不会回应主机门铃」从假设变成测量。
+  - **键 112**：打印 `PWR_COL_INTER_FRAME_CTRL`、它的延迟/历史字、`CM3_CFG`、`CM3_BOOT_CONFIG`、`CM3_SYSRESET`，启动字之后再打一次。**目的**：每份窗口里 `gmurpmh=... ack=00000000 apolls=400000 ok=0` 从未成功，本轮把电源侧的字直接打出来。
+  - **键 113**：先读 `HFI_SFR_ADDR` 与 `PWR_COL_CP_MSG`，再**用它们原本持有的值写回**（不发明常量），读回，再启动。**目的**：若 CM3 复位把这两个寄存器悄悄清了，`sfr_zero`/`cpmsg_zero` 会直接显示出来。
+- 得失：共享 preamble 让本轮的 14 笔 GMU 写点剪到最少（274 → **288**），但也意味着三个键共享同一次复位：若前置本身有错，三个键会一起错。这一点在 74.9 单独列出。
+
+### 74.3 代码形状
+| 位置 | 内容 |
+|---|---|
+| 共享 preamble | 九笔 CB0 写入（`TTBR0 = root_paddr`，`SCTLR` 最后）+ `SMR0 = VALID\|SID 4` + `S2CR0 = TRANS\|CBNDX 0` + 清 `CM3_FW_INIT_RESULT` 并读回 + 五笔 CM3 再启动（`QTBL_ADDR`/`QTBL_INFO`/`SYSRESET=1`/`CP_RESP=0`/`SYSRESET=0`）+ 有界 poll（200000 轮、每轮 `IODelay(1u)`、命中 `0xbabefaceu` 即 break）+ 两笔中断清除 |
+| 键 111 | 行 K 打印 info/ao → `HOST2GMU_INTR_SET = 1u` → 行 L 打印 set/info/mask/ao → 启动字 → 行 M 打印 ctl/bit0/polls/fwinit/info/cpresp/qtbli |
+| 键 112 | 行 K 打印 ifc/hyst/cm3cfg/bootcfg/sysreset → 启动字 → 行 L 打印 ctl/bit0/polls/fwinit/ifc/cpmsg/info |
+| 键 113 | 行 K 打印 sfr/cpmsg/qtbl/sfr_zero/cpmsg_zero → 两笔重写（各带 `dsb sy`）→ 行 L 打印 want/back 与 landed → 启动字 → 行 M |
+- 三个分支都**以启动字为自己的最后一笔 store**；启动字之后只剩 `dsb`、结果读取与打印。无 `IOSleep`、无紧循环。
+
+### 74.4 构建与门禁
+- 探针：**649,735 字符 / 9,609 行**；arm 窗口 `(fwKey >= 7u && fwKey <= 113u)`；`gmuW[...] =` 严格计数 **288**；`reinterpret_cast<volatile uint32_t *>` **63**。
+- 分支：`r250-arrival`，commit **`246a75113c80758678e0d4e7116af84f3b3afe99`**，tree `da9131d731c38113972be92da17957bc4e97d58e`。
+- CI：**#361 / run `44866225854`** `completed / success`，job `build` `04:27:51Z → 04:47:22Z`，**28/28 步**。
+- 产物：`work/tmp/r250-kernel/kernel.macho` **126,267,392 B** sha256 `d913966327e583ddf7043b297324d061ecd8c1bc8c75bb8ec6e6e791417eb963`；`work/tmp/r250-payload/payload.img` **150,994,944 B** sha256 `69875e314a8a9848d17710f83801f459156a972f3d8a47b9d687fedef6ae7664`。
+- 静态门：`required+survivors present in the probe source: 35 checked`、`required+survivors: 35 checked in both artefacts`、`key marker 'enchilada-pas-exec': kernel=1 payload=2`、`forbidden: 2 checked`、固件钉 `b07f9029…`（32,768 B）→ **`PASS: R250 static gate`**。
+- **门自证区分能力**：指向 `r249-kernel`/`r249-payload` → 25 条 required 全 0 → **`FAIL: R250 static gate (25 problems)`**。
+- 其余门：stage6 **1415/1415**、stage4 **61/61**、stage5 **48/48**、host 门 **28/28**（`PASS: enchilada adreno probe shim + modules type-check (host stub, arm64 Mach-O)`）、全量 `verify-enchilada-*.py` **ran 46 of 48, FAILING: 0**。跑门禁必须把 `TMP`/`TEMP` 指到 `work\tmp\clangtmp`，否则 `clang-23: error: unable to make temporary file: Permission denied`。
+
+### 74.5 键 111 读数（DEVICE-VERIFIED）
+rekey 后 payload sha256 `3ae306d08759a6de7efd0237b3699a0abf1895b6851c06de51ca3f830dd6edcf`；每次上机前 `check-reboot-to-twrp.py --arm` PASS，下机后看门狗 36–40 秒自动回 TWRP，无按键。
+- boot_id **624391291**，窗口 `work/tmp/r250_s111_window.bin` sha256 **`06d3a912f82213f6b5200126aec8f214b578e352c2778cba28008b9d396b0d6a`**，**13/13 行全部落盘**。
+```
+gmu111a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 key=111 mode=111 qtbl=ad949000
+gmu111b=build=0 need=3 tables=3 writes=3 root=ad960000 base=ad800000 ias=48 oas=36 ok=1
+gmu111c=plan=0 n=9 abs=0 nab=9 cbndx=0 ttbr=ad960000 cw=1 id0=48016605
+gmu111d=wrote=9 ttbr0=ad960000/00000000 sctlr=00001067 tcr=00803510 cbar=0001f300 root=ad960000
+gmu111e=smr_set wanted=80000004 back=80000004 valid=1 sid=4 landed=1
+gmu111f=s2cr_set wanted=00000000 back=00000000 typew=00000000 landed=1
+gmu111g=last_row=1 about_to_start=1 mode=111 route=1 smr=80000004 s2cr=00000000 qtbl=ad949000 base=ad800000
+gmu111h=init_cleared=1 before=babeface after_clear=00000000 about_to_reset=1
+gmu111i=reboot=1 fwinit=babeface polls=4 sysreset=00000000 cfg=00004052 ctl=00000000 win=1 survived=1
+gmu111j=interrupts_cleared=1 info=00000000 mask=00000000 ao=00000000 about_to_start=1
+gmu111k=before_doorbell info=00000000 ao=00000000 about_to_ring=1
+gmu111l=rang_doorbell set=00000001 info=00000000 mask=00000000 ao=00000000
+gmu111m=after_start=1 ctl=00000000 bit0=0 polls=200000 fwinit=babeface info=00800000 cpresp=00000000 qtbli=00000001 survived=1
+```
+**读法**：门铃写下去之后立即读回的 `info` 仍是 `00000000`、`mask` 也是 0 → 门铃**没被接受**；而启动字之后的 `info=00800000` 是 `GMU2HOST_INTR_INFO` 的 **bit 23**，按 `a6xx_gmu.xml` 的位域定义就是 `CM3_FAULT`。
+
+### 74.6 键 112 读数（DEVICE-VERIFIED）
+payload sha256 `719fb50e41e498b3a170c16f4c9f8ca57627c58f3829369f691d2be0ff41870c`；boot_id **640349468**，窗口 `work/tmp/r250_s112_window.bin` sha256 **`64dfa8421e54ebdfeef5f14cf24f376f306396c3a9cbf9f479f3570ba519dade`**，**12/12**：
+```
+gmu112k=power_state ifc=09c40405 hyst=000a2710 cm3cfg=00004052 bootcfg=00000002 sysreset=00000000 about_to_start=1
+gmu112l=after_start=1 ctl=00000000 bit0=0 polls=200000 fwinit=babeface ifc=09c40405 cpmsg=ad94b000 info=00800000 survived=1
+```
+**读法**：窗口里每一份都打印的 `gmurpmh=... ack=00000000 apolls=400000 ok=0` 不能再被当成「电源字是零」：`PWR_COL_INTER_FRAME_CTRL` 的实测值是 **`09c40405`**，启动字前后**逐位相同**；`hyst=000a2710`。所以失败在握手而不在寄存器。同一行里 `info=00800000` 再一次出现 —— **键 111 与键 112 都看到启动字后 CM3 报 fault**。
+
+### 74.7 键 113 读数（DEVICE-VERIFIED）
+payload sha256 `5cd19e227d5134b5df1efaa1b7d968a40114c42bf5fd72d8af78c5629afb62a6`；boot_id **631958867**，窗口 `work/tmp/r250_s113_window.bin` sha256 **`86fe38ce2bdf3708eb89b3082fc50cc8cdfe48e6e51184d84b62847b9843c078`**，**13/13**：
+```
+gmu113k=before_repoke sfr=06030100 cpmsg=ad949000 qtbl=ad946000 sfr_zero=0 cpmsg_zero=0
+gmu113l=repoke sfr_want=06030100 sfr_back=06030100 cpmsg_want=ad949000 cpmsg_back=ad949000 landed=1
+gmu113m=after_start=1 ctl=00000000 bit0=0 polls=200000 fwinit=babeface cpresp=00000000 qtbli=00000001 survived=1
+```
+**读法**：CM3 复位并**没有**清掉这两个寄存器（`sfr=06030100` 正是上游 `Chipid(0x06030001)` 的结果，与 R247 键 102 的读数一致），重写也原样落位（`landed=1`）。
+
+### 74.8 判决
+1. **门铃不是通道**：写 `HOST2GMU_INTR_SET = 1` 之后立即读到的 `info` 与 `mask` 逐位不变（`00000000`），且 `ctl` bit0 仍为 0。
+2. **电源字有值**：`ifc=09c40405`、`hyst=000a2710`、`cm3cfg=00004052`、`bootcfg=00000002`；启动字前后不变。因此 `gmurpmh ok=0` 不是「没有值」，而是「无人回应」。
+3. **复位不清地址**：`sfr_zero=0 cpmsg_zero=0`，且重写能落位。
+4. **启动字真的引起了固件侧的一个事件**：`GMU2HOST_INTR_INFO` bit 23 = `CM3_FAULT` 在键 111 与键 112 两次都被置起，而 `ctl` bit0 从来没被置起、`fwinit` 始终是 `babeface`。**这把「固件从不理会请求」改写成「固件接到了请求并 fault 了」**。
+
+### 74.9 必须分开说的三件事
+1. `info=00800000` 的读数发生在**启动字下写与 200000 轮 poll 之后**，中间还夹着一整段等待；因此时间点只能定到「启动字之后」，不能定到「那一笔 store 的瞬间」。
+2. 键 111 与键 112 都看到了 bit 23，但键 113 的行 M **格式里没有 `info=`**，所以三次上机中只有两次能读到它；不能写成「三次都有」。
+3. `GMU2HOST_INTR_MASK` 在三个键里都是 `00000000`（上游 `a6xx_gmu_irq_enable()` 会把它写成 `~A6XX_HFI_IRQ_MASK`），所以即使 CM3 fault 被置起，本引导也**从未以中断形式接到过它**；「报 fault」具体表现为寄存器位，不是中断。
+
+### 74.10 没有证明什么
+1. 没有读到 CM3 的 fault 原因寄存器（本轮没读 `GMU_GENERAL_*` 与 CM3 异常地址寄存器）。
+2. 没有分辨 fault 是「它读不到任何东西」还是「它读到了但拒绝接受」。
+3. 没有证明门铃在**上游顺序下**也不响（本轮的门铃写在二十一次 `HFI_CTRL_INIT` 都没成功的现状下发出）。
+4. 没有改变 R249 的结论：200000 轮的窗口里 `ctl` bit0 仍为 0。
+5. 没有证明 `polls=4` 的含义在本轮有变化（仍与 R248 的 4 次相同）。
+6. 没有解释为什么这三份窗口里 `gmursc intr=00800000` 又出现（R247/R248 六份窗口是 `00000000`）；该行由更早的块打印，位置在 `gmu111a` 之前，不能归因于本轮写入。
+
+### 74.11 三条边界
+1. `GMU2HOST_INTR_INFO` 的 bit 定义来自固定的上游源码（`drivers/gpu/drm/msm/registers/adreno/a6xx_gmu.xml`：`MSGQ` pos 0、`CM3_FAULT` pos 23），本仓库的 `AdrenoGmuBootV1.h` 只定义了偏移 `0x5192`、**没有**位域；本轮不新增头文件定义，以免把未验证的位当成已知。
+2. 这是一个时点读数，不是闭环证据：若 CM3 fault 与 `ctl` bit0 不被置起有因果关系，本轮还没分辨出来。
+3. 三个键共享一段前置，因此它们之间的差异只在启动字周围；前置若有错，三次上机会一起错，而且不会有一个孤立的读数发现它。
+
+### 74.12 R251 设计
+- **键 114**：共享前置之后，**写启动字前先把 `GMU2HOST_INTR_CLR` 再清一次并读回 `info`**，启动字之后**立即**（不做 200000 轮 poll，只读一次）读 `info`/`ctl` → 行 M 打印 `info_before_start` 与 `info_after_start`。**目的**：把 bit 23 的出现时点从「启动字之后某处」压到「启动字之后的第一次读取之前」。
+- **键 115**：共享前置之后，先把两个中断清除字再写一次并把 `GMU2HOST_INTR_MASK` 写成 `~CM3_FAULT`（即只开 bit23），然后写启动字，立即读 `info` 与 `mask`。**目的**：看 fault 在被允许、（理论上）能抗拒的情形下是否仍被置起 —— 若仍被置起，则它不是一个可清除的事件而是持续状态。
+- **键 116**：共享前置之后，**不写启动字**，只把上述三件事（读 info、写 mask、再读 info）做一遍作为对照。**目的**：把 bit 23 的出现与启动字彻底分开。
+
+### 74.13 工具事实（本轮新增）
+1. `work/tmp/r250_block.py` 首版把新块拼在 R249 块起点（`t[:i]`）而不是末尾，几乎删掉上一轮的块；发现方式是 `gmuW` 计数只 +6（应 +14）。今后拼接一律只能 `t[:j] + new + t[j:]`。
+2. 生成器里的 `IOLog("enchilada-adreno: %s\n", %s) % row` 会把 C 的 `%s` 填成缓存名，报 `-Werror,-Wformat-extra-args`；要写成 `'IOLog("enchilada-adreno: %%s\n", %s);' % row`。
+3. 生成器里的 `"%%08x"` 在拼字符串时不会被 Python 折叠，会原样进 C 源；需要显式 `replace("%%08x", "%08x")` 并断言无 `%%` 残留。
+4. stage6 的切片终止符第三次因为新块插在门铃梯子之前而失效（R249 块被 R250 块吞掉）；修法是把它换成新块的块头。
+5. `verify-enchilada-smmu-*.py` 会因为 clang 在工作区外建临时文件而报 `unable to make temporary file: Permission denied`；跑门禁前把 `TMP`/`TEMP` 指到 `work\tmp\clangtmp` 即可。
+6. 话窗头布局必须从 runner 自己的 `FMT` 读，不要自拼；本轮的三组读数都是 runner 打印的，没有手写解析。

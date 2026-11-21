@@ -140,9 +140,9 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 9,
-          'ID1 is re-read at most eight times more (keys 71, 72, 95, 97, 99, 102 and 108), not '
-          'in a loop')
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 10,
+          'ID1 is re-read at most nine times more (keys 71, 72, 95, 97, 99, 102, 108 and 111), '
+          'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
           'ID2 (stage 4) is read BEFORE the stage-6 ID0/ID1 pair (same poll)')
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 110u' in _fw,
+    check('fwKey >= 7u && fwKey <= 113u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 110u)' in code,
+    check('(fwKey >= 7u && fwKey <= 113u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4055,7 +4055,8 @@ def main():
     _i0810 = code.find('if (fwKey == 108u || fwKey == 109u || fwKey == 110u) {')
     check(_i0810 > _i0507, 'the R249 block follows the R248 block in the source')
     if _i0810 > 0:
-        _k0810 = code[_i0810:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        _k0810 = code[_i0810:].split(
+            '\nif (fwKey == 111u || fwKey == 112u || fwKey == 113u) {\n', 1)[0]
         check(_k0810.count('gmuW[') == 29,
               'the R249 block holds twenty-nine GMU stores (got %d: nine per key, plus the two '
               'descriptor writes of key 110)' % _k0810.count('gmuW['))
@@ -4111,6 +4112,72 @@ def main():
               'key 110 writes the descriptor to 0 before the start word, not after it')
         check('cbfsr=' in _k109 and 'gfsr=' in _k109,
               'key 109 reads the context-bank and global fault registers back')
+
+
+    _i111113 = code.find('if (fwKey == 111u || fwKey == 112u || fwKey == 113u) {')
+    check(_i111113 > _i0810, 'the R250 block follows the R249 block in the source')
+    if _i111113 > 0:
+        _k111113 = code[_i111113:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        check(_k111113.count('gmuW[') == 14,
+              'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
+              'the three keys (got %d)' % _k111113.count('gmuW['))
+        check(_k111113.count('CM3_FW_INIT_RESULT] = 0u;') == 1,
+              'the R250 preamble clears the init word exactly once, not once per key (got %d)'
+              % _k111113.count('CM3_FW_INIT_RESULT] = 0u;'))
+        check(_k111113.count('HFI_QTBL_ADDR] = ') == 1 and
+              _k111113.count('HFI_QTBL_INFO] = 1u;') == 1,
+              'the R250 preamble re-arms the queue table once, not once per key')
+        check(_k111113.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 1 and
+              _k111113.count('AO_HOST_INTERRUPT_CLR] = 0xffffffffu;') == 1,
+              'the R250 preamble clears both interrupt blocks once, not once per key')
+        check(_k111113.count('HFI_CTRL_INIT] = 1u;') == 3,
+              'each R250 key writes the start word exactly once (got %d)'
+              % _k111113.count('HFI_CTRL_INIT] = 1u;'))
+        check(_k111113.count('HOST2GMU_INTR_SET] = 1u;') == 1,
+              'only key 111 rings the doorbell (got %d)'
+              % _k111113.count('HOST2GMU_INTR_SET] = 1u;'))
+        check(_k111113.count('HFI_SFR_ADDR] = ') == 1 and
+              _k111113.count('PWR_COL_CP_MSG] = ') == 1,
+              'only key 113 re-pokes HFI_SFR_ADDR and PWR_COL_CP_MSG')
+        check(_k111113.count('for (') == 5,
+              'the R250 block has the write loop, one re-boot poll and three status polls (got %d)'
+              % _k111113.count('for ('))
+        check(_k111113.count('IODelay(1u)') == 4,
+              'four polling loops each wait one interval per pass (got %d)'
+              % _k111113.count('IODelay(1u)'))
+        check('IOSleep' not in _k111113, 'no R250 key sleeps')
+        check('0xbabefaceu' in _k111113,
+              'the R250 preamble polls the firmware init word for the sentinel')
+        for _row in ('gmu111a=', 'gmu111b=', 'gmu111c=', 'gmu111d=', 'gmu111e=', 'gmu111f=',
+                     'gmu111g=', 'gmu111h=', 'gmu111i=', 'gmu111j=', 'gmu111k=', 'gmu111l=',
+                     'gmu111m=', 'gmu112k=', 'gmu112l=', 'gmu113k=', 'gmu113l=', 'gmu113m='):
+            check(_row in _k111113, 'the R250 block prints %s' % _row)
+        _i111 = _k111113.index('if (r111mode == 111) {')
+        _i112 = _k111113.index('} else if (r111mode == 112) {')
+        # rindex again: the rejection ladder ends with `} else {` too
+        _i113 = _k111113.rindex('} else {')
+        check(_i111 < _i112 < _i113, 'the R250 mode branches are ordered 111, 112, 113')
+        _k111 = _k111113[_i111:_i112]
+        _k112 = _k111113[_i112:_i113]
+        _k113 = _k111113[_i113:]
+        for _name, _br in (('111', _k111), ('112', _k112), ('113', _k113)):
+            _st = _br.index('HFI_CTRL_INIT] = 1u;')
+            check('gmuW[' not in _br[_st:],
+                  'no R250 store follows the start word of key %s' % _name)
+            check('for (' in _br[_st:],
+                  'key %s polls the status only after the start word' % _name)
+        _kpre = _k111113[:_k111113.index('if (r111mode == 111) {')].rstrip()
+        check(_kpre.endswith('IOLog("enchilada-adreno: %s\\n", r111RowJ);'),
+              'the R250 preamble ends with the pre-start row, so nothing is stored after the '
+              'interrupt clears')
+        check(_k111.index('HOST2GMU_INTR_SET] = 1u;') < _k111.index('HFI_CTRL_INIT] = 1u;'),
+              'key 111 rings the doorbell before the start word, not after it')
+        check('info=%08x' in _k111 and _k111.count('GMU2HOST_INTR_INFO') >= 2,
+              'key 111 reads the GMU interrupt info before and after the doorbell')
+        check('ifc=' in _k112 and 'hyst=' in _k112 and 'cpmsg=' in _k112,
+              'key 112 prints the power and frame words either side of the start')
+        check('sfr_zero=' in _k113 and 'cpmsg_zero=' in _k113 and 'landed=' in _k113,
+              'key 113 reports what the two registers held and whether the re-poke landed')
 
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))
