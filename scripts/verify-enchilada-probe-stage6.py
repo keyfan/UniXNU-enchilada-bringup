@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 12,
-          'ID1 is re-read at most eleven times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114 and 117), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 13,
+          'ID1 is re-read at most twelve times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117 and 120), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 119u' in _fw,
+    check('fwKey >= 7u && fwKey <= 122u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 119u)' in code,
+    check('(fwKey >= 7u && fwKey <= 122u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4128,7 +4128,11 @@ def main():
         _k117119 = ''
         if _i117119 > 0:
             _k117119 = code[_i117119:].split(
-                '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+                '\nif (fwKey == 120u || fwKey == 121u || fwKey == 122u) {\n', 1)[0]
+        _i120122 = code.find('if (fwKey == 120u || fwKey == 121u || fwKey == 122u) {')
+        _k120122 = ''
+        if _i120122 > 0:
+            _k120122 = code[_i120122:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
               'the three keys (got %d)' % _k111113.count('gmuW['))
@@ -4281,6 +4285,67 @@ def main():
           'R252 neither start word is followed by another store')
     check('HFI_CTRL_INIT] = 1u;' not in _k117119[_k117119.rindex('} else {'):],
           'R252 key 119 never writes the start word')
+
+    # ---- ROUND 253: three follow-up questions about the fault that key 117 finds.
+    check(_k120122 != '', 'R253 the follow-up block is present after the fault-timing block')
+    check(_k120122.count('gmuW[') == 16,
+          'R253 the round holds sixteen GMU stores: eight in the shared preamble and eight across '
+          'the three keys (got %d)' % _k120122.count('gmuW['))
+    check(_k120122.count('HFI_CTRL_INIT] = 1u;') == 3,
+          'R253 all three keys write the start word (got %d)'
+          % _k120122.count('HFI_CTRL_INIT] = 1u;'))
+    check(_k120122.count('GMU2HOST_INTR_MASK] = ') == 2 and
+          _k120122.count('0xff7fffffu') == 2,
+          'R253 keys 120 and 121 are the only ones that open the one interrupt source (got %d)'
+          % _k120122.count('GMU2HOST_INTR_MASK] = '))
+    check(_k120122.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 2,
+          'R253 the preamble clears the block once and key 120 clears it again after the bit shows '
+          '(got %d)' % _k120122.count('GMU2HOST_INTR_CLR] = 0xffffffffu;'))
+    check(_k120122.count('CM3_FW_INIT_RESULT] = 0u;') == 1,
+          'R253 the preamble still clears the init word once')
+    check(_k120122.count('HFI_QTBL_ADDR] = ') == 2 and
+          _k120122.count('HFI_QTBL_ADDR] = 0u;') == 1,
+          'R253 only key 122 writes a zero queue-table address (got %d address stores)'
+          % _k120122.count('HFI_QTBL_ADDR] = '))
+    check(_k120122.count('HFI_QTBL_INFO] = 1u;') == 2,
+          'R253 the preamble arms the descriptor and key 122 arms the zero one (got %d)'
+          % _k120122.count('HFI_QTBL_INFO] = 1u;'))
+    check(_k120122.count('for (') == 5 and _k120122.count('IODelay(1u)') == 4
+          and 'IOSleep' not in _k120122,
+          'R253 one loop in the preamble and one per key, all paced by IODelay (got %d loops)'
+          % _k120122.count('for ('))
+    check(_k120122.count('0xbabefaceu') == 1, 'R253 the preamble still waits for the init word')
+    _names253 = ['gmu120a=', 'gmu120b=', 'gmu120c=', 'gmu120d=', 'gmu120e=', 'gmu120f=',
+                 'gmu120g=', 'gmu120h=', 'gmu120i=', 'gmu120j=', 'gmu120k=', 'gmu120l=',
+                 'gmu121k=', 'gmu121l=', 'gmu122k=', 'gmu122l=']
+    _missing253 = [n for n in _names253 if n not in _k120122]
+    check(not _missing253, 'R253 every row of the round is present (%s)' % _missing253)
+    _i121m = _k120122.index('} else if (r120mode == 121) {')
+    check(_k120122.index('if (r120mode == 120) {') < _i121m <
+          _k120122.rindex('} else {'),
+          'R253 the three mode branches are ordered 120, 121, 122')
+    _b120 = _k120122[_k120122.index('if (r120mode == 120) {'):_i121m]
+    _b121 = _k120122[_i121m:_k120122.rindex('} else {')]
+    _b122 = _k120122[_k120122.rindex('} else {'):]
+    check(_b120.count('for (') == 1 and 'polls' in _b120,
+          'R253 key 120 polls the status word after its start word')
+    check(_b120.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 1 and
+          _b120.index('gmu120k=') < _b120.index('GMU2HOST_INTR_CLR] = 0xffffffffu;'),
+          'R253 key 120 clears the block only after it has reported the observation')
+    check(_b121.count('for (') == 1 and 'gmu121l=' in _b121 and
+          'CM3_SYSRESET * 4u' in _b121 and 'CM3_BOOT_CONFIG * 4u' in _b121,
+          'R253 key 121 re-reads the CM3 reset and boot config words after the poll')
+    check(_b122.count('for (') == 1 and
+          _b122.index('HFI_QTBL_ADDR] = 0u;') < _b122.index('HFI_CTRL_INIT] = 1u;'),
+          'R253 key 122 clears the queue-table address before its start word')
+    check(len(_store.findall(_b121[_b121.index('HFI_CTRL_INIT] = 1u;'):])) == 0 and
+          len(_store.findall(_b122[_b122.index('HFI_CTRL_INIT] = 1u;'):])) == 0,
+          'R253 keys 121 and 122 stop at the start word')
+    _after120 = _b120[_b120.index('HFI_CTRL_INIT] = 1u;'):]
+    check(len(_store.findall(_after120)) == 1 and
+          'GMU2HOST_INTR_CLR] = 0xffffffffu;' in _after120,
+          'R253 key 120 has exactly one store after the start word and it is the second clear (got %d)'
+          % len(_store.findall(_after120)))
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:

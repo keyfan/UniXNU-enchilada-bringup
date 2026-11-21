@@ -5797,3 +5797,136 @@ gmu119l=after_poll_no_start=1 ctl=00000000 bit0=0 polls=200000 info=00000000 mas
 - `r252_block.py` 的「stale digest」断言一度把**注释里的上一轮键名**当成残留代码：新注释里写「Key 114 形状」是必要的可读性，因此检查必须只作用于 C 代码段（`preamble[first_member:]`），而不是整段文本。
 - 探针编译门报 `-Werror,-Wshadow`：分支里重新声明 `unsigned r117w` 会遮蔽 preamble 的同名计数器。**新增分支必须复用 preamble 的循环变量**，不要重复声明。
 - stage6 的三处断言是我按记忆写错的：掩码那笔实际写的是变量（`= r117maskWant`）而非字面量、`GMU2HOST_INTR_CLR` 在本轮被写了 **3** 次（preamble 一次 + 两键各一次）、`IODelay` 在**去注释后的代码里**是 **4** 处而不是 6（注释里的那两处被剥掉了）。**断言要对着去注释后的代码数。**
+
+## 七十七、ROUND 253：清一次就把 fault 清掉了 —— 它不是留得住的状态，而是从来没有人清过的事件；把队列表地址清零则连日志都活不到
+
+### 77.1 一句话
+
+R252 说 `CM3_FAULT`（`GMU2HOST_INTR_INFO` bit 23）是「留得住的持续状态」，依据是「掩码只开这一位、清过一次、轮询满 200000 轮它还在」。这一轮的第一件事就是**再清一次**：`GMU2HOST_INTR_CLR = 0xffffffff` 写下去之后 `info` 立刻回到 `00000000`，而掩码**仍然**是 `ff7fffff` —— 它不是 latched 状态，**只是从来没有人清过它**。第二件事是命中之后读 CM3 自己的复位与配置字：`sysreset=00000000 bootcfg=00000002 cm3cfg=00004052`，与启动字**之前**的读数逐位相同 —— CM3 没有在自己 fault 的时候复位自己。第三件事是把队列表地址清零再请求启动：**整个启动连一行日志都没有提交**，窗口与上一轮逐字节相同。
+
+### 77.2 三键的设计与单变量
+
+三键共享同一段 preamble（SMMU CB0 九笔、identity 2 MiB 表、SMR/S2CR 路由、清 init 字、五笔 CM3 再启动、有界轮询、两笔中断清除），因此在每个键里**只多一件事**：
+
+| 键 | 多出来的那一件事 | 问的问题 |
+|---|---|---|
+| 120 | 轮询命中 bit 23 **之后再清一次** `GMU2HOST_INTR_CLR` | 它是能清掉的事件，还是只能靠复位才消失的锁存？ |
+| 121 | 命中之后读 `CM3_SYSRESET` / `CM3_BOOT_CONFIG` / `CM3_CFG` | fault 的时候 CM3 是不是自己复位或改了自己的配置？ |
+| 122 | 启动字**之前**把 `HFI_QTBL_ADDR` 写成 0、`HFI_QTBL_INFO` 写 1 | fault 是因为「读了一张坏表」，还是只需要「启动请求」本身？ |
+
+轮询的时间标定沿用 R201：200000 轮 × `IODelay(1u)` 约 3.17 秒。
+
+### 77.3 代码形状
+
+- 键 120：掩码 `0xff7fffff`（只开 bit 23）→ 启动字 → `for (200000)` 轮询 `HFI_CTRL_STATUS` bit 0 → 行 K `gmu120k=observed=1 ctl= bit0= polls= info= mask= about_to_clear=1` → **再清一次** `GMU2HOST_INTR_CLR = 0xffffffff` → 行 L `gmu120l=cleared_after=1 wrote= info= mask= qtbli= survived=1`。
+- 键 121：同样的掩码与启动字 → 同样的轮询 → 行 K `gmu121k=observed=1 … about_to_read_cm3=1` → 行 L `gmu121l=cm3_after=1 sysreset= bootcfg= cm3cfg= fwinit= info= ctl= survived=1`（**只读，不写**）。
+- 键 122：行 K `gmu122k=zero_table=1 qtbl_want=00000000 info_before= about_to_start=1` → 写 `HFI_QTBL_ADDR = 0`、`HFI_QTBL_INFO = 1` → 启动字 → 轮询 → 行 L `gmu122l=after_poll=1 ctl= bit0= polls= info= mask= qtbl_now= survived=1`。
+
+块内共 **16 笔 `gmuW`**（preamble 8 + 键 120 的 3 + 键 121 的 2 + 键 122 的 3）、5 个 `for (`，每个轮询都用 `IODelay(1u)` 让步，**不含 `IOSleep`**。
+
+### 77.4 构建与门禁
+
+- 分支 `r253-follow-up`，commit `73651e8763a627bfa9fa7d5311c3b65bf598225b`，tree `1e35c3ad407a98eeffba313b6c78142cc4dde3f2`。
+- CI **#364 / run `44879572074`**：`completed / success`，`2026-11-21T07:17:44Z → 07:36:36Z`，**28/28 步**。
+- 产物：`kernel.macho` **126,300,160 B** sha256 `f29ed0805de46954d6cc02658613b57efab114f17a46025c8edf5e0591245d52`；`payload.img` **150,994,944 B** sha256 `557866be4ded1e9b3328415f968bb82a301adf96015005431508d3c9be2e6ebc`。
+- 静态门 `r253_static.py`：`required+survivors present in the probe source: 35`、`in both artefacts: 35`、`key marker 'enchilada-pas-exec': kernel=1 payload=2`、`forbidden: 3 checked`、固件钉 `b07f9029…`（32,768 B）→ `PASS: R253 static gate`。
+- **门自证区分能力**：把同一份门指向 `r252-kernel` / `r252-payload` → 23 条 required 全部 `kernel=0 payload=0` → `FAIL: R253 static gate (23 problems)`。
+- 源码级门：stage4 **61/61**、stage5 **48/48**、stage6 **1461/1461**、host 门 **28/28**、全量 46/48 FAILING 0。
+- 探针：**712,460 字符 / 10,641 行**，arm 窗口 `(fwKey >= 7u && fwKey <= 122u)`，GMU 写点 **331**，`reinterpret_cast<volatile uint32_t *>` **78**。
+
+### 77.5 键 120 读数（DEVICE-VERIFIED，12/12 行）
+
+payload sha256 `118816d889e6b721b3f4a79dd15aee44174e8d75c2fd374703d6df4d438a900e`，boot_id **639527882**，窗口 sha256 **`e16f658e8d5298c55271f6ab732b1b906dcce6eda717718b9b20e450e832c181`**。
+
+```
+gmu120a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 key=120 mode=120 qtbl=ad94e000
+gmu120b=build=0 need=3 tables=3 writes=3 root=ad960000 base=ad800000 ias=48 oas=36 ok=1
+gmu120c=plan=0 n=9 abs=0 nab=9 cbndx=0 ttbr=ad960000 cw=1 id0=48016605
+gmu120d=wrote=9 ttbr0=ad960000/00000000 sctlr=00001067 tcr=00803510 cbar=0001f300
+gmu120e=smr_set wanted=80000004 back=80000004 valid=1 sid=4 landed=1
+gmu120f=s2cr_set wanted=00000000 back=00000000 typew=00000000 landed=1
+gmu120h=init_cleared=1 before=babeface after_clear=00000000 about_to_reset=1
+gmu120i=reboot=1 fwinit=babeface polls=4 sysreset=00000000 cfg=00004052 ctl=00000000 win=1 survived=1
+gmu120j=interrupts_cleared=1 info=00000000 mask=00000000 ao=00000000 about_to_start=1
+gmu120k=observed=1 ctl=00000000 bit0=0 polls=200000 info=00800000 mask=ff7fffff about_to_clear=1
+gmu120l=cleared_after=1 wrote=ffffffff info=00000000 mask=ff7fffff qtbli=00000001 survived=1
+```
+
+判决：**THE SECOND CLEAR REMOVES THE BIT, so it was an event nobody had cleared yet and not a latched state.** 三个细节支撑这句话：① 清除前后 `mask` 都是 `ff7fffff`，所以清掉的不是掩码；② `qtbli=00000001` 说明描述符没有被这最后一笔写弄坏；③ `survived=1`，这一笔清除没有把机器弄死。`ctl` bit 0 仍然是 0。
+
+### 77.6 键 121 读数（DEVICE-VERIFIED，12/12 行）
+
+第一次运行（12/13，少的正是 `gmu120k` —— 该行只在键 120 打，已从行表删掉）：payload sha256 `9bb3a4f1ec22cd3aa2ad12a2803320202e7c1d4946ff4e66a8e50d7b7fbc824a`，boot_id **640193532**，窗口 **`ee3728899e2aa17b87257b1041da9d381a2ed44afec9a967fc3302fe51e1b1af`**。为了给键 122 做对照，同一 payload 又跑了一次：boot_id **639658773**，窗口 **`5a116285aabb7852782bab49b09c854f97ea069a09b844e01860ef064239e15e`**，两次读数逐位相同。
+
+```
+gmu121k=observed=1 ctl=00000000 bit0=0 polls=200000 info=00800000 about_to_read_cm3=1
+gmu121l=cm3_after=1 sysreset=00000000 bootcfg=00000002 cm3cfg=00004052 fwinit=babeface info=00800000 ctl=00000000 survived=1
+```
+
+判决：**THE CM3 DID NOT TOUCH ITS OWN RESET OR CONFIGURATION WORDS, so the fault is not the CM3 rebooting itself.** `bootcfg=00000002` 与 `cm3cfg=00004052` 正是 R247 在**启动字之前**读到的值，`fwinit` 仍是 `babeface`，`sysreset=0` —— 也就是说 fault 期间 CM3 的复位请求与两个配置字一动不动，而 `info` 仍是 `00800000`。
+
+### 77.7 键 122：三次启动都没提交一行
+
+payload sha256 `20ed8403c37a33891ccac667afa4bcefbd13426df7549e86fc94564a23399a6e`。**三次上机**（15:57、16:00、16:04）的每一步都通过了检查：
+
+- 上机前 `check-reboot-to-twrp.py --arm` → `PASS (3 checks, 0 failures)`；
+- `fastboot flash system_b` → `Finished. Total time: 4.781s`，且**回读** system_b 的关键块与 payload 逐字节相同（`flash readback matches: True`、`key block says: enchilada-pas-exec=122 -no_slto_`、`key verified: this boot will run key 122`）；
+- `fastboot boot boot-r16.img` → `Booting OKAY`；
+- 约 38–43 秒 `adb devices` 空列表，然后设备回到 TWRP。
+
+而窗口**与上一轮逐字节相同**（先 `boot_id 640193532 / ee3728899e2a…`，后 `boot_id 639658773 / 5a116285aabb…`），行计数 `gmu122k=0 gmu122l=0`（10 of 12）。
+
+**这不是「镜像坏了」**：把 `r253-s122-payload` 与 `r253-s121-payload` 逐字节比较，**全文件只有一个字节不同** —— 偏移 `0x7963270`，`enchilada-pas-exec=121` 的最后一个字符 `1` 变成 `2`。而同一个 121 payload 在键 122 失败之后紧接着跑成功（boot_id 639658773，12/12 行）。
+
+**这也不是「boot 或 writer 本来就写不出来」**——控制键 123 回答了这一点。
+
+### 77.8 控制键 123：不武装的同一颗内核照样提交窗口（DEVICE-VERIFIED）
+
+把同一个镜像的同一个参数改写成 `enchilada-pas-exec=123`（**在 arm 窗口 `<= 122` 之外**，payload sha256 `bf82ed692b81f4b194f5104b00dcca268f0f2a6959286fa872dd7c787e8c89eb`），两次上机：
+
+- 第一次：窗口 sha256 `7e8eef870d95ffc2ff6084e8bc1ece5071bab78b73b07709a610c3947479bad6`；
+- 第二次：boot_id **581958999**，窗口 **`97239231380c3f398ba78872073c95d9d7345d3e85c43216730c42a06a9e7188`**，行 `gmu217seen=parsed=1 key=123 armed=0`，条的 12 行全为 0（未武装，块本来就不跑），窗口头里的 `key=` 字段为空。
+
+⇒ 同一颗内核、同一条 flash/boot 路径，**未武装时窗口一定会被提交**（`gmu217seen` 这一行在武装判断之外，所以它总会出现）。因此键 122 的「一个字节都没变」只能意味着：**块跑了，然后在提交整轮之前机器就死了**。
+
+判决：**ZEROING THE QUEUE-TABLE ADDRESS IS FATAL FOR THE BOOT ITSELF — the round does not commit a single byte, so this key cannot answer "does the fault need a readable table"; what it does answer is that the table address is load-bearing for the very act of requesting the start.**
+
+### 77.9 判决（四条）
+
+1. **`CM3_FAULT` 是一个可清除的事件**：一次 `GMU2HOST_INTR_CLR = 0xffffffff` 就让它从 `00800000` 回到 `00000000`，掩码不变。R252 的「留得住的持续状态」需要订正（见 77.11）。
+2. **CM3 在 fault 期间没有复位自己、也没有改自己的配置**：`sysreset=0`、`bootcfg=00000002`、`cm3cfg=00004052` 与启动字之前逐位相同，`fwinit` 仍是 `babeface`。
+3. **队列表地址清零 = 启动不了**：同一条路径、同一颗内核、只差这一个参数，三次都是零字节。
+4. **`ctl` bit 0 在键 120/121 依旧全 0**：固件仍然从不报告 HFI 启动。加上 121 的读数，这一轮又给「CM3 在跑但 HFI 不启动」添了两条独立证据。
+
+### 77.10 必须分开说的三件事
+
+- 「fault 能被清掉」和「fault 有原因」不是同一件事：清得掉只说明它是一个**事件位**，不说明是什么事件；`ctl` bit 0 恒 0 说明事件之后 HFI 也没起来。
+- 「CM3 没有复位自己」不等于「CM3 一切正常」：它只说明 `SYSRESET` 与两个配置字没动，不说明 CM3 在跑什么代码。
+- 「零地址启动不了」不等于「fault 来自读表」：机器死在提交之前，我们**连它死在哪一笔都不知道**（见 77.12）。
+
+### 77.11 对 §76.8 与 §76.2 的订正
+
+R252 判决第 3 条写的是「留得住的持续状态（只开该源 + 清过一次 + 满轮询仍在）」。R253 的键 120 说明这句话**只对「没有人再清一次」成立**：R252 的三次清除都发生在**启动字之前**（preamble 与键 118 各一次），启动字之后从来没有人写过 `GMU2HOST_INTR_CLR`。加上键 120 的这一笔，bit 23 立刻消失。正确的表述是：**`CM3_FAULT` 是启动字之后约几百毫秒内发生、并且会一直留在寄存器里直到被清除的事件位**。旧表述保留在原处，本节点明订正。
+
+### 77.12 没证明什么（以及为什么键 122 的答案只能等下一轮）
+
+- 没有定位键 122 死在哪一笔：`HFI_QTBL_ADDR = 0`、`HFI_QTBL_INFO = 1`、启动字、轮询，四者都在「块开始」与「整轮提交」之间。候选机制有两个，本轮分不开：(a) 往**正在运行的** CM3 写零地址本身就是致命的；(b) 启动请求配一张零地址的表导致 GMU 读 0 地址。
+- 没有读到 fault 原因寄存器（`CM3_FAULT` 的原因位），所以「事件位被清掉」之后仍然不知道固件为什么 fault。
+- 没有把 `GMU2HOST_INTR_INFO` 当成中断接住过（IRQ 仍未接管），所以这里说的始终只是寄存器状态。
+- 没有证明 `info` 的 bit 1/bit 10（`cbfsr=00000402` 的那种组合）与 bit 23 有任何关系。
+- 0.32 秒与 3.17 秒都是按 R201 的 `IODelay` 标定换算出来的**轮数**，不是墙钟测量。
+
+### 77.13 ROUND 254 的设计（下一轮）
+
+把键 122 的死亡点夹出来，只需要在**危险的三笔之前**提交一次日志：
+
+- 键 124：行 K 之后立刻调用 `boot_log_panic_flush()`（R215/R216 已证明它能提交刚打印的那一行），**再**写 `HFI_QTBL_ADDR = 0` / `HFI_QTBL_INFO = 1` / 启动字 → 轮询 → 行 L。
+- 如果行 K 单独留在媒介上，就说明死亡发生在零地址之后的某一笔；如果连行 K 都留不下，说明在 flush 之前的某一步就已经死了 —— 两种结果都把区间缩到一笔之内。
+- 键 125（对照）：同样的 flush，但**不**写零地址、只写启动字。它应该完整活下来（与键 120/121 同形），用来证明「加 flush 本身没有改变行为」。
+
+### 77.14 工具事实（这一轮新学到的）
+
+- `PE_parse_boot_argn` 的武装判断只在探针里一处（`fwKey >= 7u && fwKey <= 122u`）；而 `gmu217seen` 那一行**在武装判断之外**，所以未武装的键也会提交窗口 —— 这正是本轮控制键成立的原因。
+- 探针的日志是**整轮提交**的：块跑到一半死掉，窗口一个字节都不会变。所以「零字节」≠「块没跑」，要看同一镜像的未武装对照。
+- 分割镜头的办法：`r179_rekey.py` 生成的 payload 与上一轮**只差参数字符串那一个字节**（偏移 `0x7963270`），任何更大的差异都说明 rekey 走错了文件。
+- 上机脚本会**回读并比对** system_b 的关键块（`flash readback matches` / `key block says`），所以「flashed 的到底是哪个 key」永远不是猜测。
