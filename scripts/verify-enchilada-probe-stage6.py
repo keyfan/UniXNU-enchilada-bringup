@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 17,
-          'ID1 is re-read at most sixteen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130 and 133), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 18,
+          'ID1 is re-read at most seventeen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133 and 136), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 135u' in _fw,
+    check('fwKey >= 7u && fwKey <= 138u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 135u)' in code,
+    check('(fwKey >= 7u && fwKey <= 138u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4152,6 +4152,11 @@ def main():
         _k133135 = ''
         if _i133135 > 0:
             _k133135 = code[_i133135:].split(
+                '\nif (fwKey == 136u || fwKey == 137u || fwKey == 138u) {\n', 1)[0]
+        _i136138 = code.find('if (fwKey == 136u || fwKey == 137u || fwKey == 138u) {')
+        _k136138 = ''
+        if _i136138 > 0:
+            _k136138 = code[_i136138:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -4619,6 +4624,68 @@ def main():
           'R257 key 133 reads the bank own TTBR0, SCTLR, TCR and CBAR back after the poll')
     check(_b134.count('0x48u') >= 2 and _b134.count('0x58u') >= 6,
           'R257 key 134 reads the global fault word and the four neighbouring banks')
+
+
+    check(_k136138 != '', 'R258 the read-path block is present after the recheck block')
+    check(len(_store.findall(_k136138)) == 14,
+          'the R258 block holds fourteen GMU stores: eight in the shared preamble and six across '
+          'the three keys (got %d)' % len(_store.findall(_k136138)))
+    check(_k136138.count('HFI_CTRL_INIT] = 1u;') == 3,
+          'each R258 key carries the start word once (got %d)'
+          % _k136138.count('HFI_CTRL_INIT] = 1u;'))
+    check(_k136138.count('GMU2HOST_INTR_MASK] = ') == 3 and
+          _k136138.count('0xff7fffffu') == 3,
+          'each R258 key enables the one interrupt source and no other (got %d/%d)'
+          % (_k136138.count('GMU2HOST_INTR_MASK] = '), _k136138.count('0xff7fffffu')))
+    check(_k136138.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 1 and
+          _k136138.count('CM3_FW_INIT_RESULT] = 0u;') == 1,
+          'the R258 preamble clears the interrupt word and the init word once each')
+    check(_k136138.count('HFI_QTBL_ADDR] = r136qtblValue;') == 1 and
+          _k136138.count('HFI_QTBL_INFO] = 1u;') == 1,
+          'the R258 preamble hands the firmware the queue table once')
+    check(_k136138.count('0xc00001feu') == 3,
+          'each R258 key clears the status word once (got %d)'
+          % _k136138.count('0xc00001feu'))
+    check(_k136138.count('0x58u') == 15 and _k136138.count('0x60u') == 6 and
+          _k136138.count('0x68u') == 3 and _k136138.count('0x48u') == 3,
+          'the R258 keys read the status, address, syndrome and global words in the expected number '
+          '(got %d/%d/%d/%d)' % (_k136138.count('0x58u'), _k136138.count('0x60u'),
+                                _k136138.count('0x68u'), _k136138.count('0x48u')))
+    check(_k136138.count('for (') == 6 and _k136138.count('IODelay(1u)') == 8 and
+          'IOSleep' not in _k136138,
+          'the R258 block paces itself with six read loops and eight short delays and no sleep '
+          '(got %d/%d)' % (_k136138.count('for ('), _k136138.count('IODelay(1u)')))
+    check(_k136138.count('0xbabefaceu') == 1 and 'readback=1' in _k136138 and
+          'cleaned=1' in _k136138,
+          'the R258 preamble still waits for the fixed init word')
+    _rows258 = ['gmu136' + s for s in ('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j',
+                                       'k', 'l', 'm', 'n')]
+    _rows258 += ['gmu137k', 'gmu137l', 'gmu138k', 'gmu138l']
+    _missing258 = [r for r in _rows258 if ('%s=' % r) not in _k136138]
+    check(_missing258 == [],
+          'every R258 row is printed in the block (missing: %s)' % ','.join(_missing258))
+    check(_k136138.index('if (r136mode == 136) {') <
+          _k136138.index('} else if (r136mode == 137) {') <
+          _k136138.rindex('} else {'),
+          'the R258 branches are declared in key order')
+    _b136 = _k136138[_k136138.index('if (r136mode == 136) {'):_k136138.index('} else if (r136mode == 137) {')]
+    _b137 = _k136138[_k136138.index('} else if (r136mode == 137) {'):_k136138.rindex('} else {')]
+    _b138 = _k136138[_k136138.rindex('} else {'):]
+    check(len(_store.findall(_b136[_b136.index('HFI_CTRL_INIT] = 1u;'):])) == 0 and
+          len(_store.findall(_b137[_b137.index('HFI_CTRL_INIT] = 1u;'):])) == 0 and
+          len(_store.findall(_b138[_b138.index('HFI_CTRL_INIT] = 1u;'):])) == 0,
+          'R258 the start word is the last store of each key')
+    check(_b136.count('0x58u') == 7 and _b136.count('far=%08x') == 1 and
+          'fsrA=%08x fsrB=%08x fsrC=%08x' in _b136 and 'fsrD=%08x' in _b136,
+          'R258 key 136 reads the status word three times in a row and once more after the address')
+    check(_b137.count('0x60u') == 3 and _b137.count('0x00u') == 3 and
+          'farA=%08x farB=%08x' in _b137 and 'sctlr_back=%08x' in _b137,
+          'R258 key 137 reads the address twice around a same-value control-word write and read')
+    check(_b138.count('0x800u') == 3 and 'smr_want=00000004' in _b138 and
+          'gfsr=%08x' in _b138 and 'smr_end=%08x' in _b138,
+          'R258 key 138 clears the stream match valid bit, keeps SID 4 and reads the global word')
+    check(_b138.index('0x800u') < _b138.index('HFI_CTRL_INIT] = 1u;'),
+          'R258 key 138 rewrites the stream match register BEFORE the start word')
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
