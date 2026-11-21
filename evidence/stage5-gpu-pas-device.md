@@ -6065,3 +6065,125 @@ gmu126l=no_start_polled=1 ctl=00000000 bit0=0 polls=200000 info=00000000 fsr=000
 - 键 124 第一次跑是我忘了先 rekey，runner 在 `ABORT missing …\r254-s124-payload\payload.img` 处自己停下（没有碰设备）—— 上机脚本的「先查文件再动设备」这条自检这一轮救了一次。
 - `r254_static.py` 与门禁的四处同步各自都踩了一次「终止符指向最新块」的老坑：新块插在 R253 与 ladder 之间时，`_k117119` 的终止符要**退回** R253 块头、`_k120122` 要改成 R254 块头。规则不变：**切片终止符永远是「下一个块的块头」。**
 
+## 七十九、ROUND 255：把丢掉的那一位补进表里，fault 还在原地 —— 而把截断值交给固件则连日志都活不到
+
+### 79.1 一句话
+
+R254 说 CM3 读队列表时地址丢了 bit 31，于是这一轮**把那一位补进表里**：在 IOVA `0x2d800000`（覆盖 `0x2d960008` 所在的 2 MiB）建一张非 identity 块指向队列表的物理页，再写启动字。结果 fault 原地不动（`fsr=00000402 far=2d960008 fsynr0=00000021`，与 R254 逐位相同）—— **我们新写的描述符没有生效**；而不写启动字的对照键状态字干净（`fsr=00000400 far=0`）。第三个键把截断值直接写进 `HFI_QTBL_ADDR`，**连一行日志都活不到（2/2）**。
+
+### 79.2 为什么这一轮去建非 identity 表
+
+§78 的判决把 fault 归到「启动请求读队列表时地址丢了 bit 31」。那么最直接的一步就是：既然它要 `0x2d960008`，就把 `0x2d800000` 这 2 MiB 映射到队列表所在的那一页。`adreno_table_build()` 的签名本来就是分离的（`vbase/pbase` 是表页放哪、`iova/paddr` 是映射哪），所以不需要改表构建器，只需要换实参。
+
+三个键共用同一段前导（表 + 路由 + 复位 + 清中断），只在启动字前后分开：
+
+| 键 | 表建在哪 | 启动字 | 想分辨什么 |
+|---|---|---|---|
+| 127 | IOVA `0x2d800000` → PA `ad800000`（队列表页） | 写 | 补上那一位之后，walk 能不能过 |
+| 128 | 同上，但把 `HFI_QTBL_ADDR` 写成 `qtbl & 0x7fffffff` | 写 | 截断到底在门内还是门外：给它截断值，它还用不用 |
+| 129 | 同 127 | **不写** | 这张低位表本身会不会 fault（对照） |
+
+单变量面貌（R219 键 66 → R255 键 129，同一张表往下推）：
+
+| 轮 | 键 | 与上一格的差别 |
+|---|---|---|
+| R219 | 66 | 不写任何 store |
+| … | … | （见 §74、§76、§77） |
+| R253 | 120 | 有启动字 + 命中后再清一次 |
+| R254 | 124 | 有启动字 + 清状态字 + 读 FAR/FSYNR0 |
+| R255 | 127 | 同上，但表改建成**非 identity**（IOVA `0x2d800000`） |
+| R255 | 128 | 同 127，但 `QTBL_ADDR` 给的是**已截断**的值 |
+| R255 | 129 | 建了同样的低位表，但**不写启动字**（对照） |
+
+### 79.3 代码形状
+
+块头 `if (fwKey == 127u || fwKey == 128u || fwKey == 129u) {`，块 24,563 字符，`braces` 净 0，16 条行名（`gmu127a`–`gmu127j` 共用前导，`gmu127k/l`、`gmu128k/l`、`gmu129k/l` 各两支），13 笔 `gmuW[...] =` store，5 个 `for (`，4 处 `IODelay(1u)`，没有 `IOSleep`。
+
+三处针对性改动：
+
+1. 非 identity 的建表实参：`adreno_table_build(&l127, (uint64_t)s127virt, s127phys, 0x2d800000ull, r127base, 0x200000ull, prot127, &t127);`，行 B 因此多了 `iova=%08x`（读到的就是 `2d800000`），行 A/G 多了 `qtbl_value=%08x`。
+2. `HFI_QTBL_ADDR` 的 store 从常量改成 `r127qtblValue`，而 `r127qtblValue = (r127mode == 128) ? (r127qtbl & 0x7fffffffu) : r127qtbl;` —— 只有键 128 交出去的是截断值。
+3. 行 K/L 各记一组 `fsr/far/fsynr0`，键 127/129 的行 K 还额外记 `iova=2d800000 pa=...`，把「我们建了什么」与「SMMU 说它想要什么」并排。
+
+### 79.4 构建与门禁
+
+- CI **#366 `44890310462`**：`2026-11-21T09:35:33Z → 09:51:26Z`，**28/28** 步，success。
+- 产物：`work\tmp\r255-kernel\kernel.macho` **126,304,256 B** sha256 `19a2ec602924d38850fa41456701030a1477f27389b005469dfa7841d7edfe3a`；`work\tmp\r255-payload\payload.img` **150,994,944 B** sha256 `b8073afaf99867e8bb2d69096b7639e33096a0ee3c35bcc2de3032941ec6b456`。
+- 静态门：`35 checked in both artefacts`、`key marker 'enchilada-pas-exec': kernel=1 payload=2`、`forbidden: 3 checked`、固件 `a630_gmu.bin`（32,768 B，sha256 钉住）→ `PASS: R255 static gate`；**区分能力自证**：指向 `r254-kernel`/`r254-payload` → `FAIL: R255 static gate (23 problems)`（逐条 `kernel=0 payload=0`）。
+- 四处门禁：host **28/28**、stage4 **61/61**、stage5 **48/48**、stage6 **1496/1496**、全量 `r239_allgates.py` → **ran 46 of 48, FAILING: 0**。探针 **760,529 字符 / 11,453 行**，严格 GMU 写点 **357**，`rd32(gSmmuVa, 0x24u)` **15** 处，arm 窗口 `<= 129u` 唯一一处。
+
+### 79.5 键 127 逐字读数
+
+```
+gmu127a=cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 key=127 mode=127 qtbl=ad960000 qtbl_value=ad960000
+gmu127b=build=0 need=3 tables=3 writes=3 root=ad964000 base=ad800000 iova=2d800000 ias=48 oas=36 ok=1
+gmu127c=plan=0 n=9 abs=0 nab=9 cbndx=0 ttbr=ad964000 cw=1 id0=48016605
+gmu127d=wrote=9 ttbr0=ad964000/00000000 sctlr=00001067 tcr=00803510 cbar=0001f300 root=ad964000
+gmu127e=smr_set wanted=80000004 back=80000004 valid=1 sid=4 landed=1
+gmu127f=s2cr_set wanted=00000000 back=00000000 typew=00000000 landed=1
+gmu127g=last_row=1 about_to_start=1 mode=127 route=1 smr=80000004 s2cr=00000000 qtbl=ad960000 qtbl_value=ad960000 base=ad800000
+gmu127h=init_cleared=1 before=babeface after_clear=00000000 about_to_reset=1
+gmu127i=reboot=1 fwinit=babeface polls=4 sysreset=00000000 cfg=00004052 ctl=00000000 win=1 survived=1
+gmu127j=interrupts_cleared=1 info=00000000 mask=00000000 ao=00000000 about_to_start=1
+gmu127k=low_map=1 iova=2d800000 pa=ad800000 fsr_before=00000400 fsr_clear_back=00000400 far_before=00000000 about_to_start=1
+gmu127l=low_map_started=1 ctl=00000000 bit0=0 polls=200000 info=00800000 fsr=00000402 far=2d960008 fsynr0=00000021 qtbl_now=ad960000 survived=1
+```
+
+`boot_id` **639964159**、窗口 `5138f374ffab9d75b66cb03702924b654f462d9b6f2e53272d640b183c84290f`、12/12 行、行 `key=127`。
+
+判决：**THE WALK STILL FAULTED INSIDE THE RANGE THIS KEY MAPPED** —— `far=2d960008` 落在刚映射的 `[2d800000, 2da00000)` 里，`fsr` 形状与 R254 逐位相同，`fsynr0=00000021`（PLVL=1、WNR=0 读、CBNDX=0）。也就是说**这张新表没有对这个 walk 生效**。
+
+### 79.6 键 128 逐字读数
+
+两次上机，两次都是**零字节**：窗口仍是上一轮的（`boot_id` 639964159 / `1b15ffaf…`），行计数 `gmu128k=0 gmu128l=0`（10 of 12）。payload sha256 `e5ee238d3c319355f7042115e5dac20a3214a6e8c33bc44ccccdc576b66e1734`，flash 回读通过、boot 送出，之后没有任何行落盘。
+
+判决：**HANDING THE FIRMWARE THE TRUNCATED ADDRESS KILLS THE ROUND BEFORE IT CAN COMMIT A ROW (2/2)** —— 与 R253 的键 122（把 `HFI_QTBL_ADDR` 写成 `0`，3/3 零字节）是同一个形状：**我们在这里写过的每一个 bit 31 被清掉的值，都把这一轮带进了「活不到提交」的结局**；而键 127/129（值仍是 `ad960000`）都正常落盘。这一轮没有定位死亡点（探针日志整轮提交，中途死掉一个字节都不落）。
+
+### 79.7 键 129 逐字读数
+
+`boot_id` **600256967**、窗口 `1b15ffafae7bf9357e9efecb18ae402446cf634d939ed45b20004458259eaf4e`、12/12 行、行 `key=129`：
+
+```
+gmu127b=build=0 need=3 tables=3 writes=3 root=ad964000 base=ad800000 iova=2d800000 ias=48 oas=36 ok=1
+gmu127i=reboot=1 fwinit=babeface polls=4 sysreset=00000000 cfg=00004052 ctl=00000000 win=1 survived=1
+gmu129k=low_map=1 iova=2d800000 pa=ad800000 fsr_before=00000400 fsr_clear_back=00000400 no_start=1 about_to_poll=1
+gmu129l=low_map_no_start=1 ctl=00000000 bit0=0 polls=200000 info=00000000 fsr=00000400 far=00000000 fsynr0=00000000 survived=1
+```
+
+判决：**WITHOUT ANY START WORD THE LOW MAPPING IS CLEAN TOO**（`fsr=00000400` 即 TF=0，`far=0`，`info=0`）—— 建表与路由本身不 fault，所以键 127 的那一次 fault 属于启动请求。
+
+### 79.8 判决（四条）
+
+1. **补上 bit 31 没有改变 walk 的结局**：`far` 与 R254 逐位相同，`fsynr0` 逐位相同 —— 描述符没有对这个 walk 生效。
+2. **PLVL=1 把两件事连起来**：R254 是 identity 表（`ad800000`），它的 L1 下标是 2，而截断后的 IOVA `2d960008` 的 L1 下标是 0 ⇒ 走到 level 1 就遇到空描述符；R255 新建的表**正是往 L1[0] 写的**，可结果仍是 PLVL=1 ⇒ 我们写的描述符没有被用上。
+3. **布置本身是干净的**（键 129），所以「fault 归启动请求」这条 R254 的结论不变。
+4. **bit 31 被清的值是致命的**：`0`（R253 键 122，3/3）与 `qtbl & 0x7fffffff`（R255 键 128，2/2）都活不到提交；未截断的值（127/129）都正常。
+
+### 79.9 必须分开说的三件事
+
+1. **「描述符没生效」有两个可能的原因，这一轮没有分辨**：① 我们写进内存的描述符对 SMMU 不可见（表页的 cache/coherency 属性），② 这个 walk 根本没用我们编程的 `TTBR0`。R256 的第一件事就是把「内存里到底写了什么」读回来，再把三种可能分开。
+2. **`far` 是 SMMU 侧记录的地址**，不是我们写进寄存器的值；键 127 的 `far` 与 R254 相同，正说明「读者想要的地址」没变，变的是我们能不能满足它。
+3. **键 128 的死亡不是「块没跑」**：它跑不到提交，与 R253 键 122 同形；死亡点在 `HFI_QTBL_ADDR` 写入之后的某一处，本轮没有定位。
+
+### 79.10 没证明什么
+
+- 没证明我们的表**在任何情况下**都不生效：只证明「用这一套建表 + 编程流程，对这一个 walk 不生效」。
+- 没证明 SMMU 的能力边界：没有做过「先用一张表让某个已知访问成功」的正向对照。
+- 没证明键 128 的死因，也没证明它和 bit 31 的因果关系（只是两个 bit-31-清的值都死、两个 bit-31-置的值都活）。
+- 没读到 `HFI_CTRL_STATUS` 的任何变化：`ctl=0` 三次全 0，固件仍然没有报告 HFI 启动。
+
+### 79.11 R256 设计
+
+三键，第一次**不去改任何 store 语义**，只回答「我们写的描述符到底在哪」：
+
+| 键 | 做什么 | 判据 |
+|---|---|---|
+| 130 | 建低位表 + 编程 CB0，然后把三张表页里的关键描述符（`L0[0]`、`L1[0]`、`L2[0x16C]`）从内存**读回来**打印；不写启动字 | 读回值与 plan 逐位相同 ⇒ 我们写对了，问题在可见性；不同 ⇒ 建表/写回路径有问题 |
+| 131 | 同 130，另在启动字之前对三张表页做 `dc civac` + `dsb sy`，然后写启动字 + 满轮询 | fault 消失 ⇒ 是 cache 可见性；fault 仍在 ⇒ 这个 walk 不用我们的 `TTBR0` |
+| 132 | 同 131 的清理，但**不写启动字** | 清理本身不产生 fault（对照），否则 131 的干净不能归因 |
+
+### 79.12 工具事实
+
+- `r255_static.py` 必须从**仓库根**跑（`PROBE` 是仓库相对路径）；它的 `FORBIDDEN` 三条是下一轮的名字（`gmu130a=`/`gmu128m=`/`gmu129m=`）。
+- runner 若没先 `r179_rekey.py` 就会在动设备之前 `ABORT missing …payload.img`（自检救了一次：R254 键 124 的第一次运行）。
+- `r255_anchor.py <runner> <prev_boot_id> <prev_sha256>` 会回读上一轮窗口并打印 `anchor cross-check: … has that sha256`，然后再改 `PREV_BOOT/PREV_SHA`；键 128 的第二次运行时窗口已被 129 覆盖，所以它报的是 `FRESH WINDOW BUT IT NAMES key=129, NOT 128`，这是正确的警告而不是误判。

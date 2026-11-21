@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 126u);
+                            (fwKey >= 7u && fwKey <= 129u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -9646,6 +9646,420 @@ if (fwKey == 124u || fwKey == 125u || fwKey == 126u) {
                                  r126fsrEnd, r126farEnd, r126fsynEnd);
                         IOLog("enchilada-adreno: %s\n", r124RowL);
 
+
+
+    }
+    }
+    }
+    }
+    }
+}
+if (fwKey == 127u || fwKey == 128u || fwKey == 129u) {
+    // ROUND 255: round 254 read the fault site and found the address the CM3 actually asked for: the
+    // queue table plus eight with bit 31 removed, 0xAD960008 -> 0x2D960008 and 0xAD90D008 ->
+    // 0x2D90D008, twice over two different allocations and two different boots. This build asks
+    // whether that lost bit is the whole of the problem.
+    //
+    // Key 127 keeps the queue table where it is and maps the low address instead: the same table set
+    // now carries a 2 MiB block whose input is 0x2D800000 and whose output is the queue table's
+    // physical page, so the read the CM3 issues inside the request - 0x2D960008, offset 0x160008 in
+    // that block - lands on the queue table itself. The status word is cleared first, so a clear
+    // translation-fault bit afterwards means the read succeeded, and any change in the status or
+    // interrupt word means the firmware got further than it ever has.
+    //
+    // Key 128 hands the firmware the truncated address and reads it straight back. If the firmware
+    // keeps 0x2D960000 the truncation is on its side and we can compensate; if it puts the full value
+    // back, the truncation is ours to do.
+    //
+    // Key 129 is key 127's mapping with no start word: the new block must fault nothing by itself.
+    char r127RowA[300];
+    char r127RowB[300];
+    char r127RowC[300];
+    char r127RowD[300];
+    char r127RowE[300];
+    char r127RowF[300];
+    char r127RowG[300];
+    char r127RowH[300];
+    char r127RowI[300];
+                    char r127RowJ[300];
+                    char r127RowK[300];
+    char r127RowL[300];
+    unsigned r127w = 0u;
+    const int r127mode = (fwKey >= 129u) ? 129 : ((fwKey >= 128u) ? 128 : 127);
+    const uint32_t r127cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r127cxOn = adreno_domain_cx_is_on(r127cx);
+    struct adreno_install_geo g127;
+    const uint32_t r127id1 = gSmmuVa ? rd32(gSmmuVa, 0x24u) : 0u;
+    const uint32_t r127geom = adreno_install_cb_geometry(r127id1, &g127);
+    const uint32_t r127qtbl = sGmuFwVa
+        ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u) : 0u;
+    const uint32_t r127qtblValue =
+        (r127mode == 128) ? (r127qtbl & 0x7fffffffu) : r127qtbl;
+    snprintf(r127RowA, sizeof r127RowA,
+             "gmu127a=cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d "
+             "key=%u mode=%d qtbl=%08x qtbl_value=%08x",
+             r127cx, r127cxOn, (unsigned)r127geom, (unsigned)g127.pgshift,
+             (unsigned)g127.cb_base, (unsigned)g127.num_context_banks,
+             (gSmmuVa != 0) ? 1 : 0, (unsigned)fwKey, r127mode, r127qtbl,
+             r127qtblValue);
+    IOLog("enchilada-adreno: %s\n", r127RowA);
+
+    if (!r127cxOn) {
+        IOLog("enchilada-adreno: gmu127b=refused-cx-down cx=%08x\n", r127cx);
+    } else if (r127geom != 0u || gSmmuVa == 0u) {
+        IOLog("enchilada-adreno: gmu127b=refused-geometry geom=%u\n",
+              (unsigned)r127geom);
+    } else if (r127qtbl == 0u) {
+        IOLog("enchilada-adreno: gmu127b=refused-no-queue-table qtbl=00000000\n");
+    } else if (!&armcpu_dma_alloc_writable) {
+        IOLog("enchilada-adreno: gmu127b=no-alloc-symbol\n");
+    } else {
+        static uint64_t s127phys = 0;
+        static uint64_t s127virt = 0;
+        if (!s127phys) {
+            s127phys = armcpu_dma_alloc_writable (4ull * 4096ull, &s127virt);
+        }
+        const uint64_t r127base =
+            static_cast<uint64_t>(r127qtbl) & ~static_cast<uint64_t>(0x1fffffull);
+        if (!s127phys || !s127virt) {
+            IOLog("enchilada-adreno: gmu127b=alloc-failed phys=%llx virt=%llx\n",
+                  (unsigned long long)s127phys, (unsigned long long)s127virt);
+        } else {
+            struct adreno_iommu_id2 d127 = {};
+            const uint32_t id2w127 = rd32(gSmmuVa, 0x28u);
+            int ok127 = 0;
+            const uint32_t r127ias = (adreno_iommu_id2_decode(id2w127, &d127) == 0)
+                ? (adreno_iommu_va_size(id2w127, 2u, &ok127)) : 0u;
+            const uint32_t r127oas = adreno_iommu_stage1_oas(id2w127);
+            const uint32_t prot127 = kAdrenoLpaePteValid | kAdrenoLpaePteAf;
+            struct adreno_lpae_geo l127 = {};
+            const uint32_t r127lpaeg = adreno_lpae_geometry(
+                (r127ias >= 32u) ? r127ias : 36u, 12u, &l127);
+            uint32_t r127need = 0u;
+            const uint32_t r127bytes = (r127lpaeg != 0u) ? 99u
+                : adreno_table_bytes_needed(&l127, 0x200000ull, &r127need);
+            struct adreno_table_result t127 = {};
+            const uint32_t r127build =
+                (r127lpaeg != 0u || r127bytes != 0u) ? 99u
+                : adreno_table_build(&l127, (uint64_t)s127virt, s127phys,
+                                     0x2d800000ull, r127base, 0x200000ull, prot127, &t127);
+            snprintf(r127RowB, sizeof r127RowB,
+                     "gmu127b=build=%u need=%u tables=%u writes=%u root=%llx base=%llx "
+                     "iova=%08x ias=%u oas=%u ok=%d",
+                     (unsigned)r127build, (unsigned)r127need, (unsigned)t127.tables,
+                     (unsigned)t127.writes, (unsigned long long)t127.root_paddr,
+                     (unsigned long long)r127base, 0x2d800000u,
+                     (unsigned)r127ias, (unsigned)r127oas, ok127);
+            IOLog("enchilada-adreno: %s\n", r127RowB);
+
+            if (r127build != 0u) {
+                IOLog("enchilada-adreno: gmu127b=refused-build=%u\n", (unsigned)r127build);
+            } else {
+                struct adreno_smmu_ctx_params p127 = {};
+                p127.cbndx = 0u;
+                p127.asid = 0u;
+                p127.ttbr = t127.root_paddr;
+                p127.ias = (r127ias >= 32u) ? r127ias : 36u;
+                p127.oas = (r127oas >= 32u) ? r127oas : 36u;
+                const uint32_t r127id0 = rd32(gSmmuVa, 0x20u);
+                p127.coherent_walk = adreno_iommu_coherent_walk(r127id0, 0u);
+                p127.ttbr1 = 0u;
+                p127.aarch64 = 1u;
+                p127.vmid16 = 0u;
+                p127.vmid = 0u;
+                struct adreno_smmu_ctx_write plan127[12];
+                struct adreno_install_write abs127[12];
+                uint32_t nplan127 = 0u, nabs127 = 0u;
+                const int r127plan = adreno_smmu_ctx_plan(&p127, plan127, 12u, &nplan127);
+                const uint32_t r127abs = adreno_install_absolute(
+                    &g127, 0u, plan127, nplan127, abs127, 12u, &nabs127);
+                snprintf(r127RowC, sizeof r127RowC,
+                         "gmu127c=plan=%d n=%u abs=%u nab=%u cbndx=%u ttbr=%llx cw=%u "
+                         "id0=%08x",
+                         r127plan, (unsigned)nplan127, (unsigned)r127abs,
+                         (unsigned)nabs127, (unsigned)p127.cbndx,
+                         (unsigned long long)p127.ttbr, (unsigned)p127.coherent_walk,
+                         r127id0);
+                IOLog("enchilada-adreno: %s\n", r127RowC);
+
+                if (r127plan != 0 || r127abs != 0u || nabs127 != 9u) {
+                    IOLog("enchilada-adreno: gmu127d=refused-plan\n");
+                } else {
+                    uint32_t k127;
+                    for (k127 = 0u; k127 < nabs127; ++k127) {
+                        const uintptr_t r127frame =
+                            (abs127[k127].gr1 != 0u)
+                            ? static_cast<uintptr_t>(gSmmuVa) + (1u << g127.pgshift)
+                            : static_cast<uintptr_t>(gSmmuVa);
+                        if (abs127[k127].is_64bit) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                r127frame +
+                                static_cast<uintptr_t>(abs127[k127].offset)) =
+                                abs127[k127].value;
+                            *reinterpret_cast<volatile uint32_t *>(
+                                r127frame +
+                                static_cast<uintptr_t>(abs127[k127].offset) + 4u) =
+                                abs127[k127].value_hi;
+                        } else {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                r127frame +
+                                static_cast<uintptr_t>(abs127[k127].offset)) =
+                                abs127[k127].value;
+                        }
+                    }
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    const uint32_t r127t0l = rd32(gSmmuVa, (unsigned)g127.cb_base + 0x20u);
+                    const uint32_t r127t0h = rd32(gSmmuVa, (unsigned)g127.cb_base + 0x24u);
+                    const uint32_t r127sct = rd32(gSmmuVa, (unsigned)g127.cb_base + 0x00u);
+                    const uint32_t r127tcr = rd32(gSmmuVa, (unsigned)g127.cb_base + 0x30u);
+                    const uint32_t r127bar = rd32(
+                        static_cast<uintptr_t>(gSmmuVa) + (1u << g127.pgshift), 0x000u);
+                    snprintf(r127RowD, sizeof r127RowD,
+                             "gmu127d=wrote=%u ttbr0=%08x/%08x sctlr=%08x tcr=%08x "
+                             "cbar=%08x root=%llx",
+                             (unsigned)nabs127, r127t0l, r127t0h, r127sct, r127tcr, r127bar,
+                             (unsigned long long)t127.root_paddr);
+                    IOLog("enchilada-adreno: %s\n", r127RowD);
+
+                    const uint32_t r127smrWant = 0x80000000u | 0x00000004u;
+                    const uint32_t r127s2Want = 0x00000000u;
+                    *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x800u) = r127smrWant;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    const uint32_t r127smrBack = rd32(gSmmuVa, 0x800u);
+                    snprintf(r127RowE, sizeof r127RowE,
+                             "gmu127e=smr_set wanted=%08x back=%08x valid=%u sid=%u landed=%u",
+                             r127smrWant, r127smrBack, (r127smrBack >> 31) & 1u,
+                             r127smrBack & 0xffffu,
+                             (r127smrBack == r127smrWant) ? 1u : 0u);
+                    IOLog("enchilada-adreno: %s\n", r127RowE);
+
+                    *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0xc00u) = r127s2Want;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    const uint32_t r127s2Back = rd32(gSmmuVa, 0xc00u);
+                    snprintf(r127RowF, sizeof r127RowF,
+                             "gmu127f=s2cr_set wanted=%08x back=%08x typew=%08x landed=%u",
+                             r127s2Want, r127s2Back, r127s2Back & 0x00030000u,
+                             (r127s2Back == r127s2Want) ? 1u : 0u);
+                    IOLog("enchilada-adreno: %s\n", r127RowF);
+
+                    const uint32_t r127smrNow = rd32(gSmmuVa, 0x800u);
+                    const uint32_t r127s2Now = rd32(gSmmuVa, 0xc00u);
+                    snprintf(r127RowG, sizeof r127RowG,
+                             "gmu127g=last_row=1 about_to_start=%d mode=%d route=1 "
+                             "smr=%08x s2cr=%08x qtbl=%08x qtbl_value=%08x base=%llx",
+                             (r127mode == 129) ? 0 : 1, r127mode,
+                             r127smrNow, r127s2Now, r127qtbl, r127qtblValue,
+                             (unsigned long long)r127base);
+                    IOLog("enchilada-adreno: %s\n", r127RowG);
+
+
+                    const uint32_t r127fwBefore = sGmuFwVa
+                        ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u) : 0u;
+                    gmuW[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    snprintf(r127RowH, sizeof r127RowH,
+                             "gmu127h=init_cleared=1 before=%08x after_clear=%08x about_to_reset=1",
+                             r127fwBefore,
+                             sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u)
+                            : 0u);
+                    IOLog("enchilada-adreno: %s\n", r127RowH);
+                    gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = r127qtblValue;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    gmuW[ADRENO_GMU_BOOT_V1_PWR_COL_CP_RESP] = 0u;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    gmuW[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    unsigned r127polls = 0u;
+                    uint32_t r127fwNow = 0u;
+                    for (r127w = 0u; r127w < 200000u; ++r127w) {
+                        r127polls = r127w + 1u;
+                        r127fwNow = sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT * 4u) : 0u;
+                        if (r127fwNow == 0xbabefaceu) {
+                            break;
+                        }
+                        IODelay(1u);
+                    }
+                    snprintf(r127RowI, sizeof r127RowI,
+                             "gmu127i=reboot=1 fwinit=%08x polls=%u sysreset=%08x cfg=%08x ctl=%08x win=%d survived=1",
+                             r127fwNow, r127polls,
+                             sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_SYSRESET * 4u)
+                            : 0u,
+                             sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_CM3_CFG * 4u)
+                            : 0u,
+                             sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u)
+                            : 0u,
+                             (r127s2Back == r127s2Want) ? 1 : 0);
+                    IOLog("enchilada-adreno: %s\n", r127RowI);
+                    gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_CLR] = 0xffffffffu;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    gmuW[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_CLR] = 0xffffffffu;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    snprintf(r127RowJ, sizeof r127RowJ,
+                             "gmu127j=interrupts_cleared=1 info=%08x mask=%08x ao=%08x about_to_start=1",
+                             sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u)
+                            : 0u,
+                             sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u)
+                            : 0u,
+                             sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS * 4u)
+                            : 0u);
+                    IOLog("enchilada-adreno: %s\n", r127RowJ);
+
+                    if (r127mode == 127) {
+                        const uint32_t r127fsrBefore = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x58u) : 0u;
+                        const uint32_t r127farBefore = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x60u) : 0u;
+                        if (gSmmuVa) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                static_cast<uintptr_t>(gSmmuVa) +
+                                static_cast<uintptr_t>(g127.cb_base) + 0x58u) = 0xc00001feu;
+                            __asm__ volatile("dsb sy" ::: "memory");
+                        }
+                        const uint32_t r127fsrClear = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x58u) : 0u;
+                        snprintf(r127RowK, sizeof r127RowK,
+                                 "gmu127k=low_map=1 iova=2d800000 pa=%08x fsr_before=%08x "
+                                 "fsr_clear_back=%08x far_before=%08x about_to_start=1",
+                                 (unsigned)(r127base & 0xffffffffull), r127fsrBefore,
+                                 r127fsrClear, r127farBefore);
+                        IOLog("enchilada-adreno: %s\n", r127RowK);
+                        const uint32_t r127maskWant = 0xff7fffffu;
+                        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = r127maskWant;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        uint32_t r127ctl = 0u;
+                        for (r127w = 0u; r127w < 200000u; ++r127w) {
+                            r127polls = r127w + 1u;
+                            r127ctl = sGmuFwVa
+                                ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u) : 0u;
+                            if ((r127ctl & 1u) != 0u) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        const uint32_t r127fsrEnd = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x58u) : 0u;
+                        const uint32_t r127farEnd = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x60u) : 0u;
+                        const uint32_t r127fsynEnd = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x68u) : 0u;
+                        snprintf(r127RowL, sizeof r127RowL,
+                                 "gmu127l=low_map_started=1 ctl=%08x bit0=%u polls=%u "
+                                 "info=%08x fsr=%08x far=%08x fsynr0=%08x qtbl_now=%08x survived=1",
+                                 r127ctl, (r127ctl & 1u), r127polls,
+                                 sGmuFwVa
+                                ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u) : 0u,
+                                 r127fsrEnd, r127farEnd, r127fsynEnd,
+                                 sGmuFwVa
+                                ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u) : 0u);
+                        IOLog("enchilada-adreno: %s\n", r127RowL);
+                    } else if (r127mode == 128) {
+                        const uint32_t r128back = sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u) : 0u;
+                        const uint32_t r128fsrBefore = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x58u) : 0u;
+                        const uint32_t r128farBefore = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x60u) : 0u;
+                        if (gSmmuVa) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                static_cast<uintptr_t>(gSmmuVa) +
+                                static_cast<uintptr_t>(g127.cb_base) + 0x58u) = 0xc00001feu;
+                            __asm__ volatile("dsb sy" ::: "memory");
+                        }
+                        snprintf(r127RowK, sizeof r127RowK,
+                                 "gmu128k=trunc_written=1 want=%08x back=%08x qtbl_orig=%08x "
+                                 "fsr_before=%08x far_before=%08x about_to_start=1",
+                                 r127qtblValue, r128back, r127qtbl, r128fsrBefore,
+                                 r128farBefore);
+                        IOLog("enchilada-adreno: %s\n", r127RowK);
+                        const uint32_t r128maskWant = 0xff7fffffu;
+                        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = r128maskWant;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        uint32_t r128ctl = 0u;
+                        for (r127w = 0u; r127w < 200000u; ++r127w) {
+                            r127polls = r127w + 1u;
+                            r128ctl = sGmuFwVa
+                                ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u) : 0u;
+                            if ((r128ctl & 1u) != 0u) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        const uint32_t r128fsrEnd = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x58u) : 0u;
+                        const uint32_t r128farEnd = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x60u) : 0u;
+                        const uint32_t r128fsynEnd = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x68u) : 0u;
+                        snprintf(r127RowL, sizeof r127RowL,
+                                 "gmu128l=trunc_started=1 ctl=%08x bit0=%u polls=%u "
+                                 "info=%08x fsr=%08x far=%08x fsynr0=%08x qtbl_now=%08x survived=1",
+                                 r128ctl, (r128ctl & 1u), r127polls,
+                                 sGmuFwVa
+                                ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u) : 0u,
+                                 r128fsrEnd, r128farEnd, r128fsynEnd,
+                                 sGmuFwVa
+                                ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u) : 0u);
+                        IOLog("enchilada-adreno: %s\n", r127RowL);
+                    } else {
+                        const uint32_t r129fsrBefore = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x58u) : 0u;
+                        if (gSmmuVa) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                static_cast<uintptr_t>(gSmmuVa) +
+                                static_cast<uintptr_t>(g127.cb_base) + 0x58u) = 0xc00001feu;
+                            __asm__ volatile("dsb sy" ::: "memory");
+                        }
+                        const uint32_t r129fsrClear = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x58u) : 0u;
+                        snprintf(r127RowK, sizeof r127RowK,
+                                 "gmu129k=low_map=1 iova=2d800000 pa=%08x fsr_before=%08x "
+                                 "fsr_clear_back=%08x no_start=1 about_to_poll=1",
+                                 (unsigned)(r127base & 0xffffffffull), r129fsrBefore,
+                                 r129fsrClear);
+                        IOLog("enchilada-adreno: %s\n", r127RowK);
+                        const uint32_t r129maskWant = 0xff7fffffu;
+                        gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = r129maskWant;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        uint32_t r129ctl = 0u;
+                        for (r127w = 0u; r127w < 200000u; ++r127w) {
+                            r127polls = r127w + 1u;
+                            r129ctl = sGmuFwVa
+                                ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u) : 0u;
+                            if ((r129ctl & 1u) != 0u) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        const uint32_t r129fsrEnd = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x58u) : 0u;
+                        const uint32_t r129farEnd = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x60u) : 0u;
+                        const uint32_t r129fsynEnd = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g127.cb_base + 0x68u) : 0u;
+                        snprintf(r127RowL, sizeof r127RowL,
+                                 "gmu129l=low_map_no_start=1 ctl=%08x bit0=%u polls=%u "
+                                 "info=%08x fsr=%08x far=%08x fsynr0=%08x survived=1",
+                                 r129ctl, (r129ctl & 1u), r127polls,
+                                 sGmuFwVa
+                                ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u) : 0u,
+                                 r129fsrEnd, r129farEnd, r129fsynEnd);
+                        IOLog("enchilada-adreno: %s\n", r127RowL);
 
 
     }

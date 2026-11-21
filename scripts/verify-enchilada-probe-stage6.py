@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 14,
-          'ID1 is re-read at most thirteen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120 and 124), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 15,
+          'ID1 is re-read at most fourteen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124 and 127), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 126u' in _fw,
+    check('fwKey >= 7u && fwKey <= 129u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 126u)' in code,
+    check('(fwKey >= 7u && fwKey <= 129u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4132,11 +4132,16 @@ def main():
         _i124126 = code.find('if (fwKey == 124u || fwKey == 125u || fwKey == 126u) {')
         _k124126 = ''
         if _i124126 > 0:
-            _k124126 = code[_i124126:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+            _k124126 = code[_i124126:].split(
+                '\nif (fwKey == 127u || fwKey == 128u || fwKey == 129u) {\n', 1)[0]
         _i120122 = code.find('if (fwKey == 120u || fwKey == 121u || fwKey == 122u) {')
         _k120122 = ''
         if _i120122 > 0:
             _k120122 = code[_i120122:].split('\nif (fwKey == 124u || fwKey == 125u || fwKey == 126u) {\n', 1)[0]
+        _i127129 = code.find('if (fwKey == 127u || fwKey == 128u || fwKey == 129u) {')
+        _k127129 = ''
+        if _i127129 > 0:
+            _k127129 = code[_i127129:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
               'the three keys (got %d)' % _k111113.count('gmuW['))
@@ -4410,6 +4415,64 @@ def main():
           len(_store.findall(_b125[_b125.index('HFI_CTRL_INIT] = 1u;'):])) == 0,
           'R254 no start word is followed by another store')
     print()
+    check(_k127129 != '', 'R255 the low-address block is present after the fault-address block')
+    check(_k127129.count('gmuW[') == 13,
+          'R255 the round holds thirteen GMU stores: eight in the shared preamble and five across '
+          'the three keys (got %d)' % _k127129.count('gmuW['))
+    check(_k127129.count('HFI_CTRL_INIT] = 1u;') == 2,
+          'R255 only keys 127 and 128 write the start word (got %d)'
+          % _k127129.count('HFI_CTRL_INIT] = 1u;'))
+    check(_k127129.count('GMU2HOST_INTR_MASK] = ') == 3 and
+          _k127129.count('0xff7fffffu') == 3,
+          'R255 all three keys open the same single interrupt source (got %d mask stores)'
+          % _k127129.count('GMU2HOST_INTR_MASK] = '))
+    check(_k127129.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 1 and
+          _k127129.count('CM3_FW_INIT_RESULT] = 0u;') == 1,
+          'R255 the preamble still clears the block and the init word exactly once each')
+    check(_k127129.count('HFI_QTBL_ADDR] = r127qtblValue;') == 1 and
+          _k127129.count('HFI_QTBL_INFO] = 1u;') == 1,
+          'R255 the queue-table address store is the one place the value can be truncated')
+    check(_k127129.count('0xc00001feu') == 3,
+          'R255 every key clears the CB0 fault status word once (got %d)'
+          % _k127129.count('0xc00001feu'))
+    check(_k127129.count('0x58u') == 11 and _k127129.count('0x60u') == 5 and
+          _k127129.count('0x68u') == 3,
+          'R255 the round reads status at 0x58, address at 0x60 and syndrome at 0x68 (got %d/%d/%d)'
+          % (_k127129.count('0x58u'), _k127129.count('0x60u'), _k127129.count('0x68u')))
+    check(_k127129.count('for (') == 5 and _k127129.count('IODelay(1u)') == 4
+          and 'IOSleep' not in _k127129,
+          'R255 two loops in the preamble and one per key, all paced by IODelay (got %d loops)'
+          % _k127129.count('for ('))
+    check(_k127129.count('0xbabefaceu') == 1, 'R255 the preamble still waits for the init word')
+    check('0x2d800000ull, r127base, 0x200000ull' in _k127129 and
+          _k127129.count('iova=%08x') == 1,
+          'R255 the table build separates input and output address: IOVA 2d800000 onto the queue '
+          'table page')
+    _names255 = ['gmu127a=', 'gmu127b=', 'gmu127c=', 'gmu127d=', 'gmu127e=', 'gmu127f=',
+                 'gmu127g=', 'gmu127h=', 'gmu127i=', 'gmu127j=', 'gmu127k=', 'gmu127l=',
+                 'gmu128k=', 'gmu128l=', 'gmu129k=', 'gmu129l=']
+    _missing255 = [n for n in _names255 if n not in _k127129]
+    check(not _missing255, 'R255 every row of the round is present (%s)' % _missing255)
+    _i128m = _k127129.index('} else if (r127mode == 128) {')
+    check(_k127129.index('if (r127mode == 127) {') < _i128m <
+          _k127129.rindex('} else {'),
+          'R255 the three mode branches are ordered 127, 128, 129')
+    _b127 = _k127129[_k127129.index('if (r127mode == 127) {'):_i128m]
+    _b128 = _k127129[_i128m:_k127129.rindex('} else {')]
+    _b129 = _k127129[_k127129.rindex('} else {'):]
+    check(_b127.index('0xc00001feu') < _b127.index('HFI_CTRL_INIT] = 1u;'),
+          'R255 key 127 clears the fault status word before its start word')
+    check('gmu128k=trunc_written=1 want=%08x back=%08x qtbl_orig=%08x' in _b128 and
+          'HFI_CTRL_INIT] = 1u;' in _b128 and '0xc00001feu' in _b128,
+          'R255 key 128 writes the truncated address, reads it back, and only then starts')
+    check('HFI_CTRL_INIT] = 1u;' not in _b129 and 'no_start=1' in _b129,
+          'R255 key 129 never writes the start word')
+    check(all('fsynr0=%08x' in b for b in (_b127, _b128, _b129)),
+          'R255 every key reads the syndrome word after its own poll')
+    check(_b127.rindex('0xc00001feu') < _b127.index('HFI_CTRL_INIT] = 1u;') and
+          _b128.rindex('0xc00001feu') < _b128.index('HFI_CTRL_INIT] = 1u;') and
+          _b129.rindex('0xc00001feu') < len(_b129),
+          'R255 no start word is preceded by a later clear in the wrong order')
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
         print('FAIL: stage-6 kernel ID0/ID1 probe contract (%d failures)' % len(fails))
