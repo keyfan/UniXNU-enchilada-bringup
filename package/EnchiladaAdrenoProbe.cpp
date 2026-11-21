@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            (fwKey >= 7u && fwKey <= 98u);
+                            (fwKey >= 7u && fwKey <= 101u);
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -6250,6 +6250,265 @@ if (fwKey == 97u || fwKey == 98u) {
                                  r97ctl, r97fwinit, r97gfsr, r97cbfsr, r97ao);
                         IOLog("enchilada-adreno: %s\n", r97RowH);
                     }
+                }
+            }
+        }
+    }
+}
+
+if (fwKey == 99u || fwKey == 100u || fwKey == 101u) {
+    // ROUND 245: R244 proved the start word can be survived when context bank 0's table
+    // covers the pages the GMU reads. The next question is what that store actually does,
+    // and it can only be answered by reading registers after it.
+    //
+    // Key 98 is key 95 verbatim: whole setup, then the start word as the last action and
+    // nothing after it. Key 97 is the same setup plus the start word, and then five reads
+    // and one more row. Both keys share one store, so the pair differs in exactly one thing.
+    //
+    // The post-start reads are best effort on purpose. A row printed after the store can
+    // only reach the window if the machine lives long enough for the writer to commit one
+    // more slot, and R244 showed exactly seven rows landing with the store last -- so this
+    // round is asking whether the machine outlives one more round, which is information
+    // either way. Nothing spins and nothing sleeps here: no time is bought.
+    extern uint64_t armcpu_dma_alloc_writable (uint64_t bytes, uint64_t *out_virt);
+    char r99RowA[300];
+    char r99RowB[300];
+    char r99RowC[300];
+    char r99RowD[300];
+    char r99RowE[300];
+    char r99RowF[300];
+    char r99RowG[300];
+    char r99RowH[300];
+    char r99RowF2[300];
+    const int r99mode = (fwKey >= 101u) ? 101 : ((fwKey >= 100u) ? 100 : 99);
+    const uint32_t r99cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r99cxOn = adreno_domain_cx_is_on(r99cx);
+    struct adreno_install_geo g99;
+    const uint32_t r99id1 = gSmmuVa ? rd32(gSmmuVa, 0x24u) : 0u;
+    const uint32_t r99geom = adreno_install_cb_geometry(r99id1, &g99);
+    const uint32_t r99qtbl = sGmuFwVa
+        ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u) : 0u;
+    snprintf(r99RowA, sizeof r99RowA,
+             "gmu99a=cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d "
+             "key=%u mode=%d qtbl=%08x",
+             r99cx, r99cxOn, (unsigned)r99geom, (unsigned)g99.pgshift,
+             (unsigned)g99.cb_base, (unsigned)g99.num_context_banks,
+             (gSmmuVa != 0) ? 1 : 0, (unsigned)fwKey, r99mode, r99qtbl);
+    IOLog("enchilada-adreno: %s\n", r99RowA);
+
+    if (!r99cxOn) {
+        IOLog("enchilada-adreno: gmu99b=refused-cx-down cx=%08x\n", r99cx);
+    } else if (r99geom != 0u || gSmmuVa == 0u) {
+        IOLog("enchilada-adreno: gmu99b=refused-geometry geom=%u\n",
+              (unsigned)r99geom);
+    } else if (r99qtbl == 0u) {
+        IOLog("enchilada-adreno: gmu99b=refused-no-queue-table qtbl=00000000\n");
+    } else if (!&armcpu_dma_alloc_writable) {
+        IOLog("enchilada-adreno: gmu99b=no-alloc-symbol\n");
+    } else {
+        static uint64_t s99phys = 0;
+        static uint64_t s99virt = 0;
+        if (!s99phys) {
+            s99phys = armcpu_dma_alloc_writable (4ull * 4096ull, &s99virt);
+        }
+        const uint64_t r99base =
+            static_cast<uint64_t>(r99qtbl) & ~static_cast<uint64_t>(0x1fffffull);
+        if (!s99phys || !s99virt) {
+            IOLog("enchilada-adreno: gmu99b=alloc-failed phys=%llx virt=%llx\n",
+                  (unsigned long long)s99phys, (unsigned long long)s99virt);
+        } else {
+            struct adreno_iommu_id2 d99 = {};
+            const uint32_t id2w99 = rd32(gSmmuVa, 0x28u);
+            int ok99 = 0;
+            const uint32_t r99ias = (adreno_iommu_id2_decode(id2w99, &d99) == 0)
+                ? (adreno_iommu_va_size(id2w99, 2u, &ok99)) : 0u;
+            const uint32_t r99oas = adreno_iommu_stage1_oas(id2w99);
+            const uint32_t prot99 = kAdrenoLpaePteValid | kAdrenoLpaePteAf;
+            struct adreno_lpae_geo l99 = {};
+            const uint32_t r99lpaeg = adreno_lpae_geometry(
+                (r99ias >= 32u) ? r99ias : 36u, 12u, &l99);
+            uint32_t r99need = 0u;
+            const uint32_t r99bytes = (r99lpaeg != 0u) ? 99u
+                : adreno_table_bytes_needed(&l99, 0x200000ull, &r99need);
+            struct adreno_table_result t99 = {};
+            const uint32_t r99build =
+                (r99lpaeg != 0u || r99bytes != 0u) ? 99u
+                : adreno_table_build(&l99, (uint64_t)s99virt, s99phys,
+                                     r99base, r99base, 0x200000ull, prot99, &t99);
+            snprintf(r99RowB, sizeof r99RowB,
+                     "gmu99b=build=%u need=%u tables=%u writes=%u root=%llx base=%llx "
+                     "ias=%u oas=%u ok=%d",
+                     (unsigned)r99build, (unsigned)r99need, (unsigned)t99.tables,
+                     (unsigned)t99.writes, (unsigned long long)t99.root_paddr,
+                     (unsigned long long)r99base, (unsigned)r99ias, (unsigned)r99oas, ok99);
+            IOLog("enchilada-adreno: %s\n", r99RowB);
+
+            if (r99build != 0u) {
+                IOLog("enchilada-adreno: gmu99b=refused-build=%u\n", (unsigned)r99build);
+            } else {
+                struct adreno_smmu_ctx_params p99 = {};
+                p99.cbndx = 0u;
+                p99.asid = 0u;
+                p99.ttbr = t99.root_paddr;
+                p99.ias = (r99ias >= 32u) ? r99ias : 36u;
+                p99.oas = (r99oas >= 32u) ? r99oas : 36u;
+                const uint32_t r99id0 = rd32(gSmmuVa, 0x20u);
+                p99.coherent_walk = adreno_iommu_coherent_walk(r99id0, 0u);
+                p99.ttbr1 = 0u;
+                p99.aarch64 = 1u;
+                p99.vmid16 = 0u;
+                p99.vmid = 0u;
+                struct adreno_smmu_ctx_write plan99[12];
+                struct adreno_install_write abs99[12];
+                uint32_t nplan99 = 0u, nabs99 = 0u;
+                const int r99plan = adreno_smmu_ctx_plan(&p99, plan99, 12u, &nplan99);
+                const uint32_t r99abs = adreno_install_absolute(
+                    &g99, 0u, plan99, nplan99, abs99, 12u, &nabs99);
+                snprintf(r99RowC, sizeof r99RowC,
+                         "gmu99c=plan=%d n=%u abs=%u nab=%u cbndx=%u ttbr=%llx cw=%u "
+                         "id0=%08x",
+                         r99plan, (unsigned)nplan99, (unsigned)r99abs,
+                         (unsigned)nabs99, (unsigned)p99.cbndx,
+                         (unsigned long long)p99.ttbr, (unsigned)p99.coherent_walk,
+                         r99id0);
+                IOLog("enchilada-adreno: %s\n", r99RowC);
+
+                if (r99plan != 0 || r99abs != 0u || nabs99 != 9u) {
+                    IOLog("enchilada-adreno: gmu99d=refused-plan\n");
+                } else {
+                    uint32_t k99;
+                    for (k99 = 0u; k99 < nabs99; ++k99) {
+                        const uintptr_t r99frame =
+                            (abs99[k99].gr1 != 0u)
+                            ? static_cast<uintptr_t>(gSmmuVa) + (1u << g99.pgshift)
+                            : static_cast<uintptr_t>(gSmmuVa);
+                        if (abs99[k99].is_64bit) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                r99frame +
+                                static_cast<uintptr_t>(abs99[k99].offset)) =
+                                abs99[k99].value;
+                            *reinterpret_cast<volatile uint32_t *>(
+                                r99frame +
+                                static_cast<uintptr_t>(abs99[k99].offset) + 4u) =
+                                abs99[k99].value_hi;
+                        } else {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                r99frame +
+                                static_cast<uintptr_t>(abs99[k99].offset)) =
+                                abs99[k99].value;
+                        }
+                    }
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    const uint32_t r99t0l = rd32(gSmmuVa, (unsigned)g99.cb_base + 0x20u);
+                    const uint32_t r99t0h = rd32(gSmmuVa, (unsigned)g99.cb_base + 0x24u);
+                    const uint32_t r99sct = rd32(gSmmuVa, (unsigned)g99.cb_base + 0x00u);
+                    const uint32_t r99tcr = rd32(gSmmuVa, (unsigned)g99.cb_base + 0x30u);
+                    const uint32_t r99bar = rd32(
+                        static_cast<uintptr_t>(gSmmuVa) + (1u << g99.pgshift), 0x000u);
+                    snprintf(r99RowD, sizeof r99RowD,
+                             "gmu99d=wrote=%u ttbr0=%08x/%08x sctlr=%08x tcr=%08x "
+                             "cbar=%08x root=%llx",
+                             (unsigned)nabs99, r99t0l, r99t0h, r99sct, r99tcr, r99bar,
+                             (unsigned long long)t99.root_paddr);
+                    IOLog("enchilada-adreno: %s\n", r99RowD);
+
+                    const uint32_t r99smrWant = 0x80000000u | 0x00000004u;
+                    const uint32_t r99s2Want = 0x00000000u;
+                    *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x800u) = r99smrWant;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    const uint32_t r99smrBack = rd32(gSmmuVa, 0x800u);
+                    snprintf(r99RowE, sizeof r99RowE,
+                             "gmu99e=smr_set wanted=%08x back=%08x valid=%u sid=%u landed=%u",
+                             r99smrWant, r99smrBack, (r99smrBack >> 31) & 1u,
+                             r99smrBack & 0xffffu,
+                             (r99smrBack == r99smrWant) ? 1u : 0u);
+                    IOLog("enchilada-adreno: %s\n", r99RowE);
+
+                    *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0xc00u) = r99s2Want;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    const uint32_t r99s2Back = rd32(gSmmuVa, 0xc00u);
+                    snprintf(r99RowF, sizeof r99RowF,
+                             "gmu99f=s2cr_set wanted=%08x back=%08x typew=%08x landed=%u",
+                             r99s2Want, r99s2Back, r99s2Back & 0x00030000u,
+                             (r99s2Back == r99s2Want) ? 1u : 0u);
+                    IOLog("enchilada-adreno: %s\n", r99RowF);
+
+                    const uint32_t r99smrNow = rd32(gSmmuVa, 0x800u);
+                    const uint32_t r99s2Now = rd32(gSmmuVa, 0xc00u);
+                    snprintf(r99RowG, sizeof r99RowG,
+                             "gmu99g=last_row=1 about_to_start=1 mode=%d route=1 "
+                             "smr=%08x s2cr=%08x qtbl=%08x base=%llx",
+                             r99mode, r99smrNow, r99s2Now, r99qtbl,
+                             (unsigned long long)r99base);
+                    IOLog("enchilada-adreno: %s\n", r99RowG);
+
+                    // ROUND 246: the survival is established, so the open question is what
+                    // the firmware does with the start request. Three keys, one variable each,
+                    // and nothing bought with time: no loop, no sleep, no poll.
+                    if (r99mode == 101) {
+                        // SID 5 (the GMU kernel stream) gets its own route beside SID 4.
+                        const uint32_t r99smr1Want = 0x80000000u | 0x00000005u;
+                        const uint32_t r99s2OneWant = 0x00000000u;
+                        *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0x804u) = r99smr1Want;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint32_t r99smr1Back = rd32(gSmmuVa, 0x804u);
+                        *reinterpret_cast<volatile uint32_t *>(gSmmuVa + 0xc04u) = r99s2OneWant;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint32_t r99s2OneBack = rd32(gSmmuVa, 0xc04u);
+                        snprintf(r99RowF2, sizeof r99RowF2,
+                                 "gmu99h=smr1_set wanted=%08x back=%08x valid=%u sid=%u "
+                                 "landed=%u s2cr1_wanted=%08x s2cr1_back=%08x landed1=%u",
+                                 r99smr1Want, r99smr1Back, (r99smr1Back >> 31) & 1u,
+                                 r99smr1Back & 0xffffu,
+                                 (r99smr1Back == r99smr1Want) ? 1u : 0u,
+                                 r99s2OneWant, r99s2OneBack,
+                                 (r99s2OneBack == r99s2OneWant) ? 1u : 0u);
+                        IOLog("enchilada-adreno: %s\n", r99RowF2);
+                        gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                    } else if (r99mode == 100) {
+                        // Re-arm the table descriptor the way upstream does right before the
+                        // start word, then read the status register once -- still before the
+                        // store, so this row has a fair chance of landing either way.
+                        gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = r99qtbl;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint32_t r99ctl1 = sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u) : 0u;
+                        const uint32_t r99qtblNow = sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u) : 0u;
+                        const uint32_t r99qtbiNow = sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u) : 0u;
+                        snprintf(r99RowH, sizeof r99RowH,
+                                 "gmu100h=before_start=1 ctl=%08x qtbla=%08x qtbli=%08x "
+                                 "survived=1",
+                                 r99ctl1, r99qtblNow, r99qtbiNow);
+                        IOLog("enchilada-adreno: %s\n", r99RowH);
+                        gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                    } else {
+                        // Key 99: the same start word as R245 key 97, then read the registers
+                        // the firmware would have to touch if it processed a start request.
+                        gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint32_t r99ctl = sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u) : 0u;
+                        const uint32_t r99cpmsg = sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG * 4u) : 0u;
+                        const uint32_t r99cpresp = sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_PWR_COL_CP_RESP * 4u) : 0u;
+                        const uint32_t r99qtbla = sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u) : 0u;
+                        const uint32_t r99qtbli = sGmuFwVa
+                            ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO * 4u) : 0u;
+                        snprintf(r99RowH, sizeof r99RowH,
+                                 "gmu99h=after_start=1 ctl=%08x cpmsg=%08x cpresp=%08x "
+                                 "qtbla=%08x qtbli=%08x survived=1",
+                                 r99ctl, r99cpmsg, r99cpresp, r99qtbla, r99qtbli);
+                        IOLog("enchilada-adreno: %s\n", r99RowH);
+                    }
+
                 }
             }
         }

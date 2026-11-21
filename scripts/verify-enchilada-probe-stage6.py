@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 5,
-          'ID1 is re-read at most four times more (keys 71, 72, 95 and 97), not in a loop')
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 6,
+          'ID1 is re-read at most five times more (keys 71, 72, 95, 97 and 99), not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
           'ID2 (stage 4) is read BEFORE the stage-6 ID0/ID1 pair (same poll)')
@@ -1222,7 +1222,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 98u' in _fw,
+    check('fwKey >= 7u && fwKey <= 101u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1694,7 +1694,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 98u)' in code,
+    check('(fwKey >= 7u && fwKey <= 101u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3796,7 +3796,7 @@ def main():
     check(_i9798 > _i9596, 'stage 6 does NOT find the ROUND 245 block after the R244 block')
     _k9798 = ''
     if _i9798 > 0:
-        _k9798 = code[_i9798:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+        _k9798 = code[_i9798:].split('\nif (fwKey == 99u || fwKey == 100u || fwKey == 101u) {\n', 1)[0]
     check(_k9798 != '', 'stage 6 does NOT slice the ROUND 245 block')
     check(_k9798.count('gmuW[') == 2,
           'stage 6 finds %d GMU stores in the R245 block (expected one per branch)'
@@ -3836,6 +3836,72 @@ def main():
     check(_store97 >= 0 and 'gmu97h=after_start=1' in _br97[_store97:],
           'key 97 does not read and print after its start word')
     check(_br97.find('rd32(') > _store97, 'key 97 reads back BEFORE the start word')
+
+    # ------------------------------------------------------------------ ROUND 246
+    # The survival is established, so the question is what the firmware does with the start
+    # request. Key 99 starts the HFI and then reads the registers the firmware would have had
+    # to touch. Key 100 re-arms the table descriptor first and reads the status once *before*
+    # the store. Key 101 adds a second route for SID 5 and then starts. Nothing loops after a
+    # store, nothing sleeps, and only key 99 reads after its start word.
+    _i99101 = code.find('if (fwKey == 99u || fwKey == 100u || fwKey == 101u) {')
+    check(_i99101 > _i9798, 'stage 6 does NOT find the ROUND 246 block after the R245 block')
+    _k99101 = ''
+    if _i99101 > 0:
+        _k99101 = code[_i99101:].split('\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+    check(_k99101 != '', 'stage 6 does NOT slice the ROUND 246 block')
+    check(_k99101.count('gmuW[') == 5,
+          'stage 6 finds %d GMU stores in the R246 block (expected five)' % _k99101.count('gmuW['))
+    check(_k99101.count('HFI_CTRL_INIT] = ') == 3,
+          'the R246 block carries %d start words (expected one per key)'
+          % _k99101.count('HFI_CTRL_INIT] = '))
+    check(_k99101.count('HFI_QTBL_ADDR] = ') == 1 and _k99101.count('HFI_QTBL_INFO] = ') == 1,
+          'key 100 must re-arm the queue-table descriptor exactly once each')
+    for _row in ('gmu99a=', 'gmu99b=refused-cx-down', 'gmu99b=refused-geometry',
+                 'gmu99b=refused-no-queue-table', 'gmu99b=no-alloc-symbol',
+                 'gmu99b=alloc-failed', 'gmu99b=refused-build', 'gmu99b=build=',
+                 'gmu99c=plan=', 'gmu99d=wrote=', 'gmu99e=smr_set', 'gmu99f=s2cr_set',
+                 'gmu99g=last_row=1', 'gmu99h=smr1_set', 'gmu100h=before_start=1',
+                 'gmu99h=after_start=1'):
+        check(_row in _k99101, 'the R246 block does NOT print %r' % _row)
+    check(_k99101.count('armcpu_dma_alloc_writable') == 3,
+          'R246 declares, guards and calls the allocator (%d)'
+          % _k99101.count('armcpu_dma_alloc_writable'))
+    check('0x200000ull' in _k99101, 'the R246 mapping is NOT the 2 MiB block')
+    check('IOSleep' not in _k99101, 'the R246 block sleeps')
+    check(_k99101.count('for (') == 1,
+          'the R246 block has %d loops (only the nine-word write may loop)'
+          % _k99101.count('for ('))
+    # Key 101: the SID 5 route is two stores, and the start word comes after both of them.
+    _k101 = _k99101[_k99101.index('if (r99mode == 101) {'):_k99101.index('} else if (r99mode == 100) {')]
+    check('gSmmuVa + 0x804u) = ' in _k101 and 'gSmmuVa + 0xc04u) = ' in _k101,
+          'key 101 does NOT program the second route at SMR1 and S2CR1')
+    check('0x80000000u | 0x00000005u' in _k101, 'key 101 does NOT route SID 5')
+    check(_k101.index('gSmmuVa + 0x804u) = ') < _k101.index('gSmmuVa + 0xc04u) = '),
+          'key 101 routes S2CR1 before SMR1')
+    check(_k101.rindex('HFI_CTRL_INIT] = ') > _k101.index('gSmmuVa + 0xc04u) = '),
+          'key 101 starts the HFI before the second route is written')
+    # Key 100: descriptor, then info, then one status read, then the start word last.
+    _i100 = _k99101.index('} else if (r99mode == 100) {')
+    _i100end = _k99101.index('} else {', _i100 + 1)
+    _k100 = _k99101[_i100:_i100end]
+    check('HFI_QTBL_ADDR] = ' in _k100 and 'HFI_QTBL_INFO] = ' in _k100,
+          'key 100 does NOT re-arm the queue-table descriptor')
+    check(_k100.index('HFI_QTBL_ADDR] = ') < _k100.index('HFI_QTBL_INFO] = '),
+          'key 100 writes QTBL_INFO before QTBL_ADDR')
+    check(_k100.index('HFI_CTRL_STATUS * 4u') < _k100.index('HFI_CTRL_INIT] = '),
+          'key 100 reads the status register after the start word')
+    check(_k100.rindex('HFI_CTRL_INIT] = ') > _k100.index('gmu100h=before_start=1'),
+          'key 100 prints before_start after the start word')
+    # Key 99: the store comes first, then the five reads, and only then the row.
+    _i99 = _k99101.rindex('} else {')
+    _k99 = _k99101[_i99:]
+    check(_k99.rindex('HFI_CTRL_INIT] = ') < _k99.index('gmu99h=after_start=1'),
+          'key 99 prints its post-start row before the store')
+    for _reg in ('HFI_CTRL_STATUS * 4u', 'PWR_COL_CP_MSG * 4u', 'PWR_COL_CP_RESP * 4u',
+                 'HFI_QTBL_ADDR * 4u', 'HFI_QTBL_INFO * 4u'):
+        check(_k99.count(_reg) == 1,
+              'key 99 reads %r %d times (expected once)' % (_reg, _k99.count(_reg)))
+
     print()
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
