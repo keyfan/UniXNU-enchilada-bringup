@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 16,
-          'ID1 is re-read at most fifteen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127 and 130), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 17,
+          'ID1 is re-read at most sixteen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130 and 133), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 132u' in _fw,
+    check('fwKey >= 7u && fwKey <= 135u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 132u)' in code,
+    check('(fwKey >= 7u && fwKey <= 135u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4147,6 +4147,11 @@ def main():
         _k130132 = ''
         if _i130132 > 0:
             _k130132 = code[_i130132:].split(
+                '\nif (fwKey == 133u || fwKey == 134u || fwKey == 135u) {\n', 1)[0]
+        _i133135 = code.find('if (fwKey == 133u || fwKey == 134u || fwKey == 135u) {')
+        _k133135 = ''
+        if _i133135 > 0:
+            _k133135 = code[_i133135:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -4544,6 +4549,76 @@ def main():
     check(_b131.rindex('0xc00001feu') < _b131.index('HFI_CTRL_INIT] = 1u;') and
           len(_store.findall(_b131[_b131.index('HFI_CTRL_INIT] = 1u;'):])) == 0,
           'R256 the start word comes after the clear and is the last store of the round')
+
+    # ---- ROUND 257: read the bank back after the start word, and flush the translations first.
+    check(_k133135 != '', 'R257 the recheck block is present after the readback block')
+    check(len(_store.findall(_k133135)) == 14,
+          'R257 the round holds fourteen GMU stores: eight in the shared preamble and six across '
+          'the three keys (got %d)' % len(_store.findall(_k133135)))
+    check(_k133135.count('HFI_CTRL_INIT] = 1u;') == 3,
+          'R257 all three keys hand over the start word (got %d)'
+          % _k133135.count('HFI_CTRL_INIT] = 1u;'))
+    check(_k133135.count('GMU2HOST_INTR_MASK] = ') == 3 and
+          _k133135.count('0xff7fffffu') == 3,
+          'R257 each key leaves only the fault source unmasked (got %d/%d)'
+          % (_k133135.count('GMU2HOST_INTR_MASK] = '), _k133135.count('0xff7fffffu')))
+    check(_k133135.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 1,
+          'R257 the preamble clears the HFI interrupts once, not once per key (got %d)'
+          % _k133135.count('GMU2HOST_INTR_CLR] = 0xffffffffu;'))
+    check(_k133135.count('CM3_FW_INIT_RESULT] = 0u;') == 1,
+          'R257 the init word is cleared once, before the reset pulse (got %d)'
+          % _k133135.count('CM3_FW_INIT_RESULT] = 0u;'))
+    check(_k133135.count('HFI_QTBL_ADDR] = r133qtblValue;') == 1 and
+          _k133135.count('HFI_QTBL_INFO] = 1u;') == 1,
+          'R257 the queue table is re-armed with the full address this time')
+    check(_k133135.count('0xc00001feu') == 3,
+          'R257 each key clears the fault status word exactly once (got %d)'
+          % _k133135.count('0xc00001feu'))
+    check(_k133135.count('0x58u') == 15 and _k133135.count('0x60u') == 6 and
+          _k133135.count('0x68u') == 4,
+          'R257 the fault word, the fault address and the syndrome are read back '
+          '(got %d/%d/%d)' % (_k133135.count('0x58u'), _k133135.count('0x60u'),
+                              _k133135.count('0x68u')))
+    check(_k133135.count('0x74u') == 3 and _k133135.count('0x7f4u') == 2,
+          'R257 the global and context-bank sync words are polled until idle '
+          '(got %d/%d)' % (_k133135.count('0x74u'), _k133135.count('0x7f4u')))
+    check(_k133135.count('0x6cu') == 1 and _k133135.count('0x68u') >= 4 and
+          _k133135.count('0x610u') == 1 and _k133135.count('0x7f0u') == 1,
+          'R257 key 135 invalidates all translations and the stage-1 ASID and syncs both')
+    check(_k133135.count('for (') == 8 and _k133135.count('IODelay(1u)') == 6 and
+          'IOSleep' not in _k133135,
+          'R257 every wait is a yielding read loop (got %d loops, %d delays)'
+          % (_k133135.count('for ('), _k133135.count('IODelay(1u)')))
+    check('0xbabefaceu' in _k133135 and _k133135.count('0xbabefaceu') == 1,
+          'R257 the CM3 bring-up still waits for its own init word')
+    check('readback=1' in _k133135 and 'cleaned=1' in _k133135,
+          'R257 the descriptor readback and the page clean are both still reported')
+    _rows257 = ['gmu133a', 'gmu133b', 'gmu133c', 'gmu133d', 'gmu133e', 'gmu133f',
+                'gmu133g', 'gmu133h', 'gmu133i', 'gmu133j', 'gmu133m', 'gmu133n',
+                'gmu133k', 'gmu133l', 'gmu134k', 'gmu134l', 'gmu135k', 'gmu135k2',
+                'gmu135l']
+    _missing257 = [r for r in _rows257 if ('%s=' % r) not in _k133135]
+    check(not _missing257,
+          'R257 the round reports its own rows (missing %s)' % _missing257)
+    check(_k133135.index('if (r133mode == 133) {') <
+          _k133135.index('} else if (r133mode == 134) {') <
+          _k133135.rindex('} else {'),
+          'R257 the three keys appear in order 133, 134, 135')
+    _b133 = _k133135.split('if (r133mode == 133) {')[1].split('} else if')[0]
+    _b134 = _k133135.split('} else if (r133mode == 134) {')[1].split('} else {')[0]
+    _b135 = _k133135[_k133135.rindex('} else {') + len('} else {'):]
+    check(_b135.index('0x6cu') < _b135.index('GMU2HOST_INTR_MASK] = ') and
+          _b135.index('0x610u') < _b135.index('GMU2HOST_INTR_MASK] = '),
+          'R257 key 135 flushes the translations BEFORE it clears the status word')
+    check(len(_store.findall(_b133[_b133.index('HFI_CTRL_INIT] = 1u;'):])) == 0 and
+          len(_store.findall(_b134[_b134.index('HFI_CTRL_INIT] = 1u;'):])) == 0 and
+          len(_store.findall(_b135[_b135.index('HFI_CTRL_INIT] = 1u;'):])) == 0,
+          'R257 the start word is the last store of each key')
+    check(_b133.count('0x20u') >= 1 and _b133.count('0x00u') >= 1 and
+          _b133.count('0x30u') >= 1 and _b133.count('0x000u') >= 1,
+          'R257 key 133 reads the bank own TTBR0, SCTLR, TCR and CBAR back after the poll')
+    check(_b134.count('0x48u') >= 2 and _b134.count('0x58u') >= 6,
+          'R257 key 134 reads the global fault word and the four neighbouring banks')
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
