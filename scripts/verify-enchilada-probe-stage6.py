@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 28,
-          'ID1 is re-read at most twenty-seven times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163 and 166), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 29,
+          'ID1 is re-read at most twenty-nine times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166 and 169), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 168u' in _fw,
+    check('fwKey >= 7u && fwKey <= 171u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 168u)' in code,
+    check('(fwKey >= 7u && fwKey <= 171u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4210,6 +4210,11 @@ def main():
         _k166168 = ''
         if _i166168 > 0:
             _k166168 = code[_i166168:].split(
+                '\nif (fwKey == 169u || fwKey == 170u || fwKey == 171u) {\n', 1)[0]
+        _i169171 = code.find('if (fwKey == 169u || fwKey == 170u || fwKey == 171u) {')
+        _k169171 = ''
+        if _i169171 > 0:
+            _k169171 = code[_i169171:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -5003,6 +5008,7 @@ def main():
     check(_k160162 != '', 'R266 the matrix block follows the R265 block')
     check(_k163165 != '', 'R267 the counting block follows the R266 block')
     check(_k166168 != '', 'R268 the counting block follows the R267 block')
+    check(_k169171 != '', 'R269 the latch block follows the R268 block')
     check(len(_store.findall(_k151153)) == 13,
           'the R263 block holds thirteen GMU stores: eight in the shared preamble, the page fill '
           'takes none, the two starting keys add one mask store and one start word each and the '
@@ -5071,6 +5077,7 @@ def main():
     check(_k160162 != '', 'R266 the matrix block follows the R265 block')
     check(_k163165 != '', 'R267 the counting block follows the R266 block')
     check(_k166168 != '', 'R268 the counting block follows the R267 block')
+    check(_k169171 != '', 'R269 the latch block follows the R268 block')
     _rows264 = re.findall(r'gmu(15[456][a-n]|15[456]k[1-4]|15[456]l)=', _k154156)
     check(len(set(_rows264)) == 19,
           'the R264 block prints nineteen named rows (got %d: %s)'
@@ -5349,6 +5356,59 @@ def main():
     for _tag, _b in (('gmu163l', _b163), ('gmu164l', _b164), ('gmu165l', _b165)):
         check('survived=1' in _b and 'ctl0=%08x' in _b and _tag + '=' in _b,
               '%s keeps the three control words and the survival flag' % _tag)
+
+    _rows269 = ['gmu169' + c for c in 'abcdefghijmn'] + [
+        'gmu169k1', 'gmu169k2', 'gmu169k3', 'gmu169k4', 'gmu169l',
+        'gmu170k', 'gmu170l', 'gmu171k', 'gmu171l']
+    check(all(_w + '=' in _k169171 for _w in _rows269),
+          'the R269 block prints every one of its twenty-one rows')
+    check(_k169171.count('gmuW[') == 25,
+          'the R269 block holds twenty-five GMU stores, measured %u'
+          % _k169171.count('gmuW['))
+    check(_k169171.count('HFI_CTRL_INIT] = 1u;') == 6,
+          'six start words across the three keys, measured %u'
+          % _k169171.count('HFI_CTRL_INIT] = 1u;'))
+    check(_k169171.count('GMU2HOST_INTR_MASK] = ') == 6 and
+          _k169171.count('0xff7fffffu') == 6,
+          'one mask store per start word, measured %u'
+          % _k169171.count('GMU2HOST_INTR_MASK] = '))
+    check(_k169171.count('0xc00001feu') == 6,
+          'every mask store is preceded by a bank fault status clear, measured %u'
+          % _k169171.count('0xc00001feu'))
+    check(_k169171.count('HFI_CTRL_STATUS] = ') == 5,
+          'five hand writes of the control word, measured %u'
+          % _k169171.count('HFI_CTRL_STATUS] = '))
+    check(_k169171.count('for (') == 11 and _k169171.count('IODelay(1u)') == 8 and
+          'IOSleep' not in _k169171,
+          'the block yields inside eleven loops and never sleeps (%u / %u)'
+          % (_k169171.count('for ('), _k169171.count('IODelay(1u)')))
+    check(_k169171.count('0xbabefaceu') == 1 and
+          _k169171.count('dc civac') == 2,
+          'the preamble keeps the firmware init wait and both page cleans')
+    check(_k169171.index('if (r169mode == 169) {') <
+          _k169171.index('} else if (r169mode == 170) {') <
+          _k169171.rindex('} else {'),
+          'the three keys appear in the order 169, 170, 171')
+    _b169 = _k169171[_k169171.index('if (r169mode == 169) {'):
+                     _k169171.index('} else if (r169mode == 170) {')]
+    _b170 = _k169171[_k169171.index('} else if (r169mode == 170) {'):
+                     _k169171.rindex('} else {')]
+    _b171 = _k169171[_k169171.rindex('} else {') + len('} else {'):]
+    check(_b169.count('HFI_CTRL_INIT] = 1u;') == 4,
+          'key 169 commits four start words in one boot')
+    check(_b169.count('HFI_CTRL_STATUS] = 0u;') == 2,
+          'key 169 clears the control word by hand before the second and before the fourth start')
+    check(_b170.count('HFI_CTRL_INIT] = 1u;') == 1,
+          'key 170 sends exactly one start word, after the hand writes')
+    check(_b170.count('HFI_CTRL_STATUS] = 1u;') == 1 and
+          _b170.count('HFI_CTRL_STATUS] = 0u;') == 1,
+          'key 170 writes the control word by hand once up and once down')
+    check(_b171.count('HFI_CTRL_INIT] = 1u;') == 1 and
+          _b171.count('HFI_CTRL_STATUS] = 0u;') == 1,
+          'key 171 starts once and then clears the control word by hand')
+    for _tag, _b in (('gmu169l', _b169), ('gmu170l', _b170), ('gmu171l', _b171)):
+        check('survived=1' in _b and _tag + '=' in _b,
+              '%s keeps the survival flag' % _tag)
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:

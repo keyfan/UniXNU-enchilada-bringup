@@ -7542,3 +7542,98 @@ gmu168l=manual_clear=1 after_write=00000000 ctl_now=00000000 pol1=200000
 - 本块的 `gmu168l` 把四个字打成**一个组合字段** `w4..w7=a5a5a5a5 5a5a5a5a c3c3c3c3 3c3c3c3c`，所以判决串里逐字取 `w4`/`w5`/`w6`/`w7` 会得到 `None`；读这类行要么按空格切整个字段再分，要么在块里改成四个独立 `w4=%08x w5=…`。
 - 同一份 runner 重跑一次会**再引导一次**并覆盖 `r268_sNNN_window.bin`；本轮把第一次的窗口另存为 `r268_s166_window_r1.bin`。设备日志 `r268-s166-device.log` 也被覆盖，所以第一次的 `boot_id` 没有留下来 —— **每次引导前先备份日志与窗口**。
 - `r268_anchor.py` 按 `HERE` 拼参数路径，在 `oneplus6-ios` 里传 `work\tmp\…` 会拼成 `work\tmp\work\tmp\…`；要么在 `work\tmp` 里跑并只传文件名，要么传绝对路径。
+
+## 九十三、ROUND 269：手清能清掉那个字，但同一引导里再启动不再被接受 —— 上一轮的「每次引导锁存一次」得到正面确认
+
+### 93.1 一句话
+
+R268 的结论是「控制字的 bit 0 每次引导锁存一次」，本轮把它直接测一遍：**同一引导里先接受一次，再把它手写回 0，然后再写一次启动字 —— 200000 轮之后它仍是 0（三次全拒）；而同一个字确实可以被手写成 1、也可以被手清成 0，读回的就是写进去的值。**
+
+### 93.2 三个键分别问什么
+
+- **键 169**：一次引导里发四次启动字 —— 第 1 次照常；第 2 次之前**手清**一次；第 3 次**什么都不清**；第 4 次之前再手清一次。每支都先清 CB0 状态字、再一笔掩码、再启动字，所以四次之间**唯一的变量就是手清**。
+- **键 170**：全程**不写启动字**，只用手写把控制字置成 1、读回、延迟后再读、再手写成 0、读回；然后才发一次真启动字。这把「软件能不能写这个字」与「固件接受启动」彻底分开。
+- **键 171**：启动一次后拍一组固件字的快照（`CM3_FW_INIT_RESULT`、`PWR_COL_CP_MSG`、`PWR_COL_CP_RESP`、`GMU2HOST_INTR_INFO`、`sGFSR`），手清控制字，再拍一组 —— 看手清有没有连带动别的字。
+
+### 93.3 代码形状
+
+- 探针 1,237,972 字符 / 20,270 行；本块 **35,604 字符 / 651 行**；块内 `gmuW[` **25** 笔、`HFI_CTRL_INIT = 1` **6** 笔、`GMU2HOST_INTR_MASK` **6** 笔、状态字清零 **6** 笔（每笔掩码前一笔）、`HFI_CTRL_STATUS] =` **5** 笔（键 169 两次手清 + 键 170 两次手写 + 键 171 一次手清）、`for (` **11**、`IODelay(1u)` **8**、无 `IOSleep`。
+- 严格 GMU 写点从 **562 → 587**（+25）。
+- 行名 21 条：`gmu169a..n`（12 条共享前导段，**行名随改名一起变成了 `gmu169*`**）、`gmu169k1..k4`、`gmu169l`、`gmu170k`、`gmu170l`、`gmu171k`、`gmu171l`。
+
+### 93.4 构建与门禁
+
+- CI **#383 `45038530947`** `success` 28/28（`2026-11-22T15:28:48Z → 15:48:11Z`）。
+- 产物 `kernel.macho` 126,435,328 B `dda2cb87b589…`、`payload.img` 150,994,944 B `d7aa521c202d…`（payload 第一次下载在 77,975,471 / 83,173,836 处 `INCOMPLETE` 中断，删目录重下后才完整）。
+- 静态门 **`PASS: R269 static gate`**（31 条 REQUIRED 全中、`required+survivors: 43 checked in both artefacts`），对 R268 产物自证 **`FAIL (31 problems)`**。
+- host 28/28、stage4 61/61、stage5 48/48、stage6 1,763/1,763、全量 46/48 `FAILING: 0`。
+
+### 93.5 键 169 的读数
+
+`boot_id 605728322`、窗口 `ca5f95a50af34177b13671898ea5cd71385e616289d3a20cdd5dfec727865aff`、17/17 行：
+
+```
+gmu169k1=start1=1 ctl=00000001 pol=1
+gmu169k2=after_clear1=1 word=00000000 about_to_start=1
+gmu169k3=start2_after_clear=1 ctl=00000000 pol=200000
+gmu169k4=start3_no_clear=1 ctl=00000000 pol=200000
+gmu169l=four_starts=1 after_clear1=00000000 clear_back2=00000000 ctl1=00000001 pol1=1 ctl2=00000000 pol2=200000 ctl3=00000000 pol3=200000 ctl4=00000000 pol4=200000 fsr=00000400 far=00000000 survived=1
+```
+
+判决串的原话：**「1 of 4 start words were accepted inside one boot / even right after a hand clear the firmware refuses another start / WITHOUT A CLEAR THE WORD NEVER COMES BACK (start 3 stayed at 00000000 first)」**。
+
+### 93.6 键 170 的读数
+
+`boot_id 580967959`、窗口 `e8fe8037a354918af194611c55036495893aa94ec7a10e43245105c01cfe5840`、17/17 行：
+
+```
+gmu170k=hand_set=1 base=00000000 set_back=00000001 set_late=00000001 clear_back=00000000 about_to_start=1
+gmu170l=set_by_hand_end=1 fills=3 ctl=00000001 pol=1 fsr=00000400 far=00000000 survived=1
+```
+
+判决串的原话：**「THE CONTROL WORD IS WRITABLE BY HAND AND THE HAND VALUE IS WHAT READS BACK / THE HAND WRITE DOES NOT REPLACE THE START WORD: the real one then went accepted」**。
+
+### 93.7 键 171 的读数
+
+`boot_id 580505538`、窗口 `4a7782a0918dfaffcf16dfe2e31c27e6b8f06dbe23e4e9f54e1e1a1fa926b886`、17/17 行：
+
+```
+gmu171k=before_clear=1 ctl=00000001 pol=1 fwinit=babeface cpmsg=ad983000 cpresp=00000000 info=00000000 gfsr=00000000
+gmu171l=after_clear=1 fills=3 ctl=00000000 fwinit=babeface cpmsg=ad983000 cpresp=00000000 info=00000000 gfsr=00000000 fsr=00000400 far=00000000 survived=1
+```
+
+判决串的原话：**「CLEARING THE CONTROL WORD BY HAND LEFT EVERY OTHER FIRMWARE WORD ALONE」**。
+
+### 93.8 判决
+
+1. **手清有效**：键 169 的手清读回 `00000000`，键 170 的手写 1 读回 `00000001`、手写 0 读回 `00000000`、延迟之后仍是 `00000001` ⇒ 这个字在这条映射上是可读可写的。
+2. **同一引导里清掉之后不再置起**：键 169 的第 2、3、4 次启动全部 200000 轮 `ctl=00000000` ⇒ 手清之后固件**不再接受**新的启动字。
+3. **上一轮的「每次引导锁存一次」得到正面确认**：R267/R268 里第 2 次之后的 `polls=0` 读的是**上一次留下的 1**；把 1 真的清掉之后，同一引导内就没有第二次置起。
+4. **手写不占用那一次**：键 170 先手写 1（读回 1）再手清（读回 0），随后**一次真启动字仍被接受**（`ctl=00000001 pol=1`）⇒ 「一次」是固件对**启动字**的响应，不是对控制字被写过的响应。
+5. **手清不连带动别的字**：键 171 的五个固件字在两次快照里逐字相同，只有控制字从 `00000001` 变成 `00000000`。
+6. 三键都没有翻译 fault（`fsr=00000400 / far=0 / fsynr0=0`）。
+
+### 93.9 必须分开说的三件
+
+- 键 169 第 2/3/4 次全是 `pol=200000`，这只是「等满窗口也没读到 1」，**不等于**「固件拒绝了这个请求」—— 与 R246/R249 的边界一样：寄存器账本上没有反应，固件内部发生了什么本轮看不到。
+- 键 170 的手写 1 读回 1，**只证明映射可写**，不证明固件「看到」了这个 1；`info=0`、`gfsr=0` 说明它没有引起任何可见响应。
+- 键 171 的两次快照在同一引导内相邻两步，中间只有一笔 `HFI_CTRL_STATUS = 0`；五个字不变是这一笔的局域性证据，**不是**「手清对固件无副作用」的普遍结论。
+
+### 93.10 没证明什么
+
+- 没证明固件是否真的收到并拒绝了第二次启动（没有消息、没有中断、没有 status 位）。
+- 没证明「一次」这个限制落在哪一级（CM3 的请求状态机 / HFI 的 CMDQ / 队列页 / 别的）。
+- 没证明手清之后如果**换一张队列表**或**重启 CM3**能否再接受一次。
+- 没证明 `polls=1` 与 `polls=0` 的差别有功能含义 —— 本轮第一次启动 `polls=1`，R268 里首轮是 `polls=103`，都在几拍之内。
+
+### 93.11 R270 设计
+
+- **键 172**：键 169 的形状，但每次启动之前**重启 CM3**（`QTBL_ADDR/INFO → SYSRESET 脉冲 → CP_RESP=0`），看「一次」是否随 CM3 复位而重置。
+- **键 173**：键 169 的形状，但第 2 次启动前把 `HFI_QTBL_ADDR` 重新武装成**新的页面**（换一张队列表），看接受与否跟队列表内容是否有关。
+- **键 174**：先启动一次（置起）→ 手清 → **重启 CM3** → 再启动，把「手清 + 复位」两个动作叠在一起看能否重新置起。
+
+### 93.12 工具事实
+
+- `r214_par.py` 的 payload 下载可能在 `INCOMPLETE: n of m` 处中断且**不重试**，目录也不会被创建；必须删目录、显式重跑，重跑时把并行度从 16 降到 8 更稳。
+- `r269_mkrun.py` 里 `.format(sum(... (int(_v, 16) & 1)))` 少一个 `)` 会让 `ast.parse` 把错误报在**下一条**语句上；生成器必须每条 append 都配 `ast.parse` 复查。
+- 改名链 `r166→r169` 不碰字符串字面量，所以共享前导段的行名会残留 `gmu166*`；本轮补了 `pre.replace("gmu166", "gmu169")` 才让 21 条行名对得上。
