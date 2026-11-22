@@ -137,7 +137,7 @@ def main():
     # ROUND 199 drives the GX GDSC through `gxW[...]`; same treatment.
     _outside = re.sub(r'gxW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey >= 7u && fwKey <= 153u' in code and
+          'fwKey >= 7u && fwKey <= 156u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
     check('if (fwKey == 45u) {' in code and
@@ -234,6 +234,11 @@ def main():
     _k151153r = ''
     if _i151153r > 0:
         _k151153r = code[_i151153r:].split(
+            '\nif (fwKey == 154u || fwKey == 155u || fwKey == 156u) {\n', 1)[0]
+    _i154156r = code.find('if (fwKey == 154u || fwKey == 155u || fwKey == 156u) {')
+    _k154156r = ''
+    if _i154156r > 0:
+        _k154156r = code[_i154156r:].split(
             '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
     _i145147r = code.find('if (fwKey == 145u || fwKey == 146u || fwKey == 147u) {')
     _k145147r = ''
@@ -244,9 +249,9 @@ def main():
     # is therefore about the total and about where the extra five live.
     check(_k8 != '' and _k0204r != '' and _k0507r != '' and _k0810r != '' and _k111113r != '' and
           _k114116r != '' and _k117119r != '' and _k120122r != '' and _k124126r != '' and
-          _k127129r != '' and _k130132r != '' and _k133135r != '' and _k136138r != '' and _k139141r != '' and _k142144r != '' and _k145147r != '' and _k148150r != '' and _k151153r != '' and
-          code.count(_p1r) == 23 and code.count(_p0r) == 23 and
-          _k8.count(_p1r) == 23 and _k8.count(_p0r) == 23 and
+          _k127129r != '' and _k130132r != '' and _k133135r != '' and _k136138r != '' and _k139141r != '' and _k142144r != '' and _k145147r != '' and _k148150r != '' and _k151153r != '' and _k154156r != '' and
+          code.count(_p1r) == 24 and code.count(_p0r) == 24 and
+          _k8.count(_p1r) == 24 and _k8.count(_p0r) == 24 and
           _k0204r.count(_p1r) == 2 and _k0204r.count(_p0r) == 2 and
           _k0507r.count(_p1r) == 3 and _k0507r.count(_p0r) == 3 and
           _k0810r.count(_p1r) == 3 and _k0810r.count(_p0r) == 3 and
@@ -263,10 +268,11 @@ def main():
           _k142144r.count(_p1r) == 1 and _k142144r.count(_p0r) == 1 and
           _k145147r.count(_p1r) == 1 and _k145147r.count(_p0r) == 1 and
           _k148150r.count(_p1r) == 1 and _k148150r.count(_p0r) == 1 and
-          _k151153r.count(_p1r) == 1 and _k151153r.count(_p0r) == 1,
+          _k151153r.count(_p1r) == 1 and _k151153r.count(_p0r) == 1 and
+          _k154156r.count(_p1r) == 1 and _k154156r.count(_p0r) == 1,
           'R168 the reset pulse exists once in the key-8 sub-block, twice in the R247 '
           're-boot block, three times in each of the R248 and R249 blocks and once in each of the '
-          'R250, R251, R253, R254, R255, R256, R257, R258, R259, R260, R261 and R262 blocks, nowhere else, and R263 adds no reset pulse of its own')
+          'R250, R251, R253, R254, R255, R256, R257, R258, R259, R260, R261, R262 and R263 blocks, nowhere else, and R264 adds no reset pulse of its own')
     _live = (code.split('if (fwKey >= 9u) {', 1)[1].split('IOLog("enchilada-adreno: %s\\n", liveRow);', 1)[0]
              if 'if (fwKey >= 9u) {' in code else '')
     check(_live != '' and 'gmulive=intr=%08x hfistat=%08x ' in code and

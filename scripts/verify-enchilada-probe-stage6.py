@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 23,
-          'ID1 is re-read at most twenty-two times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148 and 151), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 24,
+          'ID1 is re-read at most twenty-three times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151 and 154), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 153u' in _fw,
+    check('fwKey >= 7u && fwKey <= 156u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 153u)' in code,
+    check('(fwKey >= 7u && fwKey <= 156u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4182,6 +4182,11 @@ def main():
         _k151153 = ''
         if _i151153 > 0:
             _k151153 = code[_i151153:].split(
+                '\nif (fwKey == 154u || fwKey == 155u || fwKey == 156u) {\n', 1)[0]
+        _i154156 = code.find('if (fwKey == 154u || fwKey == 155u || fwKey == 156u) {')
+        _k154156 = ''
+        if _i154156 > 0:
+            _k154156 = code[_i154156:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -4970,6 +4975,7 @@ def main():
     _rows263 = ("gmu151a gmu151b gmu151c gmu151d gmu151e gmu151f gmu151g gmu151h gmu151i gmu151j "
                 "gmu151k1 gmu151k2 gmu151k3 gmu151l gmu151m gmu151n gmu152l gmu153l").split()
     check(_k151153 != '', 'R263 the page-bracket block follows the R262 block')
+    check(_k154156 != '', 'R264 the post-acceptance block follows the R263 block')
     check(len(_store.findall(_k151153)) == 13,
           'the R263 block holds thirteen GMU stores: eight in the shared preamble, the page fill '
           'takes none, the two starting keys add one mask store and one start word each and the '
@@ -5032,6 +5038,67 @@ def main():
           'the control key writes no start word at all')
     check('d0=%08x' in _b151 and 'd0=%08x' in _b152 and 'd0=%08x' in _b153,
           'each key re-reads the queue page after its poll')
+
+    check(_k154156 != '', 'R264 the post-acceptance block follows the R263 block')
+    _rows264 = re.findall(r'gmu(15[456][a-n]|15[456]k[1-4]|15[456]l)=', _k154156)
+    check(len(set(_rows264)) == 19,
+          'the R264 block prints nineteen named rows (got %d: %s)'
+          % (len(set(_rows264)), sorted(set(_rows264))))
+    check(len(_store.findall(_k154156)) == 13,
+          'the R264 block holds thirteen GMU stores: eight in the shared preamble, '
+          'the page fill, and then key 154 mask plus start word, key 155 mask plus start '
+          'word, and key 156 mask alone (got %d)' % len(_store.findall(_k154156)))
+    check(_k154156.count('HFI_CTRL_INIT] = 1u;') == 2,
+          'exactly two keys of R264 commit a start word (got %d)'
+          % _k154156.count('HFI_CTRL_INIT] = 1u;'))
+    check(_k154156.count('GMU2HOST_INTR_MASK] = ') == 3 and
+          _k154156.count('0xff7fffffu') == 3,
+          'all three R264 keys open the fault source with one mask store each (got %d/%d)'
+          % (_k154156.count('GMU2HOST_INTR_MASK] = '),
+             _k154156.count('0xff7fffffu')))
+    check(_k154156.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 1,
+          'R264 clears the interrupt word once, in the shared preamble (got %d)'
+          % _k154156.count('GMU2HOST_INTR_CLR] = 0xffffffffu;'))
+    check(_k154156.count('CM3_FW_INIT_RESULT] = 0u;') == 1 and
+          _k154156.count('HFI_QTBL_ADDR] = ') == 1 and
+          _k154156.count('HFI_QTBL_INFO] = 1u;') == 1,
+          'R264 re-boots the CM3 once and arms the queue table once (got %d/%d/%d)'
+          % (_k154156.count('CM3_FW_INIT_RESULT] = 0u;'),
+             _k154156.count('HFI_QTBL_ADDR] = '),
+             _k154156.count('HFI_QTBL_INFO] = 1u;')))
+    check(_k154156.count('0xc00001feu') == 3,
+          'each R264 key clears the bank fault status word with the same value (got %d)'
+          % _k154156.count('0xc00001feu'))
+    check(_k154156.count('0x58u') == 6 and _k154156.count('0x60u') == 3 and
+          _k154156.count('0x68u') == 3 and _k154156.count('0x800u') == 3,
+          'R264 reads the fault words with the pinned offsets (FSR %d, FAR %d, '
+          'FSYNR0 %d, SMR0 %d)'
+          % (_k154156.count('0x58u'), _k154156.count('0x60u'),
+             _k154156.count('0x68u'), _k154156.count('0x800u')))
+    check(_k154156.count('for (') == 10 and _k154156.count('IODelay(1u)') == 7 and
+          'IOSleep' not in _k154156,
+          'R264 polls with the pinned loop and never sleeps (loops %d, delays %d)'
+          % (_k154156.count('for ('), _k154156.count('IODelay(1u)')))
+    check(_k154156.count('0xbabefaceu') == 1,
+          'R264 waits for one CM3 bring-up (got %d)' % _k154156.count('0xbabefaceu'))
+    check(_k154156.count('dc civac') == 4 and _k154156.count('512ull') == 1,
+          'R264 cleans the table pages and walks five hundred twelve entries (got %d/%d)'
+          % (_k154156.count('dc civac'), _k154156.count('512ull')))
+    check(_k154156.count('PWR_COL_CP_MSG') >= 2 and _k154156.count('PWR_COL_CP_RESP') >= 2,
+          'R264 reads the CP message word and the CP response word')
+    check(_k154156.count('armcpu_map_physical_rw') >= 3 and
+          _k154156.count('0xa5a5a5a5u') == 2,
+          'the R264 pattern keys write the page through a writable mapping (rw %d, '
+          'pattern %d)' % (_k154156.count('armcpu_map_physical_rw'),
+                           _k154156.count('0xa5a5a5a5u')))
+    check(_k154156.index("r154mode == 154") < _k154156.index("r154mode == 155") <
+          _k154156.rindex('} else {'),
+          'R264 keeps its three branches in key order')
+    _b154 = _k154156[_k154156.index("r154mode == 154"):_k154156.index("r154mode == 155")]
+    check('HFI_CTRL_INIT] = 1u;' in _b154 and 'PWR_COL_CP_MSG' in _b154,
+          'key 154 commits a start word and then reads the CP words')
+    check(_b154.count('IODelay(1u)') >= 1,
+          'key 154 spaces its two page reads apart with a delay')
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
