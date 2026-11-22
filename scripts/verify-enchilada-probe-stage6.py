@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 21,
-          'ID1 is re-read at most twenty times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142 and 145), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 22,
+          'ID1 is re-read at most twenty-one times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145 and 148), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 147u' in _fw,
+    check('fwKey >= 7u && fwKey <= 150u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 147u)' in code,
+    check('(fwKey >= 7u && fwKey <= 150u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4172,6 +4172,11 @@ def main():
         _k145147 = ''
         if _i145147 > 0:
             _k145147 = code[_i145147:].split(
+                '\nif (fwKey == 148u || fwKey == 149u || fwKey == 150u) {\n', 1)[0]
+        _i148150 = code.find('if (fwKey == 148u || fwKey == 149u || fwKey == 150u) {')
+        _k148150 = ''
+        if _i148150 > 0:
+            _k148150 = code[_i148150:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -4890,6 +4895,72 @@ def main():
           'fsynr0=%08x' in _b145 and 'fsynr0=%08x' in _b146 and 'fsynr0=%08x' in _b147,
           'each key reads the fault words back after its start words')
 
+
+    _rows262 = "gmu148a gmu148b gmu148c gmu148d gmu148e gmu148f gmu148g gmu148h gmu148i gmu148j gmu148k gmu148l gmu148m gmu148n gmu149k gmu149l gmu150k gmu150k2 gmu150l".split()
+    check(_k148150 != '', 'R262 the pre/post queue-read block follows the R261 block')
+    check(len(_store.findall(_k148150)) == 12,
+          'the R262 block holds twelve GMU stores: eight in the shared preamble, the page fill '
+          'takes none, and the three keys add one mask store and one start word each (got %d)'
+          % len(_store.findall(_k148150)))
+    check(_k148150.count('HFI_CTRL_INIT] = 1u;') == 2,
+          'only the two keys that ask the firmware to start do so (got %d)'
+          % _k148150.count('HFI_CTRL_INIT] = 1u;'))
+    check(_k148150.count('GMU2HOST_INTR_MASK] = ') == 2 and _k148150.count('0xff7fffffu') == 2,
+          'each starting key opens exactly one interrupt source (got %d/%d)'
+          % (_k148150.count('GMU2HOST_INTR_MASK] = '), _k148150.count('0xff7fffffu')))
+    check(_k148150.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 1 and
+          _k148150.count('CM3_FW_INIT_RESULT] = 0u;') == 1,
+          'the R262 preamble clears the interrupt and the init word once each')
+    check(_k148150.count('HFI_QTBL_ADDR] = ') == 1 and
+          _k148150.count('HFI_QTBL_INFO] = 1u;') == 1,
+          'the R262 preamble re-arms the queue table once (got %d/%d)'
+          % (_k148150.count('HFI_QTBL_ADDR] = '), _k148150.count('HFI_QTBL_INFO] = 1u;')))
+    check(_k148150.count('0xc00001feu') == 2,
+          'each reading key clears the bank status word once (got %d)'
+          % _k148150.count('0xc00001feu'))
+    check(_k148150.count('0x58u') == 5 and _k148150.count('0x60u') == 3 and
+          _k148150.count('0x68u') == 1 and _k148150.count('0x800u') == 3,
+          'the fault words are read five, three, one and three times (got %d/%d/%d/%d)'
+          % (_k148150.count('0x58u'), _k148150.count('0x60u'), _k148150.count('0x68u'),
+             _k148150.count('0x800u')))
+    check(_k148150.count('for (') == 9 and _k148150.count('IODelay(1u)') == 4 and
+          'IOSleep' not in _k148150,
+          'nine loops, four one-microsecond waits and no sleep (got %d/%d)'
+          % (_k148150.count('for ('), _k148150.count('IODelay(1u)')))
+    check(_k148150.count('0xbabefaceu') == 1 and 'readback=1' in _k148150,
+          'the firmware init poll and the descriptor readback both survive')
+    check(_k148150.count('512ull') == 1 and _k148150.count('dc civac') == 2,
+          'the page fill walks one page span and cleans it once (got %d/%d)'
+          % (_k148150.count('512ull'), _k148150.count('dc civac')))
+    check(_k148150.count('armcpu_map_physical') >= 3,
+          'the queue-table page is mapped in the preamble and read by both reading keys (got %d)'
+          % _k148150.count('armcpu_map_physical'))
+    _missing262 = [r for r in _rows262 if ('%s=' % r) not in _k148150]
+    check(_missing262 == [],
+          'every R262 row appears in its own block (missing: %s)' % (_missing262,))
+    check(_k148150.index('if (r148mode == 148) {') <
+          _k148150.index('} else if (r148mode == 149) {') <
+          _k148150.rindex('} else {'),
+          'the three R262 keys are in ascending order')
+    _b148 = _k148150[_k148150.index('if (r148mode == 148) {'):
+                     _k148150.index('} else if (r148mode == 149) {')]
+    _b149 = _k148150[_k148150.index('} else if (r148mode == 149) {'):_k148150.rindex('} else {')]
+    _b150 = _k148150[_k148150.rindex('} else {'):]
+    check(_b148.count('HFI_CTRL_INIT] = 1u;') == 1 and _b148.count('GMU2HOST_INTR_MASK] = ') == 1,
+          'R262 key 148 commits one start word and one mask store')
+    check(_b148.index('q0=%08x') > _b148.index('p0=%08x'),
+          'R262 key 148 reads the queue page before and after the start word')
+    check(_b149.count('HFI_CTRL_INIT] = 1u;') == 0 and _b149.count('GMU2HOST_INTR_MASK] = ') == 0,
+          'R262 key 149 writes no GMU store at all')
+    check(_b149.index('b0=%08x') > _b149.index('a0=%08x'),
+          'R262 key 149 reads the queue page twice without a start word')
+    check(_b150.count('HFI_CTRL_INIT] = 1u;') == 1 and _b150.count('GMU2HOST_INTR_MASK] = ') == 1,
+          'R262 key 150 commits one start word and one mask store')
+    check(_b150.count('w00=%08x') == 1 and _b150.count('w16=%08x') == 1,
+          'R262 key 150 prints the first thirty-two words of the queue table page')
+    check('armcpu_map_physical' in _b148 and 'armcpu_map_physical' in _b149 and 'dc civac' in _k148150[
+          :_k148150.index('if (r148mode == 148) {')],
+          'the page fill and the cache clean both live in the shared preamble of R262')
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
