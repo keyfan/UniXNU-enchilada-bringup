@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 19,
-          'ID1 is re-read at most eighteen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136 and 139), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 20,
+          'ID1 is re-read at most nineteen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139 and 142), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 141u' in _fw,
+    check('fwKey >= 7u && fwKey <= 144u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 141u)' in code,
+    check('(fwKey >= 7u && fwKey <= 144u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4162,6 +4162,11 @@ def main():
         _k139141 = ''
         if _i139141 > 0:
             _k139141 = code[_i139141:].split(
+                '\nif (fwKey == 142u || fwKey == 143u || fwKey == 144u) {\n', 1)[0]
+        _i142144 = code.find('if (fwKey == 142u || fwKey == 143u || fwKey == 144u) {')
+        _k142144 = ''
+        if _i142144 > 0:
+            _k142144 = code[_i142144:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -4751,6 +4756,69 @@ def main():
           'R259 key 141 moves the match to a SID that does not exist BEFORE the start word')
     check('gfsr=%08x' in _b141 and 'fsr=%08x' in _b141 and 'smr_end=%08x' in _b141,
           'R259 key 141 reads the global word, the bank status and the match word back')
+
+
+    check(_k142144 != '', 'R260 the routing-and-table block is present after the R259 block')
+    check(len(_store.findall(_k142144)) == 14,
+          'the R260 block holds fourteen GMU stores: eight in the shared preamble and two in each '
+          'of the three keys (got %d)' % len(_store.findall(_k142144)))
+    check(_k142144.count('HFI_CTRL_INIT] = 1u;') == 3,
+          'each R260 key carries its start word once (got %d)'
+          % _k142144.count('HFI_CTRL_INIT] = 1u;'))
+    check(_k142144.count('GMU2HOST_INTR_MASK] = ') == 3 and _k142144.count('0xff7fffffu') == 3,
+          'each R260 key enables the one interrupt source (got %d/%d)'
+          % (_k142144.count('GMU2HOST_INTR_MASK] = '), _k142144.count('0xff7fffffu')))
+    check(_k142144.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 1 and
+          _k142144.count('CM3_FW_INIT_RESULT] = 0u;') == 1,
+          'the R260 preamble clears the interrupt word and the init word once each')
+    check(_k142144.count('HFI_QTBL_ADDR] = r142qtblValue;') == 1 and
+          _k142144.count('HFI_QTBL_INFO] = 1u;') == 1,
+          'the R260 preamble hands the firmware the queue table once')
+    check(_k142144.count('0xc00001feu') == 3,
+          'each R260 key clears the status word once (got %d)'
+          % _k142144.count('0xc00001feu'))
+    check(_k142144.count('0x58u') == 9 and _k142144.count('0x60u') == 3 and
+          _k142144.count('0x68u') == 2 and _k142144.count('0x48u') == 4 and
+          _k142144.count('0x800u') == 8,
+          'the R260 keys read the bank, global and match words in the expected number '
+          '(got %d/%d/%d/%d/%d)' % (_k142144.count('0x58u'), _k142144.count('0x60u'),
+                                    _k142144.count('0x68u'), _k142144.count('0x48u'),
+                                    _k142144.count('0x800u')))
+    check(_k142144.count('for (') == 10 and _k142144.count('IODelay(1u)') == 4 and
+          'IOSleep' not in _k142144,
+          'the R260 block paces itself with ten loops and four short delays and no sleep '
+          '(got %d/%d)' % (_k142144.count('for ('), _k142144.count('IODelay(1u)')))
+    check(_k142144.count('0xbabefaceu') == 1 and 'readback=1' in _k142144,
+          'the R260 preamble still waits for the fixed init word')
+    check(_k142144.count('512ull') == 2 and _k142144.count('dc civac') == 3,
+          'the two table keys fill whole pages and clean them to the point of coherence')
+    _rows260 = ['gmu142a', 'gmu142b', 'gmu142c', 'gmu142d', 'gmu142e', 'gmu142f', 'gmu142g',
+                'gmu142h', 'gmu142i', 'gmu142j', 'gmu142k', 'gmu142l', 'gmu142m', 'gmu142n',
+                'gmu143k', 'gmu143l', 'gmu144k', 'gmu144l']
+    _missing260 = [r for r in _rows260 if ('%s=' % r) not in _k142144]
+    check(_missing260 == [],
+          'every R260 row is printed in the block (missing: %s)' % ','.join(_missing260))
+    check(_k142144.index('if (r142mode == 142) {') <
+          _k142144.index('} else if (r142mode == 143) {') <
+          _k142144.rindex('} else {'),
+          'the R260 branches are declared in key order')
+    _b142 = _k142144[_k142144.index('if (r142mode == 142) {'):
+                     _k142144.index('} else if (r142mode == 143) {')]
+    _b143 = _k142144[_k142144.index('} else if (r142mode == 143) {'):_k142144.rindex('} else {')]
+    _b144 = _k142144[_k142144.rindex('} else {'):]
+    check(_b142.index('0x00000004u') < _b142.index('boot_log_panic_flush') <
+          _b142.index('HFI_CTRL_INIT] = 1u;'),
+          'R260 key 142 takes the match down and commits the log BEFORE the start word')
+    check(_b142.count('HFI_CTRL_INIT] = 1u;') == 1 and _b143.count('HFI_CTRL_INIT] = 1u;') == 1 and
+          _b144.count('HFI_CTRL_INIT] = 1u;') == 1,
+          'every R260 key writes the start word exactly once')
+    check(_b143.count('r143tab1') >= 1 and _b144.count('r144tab1') == 0,
+          'R260 key 143 fills the root page and key 144 deliberately leaves it alone')
+    check(_b143.count('512ull') == 1 and _b144.count('512ull') == 1 and
+          'adreno_lpae_leaf_pte' in _b143 and 'adreno_lpae_leaf_pte' in _b144,
+          'both table keys fill whole pages with table descriptors or the 2 MiB leaf')
+    check('fsynr0=%08x' in _b143 and 'fsynr0=%08x' in _b144 and 'gfsr=%08x' in _b143,
+          'the table keys read the fault words back after the start word')
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
