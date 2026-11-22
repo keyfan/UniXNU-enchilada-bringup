@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 24,
-          'ID1 is re-read at most twenty-three times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151 and 154), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 25,
+          'ID1 is re-read at most twenty-four times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154 and 157), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 156u' in _fw,
+    check('fwKey >= 7u && fwKey <= 159u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 156u)' in code,
+    check('(fwKey >= 7u && fwKey <= 159u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4187,6 +4187,11 @@ def main():
         _k154156 = ''
         if _i154156 > 0:
             _k154156 = code[_i154156:].split(
+                '\nif (fwKey == 157u || fwKey == 158u || fwKey == 159u) {\n', 1)[0]
+        _i157159 = code.find('if (fwKey == 157u || fwKey == 158u || fwKey == 159u) {')
+        _k157159 = ''
+        if _i157159 > 0:
+            _k157159 = code[_i157159:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -4976,6 +4981,7 @@ def main():
                 "gmu151k1 gmu151k2 gmu151k3 gmu151l gmu151m gmu151n gmu152l gmu153l").split()
     check(_k151153 != '', 'R263 the page-bracket block follows the R262 block')
     check(_k154156 != '', 'R264 the post-acceptance block follows the R263 block')
+    check(_k157159 != '', 'R265 the write-path block follows the R264 block')
     check(len(_store.findall(_k151153)) == 13,
           'the R263 block holds thirteen GMU stores: eight in the shared preamble, the page fill '
           'takes none, the two starting keys add one mask store and one start word each and the '
@@ -5040,6 +5046,7 @@ def main():
           'each key re-reads the queue page after its poll')
 
     check(_k154156 != '', 'R264 the post-acceptance block follows the R263 block')
+    check(_k157159 != '', 'R265 the write-path block follows the R264 block')
     _rows264 = re.findall(r'gmu(15[456][a-n]|15[456]k[1-4]|15[456]l)=', _k154156)
     check(len(set(_rows264)) == 19,
           'the R264 block prints nineteen named rows (got %d: %s)'
@@ -5099,6 +5106,70 @@ def main():
           'key 154 commits a start word and then reads the CP words')
     check(_b154.count('IODelay(1u)') >= 1,
           'key 154 spaces its two page reads apart with a delay')
+
+    _rows265 = ('gmu157a=', 'gmu157b=', 'gmu157c=', 'gmu157d=', 'gmu157e=', 'gmu157f=',
+                'gmu157g=', 'gmu157h=', 'gmu157i=', 'gmu157j=', 'gmu157m=', 'gmu157n=',
+                'gmu157k1=', 'gmu157k2=', 'gmu157k3=', 'gmu157k4=', 'gmu157k5=',
+                'gmu157l=', 'gmu158l=', 'gmu159l=')
+    check(_k157159 != '', 'the R265 block is present')
+    check(all(w in _k157159 for w in _rows265),
+          'every R265 record is present in the block')
+    check(_k157159.count('gmuW[') == 12,
+          'the R265 block holds twelve GMU stores: eight in the shared preamble plus two in each '
+          'of the two start keys (got %d)' % _k157159.count('gmuW['))
+    check(_k157159.count('HFI_CTRL_INIT] = 1u;') == 2,
+          'only keys 158 and 159 commit a start word (got %d)'
+          % _k157159.count('HFI_CTRL_INIT] = 1u;'))
+    check(_k157159.count('GMU2HOST_INTR_MASK] = ') == 2 and
+          _k157159.count('0xff7fffffu') == 2,
+          'both start keys mask the interrupt sources once')
+    check(_k157159.count('HFI_QTBL_ADDR] = ') == 1 and
+          _k157159.count('HFI_QTBL_INFO] = 1u;') == 1,
+          'the preamble arms the queue table exactly once')
+    check(_k157159.count('0xc00001feu') == 2,
+          'only keys 158 and 159 clear the bank status word (got %d)'
+          % _k157159.count('0xc00001feu'))
+    check(_k157159.count('for (') == 9 and _k157159.count('IODelay(1u)') == 3 and
+          'IOSleep' not in _k157159,
+          'the block polls with delays and never sleeps')
+    check(_k157159.count('dc civac') >= 2 and _k157159.count('dc cvac') >= 1,
+          'the write keys carry both cache operations (got %d/%d)'
+          % (_k157159.count('dc civac'), _k157159.count('dc cvac')))
+    check(_k157159.count('0xbabefaceu') == 1,
+          'the preamble waits for the firmware to initialise exactly once')
+    check(_k157159.count('armcpu_map_physical_rw') >= 3,
+          'every key reaches the page through the writable mapping')
+    check(_k157159.index('if (r157mode == 157) {') <
+          _k157159.index('} else if (r157mode == 158) {') <
+          _k157159.rindex('} else {'),
+          'the three keys appear in order')
+    _b157 = _k157159[_k157159.index('if (r157mode == 157) {'):
+                     _k157159.index('} else if (r157mode == 158) {')]
+    _b158 = _k157159[_k157159.index('} else if (r157mode == 158) {'):
+                     _k157159.rindex('} else {')]
+    _b159 = _k157159[_k157159.rindex('} else {') + len('} else {'):]
+    check('HFI_CTRL_INIT] = 1u;' not in _b157,
+          'key 157 writes no start word')
+    check(_b157.count('0x5a5a5a5au') == 1 and
+          _b157.count('rd32(static_cast<uintptr_t>(r157rw), 0x100u)') == 2,
+          'key 157 overwrites the same word and reads it back twice')
+    check('gmu157k5=' in _b157 and 'gmu157l=' in _b157,
+          'key 157 reports the write path and a control row')
+    check(_b158.count('HFI_CTRL_INIT] = 1u;') == 1 and
+          _b158.count('r157p[64]') == 1 and _b158.count('r157p[67]') == 1,
+          'key 158 writes the four safe words and then one start word')
+    check(_b158.count('dc civac') == 1 and 'dc cvac' not in _b158,
+          'key 158 invalidates after its write')
+    check(_b159.count('HFI_CTRL_INIT] = 1u;') == 1 and
+          _b159.count('r157p[4]') == 1 and _b159.count('r157p[7]') == 1,
+          'key 159 writes the four header words and then one start word')
+    check(_b159.count('dc cvac') == 1 and 'dc civac' not in _b159,
+          'key 159 only cleans the page after its write')
+    check(_b158.count('gmu158l=') == 1 and _b159.count('gmu159l=') == 1,
+          'both start keys report their own row')
+    for _b, _tag in ((_b158, 'gmu158l'), (_b159, 'gmu159l')):
+        check('survived=1' in _b and 'w4=%08x' in _b and 'fsynr0=%08x' in _b,
+              '%s keeps the page words and the fault ledger' % _tag)
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
