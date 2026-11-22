@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 18,
-          'ID1 is re-read at most seventeen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133 and 136), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 19,
+          'ID1 is re-read at most eighteen times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136 and 139), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 138u' in _fw,
+    check('fwKey >= 7u && fwKey <= 141u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1695,7 +1695,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 138u)' in code,
+    check('(fwKey >= 7u && fwKey <= 141u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4157,6 +4157,11 @@ def main():
         _k136138 = ''
         if _i136138 > 0:
             _k136138 = code[_i136138:].split(
+                '\nif (fwKey == 139u || fwKey == 140u || fwKey == 141u) {\n', 1)[0]
+        _i139141 = code.find('if (fwKey == 139u || fwKey == 140u || fwKey == 141u) {')
+        _k139141 = ''
+        if _i139141 > 0:
+            _k139141 = code[_i139141:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -4686,6 +4691,66 @@ def main():
           'R258 key 138 clears the stream match valid bit, keeps SID 4 and reads the global word')
     check(_b138.index('0x800u') < _b138.index('HFI_CTRL_INIT] = 1u;'),
           'R258 key 138 rewrites the stream match register BEFORE the start word')
+
+
+    check(_k139141 != '', 'R259 the routing block is present after the read-path block')
+    check(len(_store.findall(_k139141)) == 12,
+          'the R259 block holds twelve GMU stores: eight in the shared preamble and four across '
+          'the three keys (got %d)' % len(_store.findall(_k139141)))
+    check(_k139141.count('HFI_CTRL_INIT] = 1u;') == 2,
+          'keys 140 and 141 each carry the start word once and key 139 carries none (got %d)'
+          % _k139141.count('HFI_CTRL_INIT] = 1u;'))
+    check(_k139141.count('GMU2HOST_INTR_MASK] = ') == 2 and
+          _k139141.count('0xff7fffffu') == 2,
+          'keys 140 and 141 enable the one interrupt source and key 139 enables nothing (got %d/%d)'
+          % (_k139141.count('GMU2HOST_INTR_MASK] = '), _k139141.count('0xff7fffffu')))
+    check(_k139141.count('GMU2HOST_INTR_CLR] = 0xffffffffu;') == 1 and
+          _k139141.count('CM3_FW_INIT_RESULT] = 0u;') == 1,
+          'the R259 preamble clears the interrupt word and the init word once each')
+    check(_k139141.count('HFI_QTBL_ADDR] = r139qtblValue;') == 1 and
+          _k139141.count('HFI_QTBL_INFO] = 1u;') == 1,
+          'the R259 preamble hands the firmware the queue table once')
+    check(_k139141.count('0xc00001feu') == 3,
+          'each R259 key clears the status word once (got %d)'
+          % _k139141.count('0xc00001feu'))
+    check(_k139141.count('0x58u') == 9 and _k139141.count('0x60u') == 3 and
+          _k139141.count('0x68u') == 2 and _k139141.count('0x48u') == 4 and
+          _k139141.count('0x800u') == 14,
+          'the R259 keys read the bank and match words in the expected number (got %d/%d/%d/%d/%d)'
+          % (_k139141.count('0x58u'), _k139141.count('0x60u'), _k139141.count('0x68u'),
+             _k139141.count('0x48u'), _k139141.count('0x800u')))
+    check(_k139141.count('for (') == 6 and _k139141.count('IODelay(1u)') == 4 and
+          'IOSleep' not in _k139141,
+          'the R259 block paces itself with six read loops and four short delays and no sleep '
+          '(got %d/%d)' % (_k139141.count('for ('), _k139141.count('IODelay(1u)')))
+    check(_k139141.count('0xbabefaceu') == 1 and 'readback=1' in _k139141,
+          'the R259 preamble still waits for the fixed init word')
+    _rows259 = ['gmu139a', 'gmu139b', 'gmu139c', 'gmu139d', 'gmu139e', 'gmu139f', 'gmu139g',
+                'gmu139h', 'gmu139i', 'gmu139j', 'gmu139m', 'gmu139n',
+                'gmu139k', 'gmu139l', 'gmu140k', 'gmu140l', 'gmu141k', 'gmu141l']
+    _missing259 = [r for r in _rows259 if ('%s=' % r) not in _k139141]
+    check(_missing259 == [],
+          'every R259 row is printed in the block (missing: %s)' % ','.join(_missing259))
+    check(_k139141.index('if (r139mode == 139) {') <
+          _k139141.index('} else if (r139mode == 140) {') <
+          _k139141.rindex('} else {'),
+          'the R259 branches are declared in key order')
+    _b139 = _k139141[_k139141.index('if (r139mode == 139) {'):
+                     _k139141.index('} else if (r139mode == 140) {')]
+    _b140 = _k139141[_k139141.index('} else if (r139mode == 140) {'):_k139141.rindex('} else {')]
+    _b141 = _k139141[_k139141.rindex('} else {'):]
+    check(_b139.count('HFI_CTRL_INIT] = 1u;') == 0 and _b139.count('GMU2HOST_INTR_MASK] = ') == 0,
+          'R259 key 139 writes neither the start word nor a mask store')
+    check(_b139.count('0x800u') >= 2 and _b139.index('0x00000004u') < _b139.index('0xc00001feu'),
+          'R259 key 139 clears the stream match valid bit before it clears the status word')
+    check(_b140.index('0x00000004u') < _b140.index('0x80000004u') <
+          _b140.index('HFI_CTRL_INIT] = 1u;'),
+          'R259 key 140 writes the match word down and straight back up before the start word')
+    check(_b141.count('0x8000007fu') == 1 and
+          _b141.index('0x8000007fu') < _b141.index('HFI_CTRL_INIT] = 1u;'),
+          'R259 key 141 moves the match to a SID that does not exist BEFORE the start word')
+    check('gfsr=%08x' in _b141 and 'fsr=%08x' in _b141 and 'smr_end=%08x' in _b141,
+          'R259 key 141 reads the global word, the bank status and the match word back')
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
