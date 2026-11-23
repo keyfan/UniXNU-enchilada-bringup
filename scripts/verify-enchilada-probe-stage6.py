@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 207u' in _fw,
+    check('fwKey >= 7u && fwKey <= 210u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 207u)' in code,
+    check('(fwKey >= 7u && fwKey <= 210u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4275,6 +4275,11 @@ def main():
         _k205207 = ''
         if _i205207 > 0:
             _k205207 = code[_i205207:].split(
+                '\nif (fwKey == 208u || fwKey == 209u || fwKey == 210u) {\n', 1)[0]
+        _i208210 = code.find('if (fwKey == 208u || fwKey == 209u || fwKey == 210u) {')
+        _k208210 = ''
+        if _i208210 > 0:
+            _k208210 = code[_i208210:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -6453,6 +6458,103 @@ def main():
     check('const int r205mode = (fwKey >= 207u) ? 207 : ((fwKey >= 206u) ? 206 '
           ': 205);' in code,
           'R281 the mode selector is written out, not flattened into one arm')
+
+    # ---- ROUND 282: a one-millisecond ladder, the fatal wait read once, and a
+    # no-store control.  R281 bracketed the death between 15 and 20 ms after the
+    # INIT store; R282 asks exactly where, and whether the wait alone kills.
+    check(_k208210 != '', 'R282 the timing block follows the R281 block')
+    _rows282 = ('gmu208p0', 'gmu208p1', 'gmu208s%u', 'gmu208l',
+                'gmu209p0', 'gmu209p1', 'gmu209p2', 'gmu208l2',
+                'gmu210p0', 'gmu210p1', 'gmu208l3')
+    check(all(_w + '=' in _k208210 for _w in _rows282),
+          'R282 every timing row is formatted: %s'
+          % [w for w in _rows282 if w + '=' not in _k208210])
+    check(_k208210.count('gmuW[') == 4,
+          'R282 the block holds exactly four stores: descriptor clear plus INIT '
+          'for keys 208 and 209, and nothing at all for key 210 (got %d)'
+          % _k208210.count('gmuW['))
+    check(_k208210.count('0x5184u') == 3 and _k208210.count('0x5185u') == 3 and
+          _k208210.count('0x5186u') == 2,
+          'R282 all three keys declare the descriptor and the address but only the '
+          'two storing keys declare the init word (got %d/%d/%d)'
+          % (_k208210.count('0x5184u'), _k208210.count('0x5185u'),
+             _k208210.count('0x5186u')))
+    check(_k208210.count('0x5000u') == 3 and _k208210.count('0x501cu') == 3 and
+          '0xbabefaceu' not in _k208210,
+          'R282 the reset word is only read, never pulsed: no key restarts the CM3 '
+          'and no key waits for the old-firmware latch value (got %d/%d)'
+          % (_k208210.count('0x5000u'), _k208210.count('0x501cu')))
+    check('0x5194u' not in _k208210 and '0x5191u' not in _k208210,
+          'R282 rings no doorbell: this round is about the wait after the store')
+    check(_k208210.count('gmuW[r208qiWord] = 0u;') == 2 and
+          _k208210.count('gmuW[r208qaWord] = 0u;') == 0,
+          'R282 the two storing keys drop the descriptor and none touches the '
+          'address (got %d/%d)' % (_k208210.count('gmuW[r208qiWord] = 0u;'),
+                                   _k208210.count('gmuW[r208qaWord] = 0u;')))
+    check(_k208210.count('gmuW[r208iniWord] = 1u;') == 2,
+          'R282 the two storing keys write INIT exactly once each (got %d)'
+          % _k208210.count('gmuW[r208iniWord] = 1u;'))
+    check('gmuW[r208srWord]' not in _k208210 and 'gmuW[r208fwWord]' not in _k208210,
+          'R282 not one store goes to the reset word or the init word')
+    check(_k208210.count('IOSleep') == 0,
+          'R282 never sleeps the writer round away')
+    check(_k208210.count('IODelay(1u)') == 0 and
+          _k208210.count('IODelay(100u)') == 3,
+          'R282 paces every wait in hundred-microsecond steps (got %d/%d)'
+          % (_k208210.count('IODelay(1u)'), _k208210.count('IODelay(100u)')))
+    check(_k208210.index('if (r208mode == 208) {') <
+          _k208210.index('} else if (r208mode == 209) {') <
+          _k208210.index('} else if (r208mode == 210) {'),
+          'R282 the three keys appear in the order 208, 209, 210')
+    _d208 = _k208210[_k208210.index('if (r208mode == 208) {'):
+                     _k208210.index('} else if (r208mode == 209) {')]
+    _d209 = _k208210[_k208210.index('} else if (r208mode == 209) {'):
+                     _k208210.index('} else if (r208mode == 210) {')]
+    _d210 = _k208210[_k208210.index('} else if (r208mode == 210) {'):]
+    check(_d208.count('gmuW[') == 2 and _d209.count('gmuW[') == 2 and
+          _d210.count('gmuW[') == 0,
+          'R282 keys 208 and 209 carry the descriptor clear and the INIT write, key '
+          '210 stores nothing (got %d/%d/%d)'
+          % (_d208.count('gmuW['), _d209.count('gmuW['), _d210.count('gmuW[')))
+    check('for (r208s = 0u; r208s < 6u; ++r208s)' in _d208,
+          'R282 key 208 climbs six steps, one millisecond apart, from fifteen to '
+          'twenty milliseconds')
+    check('r208wm = (r208s == 0u) ? 15u : (15u + r208s);' in _d208 and
+          'r208lw = (r208s == 0u) ? 150u : 10u;' in _d208,
+          'R282 the first step is fifteen milliseconds and every later step adds '
+          'exactly one')
+    check(_d208.index('gmuW[r208iniWord] = 1u;') <
+          _d208.index('for (r208s = 0u; r208s < 6u; ++r208s)') <
+          _d208.index('gmu208s%u='),
+          'R282 key 208 stores INIT, then climbs, then prints a row at every step')
+    check('waited_ms=%u' in _d208,
+          'R282 every ladder row names the wait it was taken after')
+    check('for (r208pw = 0u; r208pw < 200u; ++r208pw)' in _d209 and
+          'for (r208pw = 0u; r208pw < 200u; ++r208pw)' in _d210,
+          'R282 keys 209 and 210 each wait the full twenty milliseconds once')
+    check(_d209.index('gmuW[r208iniWord] = 1u;') <
+          _d209.index('for (r208pw = 0u; r208pw < 200u; ++r208pw)') <
+          _d209.index('gmu209p2=after_200ms=1'),
+          'R282 key 209 stores INIT, waits the fatal twenty milliseconds, then reads')
+    check(_d210.index('gmu210p0=pre=1') <
+          _d210.index('for (r208pw = 0u; r208pw < 200u; ++r208pw)') <
+          _d210.index('gmu210p1=after_200ms_nostore=1'),
+          'R282 key 210 reads before and after the same wait while storing nothing, '
+          'so a row that lands proves the wait alone did not end the round')
+    check(_d210.count('qp') == 0 and 'gmuW[' not in _d210,
+          'R282 key 210 is the no-store control, not a quiet variant of 209')
+    for _w in ('r208fw2', 'r208sr2'):
+        check(_w in _k208210,
+              'R282 reads %s so a firmware restart cannot pass as a quiet window' % _w)
+    check('init=%08x' in _k208210 and 'r208iniBack' in _d208,
+          'R282 the ladder rows read the init word back so a rejected store is '
+          'visible')
+    for _tag, _b in (('gmu208l', _d208), ('gmu208l2', _d209), ('gmu208l3', _d210)):
+        check('survived=1' in _b and _tag + '=' in _b,
+              'R282 %s keeps the survival flag' % _tag)
+    check('const int r208mode = (fwKey >= 210u) ? 210 : ((fwKey >= 209u) ? 209 '
+          ': 208);' in code,
+          'R282 the mode selector is written out, not flattened into one arm')
     check('const int r199mode = (fwKey >= 201u) ? 201 : ((fwKey >= 200u) ? 200 '
           ': 199);' in code,
           'R279 the mode selector is written out, not flattened into one arm')
