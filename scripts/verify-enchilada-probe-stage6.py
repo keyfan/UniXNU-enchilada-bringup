@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 189u' in _fw,
+    check('fwKey >= 7u && fwKey <= 192u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 189u)' in code,
+    check('(fwKey >= 7u && fwKey <= 192u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4245,6 +4245,11 @@ def main():
         _k187189 = ''
         if _i187189 > 0:
             _k187189 = code[_i187189:].split(
+                '\nif (fwKey == 190u || fwKey == 191u || fwKey == 192u) {\n', 1)[0]
+        _i190192 = code.find('if (fwKey == 190u || fwKey == 191u || fwKey == 192u) {')
+        _k190192 = ''
+        if _i190192 > 0:
+            _k190192 = code[_i190192:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -5819,6 +5824,102 @@ def main():
     for _tag, _b in (('gmu187l', _b187), ('gmu187l2', _b188), ('gmu187l3', _b189)):
         check('survived=1' in _b and _tag + '=' in _b,
               'R275 %s keeps the survival flag' % _tag)
+
+    # ---- ROUND 276: which doorbell message, and what the fault looks like ------
+    # R275 saw BOOT_SLUMBER (set 22 / ack 30) go unanswered while CM3_FAULT (bit
+    # 23) rose instead.  a6xx_gmu_set_oob() serves four messages through the same
+    # register, each with its own set/ack pair, so R276 rings a DIFFERENT one
+    # (GPU_SET, set 16 / ack 24) and reads the words mainline reads around a
+    # fault: the AO host interrupt status, the AHB fence status, the RPMH power
+    # state and the SPTPRAC status word (which is how a6xx_gmu_gx_is_on() really
+    # judges the GX rail -- GX_HM_GDSC_POWER_OFF bit 6 | GX_HM_CLK_OFF bit 7).
+    check(_k190192 != '', 'R276 the doorbell block follows the R275 block')
+    _rows276 = ('gmu190p0', 'gmu190p1', 'gmu190l',
+                'gmu191p0', 'gmu191p1', 'gmu191p2', 'gmu190l2',
+                'gmu192p0', 'gmu192p1', 'gmu192p2', 'gmu190l3')
+    check(all(_w + '=' in _k190192 for _w in _rows276),
+          'R276 every doorbell row is formatted: %s'
+          % [w for w in _rows276 if w + '=' not in _k190192])
+    check(_k190192.count('gmuW[') == 9,
+          'R276 the block holds exactly nine stores: two in the GPU_SET key, '
+          'three in the fault-context key and four in the slumber key (got %d)'
+          % _k190192.count('gmuW['))
+    check(_k190192.count('0x23f8u') == 2 and _k190192.count('0x23f9u') == 2 and
+          _k190192.count('0x23fau') == 2,
+          'R276 the boot-slumber word and both arc-vote words are declared once '
+          'each in the two keys that use them (got %d/%d/%d)'
+          % (_k190192.count('0x23f8u'), _k190192.count('0x23f9u'),
+             _k190192.count('0x23fau')))
+    check('gmuW[r190setWord] = 0x00010000u;' in _k190192 and
+          'gmuW[r190clrWord] = 0x01000000u;' in _k190192,
+          'R276 key 190 rings the OTHER legacy message, GPU_SET: set bit 16 and '
+          'the bit-24 acknowledge clear, not the boot-slumber pair')
+    check(_k190192.count('gmuW[r190setWord] = 0x00400000u;') == 2 and
+          _k190192.count('gmuW[r190clrWord] = 0x40000000u;') == 2,
+          'R276 keys 191 and 192 ring the boot-slumber pair set 22 / clear 30 '
+          '(got %d/%d)' % (_k190192.count('gmuW[r190setWord] = 0x00400000u;'),
+                           _k190192.count('gmuW[r190clrWord] = 0x40000000u;')))
+    check(_k190192.count('0x9304u') == 1,
+          'R276 only the fault-context key writes the AO host interrupt CLR word')
+    check(_k190192.count('0x9305u') == 3 and _k190192.count('0x9313u') == 3 and
+          _k190192.count('0x50ecu') == 3 and _k190192.count('0x50d0u') == 3,
+          'R276 all three keys read the AO status, the AHB fence status, the '
+          'RPMH power state and the SPTPRAC status word, so the fault context '
+          'and the rail judge are never missing')
+    check(_k190192.count('0x000000c0u') == 9,
+          'R276 the GX-off judge tests the two SPTPRAC bits mainline uses '
+          '(GX_HM_GDSC_POWER_OFF | GX_HM_CLK_OFF): three times in each key, '
+          'once in its census row, once in its post row and once in its tail')
+    check('0x5000u' not in _k190192 and '0x501cu' not in _k190192 and
+          '0xbabefaceu' not in _k190192,
+          'R276 never restarts the CM3 and never waits for the init latch: the '
+          'firmware that is already running is the one being asked')
+    check('IOSleep' not in _k190192,
+          'R276 never sleeps the writer round away')
+    check(_k190192.count('IODelay(100u)') == 3 and
+          _k190192.count('IODelay(1u)') == 3,
+          'R276 paces each acknowledge poll in ten-millisecond steps and the '
+          'slumber option writes in one-microsecond steps, and sleeps nowhere '
+          'else (got %d/%d)' % (_k190192.count('IODelay(100u)'),
+                                _k190192.count('IODelay(1u)')))
+    check(_k190192.index('if (r190mode == 190) {') <
+          _k190192.index('} else if (r190mode == 191) {') <
+          _k190192.index('} else if (r190mode == 192) {'),
+          'R276 the three keys appear in the order 190, 191, 192')
+    _b190 = _k190192[_k190192.index('if (r190mode == 190) {'):
+                     _k190192.index('} else if (r190mode == 191) {')]
+    _b191 = _k190192[_k190192.index('} else if (r190mode == 191) {'):
+                     _k190192.index('} else if (r190mode == 192) {')]
+    _b192 = _k190192[_k190192.index('} else if (r190mode == 192) {'):]
+    check(_b190.count('gmuW[') == 2,
+          'R276 key 190 carries exactly the two GPU_SET stores (got %d)'
+          % _b190.count('gmuW['))
+    check('0x00400000u' not in _b190 and '0x40000000u' not in _b190,
+          'R276 key 190 does not touch the boot-slumber bits: the message is the '
+          'variable between it and key 191')
+    check(_b190.count('rd32(') >= 10,
+          'R276 key 190 takes the full census before it rings anything')
+    check(_b191.count('gmuW[') == 3,
+          'R276 key 191 carries the doorbell pair plus one AO status clear '
+          '(got %d)' % _b191.count('gmuW['))
+    check(_b191.index('gmuW[r190aclWord] = r190ao3;') >
+          _b191.index('gmuW[r190setWord] = 0x00400000u;'),
+          'R276 key 191 reads the fault words AFTER the doorbell and only then '
+          'writes the AO status back')
+    check(_b192.count('gmuW[') == 4,
+          'R276 key 192 carries the doorbell pair and both slumber-option '
+          'writes (got %d)' % _b192.count('gmuW['))
+    check('gmuW[r190bsWord] = 1u;' in _b192 and
+          _b192.index('gmuW[r190bsWord] = 1u;') <
+          _b192.index('gmuW[r190setWord] = 0x00400000u;') <
+          _b192.index('gmuW[r190bsWord] = 0u;'),
+          'R276 key 192 sets the "about to slumber" option before the doorbell '
+          'and puts it back to zero afterwards, which is the '
+          'a6xx_gmu_notify_slumber() order')
+    for _tag, _b in (('gmu190l', _b190), ('gmu190l2', _b191),
+                     ('gmu190l3', _b192)):
+        check('survived=1' in _b and _tag + '=' in _b,
+              'R276 %s keeps the survival flag' % _tag)
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
