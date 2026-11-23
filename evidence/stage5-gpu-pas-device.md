@@ -8605,3 +8605,62 @@ R285 留下两条互斥的解释：落地量像「十三到十五行」的行预
 - **键 230**：229 之后加 `BOOT_SLUMBER_OPTION = 0` + `GX_VOTE_IDX`/`MX_VOTE_IDX` + `HOST2GMU_INTR_SET` 门铃，看带外请求是否终于被应答（`GMU2HOST_INTR_INFO` bit30）。
 - **键 231**：229 之后读 `GMU_SPTPRAC_PWR_CLK_STATUS`、`GPU_CC_GX_GDSCR`、`CFG` 并轮询 `cf` bit16，看 GDSC 是否第一次报 power-up。
 - 目标不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧。
+
+## 一百一十一、R287：把队列表页整页填满再写 INIT —— 表建成了，HFI 仍然没有被接受
+
+**111.1 一句话**
+前六轮（R281–R286）量的是日志介质的脾气，这一轮把力气搬回 GPU 主链，用一个已经在这台机器上成功过的配方：**把 SMMU 上下文银行装好、把队列表页的每个条目都写成合法描述符、清 `HFI_QTBL_INFO`、写 `HFI_CTRL_INIT`、轮询控制字 bit0**（R260 键 143 就是这么第一次让 `ctl` bit0 读成 1 的）。本轮的三个键 229/230/231 都跑了这段前导，**每一笔都落位**（`fills=3`、`build=0`、`plan=9`、`fsr=00000400` 无 fault），**`ctl` bit0 却三键全 0 到 200000 拍**。而在同一台机器、同一镜像上，**今天早些时候重跑 R260 键 143 时 HFI 是被接受的**（`ctl=00000001 bit0=1 polls=2`，`boot_id 582506894`、窗口 `623ade94…`）。**两次的差别只能在「键 143 还写了什么」**：它把那两个 GMU 流的路由写进 `SMR0`/`S2CR0`，并把 `GMU2HOST_INTR_MASK` 写成 `0xff7fffff`。所以本轮的第一判决是**否**（表不是充分条件），第二判决是一个可以一次上机判死的假设（路由加掩码）。
+
+**111.2 三个键各自问什么**
+- **前导（三键共用）**：读普查行（`ver/qi/qa/st/gd/cf/cx_on`）→ `armcpu_dma_alloc_writable` 分配四页 → `adreno_lpae_geometry`/`adreno_table_bytes_needed`/`adreno_table_build`（IOVA `0x2d800000`，2 MiB 叶子）→ `adreno_smmu_ctx_plan` + `adreno_install_absolute` 九笔 CB0 写 → 把三页的每个条目都写成合法描述符（root/l1/叶子）→ `dc civac` 全 span → 清 `CB_FSR`（写 `0xc00001feu`）→ `HFI_QTBL_INFO = 0` → `HFI_CTRL_INIT = 1` → 轮询 `ctl` bit0 200000 拍（每拍 `IODelay(1u)`）。
+- **键 229**：前导之后只读一次整窗，行 `gmu229p2=after_hfi=1 st=%08x gd=%08x cf=%08x gxoff=%d info=%08x`。它问的是「这张表够不够」。
+- **键 230**：前导之后写 `BOOT_SLUMBER_OPTION = 0`、`GX_VOTE_IDX = 0`、`MX_VOTE_IDX = 0`、`HOST2GMU_INTR_SET = 0x00400000`（set 22），100 拍 `IODelay(100u)` 轮询 `GMU2HOST_INTR_INFO` bit30，再写 `0x40000000` 清，行 `gmu230p2=oob=1 ack=%u info=%08x bs=%08x gx=%08x mx=%08x polls=%u`。它问的是「HFI 起来以后带外门铃会不会被应答」。
+- **键 231**：前导之后 20000 拍 `IODelay(1u)` 轮询 `CFG` bit16，行 `gmu231p2=rail_poll=1 cf=%08x bit16=%u polls=%u gd=%08x st=%08x gxoff=%d`。它问的是「HFI 起来以后 GX rail 会不会上电」。
+
+**111.3 逐字读数（设备自写）**
+- **键 229** `boot_id 639287744` / 窗口 `4cf38798e2ffd690dbb6f06a599dc13fb89ff3d5d6c38553004235b3faf7ab66`：
+  `gmu229p0=pre=1 ver=00000000 qi=00000001 qa=ad971000 st=000000d4 gd=00222001 cf=00088400 cx_on=1`
+  `gmu229p1=hfi=1 fills=3 build=0 plan=9 ctl=00000000 bit0=0 polls=200000 fsr=00000400 far=00000000`
+  `gmu229p2=after_hfi=1 st=000000d4 gd=00222001 cf=00088400 gxoff=1 info=00000000`
+  `gmu229l=mode=229 gd=00222001 cf=00088400 gx_on=0 gxoff=1 ctl=00000000 survived=1`
+- **键 230** `boot_id 639182680` / 窗口 `16af12492516c16d57235910525c5d50a2f160f2aa8c6772d8c34b593e452b76`：
+  `gmu230p1=hfi=1 fills=3 build=0 plan=9 ctl=00000000 bit0=0 polls=200000`
+  `gmu230p2=oob=1 ack=0 info=00800000 bs=00000000 gx=00000000 mx=00000000 polls=100`
+  `gmu229l2=mode=230 gd=00222001 cf=00088400 gx_on=0 gxoff=1 ctl=00000000 survived=1`
+- **键 231** `boot_id 645209585` / 窗口 `6431088acdf58f0080d1386f7ef81d58f337d61cb5f7856cc1922794e791c535`：
+  `gmu231p1=hfi=1 fills=3 build=0 plan=9 ctl=00000000 bit0=0 polls=200000`
+  `gmu231p2=rail_poll=1 cf=00088400 bit16=0 polls=20000 gd=00222001 st=000000d4 gxoff=1`
+  `gmu229l3=mode=231 gd=00222001 cf=00088400 gx_on=0 gxoff=1 ctl=00000000 survived=1`
+- **对照（同一镜像，今天早些时候）**：键 143 `boot_id 582506894` / 窗口 `623ade9420fe121c97157f125a4d44eaedb84f8edab40da929db9a079b376f0e` /
+  `gmu143l=shotgun_started ctl=00000001 bit0=1 polls=2 info=00000000 gfsr=00000000 fsr=00000400 far=00000000 fsynr0=00000000 smr_end=80000004 survived=1`。
+- 三键尾行都 `survived=1`：本轮行少（每键四行），介质没有提前结束这一轮。
+
+**111.4 判决**
+1. **「把表页填满就能让 HFI 接受」在今天不成立。** 表确实建成了（`adreno_table_build` 返回 0、三页填满、九笔 CB0 写落位），`CB_FSR` 读回 `00000400`（TF=0，没有 walk fault），`ctl` bit0 从第一拍数到第 200000 拍都是 0。
+2. **所以键 143 的成功不来自「表」这一件事。** 键 143 在同一个镜像上二拍就置起了 bit0；它比 229 多做三件事：写 `SMR0`（`0x800`）让 GMU 的 stream ID 匹配进这个银行、写 `S2CR0`（`0xc00`）把流从 BYPASS 改成 TRANS、把 `GMU2HOST_INTR_MASK` 写成 `0xff7fffff`（只开 MSGQ 与 CM3_FAULT）。**这是 R288 直接要判死的假设**：把这三笔补到 229 的前导里，若 `bit0` 起来，则「HFI 需要流路由 + 掩码」成立；若仍 0，则 143 的成功另有来源（下一步只能逐笔二分它的九个写）。
+3. **键 231 的否定回答有条件**：`cf=00088400`（bit16=0）、`gd=00222001`（SW_COLLAPSE 仍置，power-up 未置）、`st=000000d4`（GX_HM_GDSC_POWER_OFF|GX_HM_CLK_OFF 仍置）⇒ 在 HFI **未被接受**的状态下，GX rail 不会自己上电。**它不能回答「HFI 接受之后 rail 会不会上电」**，那要等 232 成功之后才能问。
+4. **键 230 的否定回答同样有条件**：`ack=0`、`bs/gx/mx` 读回全 0、`info=00800000` ⇒ 在 HFI **未被接受**的状态下，带外门铃无人应答，且敲门铃会把 bit23（外部依据：`a6xx_gmu.xml` 里 `GMU2HOST_INTR_INFO` 的 `CM3_FAULT` 在 pos 23）抬起来、留得住。这与 R275/R276 的形状一致，只是这一次的上下文是「表已经铺好」。
+5. **G1 仍未关闭**：三键 `ctl` bit0 全 0；`gd/cf` 与普查行逐位相同；`cx_on=1`（CX 域在，GX 域不在）。
+
+**111.5 边界与读数陷阱**
+- **`build=0` 是成功，不是失败**：`adreno_table_build` 返回 0 表示建表成功，代码在 `r229build == 0u` 的分支里才继续装 CB0；把它读成「build 失败」会把整条判决读反。
+- **`fills=3` 是页数，不是条目数**：一页 512 个 8 字节条目，三页共 1536 笔。
+- **`gmu229p1` 有多个变体**：`refused-cx-down` / `refused-geometry` / `refused-no-qtbl` / `no-alloc-symbol` / `alloc-failed` / `refused-plan` / `refused-build` 都会以同一个标签前缀出现。**只按 `find` 取第一个会读到失败变体**；判据必须看 `hfi=1` 这个变体里的 `bit0` 与 `polls`。
+- **静态门读错产物这个坑又出现了一次**：本轮 `r287_mkstatic.py` 只替换了文件尾部的 `r286-kernel`/`r286-payload`，文件头的 `KERNEL`/`PAYLOAD` 常量仍是上一轮路径，于是门对真产物报了 12 个 FAIL。**修法是整体替换路径，再对真产物跑一次、对上一轮产物跑一次**（前者 PASS、后者 FAIL 才叫门）。
+- **CI 日志是被 302 跳转的**：直接 `urlopen` 带 `Authorization` 头会在跳转后得到 `401 Server failed to authenticate`；必须自己处理 302（`HTTPRedirectHandler` 子类返回 `None` 拿到 `Location`），再裸 `urlopen(loc)`。本轮用它证明了 CI 确实 checkout 了 `ref: r287-table` → `57dab6a0`。
+
+**111.6 门禁与工具（本轮全部通过）**
+- 探针块：块 **38,683 字符 / 658 行 / opens=83 closes=83**，块内 `gmuW[` **11**、`dsb sy` 23、`dc civac` 3、`0xc00001feu` 3；`probe` **1,609,372 字符 / 26,936 行**。
+- host 门 PASS（25/25 + 51/51 + 32/32）；probe 门 **28/28**（store 预算 `823 → 834`）；stage4 **61/61**、stage5 **48/48**、stage6 **2189/2189**；全量 `ran 46 of 48, FAILING: 0`；`check_mode_selector.py` **42 selectors / upper 231 / 自证 FAIL / VERDICT PASS**。
+- 静态门：真产物 **PASS**（required+survivors 110 行两边命中），对 **R286 产物 FAIL 12** ⇒ 区分能力成立。
+- 构建：CI **#405 run `45265903128` success 28/28**；分支 `r287-table` commit `57dab6a0443fbea4dd79eb4f5e566947f95de790`、tree `d997cd2cb0081150119f363a3fe90555648b67cc`（base `main 728316c9326a`，534 已有 + 5 上传）。
+- 产物：`kernel.macho` 126,500,864 B sha256 `8695d552c2cac7e1f950f496ef15434900afd66f415341b02b0af392e5bb8e13`；`payload.img` 150,994,944 B sha256 `f6b8ad1e29c5dbc669ee7aedc62e334bed814753cd49a820272776e0bf5cbd7b`。
+- 重键：p229 `0a632171056ab7c6862ce9e61d08001e045bbee9b5ef941948ad55cf80b8e5a0`、p230 `55681fbf4a8df4e8556e21355dcb3885de1bffd7125575223fa3a80d54002406`、p231 `537be44f628610bc1710705f5c6fc59325ab6597e94f46c496a8a37485f79da7`。
+- 每键前 `scripts\check-reboot-to-twrp.py --arm` PASS（boot_a md5 `ca8ddd7a5af345636cad8c5bf645fee2`），每次回 TWRP 后 runner 自跑 `reboot-to-twrp.py --arm-bcb-only`。
+
+**111.7 下一步**
+- **键 232**：在 229 的前导里补三笔 —— `SMR0 = VALID | SID4`（写 `0x800`）、两个 GMU 流的 `S2CR` 从 BYPASS 改成 TRANS（写 `0xc00` 起）、`GMU2HOST_INTR_MASK = 0xff7fffff`，然后照旧写 `HFI_CTRL_INIT` 并轮询。**一次上机就能判死「HFI 是不是要流路由 + 掩码」**。
+- **键 233**：232 成功后再敲门铃（带外请求的意义只有在 HFI 起来之后才成立）。
+- **键 234**：232 成功后再轮询 `CFG` bit16（同一条理由：rail 的答案只有在 HFI 起来之后才成立）。
+- 读数纪律不变：**每键不超过八行、每行尽量短、判决字段放最前面**。
+- 目标不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧。

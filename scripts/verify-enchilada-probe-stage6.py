@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 228u' in _fw,
+    check('fwKey >= 7u && fwKey <= 231u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 228u)' in code,
+    check('(fwKey >= 7u && fwKey <= 231u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4300,6 +4300,11 @@ def main():
         _k226228 = ''
         if _i226228 > 0:
             _k226228 = code[_i226228:].split(
+                '\nif (fwKey == 229u || fwKey == 230u || fwKey == 231u) {\n', 1)[0]
+        _i229231 = code.find('if (fwKey == 229u || fwKey == 230u || fwKey == 231u) {')
+        _k229231 = ''
+        if _i229231 > 0:
+            _k229231 = code[_i229231:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -6929,6 +6934,97 @@ def main():
     check('const int r226mode = (fwKey >= 228u) ? 228 : ((fwKey >= 227u) ? 227 '
           ': 226);' in code,
           'R286 the mode selector is written out, not flattened into one arm')
+
+    # ---- ROUND 287: the table, and what HFI acceptance unlocks.  Re-running R260
+    # key 143 on today's image reproduced ctl bit0 = 1 (polls = 2) with a clean
+    # boundary status word, so the precondition every flat block dropped is the
+    # filled table.  Keys 229/230/231 rebuild it inside their own preamble and then
+    # look one step further: 229 reads the gate words, 230 rings the boot-slumber
+    # doorbell with the rail votes, and 231 polls the GX power-up bit.
+    check(_k229231 != '', 'R287 the table keys follow the R286 shapes')
+    _rows287 = ('gmu229p0', 'gmu229p1', 'gmu229p2', 'gmu229l=',
+                'gmu230p0', 'gmu230p1', 'gmu230p2', 'gmu229l2=',
+                'gmu231p0', 'gmu231p1', 'gmu231p2', 'gmu229l3=')
+    check(all(_w in _k229231 for _w in _rows287),
+          'R287 every row of the three keys is formatted: %s'
+          % [w for w in _rows287 if w not in _k229231])
+    check(_k229231.count('gmuW[') == 11,
+          'R287 the three keys carry eleven pointer stores: the descriptor clear '
+          'and the INIT store in each key, plus five for the rail votes and the '
+          'doorbell in 230 (got %d)' % _k229231.count('gmuW['))
+    check(_k229231.count('0x5184u') == 3 and _k229231.count('0x5186u') == 3,
+          'R287 every key clears the descriptor and writes the INIT word once '
+          '(got %d/%d)' % (_k229231.count('0x5184u'),
+                           _k229231.count('0x5186u')))
+    check(_k229231.count('0x5180u') == 3 and _k229231.count('0x5192u') == 2,
+          'R287 polls the control word once per key and reads the interrupt info '
+          'in 229 and 230 (got %d/%d)' % (_k229231.count('0x5180u'),
+                                          _k229231.count('0x5192u')))
+    check(_k229231.count('0x5194u') == 1 and _k229231.count('0x23f8u') == 1 and
+          _k229231.count('0x23f9u') == 1 and _k229231.count('0x23fau') == 1,
+          'R287 only key 230 rings the doorbell and writes the slumber option and '
+          'the two arc votes (got %d/%d/%d/%d)'
+          % (_k229231.count('0x5194u'), _k229231.count('0x23f8u'),
+             _k229231.count('0x23f9u'), _k229231.count('0x23fau')))
+    check('0x5000u' not in _k229231 and '0x501cu' not in _k229231 and
+          '0xbabeface' not in _k229231,
+          'R287 never pulses the CM3 reset and never waits for the init latch')
+    check(_k229231.count('dc civac') == 3 and
+          _k229231.count('0xc00001feu') == 3,
+          'R287 cleans and clears the table pages once per key (got %d/%d)'
+          % (_k229231.count('dc civac'), _k229231.count('0xc00001feu')))
+    check(_k229231.count('for (r229i = 0ull; r229i < 512ull; ++r229i)') == 3 and
+          _k229231.count('r229l1off') >= 6 and _k229231.count('r229l2off') >= 6,
+          'R287 fills all three table pages in every key, not just the leaf')
+    check(_k229231.count('IODelay(1u)') == 4 and
+          _k229231.count('IODelay(100u)') == 1,
+          'R287 paces the INIT poll and the rail poll in microseconds and the '
+          'doorbell wait in hundreds of microseconds (got %d/%d)'
+          % (_k229231.count('IODelay(1u)'), _k229231.count('IODelay(100u)')))
+    check(_k229231.count('0x000000c0u') == 5 and
+          _k229231.count('0x00010000u') == 5,
+          'R287 judges the domain by its two GDSCR status bits and the power-up '
+          'bit, never by a whole word (got %d/%d)'
+          % (_k229231.count('0x000000c0u'), _k229231.count('0x00010000u')))
+    check(_k229231.index('if (r229mode == 229) {') <
+          _k229231.index('} else if (r229mode == 230) {') <
+          _k229231.index('} else if (r229mode == 231) {'),
+          'R287 the three keys appear in the order 229, 230, 231')
+    _d229 = _k229231[_k229231.index('if (r229mode == 229) {'):
+                     _k229231.index('} else if (r229mode == 230) {')]
+    _d230 = _k229231[_k229231.index('} else if (r229mode == 230) {'):
+                     _k229231.index('} else if (r229mode == 231) {')]
+    _d231 = _k229231[_k229231.index('} else if (r229mode == 231) {'):]
+    for _tag, _b in (('229', _d229), ('230', _d230), ('231', _d231)):
+        check(_b.index('%sp0=' % _tag) < _b.index('%sp1=' % _tag),
+              'R287 key %s prints the census row before it touches the table' % _tag)
+        check('adreno_table_build' in _b and 'adreno_smmu_ctx_plan' in _b and
+              'adreno_install_absolute' in _b,
+              'R287 key %s builds, plans and installs the context bank itself' % _tag)
+    check(_d230.index('gmu230p1=') < _d230.index('gmuW[r229bsWord] = 0u;') and
+          _d230.index('gmu230p1=') < _d230.index('gmuW[r229setWord] = 0x00400000u;') and
+          _d230.index('gmuW[r229setWord] = 0x00400000u;') < _d230.index('gmu230p2='),
+          'R287 key 230 only rings the doorbell after HFI was started and reports '
+          'the reply afterwards')
+    check('0x40000000u' in _d230,
+          'R287 key 230 clears its own ack bit the way upstream a6xx_gmu_set_oob '
+          'does')
+    check(_d231.index('gmu231p1=') <
+          _d231.index('for (r229polls = 0u; r229polls < 20000u; ++r229polls)'),
+          'R287 key 231 only polls the power-up bit after HFI was started')
+    check(_d231.count('gmuW[') == 2,
+          'R287 key 231 writes only the descriptor clear and the INIT word '
+          '(got %d)' % _d231.count('gmuW['))
+    check('survived=1' in _d229 and 'survived=1' in _d230 and 'survived=1' in _d231,
+          'R287 every key keeps the survival flag')
+    check('ctl=%08x' in _k229231 and 'bit0=%u' in _k229231 and 'polls=%u' in _k229231,
+          'R287 reports the control word, its accept bit and how many polls it took')
+    check('fsr=%08x' in _k229231 and 'far=%08x' in _k229231,
+          'R287 reports the boundary status word and the fault address beside the '
+          'accept bit')
+    check('const int r229mode = (fwKey >= 231u) ? 231 : ((fwKey >= 230u) ? 230 '
+          ': 229);' in code,
+          'R287 the mode selector is written out, not flattened into one arm')
     check('const int r199mode = (fwKey >= 201u) ? 201 : ((fwKey >= 200u) ? 200 '
           ': 199);' in code,
           'R279 the mode selector is written out, not flattened into one arm')
