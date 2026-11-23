@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 213u' in _fw,
+    check('fwKey >= 7u && fwKey <= 216u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 213u)' in code,
+    check('(fwKey >= 7u && fwKey <= 216u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4285,6 +4285,11 @@ def main():
         _k211213 = ''
         if _i211213 > 0:
             _k211213 = code[_i211213:].split(
+                '\nif (fwKey == 214u || fwKey == 215u || fwKey == 216u) {\n', 1)[0]
+        _i214216 = code.find('if (fwKey == 214u || fwKey == 215u || fwKey == 216u) {')
+        _k214216 = ''
+        if _i214216 > 0:
+            _k214216 = code[_i214216:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -6649,6 +6654,99 @@ def main():
     check('const int r211mode = (fwKey >= 213u) ? 213 : ((fwKey >= 212u) ? 212 '
           ': 211);' in code,
           'R283 the mode selector is written out, not flattened into one arm')
+
+    # ---- ROUND 284: the short-row cadence, the two-store cadence and the
+    # one-store split.  Key 214 prints only a millisecond number and a tick per
+    # row (no nine-word window, no MMIO read), so a cutoff that moves past
+    # fourteen rows says the loss was about row size and a cutoff that stays at
+    # fourteen says it was about elapsed time.  Key 215 runs the same short
+    # cadence right after the two stores every long-lived round carried, and key
+    # 216 runs it after clearing the descriptor alone.
+    check(_k214216 != '', 'R284 the cadence block follows the R283 block')
+    _rows284 = ('gmu214p0', 'gmu214m%u', 'gmu214l=', 'gmu215p0', 'gmu215p1',
+                'gmu215m%u', 'gmu214l2=', 'gmu216p0', 'gmu216p1', 'gmu216m%u',
+                'gmu214l3=')
+    check(all(_w in _k214216 for _w in _rows284),
+          'R284 every cadence row is formatted: %s'
+          % [w for w in _rows284 if w not in _k214216])
+    check(_k214216.count('gmuW[') == 3,
+          'R284 writes exactly three words: two under key 215 and one under key '
+          '216 (got %d)' % _k214216.count('gmuW['))
+    check(_k214216.count('0x5184u') == 3,
+          'R284 names the descriptor word once per key (got %d)'
+          % _k214216.count('0x5184u'))
+    check(_k214216.count('0x5186u') == 2 and
+          _k214216.count('gmuW[r214iniWord] = 1u;') == 1,
+          'R284 writes HFI_CTRL_INIT under key 215 only, while key 216 reads it '
+          'without writing it (got %d/%d)'
+          % (_k214216.count('0x5186u'),
+             _k214216.count('gmuW[r214iniWord] = 1u;')))
+    check('0x5194u' not in _k214216 and '0x5191u' not in _k214216,
+          'R284 rings no doorbell: the question is round survival, not the '
+          'firmware reply')
+    check('0xbabeface' not in _k214216 and 'IOSleep' not in _k214216,
+          'R284 never waits for the init latch and never sleeps the writer away')
+    check(_k214216.count('0x5000u') == 3 and _k214216.count('0x501cu') == 3,
+          'R284 reads the reset word and the init word once per key and pulses '
+          'neither (got %d/%d)' % (_k214216.count('0x5000u'),
+                                   _k214216.count('0x501cu')))
+    check(_k214216.count('IODelay(1u)') == 0 and
+          _k214216.count('IODelay(100u)') == 3,
+          'R284 paces every wait in hundred-microsecond steps (got %d/%d)'
+          % (_k214216.count('IODelay(1u)'), _k214216.count('IODelay(100u)')))
+    check(_k214216.count('__asm__ volatile("dsb sy" ::: "memory");') == 3,
+          'R284 syncs after every store it makes (got %d)'
+          % _k214216.count('__asm__ volatile("dsb sy" ::: "memory");'))
+    check(_k214216.index('if (r214mode == 214) {') <
+          _k214216.index('} else if (r214mode == 215) {') <
+          _k214216.index('} else if (r214mode == 216) {'),
+          'R284 the three keys appear in the order 214, 215, 216')
+    _d214 = _k214216[_k214216.index('if (r214mode == 214) {'):
+                     _k214216.index('} else if (r214mode == 215) {')]
+    _d215 = _k214216[_k214216.index('} else if (r214mode == 215) {'):
+                     _k214216.index('} else if (r214mode == 216) {')]
+    _d216 = _k214216[_k214216.index('} else if (r214mode == 216) {'):]
+    for _name, _b, _s, _pw in (('214', _d214, 'r214s', 'r214pw'),
+                               ('215', _d215, 'r214s2', 'r214pw2'),
+                               ('216', _d216, 'r214s3', 'r214pw3')):
+        check('for (%s = 0u; %s < 30u; ++%s)' % (_s, _s, _s) in _b and
+              'for (%s = 0u; %s < 10u; ++%s)' % (_pw, _pw, _pw) in _b,
+              'R284 key %s climbs thirty one-millisecond steps' % _name)
+        check('tick=%u' in _b and 'ms=%u' in _b,
+              'R284 key %s rows carry only the millisecond and the tick' % _name)
+    check(_d214.count('gmuW[') == 0,
+          'R284 key 214 writes nothing at all (got %d)' % _d214.count('gmuW['))
+    check('rd32(' not in _d214[_d214.index('for (r214s = 0u; r214s < 30u; ++r214s)'):
+                             _d214.index('gmu214m%u=')],
+          'R284 key 214 does no MMIO read inside its loop: row size is the only '
+          'variable against R283 key 212')
+    check(_d215.index('gmuW[r214qiWord] = 0u;') <
+          _d215.index('gmuW[r214iniWord] = 1u;') <
+          _d215.index('gmu215p1=') <
+          _d215.index('for (r214s2 = 0u; r214s2 < 30u; ++r214s2)'),
+          'R284 key 215 clears the descriptor, writes INIT, reads both back and '
+          'only then starts the cadence')
+    check(_d215.count('gmuW[') == 2,
+          'R284 key 215 makes the same two stores every long-lived round made '
+          '(got %d)' % _d215.count('gmuW['))
+    check('gmuW[r214iniWord]' not in _d216,
+          'R284 key 216 never writes HFI_CTRL_INIT: it is the one-store split')
+    check(_d216.count('gmuW[') == 1,
+          'R284 key 216 writes the descriptor clear alone (got %d)'
+          % _d216.count('gmuW['))
+    check(_d216.index('gmuW[r214qiWord] = 0u;') < _d216.index('gmu216p1=') <
+          _d216.index('for (r214s3 = 0u; r214s3 < 30u; ++r214s3)'),
+          'R284 key 216 prints its read-back before the cadence starts')
+    for _tag, _b in (('gmu214l=', _d214), ('gmu214l2=', _d215),
+                     ('gmu214l3=', _d216)):
+        check('survived=1' in _b and _tag in _b,
+              'R284 %s keeps the survival flag' % _tag)
+        check('fw=%08x sr=%08x' in _b,
+              'R284 %s carries the firmware words so a restart cannot pass as a '
+              'quiet window' % _tag)
+    check('const int r214mode = (fwKey >= 216u) ? 216 : ((fwKey >= 215u) ? 215 '
+          ': 214);' in code,
+          'R284 the mode selector is written out, not flattened into one arm')
     check('const int r199mode = (fwKey >= 201u) ? 201 : ((fwKey >= 200u) ? 200 '
           ': 199);' in code,
           'R279 the mode selector is written out, not flattened into one arm')
