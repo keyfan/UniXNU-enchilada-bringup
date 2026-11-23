@@ -199,7 +199,7 @@ def main():
     # ROUND 199 drives the GX GDSC through `gxW[...]`; same treatment.
     _outside = re.sub(r'gxW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey >= 7u && fwKey <= 201u' in code and
+          'fwKey >= 7u && fwKey <= 204u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
     check('if (fwKey == 45u) {' in code and
@@ -376,6 +376,11 @@ def main():
     _k199201r = ''
     if _i199201r > 0:
         _k199201r = code[_i199201r:].split(
+            '\nif (fwKey == 202u || fwKey == 203u || fwKey == 204u) {\n', 1)[0]
+    _i202204r = code.find('if (fwKey == 202u || fwKey == 203u || fwKey == 204u) {')
+    _k202204r = ''
+    if _i202204r > 0:
+        _k202204r = code[_i202204r:].split(
             '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
     _i145147r = code.find('if (fwKey == 145u || fwKey == 146u || fwKey == 147u) {')
     _k145147r = ''
@@ -426,7 +431,9 @@ def main():
           _k196198r != '' and
           _k196198r.count(_p1r) == 0 and _k196198r.count(_p0r) == 0 and
           _k199201r != '' and
-          _k199201r.count(_p1r) == 0 and _k199201r.count(_p0r) == 0,
+          _k199201r.count(_p1r) == 0 and _k199201r.count(_p0r) == 0 and
+          _k202204r != '' and
+          _k202204r.count(_p1r) == 0 and _k202204r.count(_p0r) == 0,
           'R168 the reset pulse exists once in the key-8 sub-block, twice in the R247 '
           're-boot block, three times in each of the R248 and R249 blocks and once in each of the '
           'R250, R251, R253, R254, R255, R256, R257, R258, R259, R260, R261, R262, R263, R264, R265 and R266 blocks, nowhere else, R267 and R268 blocks, nowhere else, and R269 adds no reset pulse of its own, and R270 adds five, each of them the same one up one down pulse the earlier keys use, and R271 adds four, one in the shared preamble and one in each of its three keys, and R272 adds four, one in the shared preamble and one in each of its three keys, and R273 adds four, one in the shared preamble and one in each of its three keys')

@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 201u' in _fw,
+    check('fwKey >= 7u && fwKey <= 204u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 201u)' in code,
+    check('(fwKey >= 7u && fwKey <= 204u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4265,6 +4265,11 @@ def main():
         _k199201 = ''
         if _i199201 > 0:
             _k199201 = code[_i199201:].split(
+                '\nif (fwKey == 202u || fwKey == 203u || fwKey == 204u) {\n', 1)[0]
+        _i202204 = code.find('if (fwKey == 202u || fwKey == 203u || fwKey == 204u) {')
+        _k202204 = ''
+        if _i202204 > 0:
+            _k202204 = code[_i202204:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -6236,6 +6241,112 @@ def main():
                      ('gmu199l3', _c201)):
         check('survived=1' in _b and _tag + '=' in _b,
               'R279 %s keeps the survival flag' % _tag)
+
+    # ---- ROUND 280: halve the wait, print a row before INIT, tighten the sampler
+    # R279 left two questions open: does a long wait end the round, or does the read
+    # after it, and did key 201 die at the reset or at the INIT store.  R280 splits
+    # both, and re-runs the sampler at a much finer spacing.
+    check(_k202204 != '', 'R280 the split block follows the R279 block')
+    _rows280 = ('gmu202p0', 'gmu202p1', 'gmu202p2', 'gmu202p3', 'gmu202l2',
+                'gmu203p0', 'gmu203p1', 'gmu203p2', 'gmu202l3',
+                'gmu204p0', 'gmu204p1', 'gmu204s%u', 'gmu202l')
+    check(all(_w + '=' in _k202204 for _w in _rows280),
+          'R280 every split row is formatted: %s'
+          % [w for w in _rows280 if w + '=' not in _k202204])
+    check(_k202204.count('gmuW[') == 8,
+          'R280 the block holds exactly eight stores: two each for keys 202 and '
+          '204, and four for key 203 (got %d)' % _k202204.count('gmuW['))
+    check(_k202204.count('0x5184u') == 3 and _k202204.count('0x5185u') == 3 and
+          _k202204.count('0x5186u') == 3,
+          'R280 every key declares the descriptor, the queue-table address and the '
+          'init word (got %d/%d/%d)' % (_k202204.count('0x5184u'),
+                                        _k202204.count('0x5185u'),
+                                        _k202204.count('0x5186u')))
+    check(_k202204.count('0x5000u') == 3 and _k202204.count('0x501cu') == 3 and
+          _k202204.count('0xbabefaceu') == 1,
+          'R280 all three keys declare the reset word and the init word, and only '
+          'key 203 waits for the old-firmware latch value (got %d/%d/%d)'
+          % (_k202204.count('0x5000u'), _k202204.count('0x501cu'),
+             _k202204.count('0xbabefaceu')))
+    check('0x5194u' not in _k202204 and '0x5191u' not in _k202204,
+          'R280 rings no doorbell: the HFI start is refused, not unacknowledged')
+    check(_k202204.count('gmuW[r202qiWord] = 0u;') == 2 and
+          _k202204.count('gmuW[r202qaWord] = 0u;') == 0,
+          'R280 the descriptor is dropped by two keys and the address by none (got '
+          '%d/%d)' % (_k202204.count('gmuW[r202qiWord] = 0u;'),
+                      _k202204.count('gmuW[r202qaWord] = 0u;')))
+    check(_k202204.count('gmuW[r202iniWord] = 1u;') == 3,
+          'R280 all three keys write INIT exactly once (got %d)'
+          % _k202204.count('gmuW[r202iniWord] = 1u;'))
+    check(_k202204.count('gmuW[r202srWord] = 1u;') == 1 and
+          _k202204.count('gmuW[r202srWord] = 0u;') == 1 and
+          _k202204.count('gmuW[r202fwWord] = 0u;') == 1,
+          'R280 only key 203 pulses the CM3 reset, which is a6xx_gmu_start() again')
+    check(_k202204.count('IOSleep') == 0,
+          'R280 never sleeps the writer round away')
+    check(_k202204.count('IODelay(1u)') == 4 and
+          _k202204.count('IODelay(100u)') == 1,
+          'R280 paces the sampler, the reset wait and the ten-millisecond wait in '
+          'one- and hundred-microsecond steps and nothing else (got %d/%d)'
+          % (_k202204.count('IODelay(1u)'), _k202204.count('IODelay(100u)')))
+    check(_k202204.index('if (r202mode == 202) {') <
+          _k202204.index('} else if (r202mode == 203) {') <
+          _k202204.index('} else if (r202mode == 204) {'),
+          'R280 the three keys appear in the order 202, 203, 204')
+    _d202 = _k202204[_k202204.index('if (r202mode == 202) {'):
+                     _k202204.index('} else if (r202mode == 203) {')]
+    _d203 = _k202204[_k202204.index('} else if (r202mode == 203) {'):
+                     _k202204.index('} else if (r202mode == 204) {')]
+    _d204 = _k202204[_k202204.index('} else if (r202mode == 204) {'):]
+    check(_d202.count('gmuW[') == 2,
+          'R280 key 202 carries exactly the descriptor clear and the init write '
+          '(got %d)' % _d202.count('gmuW['))
+    check(_d203.count('gmuW[') == 4,
+          'R280 key 203 carries the reset pair, the init-word clear and the init '
+          'write (got %d)' % _d203.count('gmuW['))
+    check(_d204.count('gmuW[') == 2,
+          'R280 key 204 carries the descriptor clear and the init write again '
+          '(got %d)' % _d204.count('gmuW['))
+    check('gmuW[r202srWord]' not in _d202 and 'gmuW[r202srWord]' not in _d204,
+          'R280 keys 202 and 204 leave the CM3 alone: only key 203 resets it')
+    check('gmuW[r202qiWord] = 0u;' not in _d203,
+          'R280 key 203 leaves the descriptor word alone, which is exactly what '
+          'makes it key 201 with one extra row in front')
+    check(_d203.index('gmuW[r202srWord] = 1u;') <
+          _d203.index('gmuW[r202fwWord] = 0u;') <
+          _d203.index('gmuW[r202srWord] = 0u;') <
+          _d203.index('gmuW[r202iniWord] = 1u;'),
+          'R280 key 203 resets the CM3, clears the init word, releases it and only '
+          'then writes INIT')
+    check('after_reset=1' in _d203 and
+          _d203.index('after_reset=1') < _d203.index('gmuW[r202iniWord] = 1u;'),
+          'R280 key 203 prints a row BEFORE the INIT store, which is the only way '
+          'to tell a death in the reset from a death in the INIT')
+    check('for (r202waitPw = 0u; r202waitPw < 100u; ++r202waitPw)' in _d202,
+          'R280 key 202 waits ten milliseconds, not twenty: half of key 200')
+    check(_d202.index('for (r202waitPw = 0u; r202waitPw < 100u; ++r202waitPw)') >
+          _d202.index('gmuW[r202iniWord] = 1u;'),
+          'R280 key 202 waits only AFTER it writes INIT')
+    check('after_half_wait=1' in _d202 and 'waited=%u' in _k202204,
+          'R280 the halved-wait row reports how many hundred-microsecond steps ran')
+    check('for (r202s = 0u; r202s < 20u; ++r202s)' in _d204,
+          'R280 key 204 samples the window twenty times instead of ten')
+    check('for (r202pw = 0u; r202pw < 50u; ++r202pw)' in _d204,
+          'R280 key 204 spaces the samples fifty polls apart, about fifty '
+          'microseconds instead of three milliseconds')
+    for _w in ('r202fw2', 'r202sr2'):
+        check(_w in _d204,
+              'R280 key 204 samples %s so a firmware restart cannot pass as a quiet '
+              'window' % _w)
+    check('latched=%u' in _k202204 and 'r202latched' in _d204,
+          'R280 the sampler keeps the latch flag it may set inside the gaps')
+    for _tag, _b in (('gmu202l', _d204), ('gmu202l2', _d202),
+                     ('gmu202l3', _d203)):
+        check('survived=1' in _b and _tag + '=' in _b,
+              'R280 %s keeps the survival flag' % _tag)
+    check('const int r202mode = (fwKey >= 204u) ? 204 : ((fwKey >= 203u) ? 203 '
+          ': 202);' in code,
+          'R280 the mode selector is written out, not flattened into one arm')
     check('const int r199mode = (fwKey >= 201u) ? 201 : ((fwKey >= 200u) ? 200 '
           ': 199);' in code,
           'R279 the mode selector is written out, not flattened into one arm')
