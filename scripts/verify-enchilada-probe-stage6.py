@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 35,
-          'ID1 is re-read at most thirty-six times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233 and 234), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 36,
+          'ID1 is re-read at most thirty-seven times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236 and 237), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 234u' in _fw,
+    check('fwKey >= 7u && fwKey <= 237u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 234u)' in code,
+    check('(fwKey >= 7u && fwKey <= 237u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4310,6 +4310,11 @@ def main():
         _k232234 = ''
         if _i232234 > 0:
             _k232234 = code[_i232234:].split(
+                '\nif (fwKey == 235u || fwKey == 236u || fwKey == 237u) {\n', 1)[0]
+        _i235237 = code.find('if (fwKey == 235u || fwKey == 236u || fwKey == 237u) {')
+        _k235237 = ''
+        if _i235237 > 0:
+            _k235237 = code[_i235237:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -7118,6 +7123,105 @@ def main():
     check('const int r232mode = (fwKey >= 234u) ? 234 : ((fwKey >= 233u) ? 233 '
           ': 232);' in code,
           'R288 the mode selector is written out, not flattened into one arm')
+
+    # ---- ROUND 289: the recipe key 143 actually runs.  R288 ruled out both the
+    # interrupt mask and the stream routing, so the rest of 143's block is the only
+    # thing left.  Keys 235/236/237 carry it whole, without the CM3 reset, and with
+    # the descriptor cleared again after the reset.
+    check(_k235237 != '', 'R289 the recipe keys follow the R288 shapes')
+    _rows289 = ('gmu235p0', 'gmu235p1', 'gmu235p2', 'gmu235l=',
+                'gmu236p0', 'gmu236p1', 'gmu236p2', 'gmu235l2=',
+                'gmu237p0', 'gmu237p1', 'gmu237p2', 'gmu235l3=')
+    check(all(_w in _k235237 for _w in _rows289),
+          'R289 every row of the three keys is formatted: %s'
+          % [w for w in _rows289 if w not in _k235237])
+    check(_k235237.count('gmuW[') == 28,
+          'R289 the three keys carry twenty-eight pointer stores (got %d)'
+          % _k235237.count('gmuW['))
+    check(_k235237.count('0x5184u') == 3 and _k235237.count('0x5185u') == 3 and
+          _k235237.count('0x5186u') == 3,
+          'R289 every key names the descriptor, its address and the INIT word '
+          '(got %d/%d/%d)' % (_k235237.count('0x5184u'),
+                              _k235237.count('0x5185u'),
+                              _k235237.count('0x5186u')))
+    check(_k235237.count('0x5193u') == 3 and _k235237.count('0xff7fffffu') == 3,
+          'R289 every key names the interrupt mask and its value '
+          '(got %d/%d)' % (_k235237.count('0x5193u'), _k235237.count('0xff7fffffu')))
+    check(_k235237.count('0x5191u') == 3 and _k235237.count('0x9304u') == 3,
+          'R289 every key names both interrupt clears (got %d/%d)'
+          % (_k235237.count('0x5191u'), _k235237.count('0x9304u')))
+    check(_k235237.count('0x5000u') == 3 and _k235237.count('0x501cu') == 3,
+          'R289 every key names the reset and the init-result word (got %d/%d)'
+          % (_k235237.count('0x5000u'), _k235237.count('0x501cu')))
+    check(_k235237.count('0x5101u') == 2 and
+          _k235237.count('gmuW[r235srWord] = 1u;') == 2 and
+          _k235237.count('0xbabeface') == 2,
+          'R289 only keys 235 and 237 assert the reset, clear the CP response and wait '
+          'for the init latch (got %d/%d/%d)'
+          % (_k235237.count('0x5101u'), _k235237.count('gmuW[r235srWord] = 1u;'),
+             _k235237.count('0xbabeface')))
+    check('0x5194u' not in _k235237 and '0x23f8u' not in _k235237,
+          'R289 rings no doorbell and writes no rail vote: the question is HFI '
+          'acceptance alone')
+    check(_k235237.count('dc civac') == 3 and _k235237.count('0xc00001feu') == 3 and
+          _k235237.count('for (r235i = 0ull; r235i < 512ull; ++r235i)') == 3,
+          'R289 fills and cleans the table pages in every key (got %d/%d/%d)'
+          % (_k235237.count('dc civac'), _k235237.count('0xc00001feu'),
+             _k235237.count('for (r235i = 0ull; r235i < 512ull; ++r235i)')))
+    check(_k235237.count('IODelay(1u)') == 5,
+          'R289 paces both polls in microseconds: three INIT polls and two init-result '
+          'polls (got %d)' % _k235237.count('IODelay(1u)'))
+    check(_k235237.index('if (r235mode == 235u) {') <
+          _k235237.index('} else if (r235mode == 236u) {') <
+          _k235237.index('} else if (r235mode == 237u) {'),
+          'R289 the three keys appear in the order 235, 236, 237')
+    _d235 = _k235237[_k235237.index('if (r235mode == 235u) {'):
+                      _k235237.index('} else if (r235mode == 236u) {')]
+    _d236 = _k235237[_k235237.index('} else if (r235mode == 236u) {'):
+                      _k235237.index('} else if (r235mode == 237u) {')]
+    _d237 = _k235237[_k235237.index('} else if (r235mode == 237u) {'):]
+    check(_d235.count('gmuW[') == 10 and _d236.count('gmuW[') == 7 and
+          _d237.count('gmuW[') == 11,
+          'R289 the reset adds three stores and 237 adds one more to clear the '
+          'descriptor again (got %d/%d/%d)'
+          % (_d235.count('gmuW['), _d236.count('gmuW['), _d237.count('gmuW[')))
+    for _tag, _b in (('235', _d235), ('236', _d236), ('237', _d237)):
+        check(_b.index('%sp0=' % _tag) < _b.index('%sp1=' % _tag) <
+              _b.index('%sp2=' % _tag),
+              'R289 key %s prints the census row, then the HFI row, then its own '
+              'readback' % _tag)
+        check(_b.index('adreno_table_build') < _b.index('%sp1=hfi=1' % _tag),
+              'R289 key %s builds the table before it starts the HFI' % _tag)
+        check(_b.index('gmuW[r235qiWord] = 1u;') < _b.index('gmuW[r235iniWord] = 1u;'),
+              'R289 key %s publishes the descriptor before writing the INIT word' % _tag)
+    check(_d235.index('gmuW[r235fwWord] = 0u;') <
+          _d235.index('gmuW[r235qaWord] = r235qtbl;'),
+          'R289 key 235 clears the init result before it hands over the queue address')
+    check(_d235.index('gmuW[r235qaWord] = r235qtbl;') <
+          _d235.index('gmuW[r235qiWord] = 1u;'),
+          'R289 key 235 writes the queue address before it marks the descriptor valid')
+    check(_d235.index('gmuW[r235srWord] = 1u;') <
+          _d235.index('gmuW[r235srWord] = 0u;') <
+          _d235.index('gmuW[r235clrWord] = 0xffffffffu;') <
+          _d235.index('gmuW[r235maskWord] = 0xff7fffffu;') <
+          _d235.index('gmuW[r235iniWord] = 1u;'),
+          'R289 key 235 asserts and releases the reset, then clears the interrupts, '
+          'then masks, then starts -- the order key 143 used')
+    check('gmuW[r235srWord] = 1u;' not in _d236 and '0xbabeface' not in _d236,
+          'R289 key 236 is the same recipe with no reset and no init-result poll')
+    check(_d237.index('gmuW[r235srWord] = 0u;') <
+          _d237.index('gmuW[r235qiWord] = 0u;') <
+          _d237.index('gmuW[r235maskWord] = 0xff7fffffu;'),
+          'R289 key 237 clears the descriptor after the reset and before the mask')
+    check('survived=1' in _d235 and 'survived=1' in _d236 and 'survived=1' in _d237,
+          'R289 every key keeps the survival flag')
+    check('bit0=%u' in _k235237 and 'polls=%u' in _k235237 and 'ctl=%08x' in _k235237,
+          'R289 reports the control word, its accept bit and how many polls it took')
+    check('fw=%08x' in _k235237 and 'sr=%08x' in _k235237 and 'qtbl=%08x' in _k235237,
+          'R289 reports the reset word, the init result and the queue address back')
+    check('const int r235mode = (fwKey >= 237u) ? 237 : ((fwKey >= 236u) ? 236 '
+          ': 235);' in code,
+          'R289 the mode selector is written out, not flattened into one arm')
     check('const int r199mode = (fwKey >= 201u) ? 201 : ((fwKey >= 200u) ? 200 '
           ': 199);' in code,
           'R279 the mode selector is written out, not flattened into one arm')

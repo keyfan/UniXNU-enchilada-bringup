@@ -8710,3 +8710,48 @@ R287 把「填满队列表页」这条路走到头：表建成了、九笔 CB0 �
 - **键 237**：同 235 但**复位后再把 `QTBL_INFO` 清 0** 才写 INIT ⇒ 判「描述符必须在 INIT 时仍有效」。
 - 读数纪律不变：**每键不超过八行、每行尽量短、判决字段放最前面**；选号前先扫 `gmu\d{3}[a-z]`（已占 100、102–234），forbidden 取 238/239/240。
 - 目标不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧。
+
+## 一百一十三、R289：照键 143 的真实顺序重放 —— 顺序全落位，HFI 仍不接受；而两个键在落地任何一行之前就没了
+
+**113.1 一句话**
+R288 用 2×2 把「掩码」与「流路由」判死之后，剩下的差异只剩「顺序」：键 143 先建表填页、再清 `CM3_FW_INIT_RESULT`、把队列表地址写回 `HFI_QTBL_ADDR`、举起 `HFI_QTBL_INFO`、**复位 CM3**（`CM3_SYSRESET` 1 → `PWR_COL_CP_RESP = 0` → 0，再轮询 `FW_INIT_RESULT` 到 `babeface`）、清两个中断字、掩码、最后才写 `HFI_CTRL_INIT`；而 R274 之后的扁平块（229–234）既不复位 CM3、也不写 `QTBL_ADDR`，还主动把 `QTBL_INFO` 清成 0。本轮三键把那条顺序整段搬进前导：**235 全配方**、**236 全配方但不做复位与 init-result 等待**、**237 全配方且复位之后再把 `QTBL_INFO` 清 0**。结果分两半：**237 四行全落地并给出完整读数，`ctl` bit0 仍是 0（200000 拍）**；**235 与 236 都是零字节 —— 探针一行都没写进窗口，`dd` 读回的还是上一轮的窗口（同 `boot_id`、同 sha）**。紧接着做了一次对照上机（把**已知能活的键 234** 用同一份 R289 payload 重键后跑），四行全落地、窗口 sha 全新，证明**这份内核与 payload 本身能启动、能跑探针**，零字节死的是 235/236 自己的代码路径。
+
+**113.2 三个键各自问什么**
+- **共用前导**（`work\tmp\r289_block.py`，由 `work\tmp\r289_mkgen.py` 在 R288 生成器上做受控手术得到）：普查行（`ver/qi/qtbl/fw/st/gd/cf/cx_on`）→ 分配四页 → `adreno_table_build`（IOVA `0x2d800000`，2 MiB 叶子）→ 九笔 CB0 → 三页每条目写合法描述符 → `dc civac` → 清 `CB_FSR`（`0xc00001feu`）→ `CM3_FW_INIT_RESULT = 0` → 写回 `HFI_QTBL_ADDR`（**取自普查行读到的现值**）→ `HFI_QTBL_INFO = 1` → `@RST@` → 两个 CLR（`GMU2HOST_INTR_CLR = 0xffffffff`、`AO_HOST_INTERRUPT_CLR = 0xffffffff`）→ `@POST@` → `GMU2HOST_INTR_MASK = 0xff7fffff` → `HFI_CTRL_INIT = 1` → 轮询 `ctl` bit0 200000 拍 → `p1` 行（`fills/build/plan/ctl/bit0/polls/fsr/far/fw/sr`）。
+- **键 235**：`@RST@` = 复位脉冲 + 200000 拍等 `0xbabeface`；`@POST@` 空 ⇒ 全配方。
+- **键 236**：`@RST@` 空、`@POST@` 空 ⇒ 全配方减去复位与 init-result 等待。
+- **键 237**：`@RST@` 同 235、`@POST@` = `HFI_QTBL_INFO = 0` ⇒ 复位之后、掩码之前把描述符放掉。
+- 生成结果：块 **42,383 字符 / 740 行**、`gmuW[` **28**（三臂 10/7/11）、probe **1,690,982 字符 / 28,352 行**；`NEW_HDR="if (fwKey == 235u || fwKey == 236u || fwKey == 237u) {"`、插在 ladder 之前、arm 窗口 `<= 237u`、选择器 `(fwKey >= 237u) ? 237 : ((fwKey >= 236u) ? 236 : 235)`。去注释后块内 `0x5184u/0x5185u/0x5186u/0x5193u/0xff7fffffu/0x5191u/0x9304u/0x5000u/0x501cu` 各三、`0x5101u`/`0xbabeface`/`gmuW[r235srWord] = 1u;` 各二、`IODelay(1u)` 五处；无门铃、无 vote。
+- 构建：CI **#407 `45283995954` success 28/28**；分支 `r289-recipe` commit **`fedefec2e92a682c05c64d4cbf9a30fca70167be`**、tree `a33cf4ada971a2943de801838650352af9712df6`（534 已有 + 5 上传，base main `22d45ed53d22`）。产物 `work\tmp\r289-kernel\kernel.macho` 126,533,632 B sha256 `0183b70e9c036a93ef0f5aab93008261edfc5be4fbb00e1f26dbfc75dcb46df6`、`work\tmp\r289-payload\payload.img` 150,994,944 B sha256 `24f47775390d93b82ea0d1745466c359dd940925f3a2f566e92d699a69f5a94a`。重键：p235 `015cf34aa4163bf89e03fffc58b272e85fd80e3a41d132f65494464ce28d8f2b`、p236 `2099710c222b7512ea0065761746040b7c3ca19a2997ab1a90a73957a5738827`、p237 `761efc328d9abf812b6a90bc8c83c5e83055ed6edf351858f5c4c25194130aa0`、对照 p234ctl `407f0f3490795310184607efcf2e626eae37bdd2da7928183ec4a68ebe6727b6`。
+
+**113.3 逐字读数（设备自己写的字段）**
+- **键 235 —— 零字节**：`counts: gmu235p0=0 gmu235p1=0 gmu235p2=0 gmu235l=0`；窗口 sha256 仍 `dc543c3652dd23afd5803d6728dbad8f971e637fb1c5c91417d01607f6381b82`、`boot_id` 仍 `618857401`；`stage7=armed-not-executed why=not-armed armed=0 exec_key=234`（窗口里那份 SHLOG 是上一轮的）；`msg_bytes=30784 slots_written=9`；`flash readback matches: True`、`key block 31132: device == payload -> True`、`system_b head 8 MiB sha256 019e16d9…` 与 payload 一致 ⇒ **不是没刷进去**。
+- **键 236 —— 零字节**：同上（窗口 sha `dc543c36…`、`boot_id 618857401`、四行全 0、`counts: enchilada-adreno=24` 全是旧日志）；payload `2099710c…` 刷入并回读一致。
+- **对照键 234（用 R289 payload 重键 `p234ctl`）—— 四行全落地**：`boot_id 644192134`、窗口 **`5af63ed65d50d78440e6110d7425d2df023170c0b670ea81e926af3ba1440a13`**；`gmu234p0=pre=1 ver=00000000 qi=00000001 qa=ad988000 smr=00000000 s2cr0=000200ff st=000000d4 gd=00222001 cf=00088400 cx_on=1`；`gmu234p1=hfi=1 fills=3 build=0 plan=9 ctl=00000000 bit0=0 polls=200000 fsr=00000400 far=00000000`；`gmu234p2=both=1 mask=ff7fffff smr=80000004 s2cr0=00000000 s2cr1=00000000 ctl=00000000 bit0=0`；`gmu232l3=mode=234 … survived=1` ⇒ **内核能启动、探针能跑、掩码与路由都还能落位**，与 R288 逐位一致。
+- **键 237 —— 四行全落地**：`boot_id 645221820`、窗口 **`9b4b98e0d48962b8e2d8727d42db69f28ed157419a5770d1a92a6ae8a2b18a98`**；`gmu237p0=pre=1 ver=00000000 qi=00000001 qtbl=ad985000 fw=babeface st=000000d4 gd=00222001 cf=00088400 cx_on=1`；`gmu237p1=hfi=1 fills=3 build=0 plan=9 ctl=00000000 bit0=0 polls=200000 fsr=00000400 far=00000000 fw=babeface sr=00000000`；`gmu237p2=cleared_after_reset=1 qtbl=ad985000 qi=00000000 mask=ff7fffff fw=babeface sr=00000000 ctl=00000000 bit0=0`；`gmu235l3=mode=237 … survived=1`。
+
+**113.4 判决**
+1. **照键 143 的顺序整段重放，仍然不接受 HFI**：237 把复位脉冲、`FW_INIT_RESULT = 0`、写回 `QTBL_ADDR`、`QTBL_INFO = 1`、两个 CLR、掩码全部做完，`fw=babeface` 证明复位后固件确实重新跑到了 `babeface`，`fsr=00000400` 证明没有 walk fault，`ctl` bit0 仍是 0 到 200000 拍 ⇒ **R287/R288 排除掉「表」「掩码」「路由」之后，剩下的「顺序」也不是那道门**。这同时把「键 143 今天为什么接受」重新变成未决问题（它的成功不是这五笔顺序的结果）。
+2. **两个键在落地任何一行之前就没了**，而同一份 payload 的键 234 与键 237 都活着 ⇒ **不是镜像问题，是 235/236 的代码路径**。235 与 236 的共同点只有一处：**`HFI_QTBL_INFO` 在写 INIT 时仍是 1，而且整轮都不再清它**（237 在复位之后把它清回 0 才写 INIT）。因此最可能的机制是「**描述符保持有效 + CM3 带着这张表跑**」最终把总线/固件搞死，死在第一次刷盘之前（探针行按批次落地，零字节只说明死得早）。
+3. **「复位」本身不是死因**：236 没有复位也死了、237 有复位还活着 ⇒ 生死与复位无关，与被清掉的描述符有关。
+4. **写回的是陈旧地址**：235/236/237 的 `qtbl` 都是普查行读到的 `HFI_QTBL_ADDR` 现值（`ad985000`，属于上一轮），而不是本轮新建表的物理地址；键 143 写的是**本轮刚建好的表**的地址。这条差异本轮没有被分开测（三键都用陈旧值），必须进下一轮。
+5. **G1 仍未关闭**：三键 `gd=00222001`（SW_COLLAPSE 置、power-up 未置）、`cf=00088400`（bit16 = 0）、`st=000000d4`（`GX_HM_GDSC_POWER_OFF | GX_HM_CLK_OFF` 都置）⇒ GX 仍未上电，GPU 仍未渲染一帧。
+
+**113.5 边界与读数陷阱**
+- **零字节是关于「这一轮有没有活到第一次刷盘」的陈述**，不是「那几行没被打印」；本轮 235/236 与 R283 键 203、R279 键 201 同类。
+- **窗口 sha 相同 = 本轮没写窗口**，此时 `dd` 读回的是上一轮字节，`boot_id` 也是上一轮的；判定脚本已按「窗口未变」单独报，不把它当成读数。
+- **判定脚本的尾行字段名错了一处**：判决读取 `gmu237l`/`gmu235l` 这类名字，而本轮尾行实际叫 `gmu235l/l2/l3`，于是 `rail after the round: gd None cf None gx_on None`；`p1`/`p2` 与三键读数本身不受影响，下一轮生成器要把尾行名按 `gmu235l<suffix>` 取。
+- **`exec_key` 只能用来判断窗口里那份 SHLOG 属于哪一轮**，不能用来判断这一轮跑的是哪个键（窗口没被写时它必然是旧的）。
+- 本轮没有出现零窗口读数；没有使用门铃、vote、`IOSleep`；没有写 `sCR0`。
+
+**113.6 门禁与工具**
+- host 门全 PASS（25/25 + 51/51 + 25/25 + 32/32 + 各 contract）；probe 门 **28/28**（store 预算 834 → **870**）；stage4 **61/61**、stage5 **48/48**、stage6 **2249/2249**；全量 `ran 46 of 48, FAILING: 0`；`check_mode_selector.py` **44 selectors / upper 237 / 自证 FAIL / VERDICT PASS**。
+- 静态门 `work\tmp\r289_static.py`：对真产物 **PASS**（`required+survivors: 110 checked in both artefacts`、marker kernel=1/payload=2、forbidden `gmu238a/gmu239a/gmu240a` 三条零、固件 32768 B sha `b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f`），对 **R288 产物 FAIL 12**（传两个参数即指向别的产物）。
+- 工具坑：`source_rows()` 返回**一个字符串**（折叠后的全文），把它当列表遍历会让每条 REQUIRED 都「缺失」；stage6 的 ID1 重读预算每轮 +1（本轮 35 → 36，键列表要补 235/236/237）；探针块生成必须从 index 版恢复（`git show ':package/EnchiladaAdrenoProbe.cpp'`，PowerShell 重定向为 UTF-16LE）。
+
+**113.7 下一步（R290）**
+- **238**：全配方，但把 `HFI_QTBL_ADDR` 写成**本轮新建表的物理地址**（`s235phys`）而不是读回的陈旧值，且**不**在之后清 `QTBL_INFO` ⇒ 判「陈旧地址是不是那两个键的死因」。
+- **239**：重复 235 的形状（陈旧地址 + 保持 `QTBL_INFO = 1`）⇒ 判死因是否可重现（可重现才谈得上定位）。
+- **240**：写**新地址** + 复位之后**清 `QTBL_INFO`**（即 237 的存活形状但配新地址）⇒ 若 238/239 一个死一个活，这条把「地址」与「描述符是否保持」拆开。
+- 每键行数压到 8 行以内、每行尽量短；尾行名按 `gmu235l<suffix>` 取；选号前先扫 `gmu\d{3}[a-z]`（已占 100、102–237），forbidden 取 241/242/243。
+- 目标不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧。
