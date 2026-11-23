@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 29,
-          'ID1 is re-read at most twenty-nine times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166 and 169), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 30,
+          'ID1 is re-read at most twenty-nine times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169 and 172), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 171u' in _fw,
+    check('fwKey >= 7u && fwKey <= 174u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 171u)' in code,
+    check('(fwKey >= 7u && fwKey <= 174u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4215,6 +4215,11 @@ def main():
         _k169171 = ''
         if _i169171 > 0:
             _k169171 = code[_i169171:].split(
+                '\nif (fwKey == 172u || fwKey == 173u || fwKey == 174u) {\n', 1)[0]
+        _i172174 = code.find('if (fwKey == 172u || fwKey == 173u || fwKey == 174u) {')
+        _k172174 = ''
+        if _i172174 > 0:
+            _k172174 = code[_i172174:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -5407,6 +5412,75 @@ def main():
           _b171.count('HFI_CTRL_STATUS] = 0u;') == 1,
           'key 171 starts once and then clears the control word by hand')
     for _tag, _b in (('gmu169l', _b169), ('gmu170l', _b170), ('gmu171l', _b171)):
+        check('survived=1' in _b and _tag + '=' in _b,
+              '%s keeps the survival flag' % _tag)
+
+    check(_k172174 != '', 'R270 the restart block follows the R269 block')
+    _rows270 = ['gmu172' + c for c in 'abcdefghijmn'] + [
+        'gmu172k1', 'gmu172k2', 'gmu172k3',
+        'gmu172p1', 'gmu172p2', 'gmu172p3', 'gmu172l',
+        'gmu173p1', 'gmu173p2', 'gmu173p3', 'gmu173l',
+        'gmu174p1', 'gmu174p2', 'gmu174p3', 'gmu174l']
+    check(all(_w + '=' in _k172174 for _w in _rows270),
+          'the R270 block prints every one of its twenty-seven rows')
+    check(_k172174.count('gmuW[') == 55,
+          'the R270 block holds fifty-five GMU stores, measured %u'
+          % _k172174.count('gmuW['))
+    check(_k172174.count('HFI_CTRL_INIT] = 1u;') == 8 and
+          _k172174.count('GMU2HOST_INTR_MASK] = ') == 8 and
+          _k172174.count('0xc00001feu') == 8,
+          'eight start words, each with its own bank clear and mask store (%u / %u / %u)'
+          % (_k172174.count('HFI_CTRL_INIT] = 1u;'),
+             _k172174.count('GMU2HOST_INTR_MASK] = '),
+             _k172174.count('0xc00001feu')))
+    check(_k172174.count('CM3_SYSRESET] = 1u;') == 5 and
+          _k172174.count('CM3_SYSRESET] = 0u;') == 5,
+          'five restarts, each one up and one down (%u / %u)'
+          % (_k172174.count('CM3_SYSRESET] = 1u;'),
+             _k172174.count('CM3_SYSRESET] = 0u;')))
+    check(_k172174.count('HFI_QTBL_ADDR] = ') == 8 and
+          _k172174.count('HFI_QTBL_INFO] = 1u;') == 8,
+          'every restart is followed by a queue table re-arm (%u / %u)'
+          % (_k172174.count('HFI_QTBL_ADDR] = '),
+             _k172174.count('HFI_QTBL_INFO] = 1u;')))
+    check(_k172174.count('HFI_CTRL_STATUS] = ') == 1 and
+          _k172174.count('HFI_CTRL_STATUS] = 0u;') == 1,
+          'only key 174 clears the control word by hand, exactly once')
+    check(_k172174.count('for (') == 21 and _k172174.count('IODelay(1u)') == 13 and
+          'IOSleep' not in _k172174,
+          'the block yields inside twenty-one loops and never sleeps (%u / %u)'
+          % (_k172174.count('for ('), _k172174.count('IODelay(1u)')))
+    check(_k172174.count('0xbabefaceu') == 5 and _k172174.count('dc civac') == 4,
+          'the preamble and the restart waits keep the firmware sentinel, and both page '
+          'copies are flushed (%u / %u)'
+          % (_k172174.count('0xbabefaceu'), _k172174.count('dc civac')))
+    check(_k172174.index('if (r172mode == 172) {') <
+          _k172174.index('} else if (r172mode == 173) {') <
+          _k172174.rindex('} else {'),
+          'the three keys appear in the order 172, 173, 174')
+    _b172 = _k172174[_k172174.index('if (r172mode == 172) {'):
+                     _k172174.index('} else if (r172mode == 173) {')]
+    _b173 = _k172174[_k172174.index('} else if (r172mode == 173) {'):
+                     _k172174.rindex('} else {')]
+    _b174 = _k172174[_k172174.rindex('} else {') + len('} else {'):]
+    check(_b172.count('HFI_CTRL_INIT] = 1u;') == 3,
+          'key 172 commits three start words, one after each restart (got %d)'
+          % _b172.count('HFI_CTRL_INIT] = 1u;'))
+    check(_b172.count('CM3_SYSRESET] = 1u;') == 3,
+          'key 172 restarts the CM3 before every one of them')
+    check(_b173.count('HFI_CTRL_INIT] = 1u;') == 3,
+          'key 173 commits three start words (got %d)'
+          % _b173.count('HFI_CTRL_INIT] = 1u;'))
+    check(_b173.count('HFI_QTBL_ADDR] = ') == 2,
+          'key 173 re-arms the queue table onto a fresh page before the second and third start')
+    check(_b173.count('CM3_SYSRESET] = 1u;') == 0,
+          'key 173 never restarts the CM3, so the page is the only variable')
+    check(_b174.count('HFI_CTRL_INIT] = 1u;') == 2,
+          'key 174 starts once, then again after the clear and the restart')
+    check(_b174.count('HFI_CTRL_STATUS] = 0u;') == 1 and
+          _b174.count('CM3_SYSRESET] = 1u;') == 1,
+          'key 174 clears the control word once and restarts the CM3 once')
+    for _tag, _b in (('gmu172l', _b172), ('gmu173l', _b173), ('gmu174l', _b174)):
         check('survived=1' in _b and _tag + '=' in _b,
               '%s keeps the survival flag' % _tag)
 
