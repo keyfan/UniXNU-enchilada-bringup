@@ -137,7 +137,7 @@ def main():
     # ROUND 199 drives the GX GDSC through `gxW[...]`; same treatment.
     _outside = re.sub(r'gxW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey >= 7u && fwKey <= 183u' in code and
+          'fwKey >= 7u && fwKey <= 186u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
     check('if (fwKey == 45u) {' in code and
@@ -285,6 +285,11 @@ def main():
     if _i181183r > 0:
         _k181183r = code[_i181183r:].split(
             '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+    _i184186r = code.find('if (fwKey == 184u || fwKey == 185u || fwKey == 186u) {')
+    _k184186r = ''
+    if _i184186r > 0:
+        _k184186r = code[_i184186r:].split(
+            '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
     _i145147r = code.find('if (fwKey == 145u || fwKey == 146u || fwKey == 147u) {')
     _k145147r = ''
     if _i145147r > 0:
@@ -294,7 +299,7 @@ def main():
     # is therefore about the total and about where the extra five live.
     check(_k8 != '' and _k0204r != '' and _k0507r != '' and _k0810r != '' and _k111113r != '' and
           _k114116r != '' and _k117119r != '' and _k120122r != '' and _k124126r != '' and
-          _k127129r != '' and _k130132r != '' and _k133135r != '' and _k136138r != '' and _k139141r != '' and _k142144r != '' and _k145147r != '' and _k148150r != '' and _k151153r != '' and _k154156r != '' and _k157159r != '' and _k160162r != '' and _k163165r != '' and _k166168r != '' and _k169171r != '' and _k172174r != '' and _k175177r != '' and _k178180r != '' and _k181183r != '' and
+          _k127129r != '' and _k130132r != '' and _k133135r != '' and _k136138r != '' and _k139141r != '' and _k142144r != '' and _k145147r != '' and _k148150r != '' and _k151153r != '' and _k154156r != '' and _k157159r != '' and _k160162r != '' and _k163165r != '' and _k166168r != '' and _k169171r != '' and _k172174r != '' and _k175177r != '' and _k178180r != '' and _k181183r != '' and _k184186r != '' and
           code.count(_p1r) == 46 and code.count(_p0r) == 46 and
           _k8.count(_p1r) == 46 and _k8.count(_p0r) == 46 and
           _k0204r.count(_p1r) == 2 and _k0204r.count(_p0r) == 2 and
@@ -323,7 +328,8 @@ def main():
           _k172174r.count(_p1r) == 5 and _k172174r.count(_p0r) == 5 and
           _k175177r.count(_p1r) == 4 and _k175177r.count(_p0r) == 4 and
           _k178180r.count(_p1r) == 4 and _k178180r.count(_p0r) == 4 and
-          _k181183r.count(_p1r) == 4 and _k181183r.count(_p0r) == 4,
+          _k181183r.count(_p1r) == 4 and _k181183r.count(_p0r) == 4 and
+          _k184186r.count(_p1r) == 0 and _k184186r.count(_p0r) == 0,
           'R168 the reset pulse exists once in the key-8 sub-block, twice in the R247 '
           're-boot block, three times in each of the R248 and R249 blocks and once in each of the '
           'R250, R251, R253, R254, R255, R256, R257, R258, R259, R260, R261, R262, R263, R264, R265 and R266 blocks, nowhere else, R267 and R268 blocks, nowhere else, and R269 adds no reset pulse of its own, and R270 adds five, each of them the same one up one down pulse the earlier keys use, and R271 adds four, one in the shared preamble and one in each of its three keys, and R272 adds four, one in the shared preamble and one in each of its three keys, and R273 adds four, one in the shared preamble and one in each of its three keys')

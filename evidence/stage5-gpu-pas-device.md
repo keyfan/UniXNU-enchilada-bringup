@@ -8003,3 +8003,44 @@ CI #390（run `45120883570`）success 28/28。取件拍平：kernel.macho 126,46
 1. 设备 runner 的 `PAYLOAD` 用 `r273-p<key>-payload`（rekey 输出目录名就是它），mkrun 改名链要显式带上 `("r272-p178-payload","r273-p%d-payload")` 这一条，否则会指向不存在的目录、runner 直接 ABORT `missing …r273-p178-payload`。
 2. `r273_static.py` 传相对路径时以脚本所在目录（`work\tmp`）为基准，是能工作的；一旦传 `work\tmp\…` 这种以 `work\tmp` 再开头的路径就会拼成 `work\tmp\work\tmp\…` 而报 missing——要么只传相对脚本目录的路径，要么传绝对路径。
 3. 三键各另存 `r273_s18{1,2,3}_window_r1.bin`（各 33,554,432 B），同键连跑会覆盖 `rNNN_sNNN_window.bin`。
+
+## 九十八、R274：GX 电源域——静止时 bit16 为 0、四笔 GDSC 写入把 GDSCR 拉起但 POWER_UP_COMPLETE 永不置起、时钟不是那道门
+
+**98.1 一句话**
+本轮第一次直接量 GX 电源域的静止态与上电时序：静止时 GX 的 POWER_UP_COMPLETE（bit16）为 0、域确实是关的；四笔 GDSC 写入（clamp 打开、clamp 关闭、清 GDSCR 的 bit0）能把 GDSCR 的 power-up 位（bit27）拉起来（00222001→08222000），但 bit16 在满 20000 次轮询后仍是 0；而且开不开那两个 gfxcc 分支时钟结果**逐位相同**，所以时钟不是 bit16 的那道门。
+
+**98.2 为什么先量 GX 域**
+R213 以来一直卡在「固件不接受启动、GPU 一帧未渲染」，而 GX 电源域从未打开是一个并行的硬缺口（见 `notes/GX-power-domain-status.md`：`gdsc_gx_do_nothing_enable` 是空实现）。在回去继续攻固件之前，先把 GX 域本身量清楚：它静止时到底是不是关的（bit16=0）、四笔 GDSC 写入能不能让它上的、gfxcc 时钟是不是前置条件。三件事互不依赖，可以一次量完，且不需要 CM3 重启或 SMMU 建表，所以这一轮用扁平自包含块，不复用 R273 的重机器。
+
+**98.3 代码形状**
+探针块 9,770 字符 / 194 行，braces 净 0（opens=12 closes=12）；块内 `gmuW[` 12 笔——其中 4 笔是两条 CBCR 时钟寄存器（cxgmuWord 写 `(v&~0xff0)|0xff0` 再 `|1`，cxoWord 同），8 笔是四笔 GX GDSC 序列（clamp `|0x10`、clamp `&~0x10`、clamp `&~1`、gdscr `&~1`）各重复一次（185 与 186 各一遍）。`for (` 4 处、`IODelay(1u)` 6 处、无 `IOSleep`；本块**不写** `HFI_CTRL_INIT`、不写中断掩码、不清 FSR、不复位 CM3、不建 SMMU 表——所以 `gmuW[` 只有这 12 笔。寄存器都经 `gmuW[...]`（volatile uint32_t *const）访问，`sGmuFwVa` map 的是 `0x0506a000..+0x30000`：GX GDSCR = `0x0509100c`（dword 0x9c03）、GX CFG/状态 = `0x05091010`（dword 0x9c04，就是轮询 POWER_UP_COMPLETE bit16 的那个字）、GX clamp = `0x05091508`（0x9d42）、CX 状态 = `0x05091540`（0x9d50）、CX GMU CBCR = `0x05091098`（0x9c26）、CXO CBCR = `0x0509109c`（0x9c27）。
+
+**98.4 构建与门禁**
+CI #391（run `45129130628`）success 28/28。取件拍平：kernel.macho 126,468,096 B sha256 `8e80298186512067b4277e3cb15a4022d27df744966465ef9c17e766cc1c74d5`，payload.img 150,994,944 B sha256 `99d74a3609fac268022cac57ac6a9a8aa60f47c2d7a2f7569f0d647ec2156675`。静态门 `r274_static.py` 对真产物 **PASS**（18 行 required+survivors 在 kernel 与 payload 里都命中，marker kernel=1 / payload=2，forbidden 3 条全零，固件 32768 B sha `b07f9029…` 钉住），对 R273 产物 **FAIL 8 problems**（`gmu184p1/gmu184l/gmu185p0/gmu185p1/gmu184l2/gmu186p0/gmu186p1/gmu184l3` 全部 kernel=0 payload=0）——门的区分能力自证成立。host 编译 25/25 + 51/51；probe 门 store 计数由 743 抬到 755（+12）；stage4 61/61、stage5 48/48、stage6 1839/1839；全量 `r239_allgates.py` ran 46 of 48 FAILING 0；`check_mode_selector.py` 29 selectors、上界 186、自证 FAIL、VERDICT PASS；`r274_hashes.py` 7 路径 0 不符。
+
+**98.5 键 184：静止态（时钟关闭）**
+`boot_id 588174820`、窗口 sha256 `37fcea66256e4725c8eb225bee5d7670cc39b1eaae727ff1fd5ce342a93e98db`、2/2 行。逐字：`gmu184p1=state=1 gdscr=00222001 cfg=00088400 clamp=00000001 cx=80001fe0 cxgmu=00004ff1 cxo=00000001 gx_on=0`。`cfg=00088400` 的 bit16（`& 0x10000`）= **0** ⇒ **GX 域静止时是关的，轮询 bit16 是有意义的**。`gdscr=00222001` 的 bit0=1（GDSC 关闭）、bit27=0；`cx=80001fe0` 是 CX 域的状态（与 GX 不同域，仅作对照）。
+
+**98.6 键 185：开两时钟 + 四笔 GDSC 写入**
+`boot_id 585398319`、窗口 `b3cacbfe9a0d8a01056b4250d47a7ecffb7ec6073e85a862dcc26475e1abf56d`、3/3 行。开时钟前 `gmu185p0=pre=1 gdscr=00222001 cfg=00088400 cxgmu=00004ff1 cxo=00000001`；开时钟并走完四笔 GDSC 后 `gmu185p1=clocked=1 gdscr=08222000 cfg=01080400 clamp=00000000 cx=80001fe0 cxgmu=00004ff1 cxo=00000001 gx_on=0 polls=20000`。判读：`gdscr` 由 00222001 变 08222000——**bit27（power-up）已置起，说明 GDSC 接受了上电请求**；`cfg` 由 00088400 变 01080400，但 `01080400 & 0x00010000 = 0`——**POWER_UP_COMPLETE（bit16）在满 20000 次轮询后仍是 0**。`polls=20000` 是轮询撑满上限，不是提前退出。
+
+**98.7 键 186：不开时钟，只走四笔 GDSC 写入（对照）**
+`boot_id 589445539`、窗口 `b4de98942625f87a8ac16a406e94823676415c51f4703d038de545db1b93ae04`、3/3 行。GDSC 写入前 `gmu186p0=pread=1 gdscr=00222001 cfg=00088400 cxgmu=00004ff1 cxo=00000001`；四笔写入后 `gmu186p1=noclock=1 gdscr=08222000 cfg=01080400 clamp=00000000 cx=80001fe0 cxgmu=00004ff1 cxo=00000001 gx_on=0 polls=20000`。与键 185 的写入后状态**逐位相同**（gdscr=08222000、cfg=01080400、bit16=0、polls=20000）。
+
+**98.8 判决**
+1. **GX 域静止时确实关着**：键 184 `cfg=00088400` bit16=0。这坐实了 GX 电源域从未打开这一缺口不是空的。
+2. **四笔 GDSC 写入能把 GDSCR 的 power-up 位（bit27）拉起来**：00222001→08222000，两键一致。写入路径成立，GDSC 接受了请求。
+3. **但 POWER_UP_COMPLETE（bit16）永不置起**：键 185、186 满 20000 轮询仍是 0。GDSC 收下了请求却没完成上电——这正是 `notes/GX-power-domain-status.md` 里的缺口 G1（bit16 由什么置起）。
+4. **gfxcc 时钟不是 bit16 的那道门**：键 185（开两时钟）与键 186（不开）写入后状态逐位相同。开不开时钟，结果一样。之前「时钟是前置条件」的猜测被本轮否掉——真正门在别处（多半是 AON 复位 clamp 时序、vdd_gfx 供电、或固件是否先写 GDSC，对应 G2/G4/G5）。
+
+**98.9 必须分开说的三件事**
+第一，本轮只证明「我们写的四笔 GDSC 序列把 bit27 拉起了、bit16 没跟上」，没证明 mainline 的完整 GDSC 上电序列（可能还有更多笔，或要配合 AON/RBCPR）也失败——那是同一缺口的不同切面，不能合并成「GDSC 上电必失败」。第二，键 186 是 185 的对照，二者唯一差别是时钟写不写；但两者都在同一个固件运行态下测的，若固件本身在某处改写了 GX GDSC，两键会一起看到那个改写，本轮不能排除。第三，`cx=80001fe0`、`cxgmu=00004ff1` 这两组值在三个键里逐位相同，说明 CX 域在整轮里稳定，可作 GX 的稳定参照，但本轮没有主动去动 CX。
+
+**98.10 没证明什么**
+没证明 bit16 究竟由什么置起（缺口仍在）。没证明 vdd_gfx 供电是否到位（本轮没读 gfxcc 的 BCM 寄存器）。没证明 AON 复位 clamp 的时序对不对。没证明固件是否在别处写 GDSC（G4）。没证明 `cfg=01080400` 的 bit10/18/19 各自语义（G3）。也没证明一旦 bit16 置起，GX 之后真能跑起来。
+
+**98.11 R275 的设计思路**
+顺着本轮判决，下一轮该拆 G1 的两条最可能的门：一是 vdd_gfx 电源本身（读 gfxcc 的 BCM/电源寄存器，看 gfx 供电有没有被要求、有没有到位）；二是 AON 复位 clamp 的时序（mainline 在 GDSC 上电前后对 AON clamp 的处理，本仓是否缺）。三键可设计为：读 gfxcc BCM 状态、按 mainline 顺序做 AON clamp 释放后再走四笔 GDSC、以及把 CX 的完整上电序列照搬到 GX 作对照。
+
+**98.12 工具事实**
+一是本轮探针块**不能复用 R273 的 pre**——R273 的 pre 留了 4+1 个未闭合 `{`，靠 R273 块尾 5 个 `}` 收口，是与 R273 分支结构深度耦合的重机器（SMMU 建表 + CM3 重启）；R274 直接写扁平自包含块（只 `sGmuFwVa`/`gmuW`/`rd32` + 固定 dword 索引）。二是**块生成器第一版用 `src[:i]+body+src[j:]` 把 R273 整块删掉了**（i=R273 头、j=ladder），症状是 probe 里 `fwKey == 181u` 计数 0；改为插在 ladder 之前并加三条断言（`count(OLD_HDR)==1`、`count(NEW_HDR)==1`、`index(OLD_HDR)<index(NEW_HDR)`）才对。三是对 store 总量的判断错了两次——先确认基线文件是对的（R273 版 743），再加本轮的 12 得 755。四是静态门 `r274_static.py` 的行取自 `snprintf(...)` 的格式串（不是 `IOLog`，后者只 print `%s` 缓冲）；提取时要先折叠相邻字面量。五是 runner 没有 preamble 的 `key=` 戳，只能靠「哪条本键专属行存在」判 key（`gmu184p1=` / `gmu185p0=` / `gmu186p0=`），并用尾行 `mode=` 交叉核对。

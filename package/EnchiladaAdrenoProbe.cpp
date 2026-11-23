@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            ((fwKey >= 7u && fwKey <= 183u));
+                            ((fwKey >= 7u && fwKey <= 186u));
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -21759,6 +21759,199 @@ if (fwKey == 181u || fwKey == 182u || fwKey == 183u) {
     }
     }
 }
+if (fwKey == 184u || fwKey == 185u || fwKey == 186u) {
+    const int r184mode = (fwKey >= 186u) ? 186 : ((fwKey >= 185u) ? 185 : 184);
+    uint32_t r184gd = 0u, r184cf = 0u, r184cl = 0u, r184cx = 0u;
+    uint32_t r184ck = 0u, r184co = 0u;
+    uint32_t r184gd1 = 0u, r184cf1 = 0u, r184cl1 = 0u, r184cx1 = 0u;
+    uint32_t r184ck1 = 0u, r184co1 = 0u;
+    uint32_t r184gd2 = 0u, r184cf2 = 0u, r184cl2 = 0u, r184cx2 = 0u;
+    uint32_t r184ck2 = 0u, r184co2 = 0u;
+    uint32_t r184gd4 = 0u, r184cf4 = 0u, r184cl4 = 0u, r184cx4 = 0u;
+    uint32_t r184ck4 = 0u, r184co4 = 0u;
+    uint32_t r184cw2 = 0u, r184cw3 = 0u;
+    uint32_t r184gdpre = 0u, r184clpost = 0u, r184cfpost = 0u, r184pw = 0u;
+    char r184RowP0[300];
+    char r184RowP1[300];
+    char r184RowL[300];
+    char r184RowL2[300];
+    char r184RowL3[300];
+    if (r184mode == 184) {
+    const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+    const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+    const uint32_t clampWord = 0x9d42u;   /* 0x05091508 */
+    const uint32_t cxstWord = 0x9d50u;    /* 0x05091540 */
+    const uint32_t cxgmuWord = 0x9c26u;   /* 0x05091098 */
+    const uint32_t cxoWord = 0x9c27u;     /* 0x0509109c */
+    r184gd1 = rd32(sGmuFwVa, gdscrWord * 4u);
+    r184cf1 = rd32(sGmuFwVa, cfgWord * 4u);   /* CFG IS the GX status word */
+    r184cl1 = rd32(sGmuFwVa, clampWord * 4u);
+    r184cx1 = rd32(sGmuFwVa, cxstWord * 4u);
+    r184ck1 = rd32(sGmuFwVa, cxgmuWord * 4u);
+    r184co1 = rd32(sGmuFwVa, cxoWord * 4u);
+            snprintf(r184RowP1, sizeof r184RowP1,
+                     "gmu184p1=state=1 gdscr=%08x cfg=%08x clamp=%08x cx=%08x cxgmu=%08x cxo=%08x gx_on=%d",
+                     (unsigned)r184gd1, (unsigned)r184cf1,
+                             (unsigned)r184cl1, (unsigned)r184cx1,
+                             (unsigned)r184ck1, (unsigned)r184co1,
+                             (unsigned)((r184cf1 & 0x00010000u) != 0u));
+            IOLog("enchilada-adreno: %s\n", r184RowP1);
+            r184gd = r184gd1; r184cf = r184cf1; r184cl = r184cl1;
+            r184cx = r184cx1; r184ck = r184ck1; r184co = r184co1;
+            snprintf(r184RowL, sizeof r184RowL,
+                     "gmu184l=mode=%d gdscr=%08x cfg=%08x clamp=%08x cx=%08x "
+                     "cxgmu=%08x cxo=%08x gx_on=%d survived=1",
+                     r184mode,
+                     (unsigned)r184gd, (unsigned)r184cf,
+                     (unsigned)r184cl, (unsigned)r184cx,
+                     (unsigned)r184ck, (unsigned)r184co,
+                     (unsigned)((r184cf & 0x00010000u) != 0u));
+            IOLog("enchilada-adreno: %s\n", r184RowL);
+    } else if (r184mode == 185) {
+    const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+    const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+    const uint32_t clampWord = 0x9d42u;   /* 0x05091508 */
+    const uint32_t cxstWord = 0x9d50u;    /* 0x05091540 */
+    const uint32_t cxgmuWord = 0x9c26u;   /* 0x05091098 */
+    const uint32_t cxoWord = 0x9c27u;     /* 0x0509109c */
+    r184gd1 = rd32(sGmuFwVa, gdscrWord * 4u);
+    r184cf1 = rd32(sGmuFwVa, cfgWord * 4u);   /* CFG IS the GX status word */
+    r184cl1 = rd32(sGmuFwVa, clampWord * 4u);
+    r184cx1 = rd32(sGmuFwVa, cxstWord * 4u);
+    r184ck1 = rd32(sGmuFwVa, cxgmuWord * 4u);
+    r184co1 = rd32(sGmuFwVa, cxoWord * 4u);
+            snprintf(r184RowP0, sizeof r184RowP0,
+                     "gmu185p0=pre=1 gdscr=%08x cfg=%08x cxgmu=%08x cxo=%08x",
+                     (unsigned)r184gd1, (unsigned)r184cf1,
+                             (unsigned)r184ck1, (unsigned)r184co1);
+            IOLog("enchilada-adreno: %s\n", r184RowP0);
+    r184cw2 = rd32(sGmuFwVa, cxgmuWord * 4u);
+    gmuW[cxgmuWord] = (r184cw2 & ~0x00000ff0u) | 0x00000ff0u;
+    __asm__ volatile("dsb sy" ::: "memory");
+    gmuW[cxgmuWord] = r184cw2 | 0x00000001u;
+    __asm__ volatile("dsb sy" ::: "memory");
+    for (r184pw = 0u; r184pw < 500u; ++r184pw) {
+        r184cw2 = rd32(sGmuFwVa, cxgmuWord * 4u);
+        if ((r184cw2 & 0x80000000u) == 0u) {
+            break;
+        }
+        IODelay(1u);
+    }
+    r184cw3 = rd32(sGmuFwVa, cxoWord * 4u);
+    gmuW[cxoWord] = (r184cw3 & ~0x00000ff0u) | 0x00000ff0u;
+    __asm__ volatile("dsb sy" ::: "memory");
+    gmuW[cxoWord] = r184cw3 | 0x00000001u;
+    __asm__ volatile("dsb sy" ::: "memory");
+    for (r184pw = 0u; r184pw < 500u; ++r184pw) {
+        r184cw3 = rd32(sGmuFwVa, cxoWord * 4u);
+        if ((r184cw3 & 0x80000000u) == 0u) {
+            break;
+        }
+        IODelay(1u);
+    }
+    r184clpost = rd32(sGmuFwVa, clampWord * 4u);
+    gmuW[clampWord] = r184clpost | 0x00000010u;
+    __asm__ volatile("dsb sy" ::: "memory");
+    IODelay(1u);
+    gmuW[clampWord] = r184clpost & 0xffffffefu;
+    gmuW[clampWord] = r184clpost & 0xfffffffeu;
+    r184gdpre = rd32(sGmuFwVa, gdscrWord * 4u);
+    gmuW[gdscrWord] = r184gdpre & 0xfffffffeu;
+    __asm__ volatile("dsb sy" ::: "memory");
+    for (r184pw = 0u; r184pw < 20000u; ++r184pw) {
+        r184cfpost = rd32(sGmuFwVa, cfgWord * 4u);
+        if ((r184cfpost & 0x00010000u) != 0u) {
+            break;
+        }
+        IODelay(1u);
+    }
+    r184gd4 = rd32(sGmuFwVa, gdscrWord * 4u);
+    r184cf4 = rd32(sGmuFwVa, cfgWord * 4u);   /* CFG IS the GX status word */
+    r184cl4 = rd32(sGmuFwVa, clampWord * 4u);
+    r184cx4 = rd32(sGmuFwVa, cxstWord * 4u);
+    r184ck4 = rd32(sGmuFwVa, cxgmuWord * 4u);
+    r184co4 = rd32(sGmuFwVa, cxoWord * 4u);
+            snprintf(r184RowP1, sizeof r184RowP1,
+                     "gmu185p1=clocked=1 gdscr=%08x cfg=%08x clamp=%08x cx=%08x cxgmu=%08x cxo=%08x gx_on=%d polls=%u",
+                     (unsigned)r184gd4, (unsigned)r184cf4,
+                             (unsigned)r184cl4, (unsigned)r184cx4,
+                             (unsigned)r184ck4, (unsigned)r184co4,
+                             (unsigned)((r184cf4 & 0x00010000u) != 0u),
+                             (unsigned)r184pw);
+            IOLog("enchilada-adreno: %s\n", r184RowP1);
+            r184gd = r184gd4; r184cf = r184cf4; r184cl = r184cl4;
+            r184cx = r184cx4; r184ck = r184ck4; r184co = r184co4;
+            snprintf(r184RowL2, sizeof r184RowL2,
+                     "gmu184l2=mode=%d gdscr=%08x cfg=%08x clamp=%08x cx=%08x "
+                     "cxgmu=%08x cxo=%08x gx_on=%d survived=1",
+                     r184mode,
+                     (unsigned)r184gd, (unsigned)r184cf,
+                     (unsigned)r184cl, (unsigned)r184cx,
+                     (unsigned)r184ck, (unsigned)r184co,
+                     (unsigned)((r184cf & 0x00010000u) != 0u));
+            IOLog("enchilada-adreno: %s\n", r184RowL2);
+    } else if (r184mode == 186) {
+    const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+    const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+    const uint32_t clampWord = 0x9d42u;   /* 0x05091508 */
+    const uint32_t cxstWord = 0x9d50u;    /* 0x05091540 */
+    const uint32_t cxgmuWord = 0x9c26u;   /* 0x05091098 */
+    const uint32_t cxoWord = 0x9c27u;     /* 0x0509109c */
+    r184gd1 = rd32(sGmuFwVa, gdscrWord * 4u);
+    r184cf1 = rd32(sGmuFwVa, cfgWord * 4u);   /* CFG IS the GX status word */
+    r184cl1 = rd32(sGmuFwVa, clampWord * 4u);
+    r184cx1 = rd32(sGmuFwVa, cxstWord * 4u);
+    r184ck1 = rd32(sGmuFwVa, cxgmuWord * 4u);
+    r184co1 = rd32(sGmuFwVa, cxoWord * 4u);
+            snprintf(r184RowP0, sizeof r184RowP0,
+                     "gmu186p0=pread=1 gdscr=%08x cfg=%08x cxgmu=%08x cxo=%08x",
+                     (unsigned)r184gd1, (unsigned)r184cf1,
+                             (unsigned)r184ck1, (unsigned)r184co1);
+            IOLog("enchilada-adreno: %s\n", r184RowP0);
+    r184clpost = rd32(sGmuFwVa, clampWord * 4u);
+    gmuW[clampWord] = r184clpost | 0x00000010u;
+    __asm__ volatile("dsb sy" ::: "memory");
+    IODelay(1u);
+    gmuW[clampWord] = r184clpost & 0xffffffefu;
+    gmuW[clampWord] = r184clpost & 0xfffffffeu;
+    r184gdpre = rd32(sGmuFwVa, gdscrWord * 4u);
+    gmuW[gdscrWord] = r184gdpre & 0xfffffffeu;
+    __asm__ volatile("dsb sy" ::: "memory");
+    for (r184pw = 0u; r184pw < 20000u; ++r184pw) {
+        r184cfpost = rd32(sGmuFwVa, cfgWord * 4u);
+        if ((r184cfpost & 0x00010000u) != 0u) {
+            break;
+        }
+        IODelay(1u);
+    }
+    r184gd2 = rd32(sGmuFwVa, gdscrWord * 4u);
+    r184cf2 = rd32(sGmuFwVa, cfgWord * 4u);   /* CFG IS the GX status word */
+    r184cl2 = rd32(sGmuFwVa, clampWord * 4u);
+    r184cx2 = rd32(sGmuFwVa, cxstWord * 4u);
+    r184ck2 = rd32(sGmuFwVa, cxgmuWord * 4u);
+    r184co2 = rd32(sGmuFwVa, cxoWord * 4u);
+            snprintf(r184RowP1, sizeof r184RowP1,
+                     "gmu186p1=noclock=1 gdscr=%08x cfg=%08x clamp=%08x cx=%08x cxgmu=%08x cxo=%08x gx_on=%d polls=%u",
+                     (unsigned)r184gd2, (unsigned)r184cf2,
+                             (unsigned)r184cl2, (unsigned)r184cx2,
+                             (unsigned)r184ck2, (unsigned)r184co2,
+                             (unsigned)((r184cf2 & 0x00010000u) != 0u),
+                             (unsigned)r184pw);
+            IOLog("enchilada-adreno: %s\n", r184RowP1);
+            r184gd = r184gd2; r184cf = r184cf2; r184cl = r184cl2;
+            r184cx = r184cx2; r184ck = r184ck2; r184co = r184co2;
+            snprintf(r184RowL3, sizeof r184RowL3,
+                     "gmu184l3=mode=%d gdscr=%08x cfg=%08x clamp=%08x cx=%08x "
+                     "cxgmu=%08x cxo=%08x gx_on=%d survived=1",
+                     r184mode,
+                     (unsigned)r184gd, (unsigned)r184cf,
+                     (unsigned)r184cl, (unsigned)r184cx,
+                     (unsigned)r184ck, (unsigned)r184co,
+                     (unsigned)((r184cf & 0x00010000u) != 0u));
+            IOLog("enchilada-adreno: %s\n", r184RowL3);
+    }
+}
+
 
 if (fwKey >= 18u && fwKey <= 21u) {
                                             // ROUND 177: R176 showed that alloc, map, table fill
