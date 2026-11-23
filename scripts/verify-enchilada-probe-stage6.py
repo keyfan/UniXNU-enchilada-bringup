@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 210u' in _fw,
+    check('fwKey >= 7u && fwKey <= 213u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 210u)' in code,
+    check('(fwKey >= 7u && fwKey <= 213u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4280,6 +4280,11 @@ def main():
         _k208210 = ''
         if _i208210 > 0:
             _k208210 = code[_i208210:].split(
+                '\nif (fwKey == 211u || fwKey == 212u || fwKey == 213u) {\n', 1)[0]
+        _i211213 = code.find('if (fwKey == 211u || fwKey == 212u || fwKey == 213u) {')
+        _k211213 = ''
+        if _i211213 > 0:
+            _k211213 = code[_i211213:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -6555,6 +6560,95 @@ def main():
     check('const int r208mode = (fwKey >= 210u) ? 210 : ((fwKey >= 209u) ? 209 '
           ': 208);' in code,
           'R282 the mode selector is written out, not flattened into one arm')
+
+    # ---- ROUND 283: no store at all.  One row per millisecond for thirty
+    # milliseconds (211) measures the log flush cadence; the same cadence with no
+    # MMIO read at all (212) separates read traffic from log traffic; and 213
+    # prints two rows from a single read after the wait R282 proved can kill.
+    check(_k211213 != '', 'R283 the cadence block follows the R282 block')
+    _rows283 = ('gmu211p0', 'gmu211m%u', 'gmu211l=', 'gmu212p0', 'gmu212m%u',
+                'gmu211l2=', 'gmu213p0', 'gmu213d', 'gmu213e', 'gmu211l3=')
+    check(all(_w in _k211213 for _w in _rows283),
+          'R283 every cadence row is formatted: %s'
+          % [w for w in _rows283 if w not in _k211213])
+    check(_k211213.count('gmuW[') == 0,
+          'R283 stores nothing at all: not one key writes a GMU word (got %d)'
+          % _k211213.count('gmuW['))
+    check('0x5186u' not in _k211213 and '0x00000001u' not in _k211213,
+          'R283 never writes HFI_CTRL_INIT or its latch bit')
+    check('0x5194u' not in _k211213 and '0x5191u' not in _k211213,
+          'R283 rings no doorbell: the question is the medium, not the firmware')
+    check('0xbabeface' not in _k211213 and 'IOSleep' not in _k211213,
+          'R283 never waits for the init latch and never sleeps the writer away')
+    check(_k211213.count('0x5000u') == 3 and _k211213.count('0x501cu') == 3,
+          'R283 reads the reset word and the init word once per key and pulses '
+          'neither (got %d/%d)' % (_k211213.count('0x5000u'),
+                                   _k211213.count('0x501cu')))
+    check(_k211213.count('IODelay(1u)') == 0 and
+          _k211213.count('IODelay(100u)') == 3,
+          'R283 paces every wait in hundred-microsecond steps (got %d/%d)'
+          % (_k211213.count('IODelay(1u)'), _k211213.count('IODelay(100u)')))
+    check(_k211213.index('if (r211mode == 211) {') <
+          _k211213.index('} else if (r211mode == 212) {') <
+          _k211213.index('} else if (r211mode == 213) {'),
+          'R283 the three keys appear in the order 211, 212, 213')
+    _d211 = _k211213[_k211213.index('if (r211mode == 211) {'):
+                     _k211213.index('} else if (r211mode == 212) {')]
+    _d212 = _k211213[_k211213.index('} else if (r211mode == 212) {'):
+                     _k211213.index('} else if (r211mode == 213) {')]
+    _d213 = _k211213[_k211213.index('} else if (r211mode == 213) {'):]
+    check('for (r211s = 0u; r211s < 30u; ++r211s)' in _d211 and
+          'for (r211pw = 0u; r211pw < 10u; ++r211pw)' in _d211,
+          'R283 key 211 climbs thirty steps, ten hundred-microsecond waits each, '
+          'so one row is one millisecond')
+    check(_d211.index('gmu211p0=') <
+          _d211.index('for (r211s = 0u; r211s < 30u; ++r211s)') <
+          _d211.index('gmu211m%u='),
+          'R283 key 211 takes a census before the climb and then one row per step')
+    check(_d211[_d211.index('for (r211s = 0u; r211s < 30u; ++r211s)'):
+              _d211.index('gmu211m%u=')].count('rd32(') >= 9,
+          'R283 key 211 reads the whole window inside every step')
+    check('for (r211s2 = 0u; r211s2 < 30u; ++r211s2)' in _d212 and
+          'for (r211pw2 = 0u; r211pw2 < 10u; ++r211pw2)' in _d212,
+          'R283 key 212 climbs the same thirty steps')
+    _loop212 = _d212[_d212.index('for (r211s2 = 0u; r211s2 < 30u; ++r211s2)'):
+                     _d212.index('    r211ctl2 = rd32(')]
+    check('rd32(' not in _loop212,
+          'R283 key 212 does no MMIO read inside its loop: it isolates log '
+          'traffic from read traffic')
+    check('tick=%u' in _d212 and 'gmu212m%u=' in _d212,
+          'R283 key 212 rows carry only the step index and the tick')
+    check(_d212.index('for (r211s2 = 0u; r211s2 < 30u; ++r211s2)') <
+          _d212.index('gmu212m%u='),
+          'R283 key 212 prints inside the climb, not after it')
+    check('for (r211pw3 = 0u; r211pw3 < 200u; ++r211pw3)' in _d213,
+          'R283 key 213 waits the full twenty milliseconds R282 proved fatal')
+    check(_d213.index('gmu213p0=') <
+          _d213.index('for (r211pw3 = 0u; r211pw3 < 200u; ++r211pw3)') <
+          _d213.index('gmu213d=') <
+          _d213.index('gmu213e='),
+          'R283 key 213 reads once after the wait and prints two rows from it')
+    check(_d213[_d213.index('gmu213d='):_d213.index('gmu213e=')].count(
+              'IOLog(') == 1,
+          'R283 the first row of key 213 is committed before the second row is '
+          'formatted')
+    _gap = _d213[_d213.index('gmu213d='):_d213.index('gmu213e=')]
+    check('rd32(' not in _gap,
+          'R283 nothing rereads the window between the two rows, so a row that '
+          'lands alone is a flush fact, not a hardware fact')
+    for _w in ('r211fw2', 'r211sr2', 'r211fw3', 'r211sr3'):
+        check(_w in _k211213,
+              'R283 reads %s so a firmware restart cannot pass as a quiet '
+              'window' % _w)
+    check(_k211213.count('init=') == 0,
+          'R283 never prints an init word it never wrote')
+    for _tag, _b in (('gmu211l=', _d211), ('gmu211l2=', _d212),
+                     ('gmu211l3=', _d213)):
+        check('survived=1' in _b and _tag in _b,
+              'R283 %s keeps the survival flag' % _tag)
+    check('const int r211mode = (fwKey >= 213u) ? 213 : ((fwKey >= 212u) ? 212 '
+          ': 211);' in code,
+          'R283 the mode selector is written out, not flattened into one arm')
     check('const int r199mode = (fwKey >= 201u) ? 201 : ((fwKey >= 200u) ? 200 '
           ': 199);' in code,
           'R279 the mode selector is written out, not flattened into one arm')
