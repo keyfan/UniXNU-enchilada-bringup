@@ -8044,3 +8044,44 @@ CI #391（run `45129130628`）success 28/28。取件拍平：kernel.macho 126,46
 
 **98.12 工具事实**
 一是本轮探针块**不能复用 R273 的 pre**——R273 的 pre 留了 4+1 个未闭合 `{`，靠 R273 块尾 5 个 `}` 收口，是与 R273 分支结构深度耦合的重机器（SMMU 建表 + CM3 重启）；R274 直接写扁平自包含块（只 `sGmuFwVa`/`gmuW`/`rd32` + 固定 dword 索引）。二是**块生成器第一版用 `src[:i]+body+src[j:]` 把 R273 整块删掉了**（i=R273 头、j=ladder），症状是 probe 里 `fwKey == 181u` 计数 0；改为插在 ladder 之前并加三条断言（`count(OLD_HDR)==1`、`count(NEW_HDR)==1`、`index(OLD_HDR)<index(NEW_HDR)`）才对。三是对 store 总量的判断错了两次——先确认基线文件是对的（R273 版 743），再加本轮的 12 得 755。四是静态门 `r274_static.py` 的行取自 `snprintf(...)` 的格式串（不是 `IOLog`，后者只 print `%s` 缓冲）；提取时要先折叠相邻字面量。五是 runner 没有 preamble 的 `key=` 戳，只能靠「哪条本键专属行存在」判 key（`gmu184p1=` / `gmu185p0=` / `gmu186p0=`），并用尾行 `mode=` 交叉核对。
+
+## 九十九、R275：rail 带外握手——两个 vote 数值全部落位、门铃不被应答、门铃之后 info 抬出 bit23（CM3_FAULT）
+
+**99.1 一句话**
+本轮的起点是「GX 的 POWER_UP_COMPLETE（bit16）由什么置起」：R274 已证明四笔 GDSC 写入能把 GDSCR 的 power-up 位（bit27）拉起来，但 bit16 在满 20000 次轮询后仍是 0。这一轮不去猜寄存器，而是照钉住的上游把 `a6xx_gmu_gfx_rail_on()` 那条**带外（out-of-band）门铃**通路整条搬到设备上：清 `GMU_BOOT_SLUMBER_OPTION`、写两个 arc vote、按 bit22 敲门铃、等 `GMU2HOST_INTR_INFO` 的 bit30 应答。结果是：**两个 vote 全零（固件从没投过 rail 票）、四笔写在门铃前全部落位且读数一点没变、门铃**一次也没被应答**（bit30 始终 0），而门铃之后 `info` 从 `00000000` 变成 `00800000`——按上游的位定义那是 bit23 = `CM3_FAULT`**。把 CM3 先复位再敲门铃（同一套五笔）结果**逐位相同**，所以答案不是「固件还没起来」。
+
+**99.2 为什么改问 rail 门铃**
+R274 收尾时列了三件「必须分开说」的事，其中最关键的是：**CPU 侧的 GX GDSC 上电路径是空实现**——钉住的上游 `drivers/clk/qcom/gpucc-sdm845.c` 里 `gpu_gx_gdsc` 的 `.power_on` 是 `gdsc_gx_do_nothing_enable`，而该函数连 GDSC 本身都不碰，只 `regulator_enable(sc->rsupply)`（注释原文 "Do nothing with the GDSC itself"）。同时 `a6xx_gmu_resume()` 对 GX 电源域那次 `pm_runtime_get_sync(gmu->gxpd)` 的注释也写明 "won't actually do anything"。换句话说：**mainline 从来没打算用「写 GDSCR」这条路上电**，它走的是 GMU 的带外请求——`a6xx_gmu_gfx_rail_on()` 先清 slumber、再写 GX/MX 两个 vote、再敲 bit22 的门铃，等 bit30 应答。R274 量的四笔 GDSCR 写是我们自己发明的路径，它把 bit27 拉起来却不能完成上电，这一点在本轮得到了侧证：在门铃之前把 vote 写全，`gx_on` 仍然是 0。
+
+**99.3 代码形状**
+探针块 12,116 字符 / 226 行，braces 净 0（opens=10 closes=10）；块内 `gmuW[` **13 笔**——188 五笔（`GMU_BOOT_SLUMBER_OPTION`、`GMU_GX_VOTE_IDX`、`GMU_MX_VOTE_IDX`、`GMU_HOST2GMU_INTR_SET`、`GMU_GMU2HOST_INTR_CLR`）、189 另八笔（先三笔复位：清 `CM3_FW_INIT_RESULT`、`CM3_SYSRESET=1`、`CM3_SYSRESET=0`，再五笔同 188）；`IODelay(1u)` 2 处、`IODelay(100u)` 2 处（应答窗口是 100 × 100 µs = 10 ms，不用空转买时间）。本块**不写** `HFI_CTRL_INIT`、不写中断掩码、不清 FSR、不建 SMMU 表。寄存器全部经 `gmuW[...]`（`volatile uint32_t *const`）访问，`sGmuFwVa` map 的是 `0x0506a000..+0x30000`；用到的 dword 索引（来源钉住的上游 `drivers/gpu/drm/msm/registers/adreno/a6xx_gmu.xml`）：`GMU_BOOT_SLUMBER_OPTION 0x23f8`、`GMU_GX_VOTE_IDX 0x23f9`、`GMU_MX_VOTE_IDX 0x23fa`、`GMU_HOST2GMU_INTR_SET 0x5194`、`GMU_GMU2HOST_INTR_INFO 0x5192`、`GMU_GMU2HOST_INTR_CLR 0x5191`、`GMU_GX_SPTPRAC_POWER_CONTROL 0x0081`、`GMU_SPTPRAC_PWR_CLK_STATUS 0x50d0`、`GMU_CM3_SYSRESET 0x5000`、`GMU_CM3_FW_INIT_RESULT 0x501c`、`GPU_CC_GX_GDSCR 0x9c03`（= `ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR`）、GDSCR 状态 = `0x9c04`（GDSCR+1）。三键：**187** 纯普查（零写、连读两次）、**188** 照上游五笔但不动 CM3、**189** 先复位 CM3（等 `0xbabeface` 自己回来）再跑同一套五笔。188 与 189 之间唯一的差别就是「敲门铃时固件是不是刚起来」，这是本轮的分辨力来源。
+
+**99.4 构建与门禁**
+CI #392（run `45139289855`）success 28/28。取件拍平：kernel.macho 126,468,096 B sha256 `d9db2be1647c5102b840e5965d23a4e48a10dcff29623f3b6988865c151a8172`，payload.img 150,994,944 B sha256 `07d9461e9fa4ac10ff0b3b9b669b08cb45379afe8b759e162f88ee4f9157270a`。静态门 `r275_static.py` 对真产物 **PASS**（20 行 required+survivors 在 kernel 与 payload 里都命中，marker kernel=1 / payload=2，forbidden 3 条全零，固件 32768 B sha `b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f` 钉住），对 R274 产物 **FAIL 10 problems**（10 条 R275 行全 kernel=0 payload=0）——门的区分能力自证成立。host 门 32/32；probe 门 28/28，store 计数由 755 抬到 **768**（+13）；stage4 61/61、stage5 48/48、stage6 1862/1862；全量 `r239_allgates.py` ran 46 of 48 FAILING 0；`check_mode_selector.py` 30 selectors、上界 189、自证 FAIL、VERDICT PASS；`r275_hashes.py` 7 路径 0 不符。三份 payload 各自重键（`enchilada-pas-exec=2` → `=187/188/189`），sha256 分别 `e5326aed4fe6f168f1ea705cf5d4a4187246a9fb00b9e4850c6be1ddc7ccb8f4`、`5d78411bb57aab6fcd0670e58b989501fa262030f4bbff8a68f1c7b047b7596f`、`e86d90fd2c4a471cb60bd6ea735adaeea9dcff8ce472f8b603908b439d10779d`；每键上机前 `check-reboot-to-twrp.py --arm` PASS（boot_a md5 `ca8ddd7a5af345636cad8c5bf645fee2`）。
+
+**99.5 键 187：静止态普查（零写、两份读数）**
+`boot_id 587926344`、窗口 sha256 `ecf8232c3db9da179545c1dcb4d0f553d49d4b30574b5c8bdf762efc711b75b5`，3/3 行。逐字：`gmu187p0=census=1 bs=00000000 gx=00000000 mx=00000000 sp=00000000 st=000000d4 gd=00222001 cf=00088400 fw=babeface info=00000000`；`gmu187p1` 逐位相同；`gmu187l=mode=187 gd=00222001 cf=00088400 gx_on=0 ack=0 info=00000000 survived=1`。读法：`bs=0` 说明 slumber 请求字本来就是清的；`gx`/`mx` 两个 arc vote **都是 0**，也就是**固件从没投过 rail 票**；`sp=0` 是 SPTPRAC 控制字（未请求），`st=000000d4` 是它的状态字；`gd=00222001` 是 GDSCR（bit0=1 SW_COLLAPSE、bit27=0），`cf=00088400` 是 GDSCR+1（bit16=0）；`fw=babeface` 说明 CM3 的 init latch 在，`info=0` 说明此刻没有任何 GMU→host 中断。两份读数逐位相同 ⇒ 这些字不是自己在动，后面的差值只能归因于我们的写。
+
+**99.6 键 188：照上游五笔敲门铃，不动 CM3**
+`boot_id 586464408`、窗口 sha256 `d9a65e52a943d60ab81ab5c28bd338a7fe9ace2cc1246d1800769c6b812da2b8`，3/3 行。`gmu188p0=pre=1 bs=00000000 gx=00000000 mx=00000000 sp=00000000 st=000000d4 gd=00222001 cf=00088400 fw=babeface info=00000000`（与 187 逐位相同）；写完之后 `gmu188p1=oob_nocm3=1 ack=0 bs=00000000 gx=00000000 mx=00000000 info=00800000 gd=00222001 cf=00088400 gx_on=0 polls=100`；尾行 `gmu187l2=mode=188 gd=00222001 cf=00088400 gx_on=0 ack=0 info=00800000 survived=1`。三件事：①**五笔写本身没有改动任何可观测的 rail 状态**——`bs/gx/mx` 事后仍是 0，`gd/cf` 与静止态逐位相同；②**应答位没来**——`polls=100`（10 ms）里 `GMU2HOST_INTR_INFO` 的 bit30 一次也没置起（`ack=0`）；③**门铃之后 `info` 变成了 `00800000`**，即 bit23 置起。
+
+**99.7 键 189：先复位 CM3，再敲同一套门铃**
+`boot_id 587310319`、窗口 sha256 `bd32f40fc71d6d123848aca833a8adaae7b447d31d8fa75f46de1bf3dd91732b`，4/4 行。`gmu189p0=pre=1`（与 187 逐位相同）；复位脉冲后 `gmu189p1=reset=1 fw=babeface polls=4 sysreset=00000000`——**清掉 init latch 再打 `CM3_SYSRESET`，`0xbabeface` 在 4 拍内自己回来**，证明敲门前固件确实重跑过；再敲门铃 `gmu189p2=oob_cm3=1 ack=0 bs=00000000 gx=00000000 mx=00000000 info=00800000 sp=00000000 st=000000d4 gd=00222001 cf=00088400 gx_on=0 polls=100`。与键 188 的应答结果**逐位相同**。
+
+**99.8 判决**
+1. **缺的不是 vote 数值**：静止态两个 vote 已经是 0，188/189 把「读到的 0」原样写回、并清 slumber，读数一点没变。也就是说**固件从来没有投过 rail 票**，但我们把票写进去也不会让它开始上电。
+2. **门铃这条通路在被固件拒绝**：`HOST2GMU_INTR_SET` bit22 写下去，`GMU2HOST_INTR_INFO` 的 bit30（legacy 编码 slab 里 BOOT_SLUMBER 的 ack 位）在 10 ms 内**一次也没置起**。188（CM3 一直在跑）与 189（CM3 刚复位、4 拍回 latch）结果相同 ⇒ 不是「固件还没起来」，而是**这颗固件不服务这个带外请求**。
+3. **门铃之后 bit23 置起 = `CM3_FAULT`**：`info` 从 `00000000` 变成 `00800000`，而按钉住的上游 `a6xx_gmu.xml`，`GMU2HOST_INTR_INFO` 的 bit23 就是 `CM3_FAULT`（同一文件里 `MSGQ` 是 pos 0、`CM3_FAULT` 是 pos 23）。本仓库 `AdrenoGmuBootV1.h` 只定义了这个字的偏移 `0x5192u`、**没有位域**，所以这条位定义是**外部依据**，不是本仓库的定义。187（零写）读到的是 `0`，188/189（敲门铃）读到同一个 `00800000` ⇒ 这一位置起**归门铃**。它与 R252 那条「启动字之后出现 `CM3_FAULT`」是同一族的现象：同样的位、同样延迟出现、同样留得住（本次 10 ms 步长内已可见，比 R252 的 0.32 s 更短，因为轮询步长不同）。
+4. **GX 电源域上电的最后一步仍然缺**：`gx_on`（`cf & 0x10000`）在三键里全是 0。R274 的 G1 没有关闭；但候选门的集合被本轮收敛了：**不是 vote 数值、不是 gfxcc 时钟、也不是「固件没在跑」，而是带外中断通路本身**（固件是否实现了 BOOT_SLUMBER 这一类 OOB 消息）。
+
+**99.9 必须分开说的三件事**
+第一，本轮证明的是「我们照上游写的这条带外通路**在这颗固件上不被应答**」，**没有**证明 mainline 在真机上能靠它把 GX 拉起来——上游那条路是在它自己的固件版本与 HFI 握手顺序下成立的，我们这里的固件是随这台设备的 recovery 分区里那一个（sha 见 99.4），两者不是同一个东西。第二，bit23 = `CM3_FAULT` 的**位定义来自外部依据**（上游 xml），本仓库没有位域；因此「置起的是 fault」这层解释可以写进判决，但**不能**写成「本仓库已定义并验证过该位的语义」。第三，189 的复位只证明「固件重跑过一次」，**没有**证明固件在复位后进入了与 mainline 期望一致的状态——`ctl` 那条 HFI 启动位在 R245–R252 从来没置起过，本轮也没有重新去碰它（本块不写 `HFI_CTRL_INIT`）。
+
+**99.10 没证明什么**
+没证明 `GMU_BOOT_SLUMBER_OPTION` 的其它取值（非 0）会不会被服务；没证明 `GMU_GX_VOTE_IDX`/`GMU_MX_VOTE_IDX` 的**非零**票值是否被接受（本轮只写了读到的 0，因为不发明票值）；没证明 `HOST2GMU_INTR_SET` 的**其它位**（尤其 `MSGQ` pos 0 那条）是否被服务；没读 `CM3_FAULT` 的**原因寄存器**；没证明 `00800000` 与「我们敲门铃」是唯一的因果关系（只证明零写的 187 读到 0、敲了门铃的 188/189 读到同一值）；也没证明 bit16 究竟由谁置起。
+
+**99.11 R276 的设计思路**
+顺着本轮，下一轮该把「带外通路到底被实现了多少」分开量：一是敲 `HOST2GMU_INTR_SET` 的**其它位**（先 `MSGQ` pos 0，再逐个单独敲），看是否有一位能被应答——这能区分「只有 BOOT_SLUMBER 不支持」与「整个 `HOST2GMU_INTR_SET` 都不被服务」；二是在敲门铃前后**读 `CM3_FAULT` 的原因寄存器**（如果存在可读的 fault 原因字），把「fault 是我敲出来的」变成有内容的归因，而不是只有一位；三是把 `GMU_BOOT_SLUMBER_OPTION` 写一个**非 0 的合法取值**再敲门铃，看固件是否只在「它自己想睡」的语义下才应答。三件事都要保持零副作用：不写 `HFI_CTRL_INIT`、不碰中断掩码、不用空转买时间。
+
+**99.12 工具事实**
+一是 `r214_par.py` 的 needle 是**单个子串**匹配，artifact 名是 `unixnu-enchilada_defconfig-kernel` / `unixnu-enchilada_defconfig-payload`，所以取件必须分别传 `"defconfig-kernel"` / `"defconfig-payload"`；传 `"defconfig-kernel|payload"` 会 `no artifact matching`（本轮踩了一次）。二是探针块里按分支发射寄存器常量时，**只发该分支真正用到的那些**——第一版把三组 `const uint32_t …Word` 全发进每个分支，probe 门直接 `unused variable 'r187setWord' [-Werror,-Wunused-variable]`；拆成 `WORDS_CENSUS`/`WORDS_DOORBELL`/`WORDS_RESET` 按分支发射后 28/28。三是 `python -c` 里带引号或中文的代码在 PowerShell 下必然报 `TerminatorExpectedAtEndOfString` 或 `SyntaxError`（本轮两次），一律先写 `.py` 再跑。四是本块第三个分支是 `} else if (r187mode == 189) {`（不是裸 `} else {`），切片与断言里若按 `rindex('} else {')` 切会 `ValueError`；本块的复位写的是 `gmuW[r187fwWord]` / `gmuW[r187rstWord]`，不是寄存器名字面量，计数断言必须按实际写法查。五是 store 预算的基线要先确认文件是对的：R274 版实测 755，本轮 +13 = 768，`scripts/check-enchilada-adreno-probe.py` 的预算与说明串同步更新。

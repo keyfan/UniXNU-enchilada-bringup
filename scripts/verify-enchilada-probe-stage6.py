@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 186u' in _fw,
+    check('fwKey >= 7u && fwKey <= 189u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 186u)' in code,
+    check('(fwKey >= 7u && fwKey <= 189u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4240,6 +4240,11 @@ def main():
         _k184186 = ''
         if _i184186 > 0:
             _k184186 = code[_i184186:].split(
+                '\nif (fwKey == 187u || fwKey == 188u || fwKey == 189u) {\n', 1)[0]
+        _i187189 = code.find('if (fwKey == 187u || fwKey == 188u || fwKey == 189u) {')
+        _k187189 = ''
+        if _i187189 > 0:
+            _k187189 = code[_i187189:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -5729,6 +5734,91 @@ def main():
     for _tag, _b in (('gmu181l', _b181), ('gmu182l', _b182), ('gmu183l', _b183)):
         check('survived=1' in _b and _tag + '=' in _b,
               '%s keeps the survival flag' % _tag)
+
+    # ---- ROUND 275: the rail vote, through the GMU's own out-of-band doorbell -
+    # R274 measured that the CPU-side GDSC sequence sets the power-up request
+    # bit (27) but never the complete bit (16), and the pinned upstream source
+    # says why: gdsc_gx_do_nothing_enable() enables only the regulator and
+    # does nothing to the GDSC, so the real rail-on path is the GMU firmware's
+    # out-of-band BOOT_SLUMBER exchange.  R275 asks that exchange directly.
+    check(_k187189 != '', 'R275 the rail-vote block follows the R274 block')
+    _rows275 = ('gmu187p0', 'gmu187p1', 'gmu187l',
+                'gmu188p0', 'gmu188p1', 'gmu187l2',
+                'gmu189p0', 'gmu189p1', 'gmu189p2', 'gmu187l3')
+    check(all(_w + '=' in _k187189 for _w in _rows275),
+          'R275 every rail row is formatted: %s'
+          % [w for w in _rows275 if w + '=' not in _k187189])
+    check(_k187189.count('gmuW[') == 13,
+          'R275 the block holds exactly thirteen stores: five in the shared '
+          'out-of-band sequence and eight more once the CM3 reset pulse is in '
+          '(got %d)' % _k187189.count('gmuW['))
+    check(_k187189.count('0x23f8u') == 3 and _k187189.count('0x23f9u') == 3 and
+          _k187189.count('0x23fau') == 3,
+          'R275 the boot-slumber word and both arc-vote words are declared once '
+          'in each of the three branches, at the offsets the register model '
+          'names (got %d/%d/%d)' % (_k187189.count('0x23f8u'),
+                                    _k187189.count('0x23f9u'),
+                                    _k187189.count('0x23fau')))
+    check(_k187189.count('0x00400000u') == 2 and
+          _k187189.count('0x40000000u') == 4,
+          'R275 the doorbell rings bit 22 in the two keys that ring it and the '
+          'acknowledge is tested and cleared through bit 30, exactly the '
+          'a6xx_gmu_set_oob() pair (got %d/%d)'
+          % (_k187189.count('0x00400000u'), _k187189.count('0x40000000u')))
+    check(_k187189.count('gmuW[r187fwWord] = 0u;') == 1,
+          'R275 only key 189 clears the init word, and only once')
+    check(_k187189.count('gmuW[r187rstWord] = 1u;') == 1 and
+          _k187189.count('gmuW[r187rstWord] = 0u;') == 1,
+          'R275 key 189 drives both halves of the reset exactly once')
+    check(_k187189.count('CM3_SYSRESET] = 1u;') == 0 and
+          _k187189.count('CM3_SYSRESET] = 0u;') == 0,
+          'R275 spells the reset through its own word index, so the pinned '
+          'CM3_SYSRESET pulse count of the older blocks is untouched')
+    check(_k187189.count('0xbabefaceu') == 1,
+          'R275 key 189 waits for the same init latch every earlier reboot used')
+    check(_k187189.count('IODelay(100u)') == 2 and
+          _k187189.count('IODelay(1u)') == 2,
+          'R275 paces the acknowledge poll in ten-millisecond steps and the '
+          'reset pulse in one-microsecond steps, and sleeps nowhere else')
+    check('IOSleep' not in _k187189,
+          'R275 never sleeps the writer round away')
+    check(_k187189.index('if (r187mode == 187) {') <
+          _k187189.index('} else if (r187mode == 188) {') <
+          _k187189.index('} else if (r187mode == 189) {'),
+          'R275 the three keys appear in the order 187, 188, 189')
+    _b187 = _k187189[_k187189.index('if (r187mode == 187) {'):
+                     _k187189.index('} else if (r187mode == 188) {')]
+    _b188 = _k187189[_k187189.index('} else if (r187mode == 188) {'):
+                     _k187189.index('} else if (r187mode == 189) {')]
+    _b189 = _k187189[_k187189.index('} else if (r187mode == 189) {'):
+                     ]
+    check('gmuW[' not in _b187 and 'write32' not in _b187,
+          'R275 key 187 writes NOTHING: it is the census the other two read')
+    check(_b187.count('gmu187p0=') == 1 and _b187.count('gmu187p1=') == 1,
+          'R275 key 187 takes the census twice, so a moving word is visible')
+    check(_b188.count('gmuW[') == 5,
+          'R275 key 188 carries exactly the five out-of-band stores (got %d)'
+          % _b188.count('gmuW['))
+    check(_b188.index('0x23f8u') >= 0 and
+          _b188.index('0x00400000u') > _b188.index('0x23f9u'),
+          'R275 key 188 writes the votes and the slumber option BEFORE it '
+          'rings the doorbell, which is the a6xx_gmu_gfx_rail_on() order')
+    check(_b188.count('CM3_SYSRESET] = ') == 0 and
+          _b188.count('0xbabefaceu') == 0,
+          'R275 key 188 never restarts the CM3: it asks whether the firmware '
+          'that is already running will answer')
+    check(_b189.count('gmuW[') == 8,
+          'R275 key 189 carries the five out-of-band stores plus the three the '
+          'reset pulse costs (got %d)' % _b189.count('gmuW['))
+    check(_b189.index('gmuW[r187fwWord] = 0u;') <
+          _b189.index('0x00400000u'),
+          'R275 key 189 restarts the CM3 BEFORE it rings the doorbell, so the '
+          'acknowledge can only come from a firmware that actually re-ran')
+    check(_b189.index('0xbabefaceu') < _b189.index('0x00400000u'),
+          'R275 key 189 waits for the init latch before the doorbell')
+    for _tag, _b in (('gmu187l', _b187), ('gmu187l2', _b188), ('gmu187l3', _b189)):
+        check('survived=1' in _b and _tag + '=' in _b,
+              'R275 %s keeps the survival flag' % _tag)
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
