@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 216u' in _fw,
+    check('fwKey >= 7u && fwKey <= 225u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 216u)' in code,
+    check('(fwKey >= 7u && fwKey <= 225u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -3112,7 +3112,7 @@ def main():
           'R218 it does not repeat R214 s mistake either')
     check('IOSleep' not in _k64 and 'IODelay' not in _k64 and 'for (' not in _k64,
           'R218 no wait of any kind')
-    # ---- ROUND 222: the start word moves INTO key 66, so the key value stops being a variable.
+    # ---- ROUND 223: the start word moves INTO key 66, so the key value stops being a variable.
     # R221 gave a full writer round of margin and still lost every row, including the one
     # printed before the store, so "not enough time to flush" is not the explanation. Every
     # zero-byte result so far also changed the key value, and the arm window has been widened
@@ -3147,7 +3147,7 @@ def main():
           'R223 key 66 carries exactly one store')
     check(_k66b.count('HFI_CTRL_INIT] = 0u;') == 1,
           'R223 that store writes 0, so the access is held constant and only the value '
-          'differs from R222')
+          'differs from R223')
     check(_k67.count('gmuW[') == 2,
           'R219 key 67 writes exactly the two table words')
     check('HFI_CTRL_INIT' not in _k67,
@@ -4290,6 +4290,11 @@ def main():
         _k214216 = ''
         if _i214216 > 0:
             _k214216 = code[_i214216:].split(
+                '\nif (fwKey == 223u || fwKey == 224u || fwKey == 225u) {\n', 1)[0]
+        _i223225 = code.find('if (fwKey == 223u || fwKey == 224u || fwKey == 225u) {')
+        _k223225 = ''
+        if _i223225 > 0:
+            _k223225 = code[_i223225:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -6747,6 +6752,96 @@ def main():
     check('const int r214mode = (fwKey >= 216u) ? 216 : ((fwKey >= 215u) ? 215 '
           ': 214);' in code,
           'R284 the mode selector is written out, not flattened into one arm')
+
+    # ---- ROUND 285: the one-store split finished and the cadence itself put
+    # under test.  Key 223 writes HFI_CTRL_INIT alone (R284 already ran zero
+    # stores and descriptor-clear alone), so if it too lands thirteen to fifteen
+    # rows the question 'which of the two writes is the condition' is void.  Key
+    # 224 prints two rows per millisecond, which tells a cutoff counted in
+    # steps from one counted in rows; key 225 waits five milliseconds before its
+    # first row, which tells a clock started at the first row from one started
+    # at probe entry.
+    check(_k223225 != '', 'R285 the cadence block follows the R284 block')
+    _rows285 = ('gmu223p0', 'gmu223p1', 'gmu223m%u', 'gmu223l=',
+                'gmu224p0', 'gmu224m%u', 'gmu224n%u', 'gmu223l2=',
+                'gmu225p0', 'gmu225p1', 'gmu225m%u', 'gmu223l3=')
+    check(all(_w in _k223225 for _w in _rows285),
+          'R285 every cadence row is formatted: %s'
+          % [w for w in _rows285 if w not in _k223225])
+    check(_k223225.count('gmuW[') == 1,
+          'R285 writes exactly one word: HFI_CTRL_INIT under key 223 (got %d)'
+          % _k223225.count('gmuW['))
+    check(_k223225.count('gmuW[r223iniWord] = 1u;') == 1,
+          'R285 the one store is the INIT write (got %d)'
+          % _k223225.count('gmuW[r223iniWord] = 1u;'))
+    check(_k223225.count('0x5186u') == 1,
+          'R285 names the INIT word once, in the one branch that writes it '
+          '(got %d)' % _k223225.count('0x5186u'))
+    check(_k223225.count('0x5184u') == 3,
+          'R285 reads the descriptor word once per key (got %d)'
+          % _k223225.count('0x5184u'))
+    check('0x5194u' not in _k223225 and '0x5191u' not in _k223225,
+          'R285 rings no doorbell: the question is round survival, not the '
+          'firmware reply')
+    check('0xbabeface' not in _k223225 and 'IOSleep' not in _k223225,
+          'R285 never waits for the init latch and never sleeps the writer away')
+    check(_k223225.count('0x5000u') == 3 and _k223225.count('0x501cu') == 3,
+          'R285 reads the reset word and the init word once per key and pulses '
+          'neither (got %d/%d)' % (_k223225.count('0x5000u'),
+                                   _k223225.count('0x501cu')))
+    check(_k223225.count('IODelay(1u)') == 0 and
+          _k223225.count('IODelay(100u)') == 4,
+          'R285 paces every wait in hundred-microsecond steps (got %d/%d)'
+          % (_k223225.count('IODelay(1u)'), _k223225.count('IODelay(100u)')))
+    check(_k223225.count('__asm__ volatile("dsb sy" ::: "memory");') == 1,
+          'R285 syncs after its only store (got %d)'
+          % _k223225.count('__asm__ volatile("dsb sy" ::: "memory");'))
+    check(_k223225.index('if (r223mode == 223) {') <
+          _k223225.index('} else if (r223mode == 224) {') <
+          _k223225.index('} else if (r223mode == 225) {'),
+          'R285 the three keys appear in the order 223, 224, 225')
+    _d223 = _k223225[_k223225.index('if (r223mode == 223) {'):
+                     _k223225.index('} else if (r223mode == 224) {')]
+    _d224 = _k223225[_k223225.index('} else if (r223mode == 224) {'):
+                     _k223225.index('} else if (r223mode == 225) {')]
+    _d225 = _k223225[_k223225.index('} else if (r223mode == 225) {'):]
+    check(_d223.index('gmuW[r223iniWord] = 1u;') <
+          _d223.index('gmu223p1=') <
+          _d223.index('for (r223s = 0u; r223s < 30u; ++r223s)'),
+          'R285 key 223 writes INIT, reads it back and only then starts the '
+          'cadence')
+    check(_d223.count('gmuW[') == 1,
+          'R285 key 223 is the INIT-only arm (got %d)' % _d223.count('gmuW['))
+    check('for (r223s = 0u; r223s < 30u; ++r223s)' in _d223 and
+          'for (r223pw = 0u; r223pw < 10u; ++r223pw)' in _d223,
+          'R285 key 223 climbs thirty one-millisecond steps')
+    check(_d224.count('gmuW[') == 0,
+          'R285 key 224 writes nothing at all (got %d)' % _d224.count('gmuW['))
+    check('for (r223s2 = 0u; r223s2 < 30u; ++r223s2)' in _d224 and
+          'for (r223pw2 = 0u; r223pw2 < 10u; ++r223pw2)' in _d224,
+          'R285 key 224 climbs the same thirty steps')
+    check(_d224.index('gmu224m%u=') < _d224.index('gmu224n%u=') and
+          'half=1' in _d224 and 'half=2' in _d224,
+          'R285 key 224 prints TWO rows in every step, so row count and step '
+          'count can disagree')
+    check(_d225.count('gmuW[') == 0,
+          'R285 key 225 writes nothing at all (got %d)' % _d225.count('gmuW['))
+    check(_d225.index('for (r223pw3 = 0u; r223pw3 < 50u; ++r223pw3)') <
+          _d225.index('gmu225p1=') <
+          _d225.index('for (r223s4 = 0u; r223s4 < 30u; ++r223s4)'),
+          'R285 key 225 waits five milliseconds before its first cadence row')
+    check('waited=50' in _d225,
+          'R285 key 225 prints how many hundred-microsecond steps it waited')
+    for _tag, _b in (('gmu223l=', _d223), ('gmu223l2=', _d224),
+                     ('gmu223l3=', _d225)):
+        check('survived=1' in _b and _tag in _b,
+              'R285 %s keeps the survival flag' % _tag)
+        check('fw=%08x sr=%08x' in _b,
+              'R285 %s carries the firmware words so a restart cannot pass as a '
+              'quiet window' % _tag)
+    check('const int r223mode = (fwKey >= 225u) ? 225 : ((fwKey >= 224u) ? 224 '
+          ': 223);' in code,
+          'R285 the mode selector is written out, not flattened into one arm')
     check('const int r199mode = (fwKey >= 201u) ? 201 : ((fwKey >= 200u) ? 200 '
           ': 199);' in code,
           'R279 the mode selector is written out, not flattened into one arm')
