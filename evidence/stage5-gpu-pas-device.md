@@ -8664,3 +8664,49 @@ R285 留下两条互斥的解释：落地量像「十三到十五行」的行预
 - **键 234**：232 成功后再轮询 `CFG` bit16（同一条理由：rail 的答案只有在 HFI 起来之后才成立）。
 - 读数纪律不变：**每键不超过八行、每行尽量短、判决字段放最前面**。
 - 目标不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧。
+
+## 一百一十二、R288：掩码与流路由都不是那道门 —— 键 143 多出来的其实是「描述符 + CM3 复位」
+
+**112.1 一句话**
+R287 把「填满队列表页」这条路走到头：表建成了、九笔 CB0 都落位、`fsr=00000400` 无 fault，`ctl` bit0 仍然 0 到 200000 拍。本轮把键 143 与键 229 的源码逐笔对比，抽出**两个候选差异**——`GMU2HOST_INTR_MASK = 0xff7fffff` 与「把两个 GMU 流 `SMR0`/`S2CR` 路由进 CB0」——然后用三个键做 2×2：**232 只加掩码、233 只加路由、234 两个都加**。三键的前导与 229 完全相同（同一份从 R287 生成器里原样提取的代码），因此每键只多一味料。结果：**232 的掩码读回 `ff7fffff`、233 的 `SMR0` 读回 `80000004` 且两条 `S2CR` 读回 `00000000`、234 两味料都读回**，而**三键的 `ctl` bit0 全部是 0，200000 拍一次没置起**。所以本轮判死的是这两个候选，剩下的差异被逐笔对照逼出来：**键 143 在复位 CM3 之前先写了 `HFI_QTBL_ADDR` 与 `HFI_QTBL_INFO = 1`，并做了一次 CM3 复位脉冲（`CM3_SYSRESET` 1 → `PWR_COL_CP_RESP = 0` → 0，然后轮询 `FW_INIT_RESULT` 到 `babeface`）**；而 R274 之后的扁平块（含本轮）**把 `HFI_QTBL_INFO` 清成 0、从不写 `QTBL_ADDR`、也从不复位 CM3**。
+
+**112.2 三个键各自问什么**
+- **前导（三键共用，从 `work\tmp\r287_block.py` 的 `PRE` 原样提取，只把 `r229` 改成 `r232`）**：普查行（`ver/qi/qa/smr/s2cr0/st/gd/cf/cx_on`，本轮新增读 `SMR0` 与 `S2CR0`）→ 分配四页 → `adreno_lpae_geometry`/`adreno_table_bytes_needed`/`adreno_table_build`（IOVA `0x2d800000`，2 MiB 叶子）→ `adreno_smmu_ctx_plan` + `adreno_install_absolute` 九笔 CB0 写 → 三页每个条目写成合法描述符 → `dc civac` → 清 `CB_FSR`（`0xc00001feu`）→ `HFI_QTBL_INFO = 0` → `HFI_CTRL_INIT = 1` → 轮询 `ctl` bit0 200000 拍。**这段前导与 R287 键 229 逐字相同**，所以三键之间的差别只有下面那一笔。
+- **键 232（只加掩码）**：在 `HFI_CTRL_INIT` 之前写 `GMU2HOST_INTR_MASK = 0xff7fffff` + `dsb`，之后读回 `mask`、`smr`、`s2cr0`。
+- **键 233（只加路由）**：在 `HFI_CTRL_INIT` 之前写 `SMR0 = 0x80000004`（VALID | SID4，地址 `0x800`）、`S2CR0 = 0x00000000`、`S2CR1 = 0x00000000`（TRANS，地址 `0xc00`/`0xc04`），每笔后 `dsb`，之后读回 `smr`、`s2cr0`、`s2cr1`。
+- **键 234（两者都加）**：掩码与三笔路由都写，读回四字。
+
+**112.3 逐字读数（设备自写）**
+- **键 232**：`boot_id 617805448`、窗口 sha256 `80489848158264b97be83e6043d3fef418979358906df2dbe2569078882f57f3`、4/4 行落地。`gmu232p0=pre=1 ver=00000000 qi=00000001 qa=ad984000 smr=00000000 s2cr0=000200ff st=000000d4 gd=00222001 cf=00088400 cx_on=1`；`gmu232p1=hfi=1 fills=3 build=0 plan=9 ctl=00000000 bit0=0 polls=200000 fsr=00000400 far=00000000`；`gmu232p2=mask_only=1 mask=ff7fffff ctl=00000000 bit0=0 smr=00000000 s2cr0=000200ff`；`gmu232l=mode=232 gd=00222001 cf=00088400 gx_on=0 gxoff=1 ctl=00000000 survived=1`。
+- **键 233**：`boot_id 631616648`、窗口 sha256 `192fce24e6028c45587c2faa81ab8d42f75e6c62316bad1031644250ed154a65`、4/4 行。`gmu233p0=pre=1 ver=00000000 qi=00000001 qa=ad970000 smr=00000000 s2cr0=000200ff st=000000d4 gd=00222001 cf=00088400 cx_on=1`；`gmu233p1=hfi=1 fills=3 build=0 plan=9 ctl=00000000 bit0=0 polls=200000 fsr=00000400 far=00000000`；`gmu233p2=route_only=1 smr=80000004 s2cr0=00000000 s2cr1=00000000 ctl=00000000 bit0=0`；`gmu232l2=mode=233 … survived=1`。
+- **键 234**：`boot_id 618857401`、窗口 sha256 `dc543c3652dd23afd5803d6728dbad8f971e637fb1c5c91417d01607f6381b82`、4/4 行。`gmu234p0=pre=1 ver=00000000 qi=00000001 qa=ad974000 smr=00000000 s2cr0=000200ff st=000000d4 gd=00222001 cf=00088400 cx_on=1`；`gmu234p1=hfi=1 fills=3 build=0 plan=9 ctl=00000000 bit0=0 polls=200000 fsr=00000400 far=00000000`；`gmu234p2=both=1 mask=ff7fffff smr=80000004 s2cr0=00000000 s2cr1=00000000 ctl=00000000 bit0=0`；`gmu232l3=mode=234 … survived=1`。
+
+**112.4 判决**
+1. **掩码不是那道门**：232 的 `mask` 读回 `ff7fffff`（未被硬件钳），`ctl` bit0 仍 0。
+2. **流路由也不是那道门**：233 的三笔都读回落位（`SMR0 = 80000004` = VALID + SID4，两条 `S2CR` = `00000000` = TRANS），`ctl` bit0 仍 0。注意普查行里 `smr=00000000`、`s2cr0=000200ff`，说明这一轮之前**没有任何流被匹配**，路由确实是新加的。
+3. **两者叠加也不是**：234 四字全落位，`ctl` 仍 0。
+4. **于是差异被源码对照逼出来**：今天早些时候键 143 接受 HFI 时（`ctl=00000001 polls=2`），它先做了四件事，而本轮前导一件都没做 —— ① `HFI_QTBL_ADDR = <队列表物理地址>`；② `HFI_QTBL_INFO = 1`（**描述符有效**，不是清的）；③ **`CM3_SYSRESET = 1` → `PWR_COL_CP_RESP = 0` → `CM3_SYSRESET = 0` 的复位脉冲**；④ 轮询 `FW_INIT_RESULT` 到 `babeface`。**也就是说：固件必须在「队列表描述符已就位」的状态下被复位启动**，之后写 `HFI_CTRL_INIT` 才会被受理；R274 之后所有扁平块都是「清描述符 + 不复位」，所以控制字恒 0 —— 这与 R248（清 `FW_INIT_RESULT` 后复位，`babeface` 自己回来）和 R239 键 83（先清 `QTBL_INFO` 再写 INIT 能活）都自洽：**复位是让固件读描述符的唯一窗口**。
+5. **G1 仍未关闭**：三键 `cf=00088400`（bit16=0）、`gd=00222001`、`st=000000d4`（`GX_HM_GDSC_POWER_OFF|GX_HM_CLK_OFF` 都置）；`gx_on=0`。
+
+**112.5 边界与读数陷阱**
+- 本轮三键**都是 4/4 行全落地**，没有碰到日志介质的截断问题（R283–R286 的教训是「行少才安全」，本轮继续遵守：每键四行、行内字段短）。
+- `fsr=00000400` 表示 `TF=0`：**没有 walk fault**，因此「表没被用上」不成立；表确实在，问题在固件未被复位。
+- `smr=00000000` 与 233 的 `smr=80000004` 是同一轮的 before/after，可自证写路径有效。
+- `build=0` 是**成功码**（R287 已记），不是「没构建」。
+- 键 232/233/234 的窗口与 boot_id 三份都不同，`row key detected from stamps` 分别报 `[232]`/`[233]`/`[234]`，不存在串轮。
+
+**112.6 门禁与工具**
+- 生成器 `work\tmp\r288_mkgen.py`：从 `r287_block.py` 用正则 `r'PRE = """(.*?)"""\n\nP2_229'` **原样提取**被键 143 证明过的前导（不重打），把 `r229`→`r232`，并在 `gmuW[r232qiWord] = 0u;` 之前插入占位符 `@EX@`，让每键只加一味料；块其余部分（p0/p1/p2/尾行/三个分支/main）自写。
+- 块与探针：**块 39,226 字符 / 674 行 / opens=79 closes=79**、块内 `gmuW[` **8**、probe **1,648,599 字符 / 27,611 行**；`NEW_HDR` = 232/233/234，`OLD_HDR` = 229/230/231，插在 ladder 前，arm 窗口 `<= 234u`，选择器 `(fwKey >= 234u) ? 234 : ((fwKey >= 233u) ? 233 : 232)`。
+- **本轮修掉的六个生成/门禁缺陷（同类会再犯）**：① `@T` 后紧跟 `@` 当分隔符 ⇒ 产出 `gmu229@p0=`，改成 `@Tp0`；② `pre.count("@T") == 2` 写死（实际 8 个，前导有七个 `refused-*` 行）⇒ 改 `>= 2`；③ 只改 `r229` 前缀没改 `s229`（34 处）⇒ `use of undeclared identifier 's229phys'`；④ 前导里还有 57 处不带 `r` 前缀的 `229` ⇒ `use of undeclared identifier 'g229'`，修法只对 `PRE = """` 到闭合 `"""` 之间做替换（`OLD_HDR` 里的 `229u/230u/231u` 必须保住）；⑤ 手写的 `IOLog(...%s\\n...)` 少一层反斜杠 ⇒ `-Werror,-Winvalid-pp-token`，修法是双反斜杠（12 行）；⑥ 静态门路径只替换 `tail` 不替换 `head` 会**静默读上一轮产物**（R287 踩过），本轮 `work\tmp\r288_mkstatic.py` 两处都换，并把 R287 的 12 行搬进 SURVIVORS、forbidden 换成源码里不存在的 `gmu235a/gmu236a/gmu237a`。
+- 门禁结果：host 门 PASS（25/25 + 51/51 + 32/32）；probe 门 **28/28**（store 预算 **834 → 842**，说明串尾追加 R288 句）；stage4 **61/61**、stage5 **48/48**、stage6 **2218/2218**；全量 `ran 46 of 48, FAILING: 0`；`check_mode_selector.py` **43 selectors / upper 234 / 自证 FAIL / VERDICT PASS**；静态门 `work\tmp\r288_static.py` 对真产物 **PASS**（110 行两边命中、marker kernel=1/payload=2、forbidden 3 条零、固件 32768 B sha 钉住），对 **R287 产物 FAIL 12**。
+- 构建：分支 `r288-mask-route`（base main `fc2181e2dc4e`）、commit `432282be9bd66f8ab354be2ce02e1070b480885a`、CI **#406 run `45277279092` success 28/28**。产物 `r288-kernel\kernel.macho` 126,517,248 B sha256 `f37b8c613218033c298b58f0a407170191ebab2fd521f811e436403bb19328c0`、`r288-payload\payload.img` 150,994,944 B sha256 `0d544396f950f4c3986ae3f79de9dad9ef2554a72f4fa7ffef32be916bbaeb72`。
+- payload 重键（`enchilada-pas-exec=2` → `=23N`）：p232 `2ab0c86588b9451140ad39078b66d51405b11d4c598afbb520cb1d64e240989b`、p233 `3ba2d0204815e15e5cf81ccf87c79aea991614840ed0d619e4f7ba845f8ea038`、p234 `773b36a935bd60cc380148b5854ab5681d036ee2edfe2b5bab113c90287c6e9a`。
+- 每键前 `scripts\check-reboot-to-twrp.py --arm` PASS（boot_a md5 `ca8ddd7a5af345636cad8c5bf645fee2`），每次回 TWRP 后 runner 自跑 `reboot-to-twrp.py --arm-bcb-only`；三次 anchor 交叉核对分别命中 `r287_s231_window.bin`、`r288_s232_window.bin`、`r288_s233_window.bin`。
+
+**112.7 下一步**
+- **键 235**：把键 143 的完整配方搬进本轮前导 —— 建表并填满三页 → `dc civac` → 清 `CB_FSR` → **`HFI_QTBL_ADDR = <页表基址>`、`HFI_QTBL_INFO = 1`** → **`CM3_SYSRESET = 1` → `PWR_COL_CP_RESP = 0` → `CM3_SYSRESET = 0`** → 轮询 `FW_INIT_RESULT` 到 `babeface` → 写 `HFI_CTRL_INIT = 1` → 轮询 `ctl` bit0。**预测 `ctl=00000001 polls=2`**；若成立，「HFI 起不来」这一条从缺口清单里划掉。
+- **键 236**：同 235 但**跳过复位脉冲**（描述符就位、不复位）⇒ 判「复位是否必要」。
+- **键 237**：同 235 但**复位后再把 `QTBL_INFO` 清 0** 才写 INIT ⇒ 判「描述符必须在 INIT 时仍有效」。
+- 读数纪律不变：**每键不超过八行、每行尽量短、判决字段放最前面**；选号前先扫 `gmu\d{3}[a-z]`（已占 100、102–234），forbidden 取 238/239/240。
+- 目标不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧。

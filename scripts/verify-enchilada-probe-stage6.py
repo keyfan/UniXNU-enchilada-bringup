@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 34,
-          'ID1 is re-read at most thirty-five times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182 and 183), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 35,
+          'ID1 is re-read at most thirty-six times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233 and 234), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 231u' in _fw,
+    check('fwKey >= 7u && fwKey <= 234u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 231u)' in code,
+    check('(fwKey >= 7u && fwKey <= 234u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4305,6 +4305,11 @@ def main():
         _k229231 = ''
         if _i229231 > 0:
             _k229231 = code[_i229231:].split(
+                '\nif (fwKey == 232u || fwKey == 233u || fwKey == 234u) {\n', 1)[0]
+        _i232234 = code.find('if (fwKey == 232u || fwKey == 233u || fwKey == 234u) {')
+        _k232234 = ''
+        if _i232234 > 0:
+            _k232234 = code[_i232234:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -7025,6 +7030,94 @@ def main():
     check('const int r229mode = (fwKey >= 231u) ? 231 : ((fwKey >= 230u) ? 230 '
           ': 229);' in code,
           'R287 the mode selector is written out, not flattened into one arm')
+
+    # ---- ROUND 288: mask or routing?  Re-running R260 key 143 today accepted HFI
+    # (ctl bit0 = 1, polls = 2) while keys 229/230/231, with the same table install
+    # and the same nine context-bank writes, were refused for the whole 200000-tick
+    # window.  Key 143 writes GMU2HOST_INTR_MASK = 0xff7fffff immediately before INIT;
+    # its smr_end = 80000004 is not a store by that branch, so routing is the other
+    # candidate.  Keys 232/233/234 add one, the other, and both inside the same
+    # preamble, so the answer cannot be confounded with the table.
+    check(_k232234 != '', 'R288 the mask-and-route keys follow the R287 shapes')
+    _rows288 = ('gmu232p0', 'gmu232p1', 'gmu232p2', 'gmu232l=',
+                'gmu233p0', 'gmu233p1', 'gmu233p2', 'gmu232l2=',
+                'gmu234p0', 'gmu234p1', 'gmu234p2', 'gmu232l3=')
+    check(all(_w in _k232234 for _w in _rows288),
+          'R288 every row of the three keys is formatted: %s'
+          % [w for w in _rows288 if w not in _k232234])
+    check(_k232234.count('gmuW[') == 8,
+          'R288 the three keys carry eight pointer stores: the descriptor clear and '
+          'the INIT store in each key, plus the interrupt mask in 232 and in 234 '
+          '(got %d)' % _k232234.count('gmuW['))
+    check(_k232234.count('0x5184u') == 3 and _k232234.count('0x5186u') == 3,
+          'R288 every key clears the descriptor and writes the INIT word once '
+          '(got %d/%d)' % (_k232234.count('0x5184u'), _k232234.count('0x5186u')))
+    check(_k232234.count('0x5193u') == 2 and _k232234.count('0xff7fffffu') == 2,
+          'R288 only keys 232 and 234 name the interrupt mask and its value '
+          '(got %d/%d)' % (_k232234.count('0x5193u'),
+                           _k232234.count('0xff7fffffu')))
+    check(_k232234.count('0x800u') >= 5 and _k232234.count('0xc04u') >= 4,
+          'R288 the stream match register and both stream-to-context registers are '
+          'named by 233 and 234 only (got %d/%d)'
+          % (_k232234.count('0x800u'), _k232234.count('0xc04u')))
+    check('0x5194u' not in _k232234 and '0x23f8u' not in _k232234,
+          'R288 rings no doorbell and writes no rail vote: the question is HFI '
+          'acceptance alone')
+    check('0x5000u' not in _k232234 and '0x501cu' not in _k232234 and
+          '0xbabeface' not in _k232234,
+          'R288 never pulses the CM3 reset and never waits for the init latch')
+    check(_k232234.count('dc civac') == 3 and
+          _k232234.count('0xc00001feu') == 3,
+          'R288 cleans and clears the table pages once per key (got %d/%d)'
+          % (_k232234.count('dc civac'), _k232234.count('0xc00001feu')))
+    check(_k232234.count('for (r232i = 0ull; r232i < 512ull; ++r232i)') == 3,
+          'R288 fills all three table pages in every key, not just the leaf')
+    check(_k232234.count('IODelay(1u)') == 3,
+          'R288 paces the INIT poll in microseconds in every key (got %d)'
+          % _k232234.count('IODelay(1u)'))
+    check(_k232234.index('if (r232mode == 232u) {') <
+          _k232234.index('} else if (r232mode == 233u) {') <
+          _k232234.index('} else if (r232mode == 234u) {'),
+          'R288 the three keys appear in the order 232, 233, 234')
+    _d232 = _k232234[_k232234.index('if (r232mode == 232u) {'):
+                     _k232234.index('} else if (r232mode == 233u) {')]
+    _d233 = _k232234[_k232234.index('} else if (r232mode == 233u) {'):
+                     _k232234.index('} else if (r232mode == 234u) {')]
+    _d234 = _k232234[_k232234.index('} else if (r232mode == 234u) {'):]
+    check(_d232.count('gmuW[') == 3 and _d233.count('gmuW[') == 2 and
+          _d234.count('gmuW[') == 3,
+          'R288 the mask adds one store to 232 and 234 and nothing to 233 '
+          '(got %d/%d/%d)' % (_d232.count('gmuW['), _d233.count('gmuW['),
+                              _d234.count('gmuW[')))
+    for _tag, _b in (('232', _d232), ('233', _d233), ('234', _d234)):
+        check(_b.index('%sp0=' % _tag) < _b.index('%sp1=' % _tag) <
+              _b.index('%sp2=' % _tag),
+              'R288 key %s prints the census row, then the HFI row, then its own '
+              'readback' % _tag)
+        check(_b.index('adreno_table_build') < _b.index('%sp1=hfi=1' % _tag),
+              'R288 key %s builds the table before it starts the HFI' % _tag)
+        check(_b.index('gmuW[r232iniWord] = 1u;') > _b.index('gmuW[r232qiWord] = 0u;'),
+              'R288 key %s clears the descriptor before writing the INIT word' % _tag)
+    check(_d232.index('gmuW[r232maskWord] = 0xff7fffffu;') <
+          _d232.index('gmuW[r232iniWord] = 1u;'),
+          'R288 key 232 writes the interrupt mask BEFORE the INIT word, exactly the '
+          'order key 143 used')
+    check(_d233.count('0xff7fffffu') == 0 and
+          _d233.index('0x800u) = 0x80000004u') < _d233.index('gmuW[r232iniWord] = 1u;'),
+          'R288 key 233 writes the stream match register before the INIT word and '
+          'never touches the interrupt mask')
+    check(_d234.count('gmuW[r232maskWord] = 0xff7fffffu;') == 1 and
+          _d234.count('0x800u) = 0x80000004u') == 1,
+          'R288 key 234 carries both ingredients exactly once')
+    check('survived=1' in _d232 and 'survived=1' in _d233 and 'survived=1' in _d234,
+          'R288 every key keeps the survival flag')
+    check('bit0=%u' in _k232234 and 'polls=%u' in _k232234 and 'ctl=%08x' in _k232234,
+          'R288 reports the control word, its accept bit and how many polls it took')
+    check('mask=%08x' in _k232234 and 'smr=%08x' in _k232234,
+          'R288 reports the interrupt mask and the stream match register back')
+    check('const int r232mode = (fwKey >= 234u) ? 234 : ((fwKey >= 233u) ? 233 '
+          ': 232);' in code,
+          'R288 the mode selector is written out, not flattened into one arm')
     check('const int r199mode = (fwKey >= 201u) ? 201 : ((fwKey >= 200u) ? 200 '
           ': 199);' in code,
           'R279 the mode selector is written out, not flattened into one arm')
