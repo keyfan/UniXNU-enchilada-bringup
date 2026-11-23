@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            ((fwKey >= 7u && fwKey <= 192u));
+                            ((fwKey >= 7u && fwKey <= 195u));
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -22439,6 +22439,224 @@ if (fwKey == 190u || fwKey == 191u || fwKey == 192u) {
                      (unsigned)((r190st2 & 0x000000c0u) != 0u),
                      (unsigned)r190ack, (unsigned)r190in2);
             IOLog("enchilada-adreno: %s\n", r190RowL3);
+    }
+}
+
+if (fwKey == 193u || fwKey == 194u || fwKey == 195u) {
+    const int r193mode = (fwKey >= 195u) ? 195 : ((fwKey >= 194u) ? 194 : 193);
+    uint32_t r193ver1 = 0u, r193ctl1 = 0u, r193hv1 = 0u, r193sfr1 = 0u;
+    uint32_t r193mm1 = 0u, r193qi1 = 0u, r193qa1 = 0u;
+    uint32_t r193ini = 0u, r193ifo = 0u, r193sr1 = 0u, r193fw1 = 0u;
+    uint32_t r193st1 = 0u, r193gd1 = 0u, r193cf1 = 0u;
+    uint32_t r193ctl2 = 0u, r193qa2 = 0u, r193in2 = 0u;
+    uint32_t r193st2 = 0u, r193gd2 = 0u, r193cf2 = 0u;
+    uint32_t r193in1 = 0u;
+    uint32_t r193ack = 0u, r193pw = 0u;
+    uint32_t r193ipw = 0u, r193ctlw = 0u;
+    char r193RowP0[320];
+    char r193RowP1[320];
+    char r193RowP2[320];
+    char r193RowL[320];
+    char r193RowL2[320];
+    char r193RowL3[320];
+    if (r193mode == 193) {
+    const uint32_t r193verWord = 0x2bf8u;   /* CM3_DTCM_START + 0xff8, fw version */
+    const uint32_t r193ctlWord = 0x5180u;   /* GMU_HFI_CTRL_STATUS */
+    const uint32_t r193hvWord = 0x5181u;    /* GMU_HFI_VERSION_INFO */
+    const uint32_t r193sfrWord = 0x5182u;   /* GMU_HFI_SFR_ADDR */
+    const uint32_t r193mmWord = 0x5183u;    /* GMU_HFI_MMAP_ADDR */
+    const uint32_t r193qiWord = 0x5184u;    /* GMU_HFI_QTBL_INFO */
+    const uint32_t r193qaWord = 0x5185u;    /* GMU_HFI_QTBL_ADDR */
+    const uint32_t r193iniWord = 0x5186u;   /* GMU_HFI_CTRL_INIT */
+    const uint32_t r193infoWord = 0x5192u;  /* GMU_GMU2HOST_INTR_INFO */
+    const uint32_t r193stWord = 0x50d0u;    /* GMU_SPTPRAC_PWR_CLK_STATUS */
+    const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+    const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+    const uint32_t r193srWord = 0x5000u;    /* GMU_CM3_SYSRESET */
+    const uint32_t r193fwWord = 0x501cu;    /* GMU_CM3_FW_INIT_RESULT */
+    r193ver1 = rd32(sGmuFwVa, r193verWord * 4u);
+    r193ctl1 = rd32(sGmuFwVa, r193ctlWord * 4u);
+    r193hv1 = rd32(sGmuFwVa, r193hvWord * 4u);
+    r193sfr1 = rd32(sGmuFwVa, r193sfrWord * 4u);
+    r193mm1 = rd32(sGmuFwVa, r193mmWord * 4u);
+    r193qi1 = rd32(sGmuFwVa, r193qiWord * 4u);
+    r193qa1 = rd32(sGmuFwVa, r193qaWord * 4u);
+    r193ini = rd32(sGmuFwVa, r193iniWord * 4u);
+    r193sr1 = rd32(sGmuFwVa, r193srWord * 4u);
+    r193fw1 = rd32(sGmuFwVa, r193fwWord * 4u);
+    r193ifo = rd32(sGmuFwVa, r193infoWord * 4u);
+    r193st1 = rd32(sGmuFwVa, r193stWord * 4u);
+    r193gd1 = rd32(sGmuFwVa, gdscrWord * 4u);
+    r193cf1 = rd32(sGmuFwVa, cfgWord * 4u);
+            snprintf(r193RowP0, sizeof r193RowP0,
+                     "gmu193p0=identity=1 ver=%08x ctl=%08x hv=%08x sfr=%08x mmap=%08x qinfo=%08x qaddr=%08x init=%08x sr=%08x fw=%08x info=%08x st=%08x gxoff=%d gd=%08x cf=%08x",
+                     (unsigned)r193ver1, (unsigned)r193ctl1,
+                             (unsigned)r193hv1, (unsigned)r193sfr1,
+                             (unsigned)r193mm1, (unsigned)r193qi1,
+                             (unsigned)r193qa1, (unsigned)r193ini,
+                             (unsigned)r193sr1, (unsigned)r193fw1,
+                             (unsigned)r193ifo, (unsigned)r193st1,
+                             (unsigned)((r193st1 & 0x000000c0u) != 0u),
+                             (unsigned)r193gd1, (unsigned)r193cf1);
+            IOLog("enchilada-adreno: %s\n", r193RowP0);
+    r193gd2 = r193gd1;
+    r193cf2 = r193cf1;
+    r193st2 = r193st1;
+    r193ack = 0u;
+    r193in2 = r193ifo;
+            snprintf(r193RowL, sizeof r193RowL,
+                     "gmu193l=mode=%d gd=%08x cf=%08x gx_on=%d "
+                     "gxoff=%d ack=%u info=%08x survived=1",
+                     r193mode,
+                     (unsigned)r193gd2, (unsigned)r193cf2,
+                     (unsigned)((r193cf2 & 0x00010000u) != 0u),
+                     (unsigned)((r193st2 & 0x000000c0u) != 0u),
+                     (unsigned)r193ack, (unsigned)r193in2);
+            IOLog("enchilada-adreno: %s\n", r193RowL);
+    } else if (r193mode == 194) {
+    const uint32_t r193setWord = 0x5194u;   /* GMU_HOST2GMU_INTR_SET */
+    const uint32_t r193clrWord = 0x5191u;   /* GMU_GMU2HOST_INTR_CLR */
+    const uint32_t r193infoWord = 0x5192u;  /* GMU_GMU2HOST_INTR_INFO */
+    const uint32_t r193ctlWord = 0x5180u;   /* GMU_HFI_CTRL_STATUS */
+    const uint32_t r193qaWord = 0x5185u;    /* GMU_HFI_QTBL_ADDR */
+    const uint32_t r193stWord = 0x50d0u;    /* GMU_SPTPRAC_PWR_CLK_STATUS */
+    const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+    const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+    r193ctl1 = rd32(sGmuFwVa, r193ctlWord * 4u);
+    r193qa1 = rd32(sGmuFwVa, r193qaWord * 4u);
+    r193in1 = rd32(sGmuFwVa, r193infoWord * 4u);
+    r193st1 = rd32(sGmuFwVa, r193stWord * 4u);
+    r193gd1 = rd32(sGmuFwVa, gdscrWord * 4u);
+    r193cf1 = rd32(sGmuFwVa, cfgWord * 4u);
+            snprintf(r193RowP0, sizeof r193RowP0,
+                     "gmu194p0=pre=1 ctl=%08x info=%08x qaddr=%08x st=%08x gxoff=%d gd=%08x cf=%08x",
+                     (unsigned)r193ctl1, (unsigned)r193in1,
+                             (unsigned)r193qa1, (unsigned)r193st1,
+                             (unsigned)((r193st1 & 0x000000c0u) != 0u),
+                             (unsigned)r193gd1, (unsigned)r193cf1);
+            IOLog("enchilada-adreno: %s\n", r193RowP0);
+    __asm__ volatile("dsb sy" ::: "memory");
+    gmuW[r193setWord] = 0x00000001u;   /* 1 << 0 */
+    __asm__ volatile("dsb sy" ::: "memory");
+    r193ack = 0u;
+    r193pw = 0u;
+    for (r193pw = 0u; r193pw < 100u; ++r193pw) {
+        r193in2 = rd32(sGmuFwVa, r193infoWord * 4u);
+        if ((r193in2 & 0x00000001u) != 0u) {
+            r193ack = 1u;
+            break;
+        }
+        IODelay(100u);
+    }
+    gmuW[r193clrWord] = 0x00000001u;   /* 1 << 0, the clear mainline does anyway */
+    __asm__ volatile("dsb sy" ::: "memory");
+    r193ctl2 = rd32(sGmuFwVa, r193ctlWord * 4u);
+    r193qa2 = rd32(sGmuFwVa, r193qaWord * 4u);
+    r193in2 = rd32(sGmuFwVa, r193infoWord * 4u);
+    r193st2 = rd32(sGmuFwVa, r193stWord * 4u);
+    r193gd2 = rd32(sGmuFwVa, gdscrWord * 4u);
+    r193cf2 = rd32(sGmuFwVa, cfgWord * 4u);
+            snprintf(r193RowP1, sizeof r193RowP1,
+                     "gmu194p1=msgq=1 ack=%u info=%08x ctl=%08x qaddr=%08x st=%08x gxoff=%d gd=%08x cf=%08x polls=%u",
+                     (unsigned)r193ack, (unsigned)r193in2,
+                             (unsigned)r193ctl2, (unsigned)r193qa2,
+                             (unsigned)r193st2,
+                             (unsigned)((r193st2 & 0x000000c0u) != 0u),
+                             (unsigned)r193gd2, (unsigned)r193cf2,
+                             (unsigned)r193pw);
+            IOLog("enchilada-adreno: %s\n", r193RowP1);
+            snprintf(r193RowL2, sizeof r193RowL2,
+                     "gmu193l2=mode=%d gd=%08x cf=%08x gx_on=%d "
+                     "gxoff=%d ack=%u info=%08x survived=1",
+                     r193mode,
+                     (unsigned)r193gd2, (unsigned)r193cf2,
+                     (unsigned)((r193cf2 & 0x00010000u) != 0u),
+                     (unsigned)((r193st2 & 0x000000c0u) != 0u),
+                     (unsigned)r193ack, (unsigned)r193in2);
+            IOLog("enchilada-adreno: %s\n", r193RowL2);
+    } else if (r193mode == 195) {
+    const uint32_t r193verWord = 0x2bf8u;   /* CM3_DTCM_START + 0xff8, fw version */
+    const uint32_t r193setWord = 0x5194u;   /* GMU_HOST2GMU_INTR_SET */
+    const uint32_t r193clrWord = 0x5191u;   /* GMU_GMU2HOST_INTR_CLR */
+    const uint32_t r193infoWord = 0x5192u;  /* GMU_GMU2HOST_INTR_INFO */
+    const uint32_t r193iniWord = 0x5186u;   /* GMU_HFI_CTRL_INIT */
+    const uint32_t r193ctlWord = 0x5180u;   /* GMU_HFI_CTRL_STATUS */
+    const uint32_t r193qaWord = 0x5185u;    /* GMU_HFI_QTBL_ADDR */
+    const uint32_t r193stWord = 0x50d0u;    /* GMU_SPTPRAC_PWR_CLK_STATUS */
+    const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+    const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+    r193ctl1 = rd32(sGmuFwVa, r193ctlWord * 4u);
+    r193qa1 = rd32(sGmuFwVa, r193qaWord * 4u);
+    r193in1 = rd32(sGmuFwVa, r193infoWord * 4u);
+    r193st1 = rd32(sGmuFwVa, r193stWord * 4u);
+    r193gd1 = rd32(sGmuFwVa, gdscrWord * 4u);
+    r193cf1 = rd32(sGmuFwVa, cfgWord * 4u);
+    r193ver1 = rd32(sGmuFwVa, r193verWord * 4u);
+            snprintf(r193RowP0, sizeof r193RowP0,
+                     "gmu195p0=pre=1 ctl=%08x info=%08x ver=%08x st=%08x gxoff=%d gd=%08x cf=%08x",
+                     (unsigned)r193ctl1, (unsigned)r193in1,
+                             (unsigned)r193ver1, (unsigned)r193st1,
+                             (unsigned)((r193st1 & 0x000000c0u) != 0u),
+                             (unsigned)r193gd1, (unsigned)r193cf1);
+            IOLog("enchilada-adreno: %s\n", r193RowP0);
+    gmuW[r193iniWord] = 1u;
+    __asm__ volatile("dsb sy" ::: "memory");
+    r193ctlw = 0u;
+    r193ipw = 0u;
+    for (r193ipw = 0u; r193ipw < 2000u; ++r193ipw) {
+        r193ctl2 = rd32(sGmuFwVa, r193ctlWord * 4u);
+        if ((r193ctl2 & 0x00000001u) != 0u) {
+            r193ctlw = 1u;
+            break;
+        }
+        IODelay(1u);
+    }
+    r193in2 = rd32(sGmuFwVa, r193infoWord * 4u);
+            snprintf(r193RowP1, sizeof r193RowP1,
+                     "gmu195p1=init=1 wrote=1 ctl=%08x latched=%u info=%08x polls=%u",
+                     (unsigned)r193ctl2, (unsigned)r193ctlw,
+                             (unsigned)r193in2, (unsigned)r193ipw);
+            IOLog("enchilada-adreno: %s\n", r193RowP1);
+    __asm__ volatile("dsb sy" ::: "memory");
+    gmuW[r193setWord] = 0x00000001u;   /* 1 << 0 */
+    __asm__ volatile("dsb sy" ::: "memory");
+    r193ack = 0u;
+    r193pw = 0u;
+    for (r193pw = 0u; r193pw < 100u; ++r193pw) {
+        r193in2 = rd32(sGmuFwVa, r193infoWord * 4u);
+        if ((r193in2 & 0x00000001u) != 0u) {
+            r193ack = 1u;
+            break;
+        }
+        IODelay(100u);
+    }
+    gmuW[r193clrWord] = 0x00000001u;   /* 1 << 0, the clear mainline does anyway */
+    __asm__ volatile("dsb sy" ::: "memory");
+    r193qa2 = rd32(sGmuFwVa, r193qaWord * 4u);
+    r193ctl2 = rd32(sGmuFwVa, r193ctlWord * 4u);
+    r193qa2 = rd32(sGmuFwVa, r193qaWord * 4u);
+    r193in2 = rd32(sGmuFwVa, r193infoWord * 4u);
+    r193st2 = rd32(sGmuFwVa, r193stWord * 4u);
+    r193gd2 = rd32(sGmuFwVa, gdscrWord * 4u);
+    r193cf2 = rd32(sGmuFwVa, cfgWord * 4u);
+            snprintf(r193RowP2, sizeof r193RowP2,
+                     "gmu195p2=msgq_after_init=1 ack=%u info=%08x ctl=%08x qaddr=%08x st=%08x gxoff=%d gd=%08x cf=%08x polls=%u",
+                     (unsigned)r193ack, (unsigned)r193in2,
+                             (unsigned)r193ctl2, (unsigned)r193qa2,
+                             (unsigned)r193st2,
+                             (unsigned)((r193st2 & 0x000000c0u) != 0u),
+                             (unsigned)r193gd2, (unsigned)r193cf2,
+                             (unsigned)r193pw);
+            IOLog("enchilada-adreno: %s\n", r193RowP2);
+            snprintf(r193RowL3, sizeof r193RowL3,
+                     "gmu193l3=mode=%d gd=%08x cf=%08x gx_on=%d "
+                     "gxoff=%d ack=%u info=%08x survived=1",
+                     r193mode,
+                     (unsigned)r193gd2, (unsigned)r193cf2,
+                     (unsigned)((r193cf2 & 0x00010000u) != 0u),
+                     (unsigned)((r193st2 & 0x000000c0u) != 0u),
+                     (unsigned)r193ack, (unsigned)r193in2);
+            IOLog("enchilada-adreno: %s\n", r193RowL3);
     }
 }
 

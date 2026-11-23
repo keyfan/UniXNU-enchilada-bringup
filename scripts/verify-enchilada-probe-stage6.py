@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 192u' in _fw,
+    check('fwKey >= 7u && fwKey <= 195u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 192u)' in code,
+    check('(fwKey >= 7u && fwKey <= 195u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4250,6 +4250,11 @@ def main():
         _k190192 = ''
         if _i190192 > 0:
             _k190192 = code[_i190192:].split(
+                '\nif (fwKey == 193u || fwKey == 194u || fwKey == 195u) {\n', 1)[0]
+        _i193195 = code.find('if (fwKey == 193u || fwKey == 194u || fwKey == 195u) {')
+        _k193195 = ''
+        if _i193195 > 0:
+            _k193195 = code[_i193195:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -5920,6 +5925,101 @@ def main():
                      ('gmu190l3', _b192)):
         check('survived=1' in _b and _tag + '=' in _b,
               'R276 %s keeps the survival flag' % _tag)
+
+    # ---- ROUND 277: what the firmware is, and does it take HFI work -----------
+    # R276 showed no out-of-band message is acknowledged, every doorbell raises
+    # CM3_FAULT (bit 23) with all AO fault sources clear, and RPMH_POWER_STATE
+    # already reads 0x0f.  R277 stops ringing out-of-band bits: it reads the
+    # firmware version word a6xx_gmu_start() itself branches on
+    # (GMU_CM3_DTCM_START + 0xff8), then rings the HFI MESSAGE doorbell (MSGQ,
+    # bit 0) instead -- with and without the HFI start handshake in front of it.
+    check(_k193195 != '', 'R277 the identity block follows the R276 block')
+    _rows277 = ('gmu193p0', 'gmu193l',
+                'gmu194p0', 'gmu194p1', 'gmu193l2',
+                'gmu195p0', 'gmu195p1', 'gmu195p2', 'gmu193l3')
+    check(all(_w + '=' in _k193195 for _w in _rows277),
+          'R277 every identity row is formatted: %s'
+          % [w for w in _rows277 if w + '=' not in _k193195])
+    check(_k193195.count('gmuW[') == 5,
+          'R277 the block holds exactly five stores: none in the identity key, '
+          'two in the MSGQ key and three in the key that starts HFI first '
+          '(got %d)' % _k193195.count('gmuW['))
+    check(_k193195.count('0x2bf8u') == 2,
+          'R277 the firmware version word is declared in both keys that read it, '
+          'and it is the one a6xx_gmu_start() branches on '
+          '(got %d)' % _k193195.count('0x2bf8u'))
+    check(_k193195.count('0x5180u') == 3 and _k193195.count('0x5185u') == 3 and
+          _k193195.count('0x5192u') == 3,
+          'R277 every key reads the HFI control status, the queue-table address '
+          'and the interrupt word, so the before/after pair is always complete '
+          '(got %d/%d/%d)' % (_k193195.count('0x5180u'),
+                              _k193195.count('0x5185u'),
+                              _k193195.count('0x5192u')))
+    check(_k193195.count('0x5181u') == 1 and _k193195.count('0x5182u') == 1 and
+          _k193195.count('0x5183u') == 1 and _k193195.count('0x5184u') == 1,
+          'R277 only the read-only identity key takes the HFI version, SFR, '
+          'mapping and queue-table info words')
+    check(_k193195.count('0x5186u') == 2 and _k193195.count('0x5000u') == 1 and
+          _k193195.count('0x501cu') == 1,
+          'R277 declares HFI_CTRL_INIT twice (the identity key reads it, the '
+          'handshake key writes it) and reads the reset and init-result words '
+          'once each')
+    check('gmuW[r193srWord]' not in _k193195 and
+          'gmuW[r193fwWord]' not in _k193195 and
+          '0xbabefaceu' not in _k193195,
+          'R277 never pulses the CM3 reset and never waits for the init latch: '
+          'the firmware that is already running is the one being asked')
+    check(_k193195.count('gmuW[r193setWord] = 0x00000001u;') == 2 and
+          _k193195.count('gmuW[r193clrWord] = 0x00000001u;') == 2,
+          'R277 both doorbell keys ring MSGQ (bit 0) and clear the same bit, '
+          'which is the message-queue pair and not an out-of-band request '
+          '(got %d/%d)' % (_k193195.count('gmuW[r193setWord] = 0x00000001u;'),
+                           _k193195.count('gmuW[r193clrWord] = 0x00000001u;')))
+    check('gmuW[r193iniWord] = 1u;' in _k193195,
+          'R277 key 195 writes HFI_CTRL_INIT once, which is the first half of '
+          'a6xx_gmu_hfi_start()')
+    check(_k193195.count('0x00000001u') == 7,
+          'R277 tests the MSGQ bit and the HFI latch bit in the right places: two '
+          'doorbell stores, two acknowledge compares and the HFI latch poll '
+          '(got %d)' % _k193195.count('0x00000001u'))
+    check(_k193195.count('IOSleep') == 0,
+          'R277 never sleeps the writer round away')
+    check(_k193195.count('IODelay(100u)') == 2 and
+          _k193195.count('IODelay(1u)') == 1,
+          'R277 paces each MSGQ poll in ten-millisecond steps and the HFI latch '
+          'poll in one-microsecond steps (got %d/%d)'
+          % (_k193195.count('IODelay(100u)'), _k193195.count('IODelay(1u)')))
+    check(_k193195.index('if (r193mode == 193) {') <
+          _k193195.index('} else if (r193mode == 194) {') <
+          _k193195.index('} else if (r193mode == 195) {'),
+          'R277 the three keys appear in the order 193, 194, 195')
+    _c193 = _k193195[_k193195.index('if (r193mode == 193) {'):
+                     _k193195.index('} else if (r193mode == 194) {')]
+    _c194 = _k193195[_k193195.index('} else if (r193mode == 194) {'):
+                     _k193195.index('} else if (r193mode == 195) {')]
+    _c195 = _k193195[_k193195.index('} else if (r193mode == 195) {'):]
+    check(_c193.count('gmuW[') == 0,
+          'R277 key 193 writes nothing at all: it is the read-only identity key '
+          '(got %d stores)' % _c193.count('gmuW['))
+    check(_c193.count('rd32(') >= 14,
+          'R277 key 193 takes the full identity census in one pass')
+    check(_c194.count('gmuW[') == 2,
+          'R277 key 194 carries only the MSGQ store and its clear (got %d)'
+          % _c194.count('gmuW['))
+    check('0x5186u' not in _c194 and 'gmuW[r193iniWord]' not in _c194,
+          'R277 key 194 never touches HFI_CTRL_INIT at all, so the difference '
+          'against key 195 is that one store and the handshake in front of it')
+    check(_c195.count('gmuW[') == 3,
+          'R277 key 195 carries the HFI init write and the same doorbell pair '
+          '(got %d)' % _c195.count('gmuW['))
+    check(_c195.index('gmuW[r193iniWord] = 1u;') <
+          _c195.index('gmuW[r193setWord] = 0x00000001u;'),
+          'R277 key 195 inits the HFI before it rings the doorbell, which is the '
+          'a6xx_gmu_hfi_start() then a6xx_hfi_queue_write() order')
+    for _tag, _b in (('gmu193l', _c193), ('gmu193l2', _c194),
+                     ('gmu193l3', _c195)):
+        check('survived=1' in _b and _tag + '=' in _b,
+              'R277 %s keeps the survival flag' % _tag)
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:

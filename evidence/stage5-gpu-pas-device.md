@@ -8126,3 +8126,45 @@ CI #393（run `45147220617`）success 28/28。取件拍平：kernel.macho 126,48
 
 **100.12 工具事实**
 一是判定脚本取字段时**必须确认那一行真的有这个键**：本轮把 `gx_on` 从 `gmu190p1`（其格式串没有 `gx_on`）里取，`field()` 的正则跨到别的行才侥幸没有误命中，结果打印了 `gx_on None` 并因此重跑一次——修法是从真正带该键的尾行取。二是 `r214_par.py` 的 needle 是**单个子串**匹配（artifact 名 `unixnu-enchilada_defconfig-kernel` / `..._defconfig-payload`），必须分别传 `"defconfig-kernel"` / `"defconfig-payload"`。三是静态门的 survivors 必须用**历史轮次真实打印过的格式串**：第一版把 R275 的 `gmu187l*` 误写成带 `gxoff` 的本轮尾行格式，静态门立刻报「不是源码里的连续行」——这正是它该做的事。四是 `python -c` 里带引号或中文在 PowerShell 下必报 `TerminatorExpectedAtEndOfString`，一律先写 `.py`。五是块内第三个分支是 `} else if (r190mode == 192) {`（不是裸 `} else {`），切片与计数断言都按实际写法查。
+
+## 一百零一、R277：固件是什么、以及消息队列的门铃也没人取——写 `HFI_CTRL_INIT` 反而让整块死在提交之前
+
+**101.1 一句话**
+R276 把「带外门铃整块不被服务」钉住之后，本轮不再换门铃，改写**固件身份与 HFI 消息通路**：只读普查 CM3 的版本字与全部 HFI 字（键 193），敲 HFI 的**消息**门铃 `MSGQ`（bit 0，不是任何带外位；键 194），再按上游 `a6xx_gmu_hfi_start()` 的前半段先写 `HFI_CTRL_INIT=1` 等 `HFI_CTRL_STATUS` bit0 落位、然后敲同一条消息门铃（键 195）。结论三句：**①固件自报的版本字是 `00000000`**（不是任何上游认识的修订版），而 `HFI_CTRL_INIT` 读 0、`HFI_CTRL_STATUS` 读 0、`HFI_VERSION_INFO` 读 0，只有队列表描述符 `qinfo=00000001` 与队列表地址 `qaddr=ad970000` 有值；**②消息门铃同样无人应答**——bit0 在 10 ms 窗口里一次没置起，而 `CM3_FAULT`(bit23) 照旧被敲门抬出来，说明这块固件**既不服务带外位、也不服务消息环**；**③把 `HFI_CTRL_INIT` 写成 1 会让整块死在提交之前**：键 195 连跑两次都是**零字节**（窗口与上一键逐字节相同、连 `boot_id` 都没换），也就是说那一笔 store 之后系统没能走到日志提交。
+ 
+**101.2 为什么改问「固件是什么」与「消息环有没有人取」**
+R275/R276 已经排除了 vote 数值、时钟前置、AON clamp 时序与「CM3 是否刚起来」这几类解释，剩下的候选只有两条：这颗固件**没有实现**带外服务，或者它实现了但**只服务它自己的消息环**（HFI）。要分开这两条，先得知道「它是什么」：上游 `a6xx_gmu_start()` 启动前就读 `GMU_CM3_DTCM_START + 0xff8` 这个版本字，并按它是否 `<= 0x20010004` 选择 `0xffffffff/0xbabeface` 还是 `0x1ff/0x100` 的初始化方案——我们一直读到的 `0xbabeface` 属于**老方案**，可这个判断从没被验证过，因为那个字从没读过。其次要问「消息环」：`a6xx_hfi_queue_write()` 把消息放进环形缓冲后抬的就是 `HOST2GMU_INTR_SET` 的 `MSGQ` 位（bit 0），这条位与带外四位**不重叠**，所以敲它是与 R275/R276 完全正交的一次探针；而 R261/R262 只证明过队列页里躺着两条记录，从没证明 CM3 读过它。
+
+**101.3 代码形状**
+探针块 11,420 字符 / 218 行，braces 净 0（opens=10 closes=10）；块内 `gmuW[` **5 笔**——键 193 **零写**，键 194 两笔（`HOST2GMU_INTR_SET` 写 `0x00000001u`(MSGQ)、`GMU2HOST_INTR_CLR` 写同值清），键 195 三笔（`HFI_CTRL_INIT` 写 `0x00000001u`、同一条消息门铃、同值清）。`IODelay(1u)` 1 处（init 等待 2000 次）、`IODelay(100u)` 2 处（两键的 100 × 100 µs = 10 ms 应答窗口）。本块**不重启 CM3**（`CM3_SYSRESET`/`CM3_FW_INIT_RESULT` 只作为只读行出现，`0x5000u`/`0x501cu` 各 1 次、`0xbabefaceu` 0 次），不写中断掩码、不碰 SMMU 表、不用空转买时间。用到的 dword 索引（来源钉住的上游 `drivers/gpu/drm/msm/registers/adreno/a6xx_gmu.xml`，基址 `0x0506a000`、size `0x30000`）：`GMU_CM3_DTCM_START 0x1c00`（版本字 = `0x1c00 + 0xff8` = `0x2bf8`）、`GMU_HFI_CTRL_STATUS 0x5180`、`GMU_HFI_VERSION_INFO 0x5181`、`GMU_HFI_SFR_ADDR 0x5182`、`GMU_HFI_MMAP_ADDR 0x5183`、`GMU_HFI_QTBL_INFO 0x5184`、`GMU_HFI_QTBL_ADDR 0x5185`、`GMU_HFI_CTRL_INIT 0x5186`、`GMU_GMU2HOST_INTR_INFO 0x5192`（`MSGQ` pos 0、`CM3_FAULT` pos 23）、`GMU_HOST2GMU_INTR_SET 0x5194`、`GMU_GMU2HOST_INTR_CLR 0x5191`、`GMU_CM3_SYSRESET 0x5000`、`GMU_CM3_FW_INIT_RESULT 0x501c`、`GMU_SPTPRAC_PWR_CLK_STATUS 0x50d0`（bit6 `GX_HM_GDSC_POWER_OFF`、bit7 `GX_HM_CLK_OFF`）、`GPU_CC_GX_GDSCR 0x9c03`、GDSCR 状态 = `0x9c04`。三键：**193** 只读身份普查；**194** 敲消息门铃（CM3 原样）；**195** 先写 init 再敲同一条门铃。
+
+**101.4 构建与门禁**
+CI #394（run `45159446166`）success 28/28（`HEAD_SHA 056130abf2c2c151f2e183268c4a2aa79c318c27`，分支 `r277-identity` commit `522523cb66dde5c6235d50acd636812f77d34c8b`、tree `7b35899fac503f673e2de3f4baa269fcfc65a5e3`，base main `1615519a97b08eb06a169ebb0eb211227cf2b0f6`）。取件拍平：kernel.macho 126,484,480 B sha256 `370faeed64614162fdd3ff9d8c99ce8a349923e4af2a7d81942851ca31f28778`，payload.img 150,994,944 B sha256 `a7e31a3d6e74a20b5734c2e07c9e0acca25ce5e53f2d50ef92e77ca2e89b2ccc`。静态门 `r277_static.py` 对真产物 **PASS**（22 行 required+survivors 在 kernel 与 payload 里都命中；marker kernel=1 / payload=2；forbidden `gmu196a=`/`gmu197a=`/`gmu198a=` 全零；固件 32768 B sha `b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f` 钉住），对 R276 产物 **FAIL 9 problems**（9 条本轮行全 kernel=0 payload=0）——门的区分能力自证成立。host 门 32/32；probe 门 28/28，store 计数由 777 抬到 **782**（本轮 +5）；stage4 61/61、stage5 48/48、stage6 1908/1908；全量 `r239_allgates.py` ran 46 of 48 FAILING 0；`check_mode_selector.py` 32 selectors、上界 195、自证 FAIL、VERDICT PASS。三份 payload 各自重键（`enchilada-pas-exec=2` → `=193/194/195`），sha256 分别 `3a615ba854a8454d4c304e14677da98bad7391161fadd7a68bb923ee5dc3a647`、`077ea2f0b2772bb9c64e810ee4db3f37451cac8aa18ef76439fd508b05addda0`、`56d9012104c72ffdb4406a43e07f26e3f7091ab161306079230609ae26d6ba27`；每键上机前 `check-reboot-to-twrp.py --arm` PASS（boot_a md5 `ca8ddd7a5af345636cad8c5bf645fee2`）。
+
+**101.5 键 193：固件自报的版本字是零，HFI 只有队列表有值**
+`boot_id 584756099`、窗口 sha256 `fa95135a61ebdbb63be0f026401a9a974e925c0bdd3d55baec64eda34ea644ca`，2/2 行，零写入。逐字：`gmu193p0=identity=1 ver=00000000 ctl=00000000 hv=00000000 sfr=06030100 mmap=00000000 qinfo=00000001 qaddr=ad970000 init=00000000 sr=00000000 fw=babeface info=00000000 st=000000d4 gxoff=1 gd=00222001 cf=00088400`；`gmu193l=mode=193 gd=00222001 cf=00088400 gx_on=0 gxoff=1 ack=0 info=00000000 survived=1`。读法：**版本字 `0x2bf8` 读 0**——它不是某一个上游修订版，而是**没有值**；于是 `a6xx_gmu_start()` 里那个「`<= 0x20010004` 就用 `0xbabeface`」的分支在我们这里**等于永远满足**（0 当然 ≤ 该常数），我们一直读到的 `0xbabeface` 与「固件是哪一版」之间**没有任何已被验证的联系**。`sfr=06030100` 与 R247 读到的「芯片号字」是同一个数，`hv=0`、`mmap=0` ⇒ HFI 侧除了 `qinfo=00000001`（队列表**已描述**）与 `qaddr=ad970000`（表**有地址**）之外，其余全是零：`HFI_CTRL_STATUS` bit0 = 0（HFI 从未被报告为启动），`HFI_CTRL_INIT` = 0（我们从未写过，也没人有替我们写过），`CM3_SYSRESET`=0、`fw=babeface` 在位、`st=000000d4`（bit6/bit7 置起 ⇒ `gx_on=0`）。
+
+**101.6 键 194：消息门铃也没人取，fault 位照旧被抬出来**
+`boot_id 585406562`、窗口 sha256 `33e8ed83763823fc3df8a4c49763d8a2acdcf763399b1c3c8954eebc33b9f0fe`，3/3 行。门铃前 `gmu194p0=pre=1 ctl=00000000 info=00000000 qaddr=ad980000 st=000000d4 gxoff=1 gd=00222001 cf=00088400`；敲 `MSGQ`（bit0）后 `gmu194p1=msgq=1 ack=0 info=00800000 ctl=00000000 qaddr=ad980000 st=000000d4 gxoff=1 gd=00222001 cf=00088400 polls=100`；尾行 `gx_on 0`。读法：**`ack=0` ⇒ `GMU2HOST_INTR_INFO` 的 bit0 在 10 ms 里没置起**——消息门铃与带外四位一样没人取；`info` 从 `00000000` 变成 `00800000`（bit23 `CM3_FAULT`）⇒ **连消息门铃都能把它敲出来**，这把 R276 的「每次写 `HOST2GMU_INTR_SET` 都有这一位」推广到了整块请求字；`qaddr` 前后都是 `ad980000`（本键自己分配的地址）⇒ 队列表没有被消费者动过；`ctl=0`、`cf` bit16=0 不动 ⇒ 消息门铃同样不推进 GX 上电。（判定脚本在本键打印了一句语法走样的英文 `the doorbell did not left its own bit set`，那是**输出文本的笔误**，数字以 `MSGQ bit before 0 after 0` 为准。）
+
+**101.7 键 195：写 `HFI_CTRL_INIT` 让整块死在提交之前（两次零字节）**
+本键连跑两次，两次都是**零字节**：读回的窗口 sha256 仍是 `33e8ed83763823fc3df8a4c49763d8a2acdcf763399b1c3c8954eebc33b9f0fe`（键 194 的窗口）、连 SHLOG 头里的 `boot_id` 也仍是 `585406562`，`rows: gmu195p0=0 gmu195p1=0 gmu195p2=0 gmu193l3=0`。两次的 flash 都成功（`flash system_b OK`、`boot sent ok=True`），手机上机后 TWRP 回来、读日志成功——**所以不是「没刷进去」，是这一键所在的整轮在提交之前就没了命**；探针日志是**整轮提交**，块中途死一个字节都不落。键 195 与键 194 的差别只有一笔 `HFI_CTRL_INIT=1` 加它前面那段等待，于是这一笔就成了「致死」的唯一候选；而 R239 的键 83（先清 `QTBL_INFO` 再写 `INIT=1`）当时是 **4/4 存活**——两轮合起来说明：**「队列表被描述着（`qinfo=1` 且有地址）+ 写 `INIT=1`」这个组合会致死，而先抹掉描述再写则不致死。**
+
+**101.8 判决**
+1. **这颗固件不是上游认识的任何一版**：版本字读 0，HFI 版本/MMAP/SFR 全零（`sfr` 那个 `06030100` 与芯片号字同值，不能当作「共享区地址」的证据），只有队列表描述符与地址有值。**「回到 `0xbabeface`」这件事不能用于推断固件版本**，因为上游用来判断版本的那个字在这里是空的。
+2. **消息环也没人取**：`MSGQ`（bit0）与两条带外位（`GPU_SET` 16/24、`BOOT_SLUMBER` 22/30）在同样的 10 ms 窗口里都没应答 ⇒ 不是「不支持某一条消息」，而是**这几条请求都没有被处理**。
+3. **`CM3_FAULT` 是敲门铃的通用回应**：三次门铃（R276 的 190/191/192、本轮的 194）都在事后读到 `00800000`，且零写入的键读 0；本轮的 194 把这条从「带外位」推广到「消息位」。
+4. **写 `HFI_CTRL_INIT=1` 在「表被描述着」的状态下会让整轮死在提交之前**（2/2 零字节）；跨轮对照（R239 键 83 先清描述再写 init，4/4 存活）把它收窄成**组合条件**，而不是「写 init 一定死」。
+5. **GX 上电路径的缺口再收窄一层**：mainline 的 `a6xx_gmu_gfx_rail_on()`（带外）与 `a6xx_gmu_hfi_start()`（init + 消息环）两条入口，在这颗固件上**都没有被服务**；下一层要问的不再是「哪条消息」，而是「这颗固件到底在跑什么主循环、有没有自己的命令入口」。
+
+**101.9 必须分开说的四件事**
+第一，键 195 的两次零字节**只证明「这一键作为整体没有提交任何字节」**，**没有**证明死因是那一笔 store 本身——也可能是紧随其后的等待循环或 CM3 收到 init 后的动作；把死因归于那笔写，依据是「与 194 只差这一笔」加上 R239 的对照，这是**推理链**不是直接观测（本轮无法在致死块里打印任何行）。第二，版本字读 0 可能意味着「该字未被写入/不可读」，而**不是**「固件版本是 0」；本轮没有读同一地址在别处的值来分辨这两种解释。第三，`sfr=06030100` 与芯片号同值这件事**只登记、不归因**。第四，R239 的对照来自**另一次构建、另一次状态**（那时我们刚做过 CM3 复位脉冲），两轮之间固件相同、表内容不一定相同，所以「组合条件」的表述**不能**升级成「机制已证明」。
+
+**101.10 没证明什么**
+没证明 `MSGQ` 位在**别的时刻**（例如刚复位后、或表刚建好时）会不会被服务；没证明 CM3 是否**收到了**这些写（只能看到没有应答位）；没证明键 195 的死亡是「CM3 把整颗 SoC 拉进复位」还是「内核在那一笔之后立刻遇到不可恢复的访问」——两种都会表现为「窗口没被提交 + TWRP 回来」；没做本轮内的对照键（例如同一固件下「先清描述再写 init」），所以 101.8 第 4 条仍是跨轮推理；也没证明 GX 上电应该走哪条路，只把「不是哪两条」写实了。
+
+**101.11 R278 的设计思路**
+下一轮的第一件事是**补本轮缺的那个对照**：同一固件、同一次构建里，键 196 = 先写 `HFI_QTBL_INFO=0` 再写 `HFI_CTRL_INIT=1`（若存活，则「表被描述着」确实是致死条件的一半）；键 197 = 只写 `HFI_CTRL_INIT=1` 但**先把表地址备份再清成 0**（分开「描述符」与「地址」哪个是那一半）；键 198 = 完全不碰 init，只把队列页（`qaddr` 那张表）**读**一遍前后对比（判「消费者有没有推进」的零写入基线）。三键都保持零副作用纪律：不复位 CM3、不碰掩码、不用空转买时间。
+
+**101.12 工具事实**
+一是 `r277_wait.py` 一开始**不存在**——我直接把 `r276_wait.py` 当参数传给它自己，后台任务报 `can't open file` 才补建；等待脚本必须每轮新建。二是 `r277_anchor.py` 的窗口正则要写成 `r27[67]_s\d+_window\.bin`，只匹配**本轮与上一轮**，否则同名窗口跨轮命中会给错的交叉核对。三是 probe 门的 store 预算断言是**累计值**：777 → 782，说明串里必须把本轮三键的笔数写清楚，否则下轮无从推算。四是 `r170_rekey.py` 每次从**同一份** `r277-payload\payload.img` 派生三份，不要拿上一键的产物再键一次（会叠加）。五是判定脚本 `field()` 必须从**真正带该键的行**取值（R276 的 `gx_on None` 就是教训），本轮 194 的 `MSGQ bit` 输出文本笔误也提醒：**判决要写进文档的句子，最好在生成器里就写对**。六是 `python -c` 里带引号或中文在 PowerShell 下必报 `TerminatorExpectedAtEndOfString`，一律先写 `.py`（本轮又踩两次）。
