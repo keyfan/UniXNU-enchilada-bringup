@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 195u' in _fw,
+    check('fwKey >= 7u && fwKey <= 198u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 195u)' in code,
+    check('(fwKey >= 7u && fwKey <= 198u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4255,6 +4255,11 @@ def main():
         _k193195 = ''
         if _i193195 > 0:
             _k193195 = code[_i193195:].split(
+                '\nif (fwKey == 196u || fwKey == 197u || fwKey == 198u) {\n', 1)[0]
+        _i196198 = code.find('if (fwKey == 196u || fwKey == 197u || fwKey == 198u) {')
+        _k196198 = ''
+        if _i196198 > 0:
+            _k196198 = code[_i196198:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -6020,6 +6025,117 @@ def main():
                      ('gmu193l3', _c195)):
         check('survived=1' in _b and _tag + '=' in _b,
               'R277 %s keeps the survival flag' % _tag)
+
+    # ---- ROUND 278: split the HFI-start lethal condition ----------------------
+    # R277 key 195 wrote HFI_CTRL_INIT with the queue table described and died
+    # before its commit (2/2 zero bytes), while R239 key 83 cleared
+    # HFI_QTBL_INFO first and survived.  R278 splits that combination: 196 drops
+    # the descriptor word and then asks the HFI to start, 197 drops only the
+    # queue-table address, and 198 runs a6xx_gmu_start()'s order (CM3 reset,
+    # init word cleared, release, poll 0xbabeface) before clearing the
+    # descriptor, writing INIT and - only if it latched - ringing MSGQ.
+    check(_k196198 != '', 'R278 the HFI-start block follows the R277 block')
+    _rows278 = ('gmu196p0', 'gmu196p1', 'gmu196p2', 'gmu196l',
+                'gmu197p0', 'gmu197p1', 'gmu197p2', 'gmu196l2',
+                'gmu198p0', 'gmu198p1', 'gmu198p2', 'gmu198p3', 'gmu198p4',
+                'gmu196l3')
+    check(all(_w + '=' in _k196198 for _w in _rows278),
+          'R278 every HFI-start row is formatted: %s'
+          % [w for w in _rows278 if w + '=' not in _k196198])
+    check(_k196198.count('gmuW[') == 11,
+          'R278 the block holds exactly eleven stores: two for the descriptor '
+          'key, two for the address key and seven for the reset-then-start key '
+          '(got %d)' % _k196198.count('gmuW['))
+    check(_k196198.count('0x5184u') == 3 and _k196198.count('0x5185u') == 3 and
+          _k196198.count('0x5186u') == 3,
+          'R278 every key declares the descriptor, the address and the init word '
+          '(got %d/%d/%d)' % (_k196198.count('0x5184u'),
+                              _k196198.count('0x5185u'),
+                              _k196198.count('0x5186u')))
+    check(_k196198.count('0x5000u') == 1 and _k196198.count('0x501cu') == 1 and
+          _k196198.count('0xbabefaceu') == 1,
+          'R278 only the reset-then-start key names the CM3 reset, the init word '
+          'and the old-firmware latch value (got %d/%d/%d)'
+          % (_k196198.count('0x5000u'), _k196198.count('0x501cu'),
+             _k196198.count('0xbabefaceu')))
+    check(_k196198.count('0x5194u') == 1 and _k196198.count('0x5191u') == 1,
+          'R278 the message doorbell is declared only by the reset-then-start key '
+          '(got %d/%d)' % (_k196198.count('0x5194u'),
+                           _k196198.count('0x5191u')))
+    check(_k196198.count('gmuW[r196srWord] = 1u;') == 1 and
+          _k196198.count('gmuW[r196srWord] = 0u;') == 1 and
+          _k196198.count('gmuW[r196fwWord] = 0u;') == 1,
+          'R278 the CM3 reset is asserted, the init word cleared and the reset '
+          'released exactly once each, which is a6xx_gmu_start()')
+    check(_k196198.count('gmuW[r196qiWord] = 0u;') == 2 and
+          _k196198.count('gmuW[r196qaWord] = 0u;') == 1 and
+          _k196198.count('gmuW[r196iniWord] = 1u;') == 3,
+          'R278 the descriptor is dropped by two keys and the address by one, and '
+          'all three keys write INIT (got %d/%d/%d)'
+          % (_k196198.count('gmuW[r196qiWord] = 0u;'),
+             _k196198.count('gmuW[r196qaWord] = 0u;'),
+             _k196198.count('gmuW[r196iniWord] = 1u;')))
+    check(_k196198.count('IOSleep') == 0,
+          'R278 never sleeps the writer round away')
+    check(_k196198.count('IODelay(1u)') == 4 and
+          _k196198.count('IODelay(100u)') == 1,
+          'R278 paces the init, the reset wait and the doorbell polls in one- and '
+          'hundred-microsecond steps and nothing else (got %d/%d)'
+          % (_k196198.count('IODelay(1u)'), _k196198.count('IODelay(100u)')))
+    check(_k196198.index('if (r196mode == 196) {') <
+          _k196198.index('} else if (r196mode == 197) {') <
+          _k196198.index('} else if (r196mode == 198) {'),
+          'R278 the three keys appear in the order 196, 197, 198')
+    _c196 = _k196198[_k196198.index('if (r196mode == 196) {'):
+                     _k196198.index('} else if (r196mode == 197) {')]
+    _c197 = _k196198[_k196198.index('} else if (r196mode == 197) {'):
+                     _k196198.index('} else if (r196mode == 198) {')]
+    _c198 = _k196198[_k196198.index('} else if (r196mode == 198) {'):]
+    check(_c196.count('gmuW[') == 2,
+          'R278 key 196 carries exactly the descriptor clear and the init write '
+          '(got %d)' % _c196.count('gmuW['))
+    check(_c197.count('gmuW[') == 2,
+          'R278 key 197 carries exactly the address clear and the init write '
+          '(got %d)' % _c197.count('gmuW['))
+    check(_c198.count('gmuW[') == 7,
+          'R278 key 198 carries the reset pair, the init-word clear, the '
+          'descriptor clear, the init write and the doorbell pair (got %d)'
+          % _c198.count('gmuW['))
+    check('gmuW[r196srWord]' not in _c196 and 'gmuW[r196srWord]' not in _c197 and
+          'gmuW[r196setWord]' not in _c196 and 'gmuW[r196setWord]' not in _c197,
+          'R278 neither the descriptor key nor the address key touches the CM3 '
+          'reset or the doorbell: they differ from key 195 by one store each')
+    check(_c198.index('gmuW[r196srWord] = 1u;') <
+          _c198.index('gmuW[r196fwWord] = 0u;') <
+          _c198.index('gmuW[r196srWord] = 0u;') <
+          _c198.index('gmuW[r196qiWord] = 0u;') <
+          _c198.index('gmuW[r196iniWord] = 1u;') <
+          _c198.index('gmuW[r196setWord] ='),
+          'R278 key 198 resets the CM3, clears the init word, releases it, drops '
+          'the descriptor, starts the HFI and only then rings the doorbell')
+    check('if (r196latched == 0u) {' in _c198 and 'r196skip = 1u;' in _c198 and
+          _c198.index('if (r196latched == 0u) {') <
+          _c198.index('gmuW[r196setWord] ='),
+          'R278 key 198 rings the doorbell only when the HFI start latched, so a '
+          'refused start cannot be mistaken for a silent doorbell')
+    check('gmuW[r196iniWord] = 1u;' in _c196 and
+          _c196.index('gmuW[r196qiWord] = 0u;') <
+          _c196.index('gmuW[r196iniWord] = 1u;'),
+          'R278 key 196 drops the descriptor BEFORE it starts the HFI')
+    check('gmuW[r196qaWord] = 0u;' in _c197 and
+          _c197.index('gmuW[r196qaWord] = 0u;') <
+          _c197.index('gmuW[r196iniWord] = 1u;'),
+          'R278 key 197 drops the address BEFORE it starts the HFI')
+    check('gmuW[r196qiWord] = 0u;' not in _c197,
+          'R278 key 197 leaves the descriptor word alone, which is the only '
+          'difference against key 196')
+    for _tag, _b in (('gmu196l', _c196), ('gmu196l2', _c197),
+                     ('gmu196l3', _c198)):
+        check('survived=1' in _b and _tag + '=' in _b,
+              'R278 %s keeps the survival flag' % _tag)
+    check('const int r196mode = (fwKey >= 198u) ? 198 : ((fwKey >= 197u) ? 197 '
+          ': 196);' in code,
+          'R278 the mode selector is written out, not flattened into one arm')
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:

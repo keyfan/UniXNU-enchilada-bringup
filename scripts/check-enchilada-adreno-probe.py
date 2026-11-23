@@ -330,11 +330,16 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 782,
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 793,
               'R168+R170+R171+R175+R178+R181+R186+R205 the pointer writes are exactly '
               'the ITCM loop, the pulse words, the three handshake words, the '
               'R234 bypass key adds one more (HFI_CTRL_INIT under key 74), the R239 shape-control and table-clear keys add seven more (keys 82/83 each repeat the four masks, and key 83 adds QTBL_INFO = 0 before the start word while key 82 writes the same store with value 0), the R240 zero-page and positive-control keys add eight more (keys 84/85 each repeat the four masks, key 84 adds QTBL_ADDR pointing at a fresh zero page and QTBL_INFO = 1 before the start word, and both keys add the start word itself), the R242 storage keys add one more (key 90 repeats the two SMMU routing stores and then adds the start word once), and the R243 type probe adds one more again (key 94 repeats those two routing stores and adds the start word once), the R247 snapshot, re-boot and re-boot-plus-start keys add eleven more (key 102 writes no GMU word at all, key 103 releases the CM3 reset with the queue table in place and polls the init word but never starts the HFI, and key 104 repeats that and adds the start word once as its last store), the R245 reproducibility and post-start keys add two more (keys 97 and 98 share one block and each branch carries the start word as its own last textual action: key 98 stops there, key 97 goes on to read the fault and status registers back), the R246 firmware-side keys add four more (key 99 carries one start word and then reads the registers the firmware would have to touch, key 100 re-arms HFI_QTBL_ADDR and HFI_QTBL_INFO and carries one start word, and key 101 adds a second route for the GMU kernel stream and carries one start word), the '
               'R277 identity keys add five more (key 193 writes nothing at all, '
+              'the R278 HFI-start keys add eleven more (key 196 clears '
+              'HFI_QTBL_INFO and then writes HFI_CTRL_INIT, key 197 clears only '
+              'HFI_QTBL_ADDR and then writes INIT, and key 198 pulses '
+              'CM3_SYSRESET both ways, clears FW_INIT_RESULT, clears '
+              'HFI_QTBL_INFO, writes INIT and rings then clears MSGQ), '
               'key 194 rings the HFI message doorbell MSGQ and then clears its reply '
               'bit, and key 195 writes HFI_CTRL_INIT once before ringing the same '
               'doorbell and clearing it), '
