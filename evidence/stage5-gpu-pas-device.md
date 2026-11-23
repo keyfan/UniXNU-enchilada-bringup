@@ -7764,3 +7764,101 @@ gmu174l=clear_then_restart=1 clear_word=00000000 ctl1=00000001 pol1=1 ctl3=00000
 - **「一行声明多个变量」要按 declarator 逐个查引用**，`-Werror,-unused-variable` 会在 CI 第 16 步才报。
 - 取 CI 日志包必须用禁用重定向的 opener 先拿 `Location`（`GET /actions/artifacts/<id>/zip` 会 302 到 Azure blob，带 Authorization 直接跟跳会 403）。
 - 改名复用脚本要 `assert t.count(old) == 1`：`r270-logs` → `r270-logs2` 被替换两遍会得到 `r270-logs22`，而扫描脚本去 `r270-logs2` 找 ⇒ 空输出被误读成「没有 error」。
+
+## 九十五、ROUND 271：CM3 复位后控制字并没有自己变回 1 —— 「复位还回接受」这一说被拆掉了
+
+### 95.1 一句话
+
+把 R270 的「复位」动作单独拎出来，配上一个**不写启动字**的对照（键 175）：手清控制字到 `00000000` → 重启 CM3 → 满 200000 拍（约 3.17 s，带 `IODelay(1u)`）什么都只读不写，控制字**整段读成 `00000000`（bit0=0），一拍都没自己变回 1**；只有在观察结束之后补写的那一个启动字才把它写回 `00000001`（`pol=1`）。键 176 重启之后**先读原值**再动手：读到的就是 `00000000`。所以 R270 键 172/174 里「复位后控制字读成 1」并不是复位放回去的 —— 复位之后控制字是 0，那个 1 是跟在后面的启动字写出来的。
+
+### 95.2 为什么这三支能拆掉 R270 的说法
+
+R270 的三支把「复位」与「启动字」叠在一起，读者无法区分「读数是启动字写出来的」和「复位本身把位放回去了」。R271 把这两件事在时间上分开：
+
+1. **键 175** 复位之后**一个启动字都不写**，只读满一整个观察窗口。如果控制字自己变回 1，就不再需要任何启动字；如果它整段是 0，那么任何后续的 1 都只能是启动字写出来的。
+2. **键 176** 复位之后**第一件事就是读**控制字的原值（在任何手清、任何启动字之前），记录「复位刚结束时固件留了什么」。
+3. **键 177** 复位之后连写两个启动字、中间不清，看第二个是否还受理 —— 若不受理，则「一次」是按**固件运行**计数；若受理，则「一次」是按**引导**计数。
+
+### 95.3 代码形状
+
+- 块 **39,015 字符 / 696 行**；`gmuW[...] =` **36** 笔，其中 `HFI_CTRL_INIT = 1u` **4** 笔、`GMU2HOST_INTR_MASK` **3** 笔、`CM3_SYSRESET` 上升/下降沿各 **4** 笔、`HFI_QTBL_ADDR`/`HFI_QTBL_INFO` 各 **4** 笔、`HFI_CTRL_STATUS = 0u` **3** 笔。
+- 行名 **27** 条：共享前导段 `gmu175a..n`（12 条）+ `gmu175k1..k3`，键 175 的 `gmu175p0..p2` + `gmu175l`，键 176 的 `gmu176p1..p3` + `gmu176l`，键 177 的 `gmu177p0..p2` + `gmu177l`。
+- 重启形状与 R270 完全相同（`QTBL_ADDR/INFO` 重写 → `CM3_SYSRESET = 1` → `CP_RESP = 0` → `CM3_SYSRESET = 0` → 轮询 `CM3_FW_INIT_RESULT` 到 `0xbabeface`），`MODEL_LOCK` 从未写（不碰 `sCR0` bit10）。
+- `watch_untouched` 的观察循环是带 `IODelay(1u)` 的读循环（200000 拍），不是纯 `rd32` 紧自旋 —— 后者会饿死日志 writer（R205/R208 的教训）。
+
+### 95.4 构建与门禁
+
+| 项 | 结果 |
+|---|---|
+| CI | #388 `45098747160` **success 28/28** |
+| 静态门 | **PASS: R271 static gate**（`required+survivors: 48 checked in both artefacts`，key marker kernel=1 payload=2，forbidden 3 checked） |
+| 静态门自证 | 对 R270 产物 **FAIL (34 problems)**（`gmu176*`/`gmu177*` 行 kernel=0 payload=0）⇒ 门有区分能力、新块确实进二进制 |
+| host 门 / stage4 / stage5 / stage6 | 28/28 / 61/61 / 48/48 / 1802/1802 |
+| 全量门禁 | `ran 46 of 48, FAILING: 0` |
+| `check_mode_selector.py` | `selectors 26 / upper bound 177`，自证 FAIL，`VERDICT: PASS` |
+| 产物 sha256 | kernel `52ee50a13cc6a878bc8319df5b6fc1b2d57aa797b61c58960570557b966ed047`（126,451,712 B）、payload `1500834307f197e6067744e3a4ba75fd4796d642839f2bb63a5af17fe989d947`（150,994,944 B） |
+
+### 95.5 键 175：复位之后不写启动字，只读满窗口
+
+`boot_id 655187289`、窗口 `210649b1d2606089650d7997bb985760e1d43a26199da16adb864260a286e12c`、19/19 行，payload 重钥后 sha256 `9345eeca135855385d386b308f958125c61c95616f43e7d52636d97bcd964abd`。
+
+```
+gmu175h=init_cleared=1 before=babeface after_clear=00000000 about_to_reset=1
+gmu175i=reboot=1 fwinit=babeface polls=4 sysreset=00000000 cfg=00004052 ctl=00000000 win=1 survived=1
+gmu175p0=hand_cleared=1 word=00000000 about_to_restart=1
+gmu175p1=no_start=1 fw=babeface rpol=4 watch=00000000 pol=200000
+gmu175p2=control_start=1 ctl=00000001 pol=1
+gmu175l=mode=175 ck1=00000000 pk1=200000 ck2=00000001 pk2=1 ck3=00000000 pk3=200000 fsr=00000400 far=00000000 survived=1
+```
+
+判决：手清后读 0；复位后（`gmu175i` 的 `ctl=00000000`）仍是 0；**整段观察 200000 拍里 `watch=00000000`（bit0=0）**，固件 sentinel `babeface`（`rpol=4`）；观察结束后补写的启动字命中 `ctl=00000001 pol=1`。⇒ **复位本身没有把 1 放回去**。
+
+### 95.6 键 176：复位之后先读原值
+
+`boot_id 574526237`、窗口 `d29556bdc749917a7a4dc06a3b82a4e8b34f2614cd718e098fe41d1319e3abae`、19/19 行，payload 重钥后 sha256 `2205986b0da81151b6134fc9f07dd47b81a39da0b2e316488389e9f2070ed97c`。
+
+```
+gmu176p1=raw_after_restart=1 fw=babeface rpol=4 ctl=00000000 bit0=0
+gmu176p2=cleared_after_restart=1 word=00000000 about_to_start=1
+gmu176p3=start_after_clear=1 ctl=00000001 pol=1
+gmu176l=mode=176 ck1=00000000 pk1=200000 ck2=00000001 pk2=1 ck3=00000000 pk3=200000 fsr=00000400 far=00000000 survived=1
+```
+
+判决：**复位刚结束、任何手清与启动字之前**，`raw_after_restart` 读到的就是 `ctl=00000000 bit0=0`；随后手清仍 0、启动字命中 `00000001 pol=1`。⇒ 与键 175 互证：复位留下的原值是 0。
+
+### 95.7 键 177：复位后连写两个启动字（中间不清）
+
+`boot_id 646890857`、窗口 `daf3e6522a7072e8f2db57513222877e080b51a132bf1d73d4f068c44b6f9e75`、19/19 行，payload 重钥后 sha256 `15d0e539641c3dcee6c97dae3bf97a81e91032807d8e781ab00f51437bc3a7d2`。
+
+```
+gmu177p0=hand_cleared=1 word=00000000 about_to_restart=1
+gmu177p1=first_start=1 ctl=000000fe pol=200000
+gmu177p2=second_start=1 ctl=000000fe pol=200000
+gmu177l=mode=177 ck1=000000fe pk1=200000 ck2=000000fe pk2=200000 ck3=00000000 pk3=200000 fsr=00000400 far=00000000 survived=1
+```
+
+判决：**这一支没有回答「一次是按运行还是按引导」的问题** —— 第一个启动字就返回 `ctl=000000fe`（bit0=0）满 200000 拍不受理，第二个同样 `000000fe`。与键 175/176 里「手清之后的启动字 `pol=1` 立刻命中」对照，这里的差别是**没有先手清就写启动字**（键 177 的顺序是 手清 → 复位 → 启动），说明键 177 里那个 `000000fe` 更像是「复位之后必须先把手清落在启动字之前，否则控制字停在 `0xfe` 的非零态、启动字不落地」。这是本支的一个**未收口的异常**，登记为待查，不作判决。
+
+### 95.8 判决（对 R270 的修订）
+
+1. **R270 的「复位把接受还回来了」被拆掉**：复位之后控制字原值是 `00000000`（键 176 直接读到、键 175 整段观察也读到 0），并没有一位 1 留在里面。R270 键 172/174 里读到的 1 是**跟在其后的启动字**写出来的，不是复位放回去的。
+2. **「一次受理」的机制仍是控制字这一位**，而不是一个看不见的固件内部状态：复位不清 `CTRL_STATUS` 之外的东西，而 `CTRL_STATUS` 复位后本来就是 0。
+3. **键 177 未收口**：复位后不先手清就写启动字，控制字停在 `0xfe`，两个启动字都不受理。这与键 175/176 的顺序（手清在启动字之前）构成对照，需要单独一支再查（见 95.10）。
+
+### 95.9 必须分开说的三件事
+
+1. 键 175 的 `watch=00000000 pol=200000` 是「满窗口只读」，它证明的是**复位之后控制字不会自己变 1**，不证明「复位之后固件完全没动过任何其它寄存器」——只看了 `CM3_FW_INIT_RESULT`（`babeface`）、`CM3_SYSRESET`（`00000000`）、`CM3_CFG`（`00004052`）。
+2. `CM3_SYSRESET` 读回永远是 `00000000`（三支的 `gmu175i`? 实为 `gmu175h`/`gmu176p1`… 里的 `sysreset=00000000`），与 R270 一致，所以「复位做了什么」只能靠 sentinel 与读数间隔间接判断。
+3. 键 177 的 `000000fe` 不是「拒绝」的干净证据：bit0=0 但整个字是 `0xfe`（bit1..7 有值），和 R267 键 165 / R270 里出现过的 `000000fe` 同形，来源未分辨（可能是掩码残留或 HFI 侧状态），只登记不归因。
+
+### 95.10 R272 设计（承接键 177 的异常）
+
+- **键 178**：复位之后**先手清、再写启动字**（复现键 175/176 的顺序），确认 `pol=1` 可复现 —— 把「必须手清在启动字之前」立住。
+- **键 179**：复位之后**不手清、只读**控制字多拍，记录它停在 `0xfe` 还是 `0`（分辨 `0xfe` 是复位留下的还是启动字写坏的）。
+- **键 180**：复位之后不手清、写启动字后立刻再读一个不同偏移的状态字（`0x5180..0x5183`），看 `0xfe` 与哪个字相关。
+
+### 95.11 工具事实
+
+- **本轮 runner 的 PAYLOAD 目录名是 `r271-p<N>-payload`（rekey 输出目录），不是 mkrun 里写的 `r271-s<N>-payload`**：三个 runner 初次运行都 `ABORT missing …271-s175-payload\payload.img`，改成 `r271-p175-payload` 后才跑起来。mkrun 改名时把 `r270-s172` 全替换成 `r271-s<key>`，而 rekey 用的是 `p<key>`，两处命名不一致是这次的空转原因。
+- **重键工具允许变长**：`r170_rekey.py <src> <dst dir> <old> <new>`，`enchilada-pas-exec=2` → `=175/=176/=177` 各改了配置字节（1377 → 1379 B），整个文件 150,994,944 B 不变，mtime 钉到 `EPOCH=315532800`。`r165_arg_payload.py` 只允许等长。
+- 上机顺序沿用 `r271_s17N_run.py` 自带：`check-reboot-to-twrp.py` PASS → `adb reboot bootloader` → `flash system_b` → `boot boot-r16.img`（UEFI 卷，非内核）→ 等看门狗回 recovery → `reboot-to-twrp.py --arm-bcb-only` 重新武装 → `dd` 拉 32 MiB 窗口 → 校验 key 块与 8 MiB 头 sha → 解析。
