@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 204u' in _fw,
+    check('fwKey >= 7u && fwKey <= 207u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 204u)' in code,
+    check('(fwKey >= 7u && fwKey <= 207u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4270,6 +4270,11 @@ def main():
         _k202204 = ''
         if _i202204 > 0:
             _k202204 = code[_i202204:].split(
+                '\nif (fwKey == 205u || fwKey == 206u || fwKey == 207u) {\n', 1)[0]
+        _i205207 = code.find('if (fwKey == 205u || fwKey == 206u || fwKey == 207u) {')
+        _k205207 = ''
+        if _i205207 > 0:
+            _k205207 = code[_i205207:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -6347,6 +6352,107 @@ def main():
     check('const int r202mode = (fwKey >= 204u) ? 204 : ((fwKey >= 203u) ? 203 '
           ': 202);' in code,
           'R280 the mode selector is written out, not flattened into one arm')
+
+    # ---- ROUND 281: isolate the poll loop, sample inside it, then drop it entirely
+    # R280 showed a window that reads all zero right after a 2000-poll loop and is
+    # healthy ten milliseconds later, and a first read that is already healthy with
+    # no loop at all.  R281 asks which of the three ingredients does it.
+    check(_k205207 != '', 'R281 the poll-loop block follows the R280 block')
+    _rows281 = ('gmu205p0', 'gmu205p1', 'gmu205p2', 'gmu205l',
+                'gmu206p0', 'gmu206p1', 'gmu206s%u', 'gmu206p3', 'gmu205l2',
+                'gmu207p0', 'gmu207p1', 'gmu207p2', 'gmu207p3', 'gmu207p4',
+                'gmu205l3')
+    check(all(_w + '=' in _k205207 for _w in _rows281),
+          'R281 every poll-loop row is formatted: %s'
+          % [w for w in _rows281 if w + '=' not in _k205207])
+    check(_k205207.count('gmuW[') == 6,
+          'R281 the block holds exactly six stores, a descriptor clear plus an INIT '
+          'write per key (got %d)' % _k205207.count('gmuW['))
+    check(_k205207.count('0x5184u') == 3 and _k205207.count('0x5185u') == 3 and
+          _k205207.count('0x5186u') == 3,
+          'R281 every key declares the descriptor, the queue-table address and the '
+          'init word (got %d/%d/%d)' % (_k205207.count('0x5184u'),
+                                        _k205207.count('0x5185u'),
+                                        _k205207.count('0x5186u')))
+    check(_k205207.count('0x5000u') == 3 and _k205207.count('0x501cu') == 3 and
+          '0xbabefaceu' not in _k205207,
+          'R281 the reset word is only read, never pulsed: no key restarts the CM3 '
+          'and no key waits for the old-firmware latch value (got %d/%d)'
+          % (_k205207.count('0x5000u'), _k205207.count('0x501cu')))
+    check('0x5194u' not in _k205207 and '0x5191u' not in _k205207,
+          'R281 rings no doorbell: this round is about the HFI start latch alone')
+    check(_k205207.count('gmuW[r205qiWord] = 0u;') == 3 and
+          _k205207.count('gmuW[r205qaWord] = 0u;') == 0,
+          'R281 every key drops the descriptor and none touches the address (got '
+          '%d/%d)' % (_k205207.count('gmuW[r205qiWord] = 0u;'),
+                      _k205207.count('gmuW[r205qaWord] = 0u;')))
+    check(_k205207.count('gmuW[r205iniWord] = 1u;') == 3,
+          'R281 every key writes INIT exactly once (got %d)'
+          % _k205207.count('gmuW[r205iniWord] = 1u;'))
+    check('gmuW[r205srWord]' not in _k205207 and 'gmuW[r205fwWord]' not in _k205207,
+          'R281 not one store goes to the reset word or the init word')
+    check(_k205207.count('IOSleep') == 0,
+          'R281 never sleeps the writer round away')
+    check(_k205207.count('IODelay(1u)') == 2 and
+          _k205207.count('IODelay(100u)') == 3,
+          'R281 paces exactly two poll loops in one-microsecond steps and the whole '
+          'wait ladder in hundred-microsecond steps (got %d/%d)'
+          % (_k205207.count('IODelay(1u)'), _k205207.count('IODelay(100u)')))
+    check(_k205207.index('if (r205mode == 205) {') <
+          _k205207.index('} else if (r205mode == 206) {') <
+          _k205207.index('} else if (r205mode == 207) {'),
+          'R281 the three keys appear in the order 205, 206, 207')
+    _d205 = _k205207[_k205207.index('if (r205mode == 205) {'):
+                     _k205207.index('} else if (r205mode == 206) {')]
+    _d206 = _k205207[_k205207.index('} else if (r205mode == 206) {'):
+                     _k205207.index('} else if (r205mode == 207) {')]
+    _d207 = _k205207[_k205207.index('} else if (r205mode == 207) {'):]
+    check(_d205.count('gmuW[') == 2 and _d206.count('gmuW[') == 2 and
+          _d207.count('gmuW[') == 2,
+          'R281 each key carries exactly the descriptor clear and the INIT write '
+          '(got %d/%d/%d)' % (_d205.count('gmuW['), _d206.count('gmuW['),
+                              _d207.count('gmuW[')))
+    check('for (r205ipw = 0u; r205ipw < 2000u; ++r205ipw)' in _d205,
+          'R281 key 205 runs the full two-thousand-poll loop, the exact shape that '
+          'printed an all-zero window in key 202')
+    check('r205ipw' not in _d206 and 'r205ipw' not in _d207,
+          'R281 only key 205 has the bare poll loop: 206 samples in its own loop and '
+          '207 has none at all')
+    check('for (r205s = 0u; r205s < 20u; ++r205s)' in _d206 and
+          'for (r205pw = 0u; r205pw < 100u; ++r205pw)' in _d206,
+          'R281 key 206 takes twenty samples one hundred polls apart, inside the loop')
+    check(_d206.index('gmu206s%u=') < _d206.index('after_loop=1'),
+          'R281 key 206 prints its samples before the post-loop row, so a sample '
+          'that lands proves the window was read while the loop still ran')
+    check(_d206.index('for (r205s = 0u; r205s < 20u; ++r205s)') <
+          _d206.index('gmu206s%u=') <
+          _d206.index('for (r205pw = 0u; r205pw < 100u; ++r205pw)'),
+          'R281 key 206 reads, prints, then waits -- in that order, inside the loop')
+    check(_d207.count('for (r205lw = 0u; r205lw < 100u; ++r205lw)') == 1 and
+          _d207.count('for (r205lw = 0u; r205lw < 50u; ++r205lw)') == 2,
+          'R281 key 207 climbs a pure-wait ladder: ten milliseconds, then five, then '
+          'five more')
+    check(_d207.index('waited_100ms=1') < _d207.index('waited_150ms=1') <
+          _d207.index('waited_200ms=1'),
+          'R281 key 207 prints the ladder rows in increasing wait order')
+    for _w in ('r205fw2', 'r205sr2', 'r205fw3', 'r205sr3', 'r205fw4', 'r205sr4'):
+        check(_w in _d206 or _w in _d207,
+              'R281 reads %s so a firmware restart cannot pass as a quiet window' % _w)
+    check('latched=%u' in _k205207 and 'r205latched' in _d205,
+          'R281 the isolated poll loop keeps the latch flag it polls on')
+    check(_d205.index('gmuW[r205iniWord] = 1u;') <
+          _d205.index('for (r205ipw = 0u; r205ipw < 2000u; ++r205ipw)') <
+          _d205.index('gmu205p2=poll_only=1'),
+          'R281 key 205 writes INIT, polls, and only then reads the window once')
+    check('IODelay(100u)' not in _d205,
+          'R281 key 205 has no hundred-microsecond wait: it is key 202 without the '
+          'ten-millisecond step')
+    for _tag, _b in (('gmu205l', _d205), ('gmu205l2', _d206), ('gmu205l3', _d207)):
+        check('survived=1' in _b and _tag + '=' in _b,
+              'R281 %s keeps the survival flag' % _tag)
+    check('const int r205mode = (fwKey >= 207u) ? 207 : ((fwKey >= 206u) ? 206 '
+          ': 205);' in code,
+          'R281 the mode selector is written out, not flattened into one arm')
     check('const int r199mode = (fwKey >= 201u) ? 201 : ((fwKey >= 200u) ? 200 '
           ': 199);' in code,
           'R279 the mode selector is written out, not flattened into one arm')
