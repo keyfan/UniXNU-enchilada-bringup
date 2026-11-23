@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 198u' in _fw,
+    check('fwKey >= 7u && fwKey <= 201u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 198u)' in code,
+    check('(fwKey >= 7u && fwKey <= 201u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4260,6 +4260,11 @@ def main():
         _k196198 = ''
         if _i196198 > 0:
             _k196198 = code[_i196198:].split(
+                '\nif (fwKey == 199u || fwKey == 200u || fwKey == 201u) {\n', 1)[0]
+        _i199201 = code.find('if (fwKey == 199u || fwKey == 200u || fwKey == 201u) {')
+        _k199201 = ''
+        if _i199201 > 0:
+            _k199201 = code[_i199201:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -6133,6 +6138,107 @@ def main():
                      ('gmu196l3', _c198)):
         check('survived=1' in _b and _tag + '=' in _b,
               'R278 %s keeps the survival flag' % _tag)
+
+    # ---- ROUND 279: measure the zero window and reverse the INIT order --------
+    # R278 showed that clearing HFI_QTBL_INFO makes the INIT store survivable and
+    # that the HFI start still never latches.  It also left one unmeasured
+    # observation: right after the INIT store the whole GMU/GPU_CC window reads
+    # zero.  R279 measures that window (199), asks whether "never latched" is a
+    # transient (200) and reverses key 197's order (201).
+    check(_k199201 != '', 'R279 the zero-window block follows the R278 block')
+    _rows279 = ('gmu199p0', 'gmu199p1', 'gmu199s%u', 'gmu199l',
+                'gmu200p0', 'gmu200p1', 'gmu200p2', 'gmu200p3', 'gmu199l2',
+                'gmu201p0', 'gmu201p1', 'gmu201p2', 'gmu199l3')
+    check(all(_w + '=' in _k199201 for _w in _rows279),
+          'R279 every zero-window row is formatted: %s'
+          % [w for w in _rows279 if w + '=' not in _k199201])
+    check(_k199201.count('gmuW[') == 8,
+          'R279 the block holds exactly eight stores: two each for keys 199 and '
+          '200, and four for key 201 (got %d)' % _k199201.count('gmuW['))
+    check(_k199201.count('0x5184u') == 3 and _k199201.count('0x5185u') == 3 and
+          _k199201.count('0x5186u') == 3,
+          'R279 every key declares the descriptor, the queue-table address and '
+          'the init word (got %d/%d/%d)' % (_k199201.count('0x5184u'),
+                                           _k199201.count('0x5185u'),
+                                           _k199201.count('0x5186u')))
+    check(_k199201.count('0x5000u') == 3 and _k199201.count('0x501cu') == 3 and
+          _k199201.count('0xbabefaceu') == 1,
+          'R279 all three keys declare the reset word and the init word, and only '
+          'the reversed key waits for the old-firmware latch value (got %d/%d/%d)'
+          % (_k199201.count('0x5000u'), _k199201.count('0x501cu'),
+             _k199201.count('0xbabefaceu')))
+    check('0x5194u' not in _k199201 and '0x5191u' not in _k199201,
+          'R279 writes no doorbell at all: a refused HFI start is not a silent one')
+    check(_k199201.count('gmuW[r199qiWord] = 0u;') == 2 and
+          _k199201.count('gmuW[r199qaWord] = 0u;') == 0,
+          'R279 the descriptor is dropped by two keys and the address by none, so '
+          'key 201 is the exact reverse of key 197 (got %d/%d)'
+          % (_k199201.count('gmuW[r199qiWord] = 0u;'),
+             _k199201.count('gmuW[r199qaWord] = 0u;')))
+    check(_k199201.count('gmuW[r199iniWord] = 1u;') == 3,
+          'R279 all three keys write INIT exactly once (got %d)'
+          % _k199201.count('gmuW[r199iniWord] = 1u;'))
+    check(_k199201.count('gmuW[r199srWord] = 1u;') == 1 and
+          _k199201.count('gmuW[r199srWord] = 0u;') == 1 and
+          _k199201.count('gmuW[r199fwWord] = 0u;') == 1,
+          'R279 only the reversed key pulses the CM3 reset, which is '
+          'a6xx_gmu_start() again')
+    check(_k199201.count('IOSleep') == 0,
+          'R279 never sleeps the writer round away')
+    check(_k199201.count('IODelay(1u)') == 4 and
+          _k199201.count('IODelay(100u)') == 1,
+          'R279 paces the sampler, the reset wait and the after-wait loop in one- '
+          'and hundred-microsecond steps and nothing else (got %d/%d)'
+          % (_k199201.count('IODelay(1u)'), _k199201.count('IODelay(100u)')))
+    check(_k199201.index('if (r199mode == 199) {') <
+          _k199201.index('} else if (r199mode == 200) {') <
+          _k199201.index('} else if (r199mode == 201) {'),
+          'R279 the three keys appear in the order 199, 200, 201')
+    _c199 = _k199201[_k199201.index('if (r199mode == 199) {'):
+                     _k199201.index('} else if (r199mode == 200) {')]
+    _c200 = _k199201[_k199201.index('} else if (r199mode == 200) {'):
+                     _k199201.index('} else if (r199mode == 201) {')]
+    _c201 = _k199201[_k199201.index('} else if (r199mode == 201) {'):]
+    check(_c199.count('gmuW[') == 2,
+          'R279 key 199 carries exactly the descriptor clear and the init write '
+          '(got %d)' % _c199.count('gmuW['))
+    check(_c200.count('gmuW[') == 2,
+          'R279 key 200 carries exactly the same two stores (got %d)'
+          % _c200.count('gmuW['))
+    check(_c201.count('gmuW[') == 4,
+          'R279 key 201 carries the reset pair, the init-word clear and the init '
+          'write (got %d)' % _c201.count('gmuW['))
+    check('gmuW[r199srWord]' not in _c199 and 'gmuW[r199srWord]' not in _c200,
+          'R279 keys 199 and 200 leave the CM3 alone: only key 201 resets it')
+    check('gmuW[r199qiWord] = 0u;' not in _c201,
+          'R279 key 201 leaves the descriptor word alone, which is what makes it '
+          'the reverse of key 197 and the twin of the lethal key 195')
+    check(_c201.index('gmuW[r199srWord] = 1u;') <
+          _c201.index('gmuW[r199fwWord] = 0u;') <
+          _c201.index('gmuW[r199srWord] = 0u;') <
+          _c201.index('gmuW[r199iniWord] = 1u;'),
+          'R279 key 201 resets the CM3, clears the init word, releases it and only '
+          'then writes INIT, the reverse order of key 197')
+    check('for (r199s = 0u; r199s < 10u; ++r199s)' in _c199,
+          'R279 key 199 samples the window ten times instead of polling one bit')
+    check('for (r199pw = 0u; r199pw < 200u; ++r199pw)' in _c199,
+          'R279 key 199 spaces the samples with a paced read loop, not a sleep')
+    for _w in ('r199fw2', 'r199sr2'):
+        check(_w in _c199,
+              'R279 key 199 samples %s so a firmware restart cannot pass as a '
+              'quiet window' % _w)
+    check(_c200.index('for (r199waitPw = 0u; r199waitPw < 200u; ++r199waitPw)') >
+          _c200.index('gmuW[r199iniWord] = 1u;'),
+          'R279 key 200 waits only AFTER it writes INIT')
+    check('r199latched' in _c200 and 'latched=%u' in _k199201,
+          'R279 the after-wait row reports the latch word it read again')
+    for _tag, _b in (('gmu199l', _c199), ('gmu199l2', _c200),
+                     ('gmu199l3', _c201)):
+        check('survived=1' in _b and _tag + '=' in _b,
+              'R279 %s keeps the survival flag' % _tag)
+    check('const int r199mode = (fwKey >= 201u) ? 201 : ((fwKey >= 200u) ? 200 '
+          ': 199);' in code,
+          'R279 the mode selector is written out, not flattened into one arm')
     check('const int r196mode = (fwKey >= 198u) ? 198 : ((fwKey >= 197u) ? 197 '
           ': 196);' in code,
           'R278 the mode selector is written out, not flattened into one arm')
