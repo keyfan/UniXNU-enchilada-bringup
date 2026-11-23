@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 32,
-          'ID1 is re-read at most thirty-three times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179 and 180), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 33,
+          'ID1 is re-read at most thirty-four times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182 and 183), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 180u' in _fw,
+    check('fwKey >= 7u && fwKey <= 183u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 180u)' in code,
+    check('(fwKey >= 7u && fwKey <= 183u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4230,6 +4230,11 @@ def main():
         _k178180 = ''
         if _i178180 > 0:
             _k178180 = code[_i178180:].split(
+                '\nif (fwKey == 181u || fwKey == 182u || fwKey == 183u) {\n', 1)[0]
+        _i181183 = code.find('if (fwKey == 181u || fwKey == 182u || fwKey == 183u) {')
+        _k181183 = ''
+        if _i181183 > 0:
+            _k181183 = code[_i181183:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -5637,6 +5642,86 @@ def main():
           _b180.count('HFI_CTRL_INIT] = 1u;') == 1,
           'key 180 restarts once, clears nothing and writes exactly one start word')
     for _tag, _b in (('gmu178l', _b178), ('gmu179l', _b179), ('gmu180l', _b180)):
+        check('survived=1' in _b and _tag + '=' in _b,
+              '%s keeps the survival flag' % _tag)
+
+    check(_k181183 != '', 'R273 the control-word tail block follows the R272 block')
+    _rows273 = ['gmu181' + c for c in 'abcdefghijmn'] + [
+        'gmu181k1', 'gmu181k2', 'gmu181k3',
+        'gmu181p1', 'gmu181p2',
+        'gmu182p1',
+        'gmu183p1', 'gmu183p2',
+        'gmu181l']
+    check(all(_w + '=' in _k181183 for _w in _rows273),
+          'the R273 block prints every one of its rows')
+    check(_k181183.count('gmuW[') == 34,
+          'the R273 block holds thirty-four GMU stores, measured %u'
+          % _k181183.count('gmuW['))
+    check(_k181183.count('HFI_CTRL_INIT] = 1u;') == 3 and
+          _k181183.count('GMU2HOST_INTR_MASK] = ') == 3 and
+          _k181183.count('0xc00001feu') == 3,
+          'each of the three keys arms once and commits one start word (%u / %u / %u)'
+          % (_k181183.count('HFI_CTRL_INIT] = 1u;'),
+             _k181183.count('GMU2HOST_INTR_MASK] = '),
+             _k181183.count('0xc00001feu')))
+    check(_k181183.count('CM3_SYSRESET] = 1u;') == 4 and
+          _k181183.count('CM3_SYSRESET] = 0u;') == 4,
+          'the preamble and the three keys each pulse the reset once (%u / %u)'
+          % (_k181183.count('CM3_SYSRESET] = 1u;'),
+             _k181183.count('CM3_SYSRESET] = 0u;')))
+    check(_k181183.count('HFI_QTBL_ADDR] = ') == 4 and
+          _k181183.count('HFI_QTBL_INFO] = 1u;') == 4,
+          'the preamble and the three keys each re-arm the queue table once (%u / %u)'
+          % (_k181183.count('HFI_QTBL_ADDR] = '),
+             _k181183.count('HFI_QTBL_INFO] = 1u;')))
+    check(_k181183.count('HFI_CTRL_STATUS] = 0u;') == 1 and
+          _k181183.count('HFI_CTRL_STATUS] = 1u;') == 0,
+          'only key 183 hand clears the control word, and no key writes it directly to one')
+    check(_k181183.count('GMU2HOST_INTR_CLR] = ') == 2,
+          'the inherited preamble clear plus key 181 s own interrupt clear (measured %u)'
+          % _k181183.count('GMU2HOST_INTR_CLR] = '))
+    check(_k181183.count('for (') == 11 and _k181183.count('IODelay(1u)') == 7 and
+          'IOSleep' not in _k181183,
+          'the block yields inside eleven loops and never sleeps (%u / %u)'
+          % (_k181183.count('for ('), _k181183.count('IODelay(1u)')))
+    check(_k181183.count('0xbabefaceu') == 4 and
+          _k181183.count('dc civac, %0') == 2,
+          'the preamble and the restart waits keep the firmware sentinel, and the page fill '
+          'flushes once (%u / %u)'
+          % (_k181183.count('0xbabefaceu'), _k181183.count('dc civac, %0')))
+    check(_k181183.count('0x517fu') == 1 and _k181183.count('0x5184u') == 1 and
+          _k181183.count('0x5185u') == 1 and _k181183.count('0x5186u') == 1,
+          'key 182 reads every neighbour 0x517f and 0x5184 through 0x5186 exactly once')
+    check(_k181183.index('if (r181mode == 181) {') <
+          _k181183.index('} else if (r181mode == 182) {') <
+          _k181183.rindex('} else {'),
+          'the three keys appear in the order 181, 182, 183')
+    _b181 = _k181183[_k181183.index('if (r181mode == 181) {'):
+                       _k181183.index('} else if (r181mode == 182) {')]
+    _b182 = _k181183[_k181183.index('} else if (r181mode == 182) {'):
+                       _k181183.rindex('} else {')]
+    _b183 = _k181183[_k181183.rindex('} else {') + len('} else {'):]
+    check(_b181.count('CM3_SYSRESET] = 1u;') == 1 and
+          _b181.count('HFI_CTRL_INIT] = 1u;') == 1 and
+          _b181.count('GMU2HOST_INTR_CLR] = ') == 1,
+          'key 181 restarts, commits one start word, then clears the interrupt latch once')
+    _s181 = _b181.index('HFI_CTRL_INIT] = 1u;')
+    _i181 = _b181.index('GMU2HOST_INTR_CLR] = ')
+    check(_s181 < _i181,
+          'key 181 starts BEFORE it clears the interrupt latch, so the clear is seen after acceptance')
+    check(_b182.count('CM3_SYSRESET] = 1u;') == 1 and
+          _b182.count('HFI_CTRL_INIT] = 1u;') == 1 and
+          _b182.count('GMU2HOST_INTR_CLR] = ') == 0,
+          'key 182 restarts, commits one start word and clears nothing')
+    check(_b183.count('CM3_SYSRESET] = 1u;') == 1 and
+          _b183.count('HFI_CTRL_INIT] = 1u;') == 1 and
+          _b183.count('HFI_CTRL_STATUS] = 0u;') == 1,
+          'key 183 restarts, commits one start word and then hand clears the word once')
+    _s183 = _b183.index('HFI_CTRL_INIT] = 1u;')
+    _c183 = _b183.index('HFI_CTRL_STATUS] = 0u;')
+    check(_s183 < _c183,
+          'key 183 starts BEFORE it clears, reproducing key 177 s failure order')
+    for _tag, _b in (('gmu181l', _b181), ('gmu182l', _b182), ('gmu183l', _b183)):
         check('survived=1' in _b and _tag + '=' in _b,
               '%s keeps the survival flag' % _tag)
 
