@@ -8558,3 +8558,50 @@ R284 把「行长」与「那两笔写」双双否掉之后，只剩一个轴没
 - **键 227**：每毫秒一行但**先等十毫秒**（预计只剩四到五行），把「入口起算」的斜率量出来，与 225 的五毫秒那点连成一条线。
 - **键 228**：每毫秒一行，但把等待**拆成两段各五毫秒、中间打一行**，判「等待期间的输出能否落地」——这正对 R283 键 213（二十毫秒纯等之后两行都没落地）的现象，能把「等待之后不能打」与「等待本身把时间用光」分开。
 - 目标不变：`ctl` bit0 还是 0、`cf` bit16 还是 0，GX 从未上电，准入表 `modeled=9 / satisfied=0`。
+
+## 一百一十、R286：行数不是标量、墙钟也不是标量；十毫秒等待不吃预算，字节才是
+
+**110.1 一句话**
+R285 留下两条互斥的解释：落地量像「十三到十五行」的行预算，又像「从探针入口起算」的墙钟。R286 用三个零写键把它们各自推了一档。**键 226**（每毫秒四行、共一百二十行）第二次上机只落地 **十三行**、末行停在 **4 ms**（第一次更糟：只有普查行、节奏一行都没落地）⇒ 落地量**既不按行数也不按墙钟**。**键 227**（先纯等 **十毫秒**，再走一毫秒一行）却仍落地 **十行**、末行到 **20 ms** ⇒ **等待本身不消费那份预算**，R285 的「时钟从探针入口起算」必须撤回。**键 228**（把五毫秒拆成两段各五毫秒、中间打一行）两段等待之间的那一行与之后的整窗读都落地，而节奏只落 **三行** ⇒ 每次真正写进日志都会花掉预算，**预算是按字节算的**。`ctl` bit0 三键全 0、`cf` bit16 全 0，G1 仍未关闭。
+
+**110.2 三个键各自问什么**
+- **键 226**：**不写任何寄存器**，同一条三十步一毫秒节奏，但**每步打四行**（`for (r226q = 0u; r226q < 4u; ++r226q)`，行 `gmu226q%u=ms=%u tick=%u idx=%u`，共一百二十行）。若落地量随每步打印量线性下滑，容量按**字节**算；若仍钉在第十二步，限的是**步数**。
+- **键 227**：**不写任何寄存器**，一毫秒一行，但**节奏之前先纯等十毫秒**（`for (r226pw2 = 0u; r226pw2 < 100u; ++r226pw2) IODelay(100u)`，100×100 µs），打一行 `gmu227p1=waited_10ms=1 waited=%u qi=%08x qa=%08x init=%08x ctl=%08x info=%08x st=%08x gxoff=%d gd=%08x cf=%08x` 把等待后的整窗记下来，再跑三十步。它给 R285 键 225 的「五毫秒 + 九行 = 十四」再加一个十毫秒点：若入口起算，这里应只剩四到五行。
+- **键 228**：**不写任何寄存器**，一毫秒一行，但**把等待拆成两段各五毫秒、中间打一行**：五毫秒 → `gmu228p1=after_5ms_a=1 waited=50 …` → 再五毫秒 → `gmu228p2=after_5ms_b=1 waited=100 …` → 三十步节奏。它正对 R283 键 213（二十毫秒纯等之后两行都没落地）：若等待本身就不让输出落地，中间那一行会缺；若只是预算被花光，中间那一行会落地而节奏变短。
+
+**110.3 设备自己写了什么（逐字）**
+- **键 226 第一次上机**（`boot_id 582775174`，窗口 sha256 `c4998c63835f903c6ad4421e476a9ffd788dcbf2c4e9d5910f5919d6fe05c3ea`）：`counts: … gmu226p0=1 gmu226q%u=0 gmu226l=0`、`cadence rows: 0` ⇒ **只有普查行落地，四行每步的节奏一行都没落地**。该次判定脚本崩在 `NameError: name '_this_key' is not defined`（`r286_s226_run.py:466`）——生成器 `r286_mkrun.py` 的 `region()` 只发了 `_names = [...]` 一行，把模板里 `_ROWS`／`_this_key = EXPECT_KEY` 两行顶掉了；修法是把三行一起发。**这一跑只作管道证据，不作判决**。
+- **键 226 第二次上机**（`boot_id 582745183`，窗口 `b231d41ed4fb829cf44e20359562dc73c0dd6db7d15ce5c4eafa0e8cea588eac`）：`rows: gmu226p0=1 gmu226q%u=13 gmu226l=0`；`steps with at least one row landed: [1, 2, 3, 4]`、`rows that landed: 13 of 120`、`LAST STEP WITH A LANDED ROW IS STEP 4 (4 MS)`、判定句 `THE CUTOFF MOVED DOWN TO STEP 4 WITH 13 ROWS LANDED, so the limit is counted in ROWS (about fourteen), not in elapsed time`；普查 `ver 00000000 st 000000d4 qi 00000001 qa ad974000`。
+- **键 227**（`boot_id 582765401`，窗口 `d5f05b606da0d9be65c1fbbc88ff55f68e393bac4314b6e770b9f47d73905a59`）：`rows: gmu227p0=1 gmu227p1=1 gmu227m%u=0 gmu226l2=0`；`after the ten-millisecond wait: init 00000000 ctl 00000000`；`the waited line landed: True (waited=100)`；`rows that landed (ms): [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]`、`THE MEDIUM KEPT 10 OF 30 CADENCE ROWS AFTER A TEN-MILLISECOND WAIT`、`LAST CADENCE ROW IS THE 10 MS ONE`、`WAIT PLUS LAST ROW = 20 MS`、判定句 `10 + 10 = 20 MS IS FAR PAST THE BAND, so the wait does not simply spend the same budget and the entry-referenced line R285 drew needs revising`。
+- **键 228**（`boot_id 582233094`，窗口 `93d64d91025c9fbb760cfb5396cb7b49806ced5808bca5d093adf788416c4a08`）：`rows: gmu228p0=1 gmu228p1=1 gmu228p2=1 gmu228m%u=0 gmu226l3=0`；`between the halves: init 00000000 ctl 00000000 / after them: init 00000000 ctl 00000000`；`row between the two halves landed: True (waited=50)`、`row after the second half landed: True (waited=100)`；`rows that landed (ms): [1, 2, 3]`、判定句 `BOTH HALF-WAIT ROWS LANDED, so output survives a five-millisecond wait and the earlier losses were the budget being spent, not the wait itself`、`LAST CADENCE ROW IS THE 3 MS ONE`、`TOTAL WAIT PLUS LAST ROW = 13 MS`。
+
+**110.4 判决**
+1. **行数不是标量**：同样三十步，211 落 15 行、224 落 25 行、225 落 11 行、226 落 14 行（13 + 普查行；第一次只有 1 行）、227 落 12 行、228 落 6 行 —— 从 1 到 25 全都有。
+2. **墙钟也不是标量**：末行时刻分别是 14、12、14、4、20、13 ms。**R285 的「时钟从探针入口起算」必须撤回**：227 先等十毫秒仍能走到 20 ms，225 只等五毫秒却停在 14 ms ⇒ 等待不是从同一个口袋里扣钱。
+3. **能同时解释两组的只有「写进日志的字节」**：226 每步四行很快就把预算烧完（4 ms 就停），228 两行等待读加上三行节奏就花光，227 只有短短十二行却拖到 20 ms（因为它几乎没有花字节）。224 的 25 行是唯一硬反例，恰恰因为它的行最短（`ms=`/`tick=` 十来个字节）⇒ **预算按字节，不按行**。
+4. **「等待之后的输出进不了介质」被推翻**：228 在两次五毫秒等待之间与之后各打一行整窗，**两行都落地**（`waited=50`、`waited=100` 都在）⇒ R283 键 213 的「二十毫秒纯等之后连打两行一行都没落地」应改读为「那一轮在等待期间已经把预算之外的活干完、随后整轮结束」。
+5. **零窗口本轮一次也没出现**（三键 `ctl=00000000 st=000000d4 gxoff=1 gd=00222001 cf=00088400` 三次一致）⇒ R281 的「临死读数」假设既未证实也未排除，最可能仍是 R283/R284 的读法：那一轮提前结束、窗口根本没被读到。
+6. **G1 仍未关闭**：三键 `ctl` bit0 全 0（227 的十毫秒等待后也是 `init 00000000 ctl 00000000`）、`cf` bit16 全 0、`qi=00000001`（描述符仍置）⇒ HFI 未被接受、GX 未上电。
+
+**110.5 边界与读数陷阱**
+- **行落地是关于「这一轮活到哪里」的陈述，不是关于硬件状态变化的陈述**：226 第一次只落地普查行、第二次落到第十三行，同一条二进制、同一台机器，差别只能归到这一轮何时结束。
+- **一次上机不足以定形状**：226 的两次上机（1 行与 13 行）说明这个带子本身有抖动，判决里一律写「两次上机各是多少」而不写单次。
+- **判定脚本崩掉不等于上机失败**：226 第一次的 `NameError` 是生成器缺陷（`region()` 少发两行），设备侧窗口与日志完好；修好生成器后重跑才拿到可用读数。
+- **`_this_key` 这类模板变量必须在生成的 runner 里就存在**：runner 通过 `ast.parse` 不代表能跑——`r286_rowscheck.py` 只查花括号与 `.format`，查不到「名字没定义」，所以要靠一次真跑。
+
+**110.6 门禁、构建与产物**
+- 静态门 `r286_static.py`：真产物 **PASS**（`required+survivors: 110 checked in both artefacts`、`key marker 'enchilada-pas-exec': kernel=1 payload=2`、forbidden 3 条全零、固件 `a630_gmu.bin` 32,768 B sha256 `b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f`）；对 **R285 产物**自证 **FAIL 12**（12 条 REQUIRED 全 `kernel=0 payload=0`）。
+- 门禁：host PASS（25/25 + 32/32 + 51/51）、probe **28/28**（store 预算保持 **823**：本轮零 store）、stage4 **61/61**、stage5 **48/48**、stage6 **2163/2163**、全量 `ran 46 of 48, FAILING: 0`、`check_mode_selector.py` **41 selectors / upper 228 / 自证 FAIL / VERDICT PASS**。
+- CI **#404 run `45258278346` success 28/28**；分支 `r286-shape` commit `db2da7233ab803d8d1d7ddf2e6ec3344be46ccf1`、tree `c131502b12848afd4e2c9d67f11d6e00d53ebe3c`（base main `1095b6beeb9b`，535 已有 + 4 上传）。
+- 产物：`r286-kernel\kernel.macho` 126,500,864 B sha256 `8a99f5ef0ba9e43fb2749d253be64af49aa81915722f9d24057c31471ee24fc2`；`r286-payload\payload.img` 150,994,944 B sha256 `92602e849a1e279c4f2a200cf07c67077044bc147737bc8681deeb33d476dab1`。
+- payload 重键（同一份镜像派生）：p226 `c24410e645bf58e963aaa2f2a828db47c0247fa6cdb3bdb330602bb77c0509a9`、p227 `2e909a317eb32840a34711f2da4dd9cc288a184d066bfddfb52bc52bbb7aea51`、p228 `d9260abef95d46a81aa1dbb56eecba04c98414b93d2c2d51c96648874240f0a3`（`enchilada-pas-exec` 1377→1379 B）。
+- `work\tmp\r286_hashes.py`（7 路径）**0/7**。
+- 每键上机前 `scripts\check-reboot-to-twrp.py --arm` PASS（boot_a md5 `ca8ddd7a5af345636cad8c5bf645fee2`），每次回 TWRP 后 runner 自跑 `reboot-to-twrp.py --arm-bcb-only`。
+
+**110.7 下一步：把力气搬回 GPU 主链**
+- 前五轮（R281–R286）买的是一条读数纪律：**每一轮最多八行、每行尽量短、判决字段放在最前面**，否则介质会在读到关键行之前就把这一轮结束掉。
+- 主链上真正的缺口还是那一个：**HFI 未被接受**（`ctl` bit0 恒 0）。R260 的键 143/144 曾经把 SMMU 表页的每个条目都写成合法描述符，然后 **SMMU 的 `FSR_FAULT` 消失、`ctl` bit0 第一次读成 1**（`polls=2`）；R274 之后的扁平块都没有重建那张表，等于把那次成功的前提丢掉了。
+- **键 229**：重建并填满队列表页（复用 `adreno_lpae_*` 助手）→ 清 `HFI_QTBL_INFO` → 写 `HFI_CTRL_INIT` → 读 `ctl/qi/qa`，判能否稳定重现 `bit0 = 1`。
+- **键 230**：229 之后加 `BOOT_SLUMBER_OPTION = 0` + `GX_VOTE_IDX`/`MX_VOTE_IDX` + `HOST2GMU_INTR_SET` 门铃，看带外请求是否终于被应答（`GMU2HOST_INTR_INFO` bit30）。
+- **键 231**：229 之后读 `GMU_SPTPRAC_PWR_CLK_STATUS`、`GPU_CC_GX_GDSCR`、`CFG` 并轮询 `cf` bit16，看 GDSC 是否第一次报 power-up。
+- 目标不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧。

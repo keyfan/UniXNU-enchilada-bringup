@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 225u' in _fw,
+    check('fwKey >= 7u && fwKey <= 228u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 225u)' in code,
+    check('(fwKey >= 7u && fwKey <= 228u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4295,6 +4295,11 @@ def main():
         _k223225 = ''
         if _i223225 > 0:
             _k223225 = code[_i223225:].split(
+                '\nif (fwKey == 226u || fwKey == 227u || fwKey == 228u) {\n', 1)[0]
+        _i226228 = code.find('if (fwKey == 226u || fwKey == 227u || fwKey == 228u) {')
+        _k226228 = ''
+        if _i226228 > 0:
+            _k226228 = code[_i226228:].split(
                 '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
@@ -6842,6 +6847,88 @@ def main():
     check('const int r223mode = (fwKey >= 225u) ? 225 : ((fwKey >= 224u) ? 224 '
           ': 223);' in code,
           'R285 the mode selector is written out, not flattened into one arm')
+
+    # ---- ROUND 286: three shapes that write nothing at all.  Key 226 prints
+    # FOUR rows per millisecond over the same thirty steps, so a landed point
+    # that keeps sliding as the bytes per step grow says the limit is bytes while
+    # one pinned at the twelfth step says the limit is steps.  Key 227 waits ten
+    # milliseconds before its first cadence row, putting a second point on the
+    # entry-referenced line R285 key 225 started at five.  Key 228 splits that
+    # same wait into two five-millisecond halves with one row in between, which
+    # separates 'output after a wait cannot land' from 'the wait uses the budget'.
+    check(_k226228 != '', 'R286 the three zero-write shapes follow the R285 block')
+    _rows286 = ('gmu226p0', 'gmu226q%u', 'gmu226l=',
+                'gmu227p0', 'gmu227p1', 'gmu227m%u', 'gmu226l2=',
+                'gmu228p0', 'gmu228p1', 'gmu228p2', 'gmu228m%u', 'gmu226l3=')
+    check(all(_w in _k226228 for _w in _rows286),
+          'R286 every row of the three shapes is formatted: %s'
+          % [w for w in _rows286 if w not in _k226228])
+    check(_k226228.count('gmuW[') == 0,
+          'R286 writes nothing at all in any of the three keys (got %d)'
+          % _k226228.count('gmuW['))
+    check(_k226228.count('0x5186u') == 0,
+          'R286 never names the INIT word: no key here writes it (got %d)'
+          % _k226228.count('0x5186u'))
+    check(_k226228.count('IODelay(1u)') == 0 and
+          _k226228.count('IODelay(100u)') == 6,
+          'R286 paces every wait in hundred-microsecond steps, one loop in key '
+          '226, two in 227 and three in 228 (got %d/%d)'
+          % (_k226228.count('IODelay(1u)'), _k226228.count('IODelay(100u)')))
+    check(_k226228.count('0x5000u') == 3 and _k226228.count('0x501cu') == 3,
+          'R286 reads the reset word and the init word once per key and pulses '
+          'neither (got %d/%d)' % (_k226228.count('0x5000u'),
+                                   _k226228.count('0x501cu')))
+    check(_k226228.count('0x5184u') == 3,
+          'R286 reads the descriptor word once per key (got %d)'
+          % _k226228.count('0x5184u'))
+    check('0x5194u' not in _k226228 and '0x5191u' not in _k226228,
+          'R286 rings no doorbell: the question is round survival, not a reply')
+    check('0xbabeface' not in _k226228 and 'IOSleep' not in _k226228,
+          'R286 never waits for the init latch and never sleeps the writer away')
+    check(_k226228.count('0x000000c0u') == 9 and
+          _k226228.count('0x00010000u') == 3,
+          'R286 judges a fault by the GDSCR power bits and the power-up bit '
+          '(got %d/%d)' % (_k226228.count('0x000000c0u'),
+                           _k226228.count('0x00010000u')))
+    check(_k226228.index('if (r226mode == 226) {') <
+          _k226228.index('} else if (r226mode == 227) {') <
+          _k226228.index('} else if (r226mode == 228) {'),
+          'R286 the three keys appear in the order 226, 227, 228')
+    _d226 = _k226228[_k226228.index('if (r226mode == 226) {'):
+                     _k226228.index('} else if (r226mode == 227) {')]
+    _d227 = _k226228[_k226228.index('} else if (r226mode == 227) {'):
+                     _k226228.index('} else if (r226mode == 228) {')]
+    _d228 = _k226228[_k226228.index('} else if (r226mode == 228) {'):]
+    check('for (r226s = 0u; r226s < 30u; ++r226s)' in _d226 and
+          'for (r226q = 0u; r226q < 4u; ++r226q)' in _d226,
+          'R286 key 226 keeps the thirty steps and prints four rows inside every '
+          'one of them')
+    check('idx=%u' in _d226 and 'gmu226q%u=' in _d226,
+          'R286 key 226 numbers its four rows inside the step')
+    check(_d227.index('for (r226pw2 = 0u; r226pw2 < 100u; ++r226pw2)') <
+          _d227.index('gmu227p1=') <
+          _d227.index('for (r226s3 = 0u; r226s3 < 30u; ++r226s3)'),
+          'R286 key 227 waits ten milliseconds, prints the waited line and only '
+          'then climbs')
+    check(_d228.index('for (r226pw4 = 0u; r226pw4 < 50u; ++r226pw4)') <
+          _d228.index('gmu228p1=') <
+          _d228.index('for (r226pw5 = 0u; r226pw5 < 50u; ++r226pw5)') <
+          _d228.index('gmu228p2=') <
+          _d228.index('for (r226s6 = 0u; r226s6 < 30u; ++r226s6)'),
+          'R286 key 228 splits the wait into two halves with a row between them '
+          'before it climbs')
+    check('waited=%u' in _k226228,
+          'R286 prints how many hundred-microsecond steps each wait took')
+    for _tag, _b in (('gmu226l=', _d226), ('gmu226l2=', _d227),
+                     ('gmu226l3=', _d228)):
+        check('survived=1' in _b and _tag in _b,
+              'R286 %s keeps the survival flag' % _tag)
+        check('fw=%08x sr=%08x' in _b,
+              'R286 %s carries the firmware words so a restart cannot pass as a '
+              'quiet window' % _tag)
+    check('const int r226mode = (fwKey >= 228u) ? 228 : ((fwKey >= 227u) ? 227 '
+          ': 226);' in code,
+          'R286 the mode selector is written out, not flattened into one arm')
     check('const int r199mode = (fwKey >= 201u) ? 201 : ((fwKey >= 200u) ? 200 '
           ': 199);' in code,
           'R279 the mode selector is written out, not flattened into one arm')
