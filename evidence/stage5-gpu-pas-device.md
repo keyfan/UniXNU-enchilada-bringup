@@ -8983,3 +8983,50 @@ R293 把边界夹在「七笔（键 248，四行全落地）」与「九笔（�
 
 **118.7 下一步（R295）**
 「举手」这一笔已经被判死，但它只是**让这一轮消失**，不是让 HFI 被接受。下一轮把注意力从「存活」搬回「接受」：**253 = 七笔前导 + 掩码（250 的存活形状）之后，干净地补做一次「先清描述符、再写 `HFI_QTBL_INFO = 1`、再写启动字」的完整序列**（把举手放在复位之后但在启动字之前，看是否既活下来又被接受）；**254 = 253 + 把描述符写在启动字之后的第二拍**（判顺序）；**255 = 253 但把 `HFI_CTRL_INIT` 换成 200000 拍的第二次尝试**（判是否只要「先举手再启动」）。
+
+## 一百一十九、R295：把「举手」搬进复位窗口，三臂全部消失（键 253/254/255）
+
+**119.1 一句话**
+R294 把致死点判成「复位之后再举起描述符」。本轮把同一笔搬到复位**之前**（253，与 R260 键 143 的真实次序逐笔相同）、留在复位之后（254，R294 的复现对照）、以及复位之前**再加一次启动字**（255）。结果：**三臂全部零字节，窗口与 `boot_id` 都还是 R294 键 250 的那一份** ⇒ **「位置」不是判别式：只要把 `HFI_QTBL_INFO` 从 0 写成 1，这一轮就在第一次刷盘之前结束**。
+
+**119.2 三键设计**
+三臂共用 R293/R294 已被证明能活的七笔骨架（装 CB0、分配四页并建表、每页 512 条目全填、`dc civac`、清 `CB_FSR`、`CM3_FW_INIT_RESULT = 0`、写 `HFI_QTBL_ADDR = s255phys`、复位脉冲 `CM3_SYSRESET = 1`/`PWR_COL_CP_RESP = 0`/`CM3_SYSRESET = 0` 并等 `0xbabeface`），三臂都不写两个中断 CLR：
+
+- **253（九笔，`raise_in_reset`）**：`序 = fw=0 → qa=新基址 → qi=0 → qi=1（举手）→ sr=1 → cp=0 → sr=0 → mask → ini=1`，**举手落在 `CM3_SYSRESET = 1` 之前**，这正是 R260 键 143 的顺序（143 当年就是这样被接受的）。
+- **254（九笔，`raise_after_reset`）**：举手留在复位与等待之后、启动字之前，即 R294 键 251/252 的死亡位置，作为对照。
+- **255（十笔，`raise_in_reset_retry`）**：253 再加一次 `HFI_CTRL_INIT = 1` 与第二个 200000 拍窗口，判「两次启动字」能否改变结果。
+
+每臂的普查行都落在第一笔存储之前；253 锚 R294 键 250 的 `644404938` / `b72145af…`，254 与 255 锚上一键。
+
+**119.3 逐字读数**
+
+- **253**：`rows: gmu253p0=0 gmu253p1=0 gmu253p2=0 gmu253l=0`；窗口 sha256 **`b72145afafb87af744d6d14fa9e4c5b8562e3d5c1bde5d0ffbceba279396fa7c`**、`boot_id` **`644404938`**（与 R294 键 250 逐字相同）；`row key detected from stamps []`；判定句 `THE WINDOW IS STILL THE PREVIOUS ROUND'S BYTES …; this boot committed nothing, so the round ended before it could print`；`THE ROUND NEVER REACHED ITS TAIL ROW`。
+- **254**：`rows: gmu254p0=0 gmu254p1=0 gmu254p2=0 gmu254l=0`；窗口 sha 与 `boot_id` 同上；判定句 `FRESH WINDOW BUT ITS STAMPS NAME []`（因为锚已是上一轮自己的窗口，`exec_key` 里没有本键的戳）。
+- **255**：`rows: gmu255p0=0 gmu255p1=0 gmu255p2=0 gmu255l=0`；窗口 sha 与 `boot_id` 同上。
+- 三键都 `flash readback matches: True`、`key block says: enchilada-pas-exec=25N` ⇒ 刷写无误，死的是这一轮本身。
+
+**119.4 判决**
+
+1. **位置不是判别式**：举手在复位**之前**（253，与 143 同序）与在复位**之后**（254）都让整轮消失 ⇒ R294 的表述必须收紧：不是「运行期间保持有效」，而是**把 `HFI_QTBL_INFO` 从清着的状态写成 1 这个动作本身**。
+2. **两次启动字救不了**（255 同样零字节）⇒ 死点在启动字之前，与 HFI 是否被接受无关。
+3. **掩码仍然无罪**（250 是同一个七笔骨架加掩码，四行全落地），两个中断 CLR 也仍被排除（三臂都没写）。
+4. **与 143 的矛盾成为下一轮的主问题**：143 当年在 `QTBL_INFO = 1` 之后复位、被接受且四行落地；本轮 253 与它逐笔相同却整轮消失。剩下的差别只有两处 —— 143 的举手**前没有先写 `qi = 0`**（即没有 0→1 的跃变，它写的可能是一个原本就是 1 的位），以及 143 写回的 `HFI_QTBL_ADDR` 是**内核自己那张表**的地址而不是本轮新表的基址。
+5. **HFI 仍未接受**：本轮没有任何一条新的 `ctl` 读数，G1（GDSCR `cf` bit16 由什么置起）未关闭；`gd=00222001`、`cf=00088400`、`gx_on=0`、`st=000000d4`。
+
+**119.5 边界与读数陷阱**
+
+- 「零字节」= **这一轮没活到第一次刷盘**；`flash readback matches: True` 与 `key block says: …` 是排除「没刷进去」的唯一凭据，必须在每键的公告里各看一次。
+- **窗口 sha 相同不等于「本轮写了同样的字节」**，而是「本轮没写窗口」：`boot_id` 相同即证明这是上一轮的窗口文件。
+- 254/255 的 `FRESH WINDOW BUT ITS STAMPS NAME []` 是**锚定归因失败的提示**，不是新读数；逐键必须重锚（上一键零字节时更要用「最近一次真实落地」的 boot）。
+- 判定脚本的 `census row: ver None …` 只是「那些行没落地」的转写，不能读成「设备读到 None」。
+
+**119.6 门禁与工具**
+
+- host 门 25/25 + 51/51 + 32/32；probe 门 **32/32**（store 预算 997 → **1025**，并在 R294 那条断言之后新增一条独立断言 `R295 the three keys move the descriptor raise relative to the CM3 reset`）；stage4 **67/67**、stage5 **54/54**、stage6 **2397/2397**（stage6 新增约 33 条 R295 断言段，ID1 重读预算 41 → 42）；全量 `ran 46 of 48, FAILING: 0`；mode-selector **50 selectors / upper 255 / 自证 FAIL / VERDICT PASS**。
+- 静态门 `r295_static.py`（由 `r294_static.py` 派生）：真产物 **PASS**（`required+survivors: 110 checked in both artefacts`、`key marker 'enchilada-pas-exec': kernel=1 payload=2`、forbidden `gmu256a/gmu257a/gmu258a` 三零、固件 32768 B sha 钉住）；对 **R294 产物**（`r294-kernel\kernel.macho r294-payload\payload.img`）**FAIL 12**。
+- 构建：CI **#413 `45326633497` success**；分支 `r295-position` commit `4e3afb0b1796e7bddb4a9aebc892bd2dcacef2c2`、tree `27510dff88b8a72a2e2fde2bec9ce2d0b14af892`（base `5720351c3d6c`，535 已有 + 5 上传）。产物：`work\tmp\r295-kernel\kernel.macho` **126,570,496 B sha256 `ab569cb9933e8eee8e1319df086b7bfcfefce52454a909a4e3ba2b30802ba491`**、`work\tmp\r295-payload\payload.img` **150,994,944 B sha256 `1bf5d608d255e6c9a9dce4736ba744a57550869aa398a45d82ae9bbd1f883a9b`**。
+- 重键（`r170_rekey.py … "enchilada-pas-exec=2" "enchilada-pas-exec=25N"`，cwd `work\tmp`）：p253 / p254 / p255 各 150,994,944 B，配置串 1377 → 1379 B。
+- 生成器 `work\tmp\r295_block.py` 的写法值得记：**不重打 245 那一臂**，而是从 `work\tmp\r293_arm245.txt` 读出原文，按 `STORES` 字典用「删一笔 + 在锚点前插一笔」的方式重排，因此 253 与 143 的顺序一致这件事是**外科手术得到**的，不是手写近似。
+
+**119.7 下一步（R296）**
+把「143 与 253 的矛盾」拆成两个可一次判死的变量：**256 = 存活骨架 + 只改 `HFI_QTBL_ADDR`（写新表基址）而完全不碰 `HFI_QTBL_INFO`**（判「换地址」本身是否致死）；**257 = 存活骨架 + 只写 `HFI_QTBL_INFO = 1` 一次（不先清 0，即没有 0→1 跃变）**（判跃变）；**258 = 存活骨架 + 先清 `qi = 0` 再写 `qi = 1`，但地址写回内核自己的那张表（`r256qtbl` 读回值）**（判「跃变 + 原地址」是否接近 143 的存活条件）。
