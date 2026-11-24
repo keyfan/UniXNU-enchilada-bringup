@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 44,
-          'ID1 is re-read at most forty-five times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260 and 261), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 45,
+          'ID1 is re-read at most forty-six times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263 and 264), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 261u' in _fw,
+    check('fwKey >= 7u && fwKey <= 264u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 261u)' in code,
+    check('(fwKey >= 7u && fwKey <= 264u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -7273,6 +7273,11 @@ def main():
     _k259261 = ''
     if _i259261 > 0:
         _k259261 = code[_i259261:].split(
+            '\nif (fwKey == 262u || fwKey == 263u || fwKey == 264u) {\n', 1)[0]
+    _i262264 = code.find('if (fwKey == 262u || fwKey == 263u || fwKey == 264u) {')
+    _k262264 = ''
+    if _i262264 > 0:
+        _k262264 = code[_i262264:].split(
             '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
     check(_k238240 != '', 'R290 the separation keys sit before the ladder')
     _rows290 = ('gmu238p0', 'gmu238p1', 'gmu238p2', 'gmu238l=',
@@ -7744,6 +7749,73 @@ def main():
           'clears_clear_and_raise=1' in _a261,
           'R297 each row names what its arm separates')
 
+    check(_i262264 > 0 and _k262264 != '',
+          'R298 the isolation keys are present in the source')
+    _a262 = _k262264.split('} else if (r262mode == 263u) {')[0].split(
+        'if (r262mode == 262u) {')[1]
+    _rest298 = _k262264.split('} else if (r262mode == 263u) {')[1]
+    _a263 = _rest298.split('} else if (r262mode == 264u) {')[0]
+    _a264 = _rest298.split('} else if (r262mode == 264u) {')[1]
+    check(_a262.count('gmuW[') == 8 and _a263.count('gmuW[') == 9 and
+          _a264.count('gmuW[') == 9,
+          'R298 the three keys hold eight, nine and nine pointer writes: the 250 '
+          'shape, then the same shape with one interrupt clear added')
+    check(_a262.count('gmuW[r262clrWord]') == 0 and
+          _a262.count('gmuW[r262aocWord]') == 0,
+          'R298 key 262 reaches the start word with both interrupt words untouched')
+    check(_a263.count('gmuW[r262aocWord]') == 1 and
+          _a263.count('gmuW[r262clrWord]') == 0 and
+          _a264.count('gmuW[r262clrWord]') == 1 and
+          _a264.count('gmuW[r262aocWord]') == 0,
+          'R298 keys 263 and 264 separate the two clears instead of writing both')
+    for _tag, _arm in (('262', _a262), ('263', _a263), ('264', _a264)):
+        check(_arm.count('gmuW[r262maskWord] = 0xff7fffffu;') == 1 and
+              _arm.count('gmuW[r262iniWord] = 1u;') == 1 and
+              _arm.count('gmuW[r262fwWord] = 0u;') == 1 and
+              _arm.count('gmuW[r262qiWord] = 0u;') == 1 and
+              _arm.count('gmuW[r262srWord] = 1u;') == 1 and
+              _arm.count('gmuW[r262srWord] = 0u;') == 1 and
+              _arm.count('gmuW[r262cpWord] = 0u;') == 1,
+              'R298 key %s keeps the seven stores of the 250 shape and its '
+              'descriptor clear' % _tag)
+        check(_arm.count('0xbabefaceu') == 1 and _arm.count('dc civac') == 1 and
+              _arm.count('0xc00001feu') == 1,
+              'R298 key %s waits for the firmware sentinel and hands the same '
+              'context to the same doorbell' % _tag)
+        check(_arm.index('gmu%s' % _tag) < _arm.index('gmuW['),
+              'R298 key %s prints its census row before its first store' % _tag)
+        check(('gmu%sc=census=1 5180=%%08x 5181=%%08x' % _tag) in _arm,
+              'R298 key %s names the reserved bits it reads first' % _tag)
+        check(_arm.count('(unsigned)r262seenCtl') == 1 and
+              _arm.count('(unsigned)r262seenAo') == 1,
+              'R298 key %s prints the whole census row the block read at entry' % _tag)
+    check(_k262264.count('0x5180u * 4u') == 1 and
+          _k262264.count('0x5181u * 4u') == 1 and
+          _k262264.count('0x5184u * 4u') == 1 and
+          _k262264.count('0x5185u * 4u') == 1 and
+          _k262264.count('0x5186u * 4u') == 1 and
+          _k262264.count('0x5192u * 4u') == 1 and
+          _k262264.count('0x9305u * 4u') == 1,
+          'R298 the block reads exactly one zero-write census, so a same-boot '
+          'leftover in a latched bit cannot pose as a live CM3')
+    check(_a262.count('aoPre') == 0 and _a262.count('hfiPre') == 0,
+          'R298 key 262 brackets no clear because it writes none')
+    check(_a263.index('r262aoPre') < _a263.index('gmuW[r262aocWord] = ') <
+          _a263.index('r262aoPost'),
+          'R298 key 263 reads 0x9305 before and after its single AO clear')
+    check(_a264.index('r262hfiPre') < _a264.index('gmuW[r262clrWord] = ') <
+          _a264.index('r262hfiPost'),
+          'R298 key 264 reads 0x5192 before and after its single HFI clear')
+    check('gmu263d=ao_clear=1 pre9305=%08x post9305=%08x' in _a263 and
+          'gmu264d=hfi_clear=1 pre5192=%08x post5192=%08x' in _a264,
+          'R298 each clearing key prints the status word it read around the clear')
+    check('const int r262mode = (fwKey >= 264u) ? 264 : '
+          '((fwKey >= 263u) ? 263 : 262);' in code,
+          'R298 the mode selector is written out, not flattened into one arm')
+    check('descriptor_control=1' in _a262 and
+          'descriptor_control_ao_clear=1' in _a263 and
+          'descriptor_control_hfi_clear=1' in _a264,
+          'R298 each row names the clear its arm carries and the one it does not')
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
         print('FAIL: stage-6 kernel ID0/ID1 probe contract (%d failures)' % len(fails))

@@ -9134,3 +9134,70 @@ R296 把 143 与本轮三臂的唯一剩余差别收窄到**两个中断 CLR**�
 2. **CLR 二分**：**263 = 262 + 只 `GMU2HOST_INTR_CLR`**；**264 = 262 + 只 `AO_HOST_INTERRUPT_CLR`**。把毒性定到某一个 CLR 上。
 3. **顺序与掩码对照**：**265 = 262 + 两个 CLR 放在启动字之后**（先启动后清中断），检验是否只是「启动前清中断」这个顺序致死；**266 = 262 + 掩码换成 `0xffffffff`**（与 143 的掩码差异）。
 4. 若 262 也死，则判决 2 作废，把「死亡」归到跨轮构建/表状态上，改用旧产物重放 143 原链做同轮对照。
+
+## 一百二十二、R298：同构建阳性对照成立，两个 CLR 各自单独都不杀存活形状（键 262/263/264）
+
+**122.1 一句话**
+R297 判决 2 的 caveat 在本轮被同构建对照补上：**262（严格等于键 250 的 descriptor-cleared 形状，零 CLR）**、**263（262 + 仅 AO 清 `0x9304 = ~0`）**、**264（262 + 仅 HFI 清 `0x5191 = ~0`）** 三键**全部真落盘**（窗口 sha256 逐键新值、`boot_id` 逐键新值、行内 stamp 指名本键）。⇒ **descriptor-cleared 形状在本版产物上活着**；**两种 CLR 各自单独都不杀这个形状**；R297 键 260 的死因此只能归因于**两个 CLR 同时在场（或其先后顺序/次数）**；三键 **HFI 仍被拒**（`ctl=00000000`、`bit0=0 after 200000 polls`、`fsr=00000400`）⇒ **CLR 依旧不是 HFI 被接受的充分条件**。
+
+**122.2 三键设计**
+
+三键都从 R297 的 260 臂「删 store」手术式派生（模板是 10 笔的 250 形状），store 计数 **8/9/9**，共 **+26**（probe 门 store 预算 **1079 → 1105**）：
+
+- **262（八笔，`descriptor_control`）**：`fw=0 → qa=新表基址 → qi=0 → sr=1 → cp=0 → sr=0 → mask=0xff7fffff → ini=1`，**两个 CLR 一笔不写**；末尾读 `0x9305` / `0x5192`。这是 R297 缺的**同构建阳性对照**（250 的存活是 R294 构建观测）。
+- **263（九笔，`descriptor_control_ao_clear`）**：262 + **只在写启动字前清 `AO_HOST_INTERRUPT_CLR` `0x9304 = ~0`**，紧邻前后读 `0x9305`（d 行 `ao_clear`）⇒ R297 取证 §8.3 的 260b。
+- **264（九笔，`descriptor_control_hfi_clear`）**：262 + **只在写启动字前清 `GMU2HOST_INTR_CLR` `0x5191 = ~0`**，紧邻前后读 `0x5192`（d 行 `hfi_clear`）⇒ 与 263 对称，回答「260 里到底是哪一个 CLR 把活形状弄死」。
+
+每臂的**零写普查行**（`0x5180/0x5181/0x5184/0x5185/0x5186/0x5192/0x9305` 七个字）都打印在本臂第一笔 store 之前，所以同一 boot 里上一臂残留的锁存位无法伪装成「CM3 活着」。键窗由 `(fwKey >= 7u && fwKey <= 261u)` 改为 `<= 264u`，新块 45,581 字符 / 795 行，插在 ladder 之前、R297 块之后；R297 块字节不变，ladder 之后后缀相同（`work\\tmp\\r298_check_block.py` 自证）。
+
+**122.3 逐字读数**
+
+| 键 | 时间 | payload sha256 | key 块 / 回读 | 窗口 sha256 | boot_id | msg_bytes | 落盘行 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 262 | 16:25:00–16:25:58 | `4c61fabd…c381d` | block 31153 device==payload **True**、matches **True** | `3642553a8d44a4bba44039547a5d5528d3e191f0068abc94ab260661cafbf546` | **643989549** | 30967 | 5/5 |
+| 263 | 16:27:11–16:28:09 | `d6a8a7dd…23356d` | 同上 **True/True** | `99829d88660e7d72ed1bbc8f03c7bfddb93ecb37f57c7fa45cf58aed8180fe62` | **619986579** | 31064 | 6/6 |
+| 264 | 16:28:26–16:29:23 | `f3e6d130…bf00e` | 同上 **True/True** | `f126646f29cd76b1e4a3add4180958cbbe0eb101e7468fff89e7e89a70c3aa0b` | **642045731** | 31066 | 6/6 |
+
+- **262**（正对照）逐字：`gmu262p0=pre=1 ver=00000000 qi=00000001 qtbl=ad995000 fw=babeface st=000000d4 gd=00222001 cf=00088400 cx_on=1`；`gmu262c=census=1 5180=00000000 5181=00000000 5184=00000001 5185=ad995000 5186=00000000 5192=00000000 9305=00000000`；`gmu262p1=hfi=1 fills=3 build=0 plan=9 ctl=00000000 bit0=0 polls=200000 fsr=00000400 far=00000000 fw=babeface sr=00000000`；`gmu262p2=descriptor_control=1 qa=ad9a0000 qi=00000000 mask=ff7fffff fw=babeface sr=00000000 ctl=00000000 bit0=0`；`gmu262l=mode=262 gd=00222001 cf=00088400 gx_on=0 gxoff=1 ctl=00000000 survived=1`；runner：`row key detected from stamps [262] / THIS BOOT REACHED THE WRITER AND ITS STAMPS NAME key=262 … HFI WAS STILL REFUSED after 200000 polls`。
+- **263**（仅 AO 清）逐字：`gmu263d=ao_clear=1 pre9305=00000000 post9305=00000000`；`gmu263p2=descriptor_control_ao_clear=1 qa=ad9a4000 qi=00000000 mask=ff7fffff fw=babeface sr=00000000 ctl=00000000 bit0=0`；`gmu263l=… survived=1`；`census` 行七字同 262 形状（5184=00000001、5185=ad9a0000，其余 0）。
+- **264**（仅 HFI 清）逐字：`gmu264d=hfi_clear=1 pre5192=f0409800 post5192=f0409800`；`gmu264p2=descriptor_control_hfi_clear=1 qa=ad995000 qi=00000000 mask=ff7fffff fw=babeface sr=00000000 ctl=00000000 bit0=0`；`gmu264l=… survived=1`；`census` 行七字同 262 形状（5184=00000001、5185=ad991000，其余 0）。
+- 三键每次前 `REBOOT_TO_TWRP_GATE: PASS (3 checks, 0 failures)`（boot_a md5 `ca8ddd7a5af345636cad8c5bf645fee2`）；窗口均 33,554,432 B，`magic=SHLOG001 ver=4 hdr=152 first_lba=14809083`、`uptime_s=4 write_errors=0`；三键 `slots_written=9`。
+
+**122.4 判决**
+
+1. **262 落盘 ⇒ R297 判决 2 保留、不作废**：descriptor-cleared 形状（`qi=0, sr 1→0, mask=0xff7fffff, ini=1`，CLR 一笔不写）在今天这版产物上 5 行全落地，所以 260（同形状 + 两个 CLR）的死**不是构建差异**，只能归到两个 CLR 上。
+2. **263：AO 清单独无害**。`pre9305=00000000 post9305=00000000`（清前清后同一次 dsb 间隔内读 `0x9305`），六行全落地、`survived=1` ⇒ 260 的死不能归因于 `0x9304=~0` 单独。
+3. **264：HFI 清单独无害**（六行全落地、`survived=1`）；但 `pre5192=f0409800 post5192=f0409800` —— 写 `0x5191=~0` 后紧接的这次读**没有变化**。这条只证明「该写入没有改变 `0x5192` 的读数」，**不能证明清的动作生效**；两种可能都未排除：(a) `0x5192` 这些位不由 `0x5191` 的 W1C 清，(b) GMU 在同一间隔内立刻重锁存。
+4. **致死需要两个 CLR 同时在场（或与顺序/次数有关）**：262 活、263 活、264 活，而 R297 260（同形状 + 两个 CLR）死 ⇒ 单独一个清不杀形状。R299 的 265（262 + 两个 CLR）是把这个结论从「间接」抬成「同构建直接复现」的唯一一步。
+5. **三键都没有让 HFI 被接受**：`ctl=00000000`、`bit0=0 after 200000 polls`、`fsr=00000400`（`far=00000000`）、`preamble fills 3 build 0`、`plan=9`。三次表基址不同（`qtbl=ad995000 / ad9a0000 / ad991000`）而 `qi=00000001` 三次一致 —— 「表地址每次不同、INFO=1 每次相同」，与 R296 判据方向一致，且与 CLR 无关。G1（`cf` bit16）未关闭，GPU 未渲染一帧。
+
+**122.5 上游语义对账（采纳 R297 取证 §7 的三项口径修正）**
+
+- **两个 CLR 都是 host 侧 W1C**：`a6xx_gmu_irq`（`drivers/gpu/drm/msm/adreno/a6xx_gmu.c:41-42`）读 `0x9305` 整字原样写回 `0x9304`；`a6xx_hfi_irq`（同文件 `:65-66`）读 `0x5192` 整字写回 `0x5191`；`a6xx_hfi.c:120-122` 与 `a6xx_gmu.c:341` 各只写一位 ⇒ 唯一自洽解释是**写 1 清**。清太早的后果：抹掉 `WDOG_BITE`/`CM3_FAULT` 会让 `a6xx_gmu_fault`（`:20-34`）不入队、只剩静默超时；落在 set_oob 的 set（`:328`）与 poll（`:331`）之间 ⇒ `:334` `Timeout waiting for GMU OOB set`；抹掉 MSGQ ⇒ `a6xx_hfi.c:113` 等 ack 超时。
+- **`0xff7fffff` 不是「只开 MSGQ 与 CM3_FAULT」**：它等于 `~(1 << 23)` = `~A6XX_HFI_IRQ_MASK`（`a6xx_gmu.c:905`/`:1090`）。在 1=masked 的语义下，它**只放开 CM3_FAULT、反而掩掉 MSGQ**；此前 evidence 里「只开 MSGQ 与 CM3_FAULT」的写法是错的（不影响轮询读 `0x5192`）。
+- **`0x5180` bit0 是锁存、上游从不写也不自清**（唯一复位者 `a6xx_hfi_stop` `:774-793`，裸机不调）⇒ 同一 boot 内跨臂残留会伪装成「被接受」，**每臂必须先报零写普查 bit0=0，再报本臂读数**。本轮三键的 census 行已经这样做了（5180=00000000）。
+- **143 的 `ctl bit0=1` 只能由活着的 CM3 置起**（`a6xx_gmu.c:247-250`；143 是唯一一次 `bit0=1` 且 `polls=2`）⇒ 那一刻 CM3 固件是活的。「`INFO=1` 就死」更可信的解释是**活固件去走一张未与上游布局对账的表**（`a6xx_hfi.c:822-855` / `:807-819`；A630 响应队列 id=4），而不是「两个寄存器位耦合」。而「判活的唯一共同点是写 INIT 时 `QTBL_INFO==0`」（256 一笔不写 `0x5184` 仍死 ⇒ 那个 1 是内核自己留的，`a6xx_gmu.c:9058` 一带）说明 CLR 的相关性只存在于 `INFO=1` 形状中。
+
+**122.6 边界与读数陷阱**
+
+- **同构建只对三键成立**：262/263/264 共用 CI #416 的同一份 payload（`cf64c4ca…`）+ 三次重键；与 R297 的 250/260 之间仍是跨构建比较（R297 payload `d3bca995…`）。
+- **264 的 `pre/post` 同值不能证明「清发生且无效」**：它只证明「写 `0x5191=~0` 没有改变紧接着的 `0x5192` 读数」。下一轮必须加清后 `IODelay` 重读，或读 `0x5191` 自身，把「清是否生效」变成可判定。
+- 三键 `msg_bytes` 30967/31064/31066、`slots_written=9` 一致 ⇒ 写入路径与槽位没有变化，读数可比。
+- `262` 是「从 260 删 store」派生的行为等价，不是跨构建字节级同一份产物；「250 的形状」指的是 store 序列与写值，不是镜像字节。
+- 三次窗口都是新值与新 `boot_id`，且 `flash readback matches: True` ⇒ 本轮不是「上一轮字节」的假活；stamp 直接指名本键，无需靠锚推断。
+
+**122.7 门禁与工具**
+
+- 取件：CI **#416 run `45351760672` success**（`2026-11-24T07:55:30Z → 08:15:46Z`）；分支 `r298-isolation` commit `44901d36c86a5061c60c7e23d8dd43e7246bdbfa`、tree `fa9e1e250a28e36fc2c60dc6cd6f45850a5a6227`（parent 为 main `90f1ad43072b4500f486e0b203cf936bf3cb89b1`，540 个 blob）。artifacts：kernel 78,983,006 B（id 14901338132）、payload 83,354,977 B（id 14901034517）。
+- 产物：`work\\tmp\\r298-kernel\\kernel.macho` **126,619,648 B sha256 `c0f71b2ae9848689edb527034837af469efebd8af02574c8caa82d0cd952ba62`**；`work\\tmp\\r298-payload\\payload.img` **150,994,944 B sha256 `cf64c4ca65ad28eb97278eb6b682e694206542681a6d9a7e8be54b8e376a3197`**。
+- 静态门 `work\\tmp\\r298_static.py`：真产物 **PASS**（`required+survivors: 115 checked in both artefacts`、marker `kernel=1 payload=2`、forbidden `gmu265a/gmu266a/gmu267a` 三零、固件 32768 B sha 钉住）；对 R297 产物 **FAIL 17** ⇒ 区分能力自证成立。
+- 重键（`work\\tmp\\r179_rekey.py`，cwd `work\\tmp`）：p262 `4c61fabdd6fe58c93d603549d9f65c73d85be1631eeb6fed899eb3872c8c381d`（config 1377→1379 B）、p263 `d6a8a7dd24804e07fb3094714be05cef24a93545a21c42740aae7ef16223356d`、p264 `f3e6d130f2b2fff89678613a72967923fea6f99a265a933d09ab886552dbf00e`，各 150,994,944 B。
+- 门禁：host **25/25 + 51/51 + 25/25 + 32/32** + 各 contract PASS；probe **37/37**（store 预算 **1079 → 1105**，新增三条 R298 store 断言，clang 真编译通过 host stub arm64 Mach-O）；stage4 **70/70**、stage5 **57/57**、stage6 **2474/2474**（新增 26 条 R298 行契约，ID1 重读预算 44 → 45）；全量 `r239_allgates.py` → `ran 46 of 48, FAILING: 0`；`work\\tmp\\check_mode_selector.py` → **53 selectors / upper 264 / 自证 FAIL / VERDICT PASS**。
+- 块 `work\\tmp\\r298_block.py`：45,581 字符 / 795 行 / store 8/9/9；probe 源 2,058,467 字符 / 34,791 行。
+
+**122.8 下一步（R299）**
+
+1. **265 = 262 + 两个 CLR**：在今天构建上直接复现 R297 的 260，把「两个一起就死」从间接抬成直接。
+2. **266 = 265 换序**（先 `0x5191` 后 `0x9304` → 先 `0x9304` 后 `0x5191`）：判定致死项是否与先后顺序有关。
+3. **267 = 262 + 两次 HFI 清**（`0x5191` 写两次、中间 dsb）：检验「第二次清」是否才是致死项。
+4. **268 = 264 的变体**：清之后 `IODelay` 再读 `0x5192` / 读 `0x5191` 自身，把「清是否生效」变成可判定；若 265 也落盘，则 260 的死要重新归因，应回到字节级比对 260 块与 262 块。
