@@ -8755,3 +8755,51 @@ R288 用 2×2 把「掩码」与「流路由」判死之后，剩下的差异只
 - **240**：写**新地址** + 复位之后**清 `QTBL_INFO`**（即 237 的存活形状但配新地址）⇒ 若 238/239 一个死一个活，这条把「地址」与「描述符是否保持」拆开。
 - 每键行数压到 8 行以内、每行尽量短；尾行名按 `gmu235l<suffix>` 取；选号前先扫 `gmu\d{3}[a-z]`（已占 100、102–237），forbidden 取 241/242/243。
 - 目标不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧。
+
+## 一百一十四、R290：把「陈旧地址」与「描述符保持有效」拆开 —— 死因是后者，地址不是
+
+**114.1 一句话**
+R289 的三键写回的都是普查行读到的**陈旧队列地址**（`ad985000`，上一轮那张表），而键 143 写的是它自己新建的表；同时 R289 里两个键在落地任何一行之前就没了、一个键活下来。本轮把这两个变量拆开：**238 写本轮新建表的物理基址、描述符整轮保持有效**；**239 重复 235 的形状（写回陈旧地址、描述符保持有效）**；**240 写新地址、但在复位之后把描述符清掉**（237 的存活形状配新地址）。结果很干净：**238 与 239 都是零字节**（探针一行没进窗口，`dd` 读回的还是上一轮的窗口 —— 同 `boot_id 645221820`、同 sha `9b4b98e0d489…`），**240 四行全落地**且给出完整读数 —— 新地址 `ad989000` 与陈旧地址 `ad985000` 确实不同、描述符 `qi = 00000000`、固件 `fw = babeface`、`fsr = 00000400`、`ctl` bit0 在 200000 拍后仍是 0、`gd = 00222001`、`cf = 00088400`、`gx_on = 0`。⇒ **死因不是「地址陈旧」，而是「描述符在 CM3 运行期间保持有效」**：235/239/238 都保持、都死；237/240 都在复位之后清掉、都活。HFI 仍未接受。
+
+**114.2 三个键各自问什么**
+- **共用前导**（`work\tmp\r290_block.py`，由 `work\tmp\r290_mkgen.py` 在 R289 生成器上做受控手术得到）：普查行（`ver/qi/qtbl/fw/st/gd/cf/cx_on`）→ 分配四页 → `adreno_table_build`（IOVA `0x2d800000`，2 MiB 叶子）→ 九笔 CB0 → 三页每条目写合法描述符 → `dc civac` → 清 `CB_FSR`（`0xc00001feu`）→ `CM3_FW_INIT_RESULT = 0` → **`HFI_QTBL_ADDR = @QA@`**（`@QA@` 由每个键填：`r238qaw = (uint32_t)s238phys;` 或 `r238qaw = r238qtbl;`）→ `HFI_QTBL_INFO = 1` → 复位脉冲（`CM3_SYSRESET` 1 → `PWR_COL_CP_RESP = 0` → 0，再 200000 拍轮询 `FW_INIT_RESULT` 到 `0xbabeface`）→ `GMU2HOST_INTR_CLR = 0xffffffff` + `AO_HOST_INTERRUPT_CLR = 0xffffffff` → `@POST@` → `GMU2HOST_INTR_MASK = 0xff7fffff` → `HFI_CTRL_INIT = 1` → 200000 拍轮询 `ctl` bit0。
+- **238**：`@POST@` 为空（描述符整轮有效），地址写 `s238phys`（本轮新表）。
+- **239**：`@POST@` 为空，地址写 `r238qtbl`（普查行读到的陈旧值）—— 即 235 的形状，用来判死因可否重现。
+- **240**：`@POST@` 是 `gmuW[r238qiWord] = 0u;` + dsb（复位之后、掩码之前清描述符），地址写 `s238phys`。
+- 三键探针全文件 `gmuW[...] =` 实测 **901**（块内 **31**：238/239/240 分别 10/10/11）。
+
+**114.3 逐字读数（设备自己写的字段）**
+- **238：零字节**。`counts: gmu238p0=0 gmu238p1=0 gmu238p2=0 gmu238l=0`；窗口 sha256 仍 `9b4b98e0d48962b8e2d8727d42db69f28ed157419a5770d1a92a6ae8a2b18a98`、`boot_id` 仍 `645221820`（**这是 R289 键 237 的窗口**）；`stage7=armed-not-executed why=not-armed armed=0 exec_key=237`。刷写本身正常（`flash readback matches: True`、key block 回读一致），所以是这一轮**没活到第一次刷盘**。
+- **239：零字节**。同上（`gmu239p0=0 gmu239p1=0 gmu239p2=0 gmu238l2=0`，窗口与 `boot_id` 仍是 237 的）⇒ **235 的死亡形状完整重现**。
+- **240：四行全落地**。`boot_id 642521717`、窗口 sha256 **`41ada9c94a468e50a9e62cd7a1211f519cd6dcccf3cd669ebe93c7337f9e1e7b`**：
+  - `gmu240p0=pre=1 ver=00000000 qi=00000001 qtbl=ad985000 fw=babeface st=000000d4 gd=00222001 cf=00088400 cx_on=1`（普查：描述符仍置着、地址是上一轮的表）
+  - `gmu240p1=hfi=1 fills=3 build=0 plan=9 ctl=00000000 bit0=0 polls=200000 fsr=00000400 far=00000000 fw=babeface sr=00000000`（表建好、九笔 CB0 落位、复位后固件确实回到 `babeface`、无 walk fault、HFI 不被接受）
+  - `gmu240p2=fresh_cleared=1 qa=ad989000 qi=00000000 mask=ff7fffff fw=babeface sr=00000000 ctl=00000000 bit0=0`（**新地址写进去且读回是它**、描述符清零、掩码落位）
+  - `gmu238l3=mode=240 gd=00222001 cf=00088400 gx_on=0 gxoff=1 ctl=00000000 survived=1`
+- 判定脚本句：`before the writes: ver 00000000 queue address ad985000 init result babeface st 000000d4 cx_on 1` / `THE FIRMWARE WAS HANDED A FRESH ADDRESS (ad989000 vs the stale ad985000)` / `THE FIRMWARE REACHED babeface BEFORE HFI WAS ASKED TO START` / `HFI WAS STILL REFUSED after the whole key-240 recipe (200000 polls)` / `rail after the round: gd 00222001 cf 00088400 gx_on 0`。
+
+**114.4 判决**
+1. **死因定位：「描述符在 CM3 运行期间保持有效」**。保持有效的三键（235 陈旧地址、239 陈旧地址、238 新地址）全都零字节；复位之后清掉的两键（237 陈旧地址、240 新地址）全都活。**地址不是死因**：238 带新地址照样死，240 带新地址照样活。
+2. **新地址这条路本身无害**：240 把 `ad989000`（本轮表的基址）写进 `HFI_QTBL_ADDR`，读回就是它，`fsr = 00000400`（无 fault），整轮活着 ⇒ 地址写对了、SMMU 没有因此报错。
+3. **HFI 仍未接受**：240 在完整配方下 `ctl` bit0 在 200000 拍里一次没置起，即便固件已回到 `babeface`、描述符在启动那一刻是清零的。**「描述符必须在 HFI 启动时有效」这一假设与 240 冲突**（240 在启动前把描述符清了，若描述符是必要条件就该失败，而它确实失败 —— 但 237 也一样失败，所以这一条尚无区分力）。
+4. **键 143 为什么曾接受仍未解释**：143 在今天早些时候被复现过（`ctl = 00000001`、`polls = 2`），它与本轮 238 的唯一差别是「143 写的是自己那张表的地址 + 描述符保持」，而 238 正是这个形状却死了 ⇒ 差别只能在更细的地方（143 的 ctx 装法与页内容、或它前面那段 `adreno_table_build` 的参数）。
+5. **G1 未关闭**：`gd = 00222001`（SW_COLLAPSE 置、power-up 未置）、`cf = 00088400`（bit16 = 0）、`st = 000000d4`（`GX_HM_GDSC_POWER_OFF|GX_HM_CLK_OFF` 都置）、`gx_on = 0`；GPU 未渲染一帧，准入表 `modeled=9 / satisfied=0 / BLOCKED`，`CONFIG_XNU_NATIVE_ADRENO=n`。
+
+**114.5 边界与读数陷阱**
+- **零字节只说明「没活到第一次刷盘」**，不能说明代码错在哪一行；本轮 238/239 的死点与 235 完全同形（连窗口 sha 都还是 237 的）。
+- **窗口 sha 相同 = 这一轮没写窗口**（`boot_id` 也是旧的）—— 判定脚本只有把 `PREV_BOOT/PREV_SHA` 与 `boot_id`/窗口 sha 对比才能区分「本轮没写」与「本轮写了同样的字节」；`exec_key` 只说明窗口里 SHLOG 属于哪一轮。
+- **尾行字段名必须按实际行名取**（`gmu238l`/`gmu238l2`/`gmu238l3`）：R289 曾因判定脚本写死 `gmu235l` 而打印 `rail after the round: gd None cf None gx_on None`，本轮已改。
+- **`s238phys` 也出现在 239 分支的注释里**，用 `_d239.count('s238phys') == 0` 做静态断言会误报；必须比对**赋值语句本身**。
+
+**114.6 门禁与工具**
+- 块：`work\tmp\r290_mkgen.py` 手术派生 `r290_block.py`（20,198 字符）；最终块 **43,285 字符 / 758 行 / opens=85 closes=85**、`gmuW[` **31**、probe **1,734,268 字符 / 29,111 行**；arm 窗口 `(fwKey >= 7u && fwKey <= 240u)`；选择器 `const int r238mode = (fwKey >= 240u) ? 240 : ((fwKey >= 239u) ? 239 : 238);`。
+- host 门 PASS（32/32 + 25/25 + 51/51）；probe 门 **28/28**（store 预算 **870 → 901**）；stage4 **62/62**、stage5 **49/49**、stage6 **2267/2267**；全量 `..\tmp\r239_allgates.py` → `ran 46 of 48, FAILING: 0`；`check_mode_selector.py` → **45 selectors / upper 240 / VERDICT PASS**；静态门 `r290_static.py` 对真产物 **PASS**（110 行两边命中、marker kernel=1/payload=2、forbidden `gmu241a/gmu242a/gmu243a` 零），对 **R289 产物 FAIL 12**。
+- 构建：分支 `r290-separation` commit `34b612f25ff017672e2a8f6b5708161eb1b0b0fd`、tree `45de0b12436962bc8a19e83e7d6920cce189e442`（base main `c078154f1d74`）；CI **#408 `45290962103` success 28/28**；产物 `kernel.macho` 126,533,632 B sha256 `6299d86cccd44d3978777fca6f4e2b592d292fe5a48f224a4565c956e19ed91b`、`payload.img` 150,994,944 B sha256 `6d6634bac820850c5e6e4cf64871d3bb0a09ee5b8ac1e0433398c662182d2dd6`；重键 p238 `60fa331471aef10ceb8270191f274f8b85fcf8fa197b35f71b77c88e9b8a11b2`、p239 `5d60c5fad6ddb57eb7775045b33f54b1807801fd81a621eaa9b870b22ec91ae2`、p240 `9224b1750337270f5e58e5c5c545586bd6855f66ea2c48de50ef4c8ab8177ec9`。
+- 工具：`r290_rows.py`（打印本轮 12 条 `snprintf` 格式串）、`r290_mkstatic.py`、`r290_mkrun.py`/`r290_mkmkrun.py`、`r290_mkrowscheck.py`/`r290_rowscheck.py`、`r290_mkhelpers.py`/`r290_anchor.py`/`r290_wait.py`、`peek_ci.py <run_id>`。
+- 教训：**`verdict_block` 必须返回列表**（`region()` 里是 `"\n".join(verdict_block(key))`，返回字符串会被逐字拆行）；**`build()` 的 `subs` 里 `r289-s%d`→文件名替换要跟着轮次改**，否则生成的 runner 会把上一轮的 payload 目录当成本轮的（本轮生成过一次 `r289-p238-payload` 才发现）。
+
+**114.7 下一步（R291）**
+- **241**：**复位期间描述符清零、启动前再举起**（`QTBL_INFO = 1` 在 `HFI_CTRL_INIT` 之前立刻写），既避开 238 的死区、又让「启动那一刻描述符有效」成立 ⇒ 若接受，说明 143 的接受就靠这个次序。
+- **242**：同 241，但启动之后立刻再把描述符清 0（`@POST2@`）⇒ 判 HFI 启动是否需要描述符在启动**之后**继续有效。
+- **243**：同 241，接受之后敲一次带外门铃（`BOOT_SLUMBER` set 22 / ack 30）⇒ 一旦 HFI 接受，带外服务是否可用（R275/R276 的否定回答只在「HFI 未接受」条件下成立）。
+- 目标不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧。

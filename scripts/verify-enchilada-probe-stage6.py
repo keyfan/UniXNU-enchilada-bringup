@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 36,
-          'ID1 is re-read at most thirty-seven times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236 and 237), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 37,
+          'ID1 is re-read at most thirty-eight times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236, 237, 238, 239 and 240), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 237u' in _fw,
+    check('fwKey >= 7u && fwKey <= 240u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 237u)' in code,
+    check('(fwKey >= 7u && fwKey <= 240u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -4315,7 +4315,7 @@ def main():
         _k235237 = ''
         if _i235237 > 0:
             _k235237 = code[_i235237:].split(
-                '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+                '\nif (fwKey == 238u || fwKey == 239u || fwKey == 240u) {\n', 1)[0]
         check(_k111113.count('gmuW[') == 14,
               'the R250 block holds fourteen GMU stores: eight in the shared preamble and six across '
               'the three keys (got %d)' % _k111113.count('gmuW['))
@@ -7228,6 +7228,71 @@ def main():
     check('const int r196mode = (fwKey >= 198u) ? 198 : ((fwKey >= 197u) ? 197 '
           ': 196);' in code,
           'R278 the mode selector is written out, not flattened into one arm')
+
+    # ---- ROUND 290: which of the two leftovers kills a key.  R289 replayed key
+    # 143's order and HFI was still refused, yet two of its three keys wrote no
+    # byte at all.  Both of those left the descriptor valid while the CM3 ran, and
+    # all three wrote back the STALE queue address read in the census row.  Keys
+    # 238/239/240 split exactly that pair.
+    _i238240 = code.find('if (fwKey == 238u || fwKey == 239u || fwKey == 240u) {')
+    _k238240 = ''
+    if _i238240 > 0:
+        _k238240 = code[_i238240:].split(
+            '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+    check(_k238240 != '', 'R290 the separation keys sit before the ladder')
+    _rows290 = ('gmu238p0', 'gmu238p1', 'gmu238p2', 'gmu238l=',
+                'gmu239p0', 'gmu239p1', 'gmu239p2', 'gmu238l2=',
+                'gmu240p0', 'gmu240p1', 'gmu240p2', 'gmu238l3=')
+    check(all(_w in _k238240 for _w in _rows290),
+          'R290 every row of the three keys is formatted: %s'
+          % [w for w in _rows290 if w not in _k238240])
+    check(_k238240.count('gmuW[') == 31,
+          'R290 the three keys carry thirty-one pointer stores (got %d)'
+          % _k238240.count('gmuW['))
+    check(_k238240.count('0x5184u') == 3 and _k238240.count('0x5185u') == 3 and
+          _k238240.count('0x5186u') == 3,
+          'R290 each key still clears the descriptor, writes the address and writes INIT')
+    check(_k238240.count('0x501cu') == 3 and _k238240.count('0x5000u') == 3 and
+          _k238240.count('0x5101u') == 3,
+          'R290 all three keys keep the init-word clear, the reset pulse and its poll')
+    check(_k238240.count('0x5193u') == 3 and _k238240.count('0xff7fffffu') == 3 and
+          _k238240.count('0x5191u') == 3 and _k238240.count('0x9304u') == 3,
+          'R290 all three keys keep the mask store and both interrupt clears')
+    check(_k238240.count('0xbabefaceu') == 3,
+          'R290 every reset arm polls for the sentinel (got %d)'
+          % _k238240.count('0xbabefaceu'))
+    check(_k238240.count('dc civac') == 3 and _k238240.count('0xc00001feu') == 3 and
+          _k238240.count('for (r238i = 0ull; r238i < 512ull; ++r238i)') == 3,
+          'R290 every key still fills the table pages and cleans them to the PoC')
+    check(_k238240.count('IODelay(1u)') == 6,
+          'R290 six one-interval polls: three control polls and three sentinel polls (got %d)'
+          % _k238240.count('IODelay(1u)'))
+    check(_k238240.count('r238qaw = (uint32_t)s238phys;') == 2 and
+          _k238240.count('r238qaw = r238qtbl;') == 1,
+          'R290 two keys hand the firmware the fresh table base and one the stale address')
+    _d238 = _k238240.split('} else if (r238mode == 239u) {')[0]
+    _d239 = _k238240.split('} else if (r238mode == 239u) {')[1].split(
+        '} else if (r238mode == 240u) {')[0]
+    _d240 = _k238240.split('} else if (r238mode == 240u) {')[1]
+    for _t, _b, _n in (('238', _d238, 10), ('239', _d239, 10), ('240', _d240, 11)):
+        check(_b.count('gmuW[') == _n,
+              'R290 key %s carries %d pointer stores (got %d)'
+              % (_t, _n, _b.count('gmuW[')))
+    check(_d239.count('r238qaw = (uint32_t)s238phys;') == 0 and
+          _d239.count('r238qaw = r238qtbl;') == 1,
+          'R290 key 239 writes the stale address, never the fresh base')
+    check(_d240.count('gmuW[r238qiWord] = 0u;') == 1 and
+          _d238.count('gmuW[r238qiWord] = 0u;') == 0,
+          'R290 only key 240 clears the descriptor again after the reset')
+    check(_d240.index('gmuW[r238srWord] = 0u;') <
+          _d240.index('gmuW[r238qiWord] = 0u;') <
+          _d240.index('gmuW[r238maskWord] = 0xff7fffffu;'),
+          'R290 key 240 clears the descriptor between the reset and the mask')
+    check('const int r238mode = (fwKey >= 240u) ? 240 : ((fwKey >= 239u) ? 239 '
+          ': 238);' in code,
+          'R290 the mode selector is written out, not flattened into one arm')
+    check('qa=%08x' in _k238240,
+          'R290 the separation rows report the address actually written')
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
