@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            ((fwKey >= 7u && fwKey <= 264u));
+                            ((fwKey >= 7u && fwKey <= 267u));
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -33404,6 +33404,854 @@ if (fwKey == 262u || fwKey == 263u || fwKey == 264u) {
                  (unsigned)((sGmuFwVa ? rd32(sGmuFwVa, r262stWord * 4u) : 0u) & 0x000000c0u ? 1 : 0),
                  r262ctl);
         IOLog("enchilada-adreno: %s\n", r262RowL);
+            }
+}
+// ---- ROUND 299: what about writing both interrupt clears is fatal?  R298 showed
+// the descriptor-cleared shape survives on this build (262) and that either clear
+// alone leaves it alive (263 the AO clear, 264 the HFI clear).  R297's 260 wrote
+// both and vanished, so key 265 puts both back on the living shape, key 266 swaps
+// their order and key 267 puts a hundred-microsecond gap and a re-read between
+// them: together they separate "both stores" from "the order" from "the spacing".
+if (fwKey == 265u || fwKey == 266u || fwKey == 267u) {
+    char r265RowP0[352];
+    char r265RowP1[352];
+    char r265RowP2[352];
+    char r265RowL[352];
+    unsigned r265polls = 0u;
+    unsigned r265fw2 = 0u;
+    uint32_t r265qaw = 0u;
+    uint32_t r265ctl = 0u;
+    uint32_t r265fw = 0u;
+    static uint64_t s265phys = 0;
+    static uint64_t s265virt = 0;
+    const int r265mode = (fwKey >= 267u) ? 267 : ((fwKey >= 266u) ? 266 : 265);
+    const uint32_t r265qtbl = sGmuFwVa
+        ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u) : 0u;
+    struct adreno_install_geo g265;
+    const uint32_t r265id1 = gSmmuVa ? rd32(gSmmuVa, 0x24u) : 0u;
+    const uint32_t r265geom = adreno_install_cb_geometry(r265id1, &g265);
+    const uint32_t r265cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r265cxOn = adreno_domain_cx_is_on(r265cx);
+    char r265RowC[352];
+    char r265RowD[352];
+    const uint32_t r265seenCtl = sGmuFwVa ? rd32(sGmuFwVa, 0x5180u * 4u) : 0u;
+    const uint32_t r265seenBank = sGmuFwVa ? rd32(sGmuFwVa, 0x5181u * 4u) : 0u;
+    const uint32_t r265seenQi = sGmuFwVa ? rd32(sGmuFwVa, 0x5184u * 4u) : 0u;
+    const uint32_t r265seenQa = sGmuFwVa ? rd32(sGmuFwVa, 0x5185u * 4u) : 0u;
+    const uint32_t r265seenIni = sGmuFwVa ? rd32(sGmuFwVa, 0x5186u * 4u) : 0u;
+    const uint32_t r265seenStat = sGmuFwVa ? rd32(sGmuFwVa, 0x5192u * 4u) : 0u;
+    const uint32_t r265seenAo = sGmuFwVa ? rd32(sGmuFwVa, 0x9305u * 4u) : 0u;
+    if (r265mode == 265u) {
+        const uint32_t r265verWord = 0x2bf8u;
+        const uint32_t r265ctlWord = 0x5180u;
+        const uint32_t r265qiWord = 0x5184u;
+        const uint32_t r265qaWord = 0x5185u;
+        const uint32_t r265iniWord = 0x5186u;
+        const uint32_t r265stWord = 0x50d0u;
+        const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+        const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+        const uint32_t r265fwWord = 0x501cu;
+        const uint32_t r265srWord = 0x5000u;
+        const uint32_t r265cpWord = 0x5101u;
+        const uint32_t r265maskWord = 0x5193u;
+        const uint32_t r265aocWord = 0x9304u;
+        const uint32_t r265clrWord = 0x5191u;
+        snprintf(r265RowP0, sizeof r265RowP0,
+                 "gmu265p0=pre=1 ver=%08x qi=%08x qtbl=%08x fw=%08x st=%08x gd=%08x cf=%08x cx_on=%d",
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265verWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265qiWord * 4u) : 0u),
+                 (unsigned)r265qtbl,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265fwWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265stWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 r265cxOn);
+        IOLog("enchilada-adreno: %s\n", r265RowP0);
+        snprintf(r265RowC, sizeof r265RowC,
+                 "gmu265c=census=1 5180=%08x 5181=%08x 5184=%08x 5185=%08x 5186=%08x 5192=%08x 9305=%08x",
+                 (unsigned)r265seenCtl,
+                 (unsigned)r265seenBank,
+                 (unsigned)r265seenQi,
+                 (unsigned)r265seenQa,
+                 (unsigned)r265seenIni,
+                 (unsigned)r265seenStat,
+                 (unsigned)r265seenAo);
+        IOLog("enchilada-adreno: %s\n", r265RowC);
+        if (!r265cxOn) {
+            IOLog("enchilada-adreno: gmu265p1=refused-cx-down cx=%08x\
+", r265cx);
+        } else if (r265geom != 0u || gSmmuVa == 0u) {
+            IOLog("enchilada-adreno: gmu265p1=refused-geometry geom=%u\
+",
+                  (unsigned)r265geom);
+        } else if (r265qtbl == 0u) {
+            IOLog("enchilada-adreno: gmu265p1=refused-no-qtbl\
+");
+        } else if (!&armcpu_dma_alloc_writable) {
+            IOLog("enchilada-adreno: gmu265p1=no-alloc-symbol\
+");
+        } else {
+            if (!s265phys) {
+                s265phys = armcpu_dma_alloc_writable (4ull * 4096ull, &s265virt);
+            }
+            const uint64_t r265base =
+                static_cast<uint64_t>(r265qtbl) & ~static_cast<uint64_t>(0x1fffffull);
+            if (!s265phys || !s265virt) {
+                IOLog("enchilada-adreno: gmu265p1=alloc-failed\
+");
+            } else {
+                struct adreno_iommu_id2 d265 = {};
+                const uint32_t id2w265 = rd32(gSmmuVa, 0x28u);
+                int ok265 = 0;
+                const uint32_t r265ias = (adreno_iommu_id2_decode(id2w265, &d265) == 0)
+                    ? (adreno_iommu_va_size(id2w265, 2u, &ok265)) : 0u;
+                const uint32_t r265oas = adreno_iommu_stage1_oas(id2w265);
+                const uint32_t prot265 = kAdrenoLpaePteValid | kAdrenoLpaePteAf;
+                struct adreno_lpae_geo l265 = {};
+                const uint32_t r265lpaeg = adreno_lpae_geometry(
+                    (r265ias >= 32u) ? r265ias : 36u, 12u, &l265);
+                uint32_t r265need = 0u;
+                const uint32_t r265bytes = (r265lpaeg != 0u) ? 99u
+                    : adreno_table_bytes_needed(&l265, 0x200000ull, &r265need);
+                struct adreno_table_result t265 = {};
+                const uint32_t r265build =
+                    (r265lpaeg != 0u || r265bytes != 0u) ? 99u
+                    : adreno_table_build(&l265, (uint64_t)s265virt, s265phys,
+                                         0x2d800000ull, r265base, 0x200000ull,
+                                         prot265, &t265);
+                uint32_t r265fills = 0u;
+                uint32_t r265plan = 99u;
+                uint32_t r265nabs = 0u;
+                if (r265build == 0u) {
+                    struct adreno_smmu_ctx_params p265 = {};
+                    p265.cbndx = 0u;
+                    p265.asid = 0u;
+                    p265.ttbr = t265.root_paddr;
+                    p265.ias = (r265ias >= 32u) ? r265ias : 36u;
+                    p265.oas = (r265oas >= 32u) ? r265oas : 36u;
+                    const uint32_t r265id0 = rd32(gSmmuVa, 0x20u);
+                    p265.coherent_walk = adreno_iommu_coherent_walk(r265id0, 0u);
+                    p265.ttbr1 = 0u;
+                    p265.aarch64 = 1u;
+                    p265.vmid16 = 0u;
+                    p265.vmid = 0u;
+                    struct adreno_smmu_ctx_write plan265[12];
+                    struct adreno_install_write abs265[12];
+                    uint32_t nplan265 = 0u;
+                    const int r265pl = adreno_smmu_ctx_plan(&p265, plan265, 12u, &nplan265);
+                    const uint32_t r265abs = adreno_install_absolute(
+                        &g265, 0u, plan265, nplan265, abs265, 12u, &r265nabs);
+                    r265plan = (r265pl != 0 || r265abs != 0u) ? 98u : (uint32_t)nplan265;
+                    if (r265plan == 9u) {
+                        uint32_t k265;
+                        for (k265 = 0u; k265 < r265nabs; ++k265) {
+                            const uintptr_t r265frame =
+                                (abs265[k265].gr1 != 0u)
+                                ? static_cast<uintptr_t>(gSmmuVa) + (1u << g265.pgshift)
+                                : static_cast<uintptr_t>(gSmmuVa);
+                            if (abs265[k265].is_64bit) {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r265frame +
+                                    static_cast<uintptr_t>(abs265[k265].offset)) =
+                                    abs265[k265].value;
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r265frame +
+                                    static_cast<uintptr_t>(abs265[k265].offset) + 4u) =
+                                    abs265[k265].value_hi;
+                            } else {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r265frame +
+                                    static_cast<uintptr_t>(abs265[k265].offset)) =
+                                    abs265[k265].value;
+                            }
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint64_t r265rootOff =
+                            (t265.root_paddr >= s265phys) ? (t265.root_paddr - s265phys) : 0ull;
+                        const uint64_t r265span =
+                            static_cast<uint64_t>(t265.tables) * 4096ull;
+                        const uint64_t r265raw0 = *reinterpret_cast<volatile uint64_t *>(
+                            static_cast<uintptr_t>(s265virt) + r265rootOff);
+                        const uint64_t r265l1pa = r265raw0 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r265l1 = (r265l1pa >= s265phys &&
+                                                 r265l1pa < s265phys + r265span)
+                            ? *reinterpret_cast<volatile uint64_t *>(
+                                static_cast<uintptr_t>(s265virt) + (r265l1pa - s265phys))
+                            : 0ull;
+                        const uint64_t r265l2pa = r265l1 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r265tab1 = adreno_lpae_table_pte(r265l1pa);
+                        const uint64_t r265tab2 = adreno_lpae_table_pte(r265l2pa);
+                        const uint64_t r265leaf = adreno_lpae_leaf_pte(prot265, 2u, r265base);
+                        const uint64_t r265l1off =
+                            (r265l1pa >= s265phys && r265l1pa < s265phys + r265span)
+                            ? (r265l1pa - s265phys) : 0ull;
+                        const uint64_t r265l2off =
+                            (r265l2pa >= s265phys && r265l2pa < s265phys + r265span)
+                            ? (r265l2pa - s265phys) : 0ull;
+                        if (r265l1off != 0ull && r265l2off != 0ull) {
+                            uint64_t r265i;
+                            for (r265i = 0ull; r265i < 512ull; ++r265i) {
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s265virt) + r265i * 8ull) =
+                                    r265tab1;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s265virt) +
+                                    r265l1off + r265i * 8ull) = r265tab2;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s265virt) +
+                                    r265l2off + r265i * 8ull) = r265leaf;
+                            }
+                            __asm__ volatile("dsb sy" ::: "memory");
+                            r265fills = 3u;
+                        }
+                        uint64_t r265q;
+                        for (r265q = 0ull; r265q < r265span; r265q += 64ull) {
+                            __asm__ volatile("dc civac, %0" :: "r"(
+                                static_cast<uintptr_t>(s265virt) + r265q) : "memory");
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        if (gSmmuVa) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                static_cast<uintptr_t>(gSmmuVa) +
+                                static_cast<uintptr_t>(g265.cb_base) + 0x58u) = 0xc00001feu;
+                            __asm__ volatile("dsb sy" ::: "memory");
+                        }
+                                                gmuW[r265fwWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        r265qaw = (uint32_t)s265phys;
+                        gmuW[r265qaWord] = r265qaw;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265qiWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265srWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265cpWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265srWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r265fw2 = 0u; r265fw2 < 200000u; ++r265fw2) {
+                            r265fw = sGmuFwVa ? rd32(sGmuFwVa, r265fwWord * 4u) : 0u;
+                            if (r265fw == 0xbabefaceu) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        char r265RowE[352];
+                        const uint32_t r265hfiPre = sGmuFwVa ? rd32(sGmuFwVa, 5192u * 4u) : 0u;
+                        gmuW[r265clrWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint32_t r265hfiPost = sGmuFwVa ? rd32(sGmuFwVa, 5192u * 4u) : 0u;
+                        snprintf(r265RowE, sizeof r265RowE,
+                                 "gmu265e=hfi_clear=1 pre5192=%08x post5192=%08x",
+                                 (unsigned)r265hfiPre, (unsigned)r265hfiPost);
+                        IOLog("enchilada-adreno: %s\n", r265RowE);
+                        const uint32_t r265aoPre = sGmuFwVa ? rd32(sGmuFwVa, 9305u * 4u) : 0u;
+                        gmuW[r265aocWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint32_t r265aoPost = sGmuFwVa ? rd32(sGmuFwVa, 9305u * 4u) : 0u;
+                        snprintf(r265RowD, sizeof r265RowD,
+                                 "gmu265d=ao_clear=1 pre9305=%08x post9305=%08x",
+                                 (unsigned)r265aoPre, (unsigned)r265aoPost);
+                        IOLog("enchilada-adreno: %s\n", r265RowD);
+                        gmuW[r265maskWord] = 0xff7fffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265iniWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r265polls = 0u; r265polls < 200000u; ++r265polls) {
+                            r265ctl = sGmuFwVa ? rd32(sGmuFwVa, r265ctlWord * 4u) : 0u;
+                            if ((r265ctl & 0x00000001u) != 0u) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        const uint32_t r265fsr = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g265.cb_base + 0x58u) : 0u;
+                        const uint32_t r265far = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g265.cb_base + 0x60u) : 0u;
+                        snprintf(r265RowP1, sizeof r265RowP1,
+                                 "gmu265p1=hfi=1 fills=%u build=%u plan=%u ctl=%08x "
+                                 "bit0=%u polls=%u fsr=%08x far=%08x "
+                                 "fw=%08x sr=%08x",
+                                 (unsigned)r265fills, (unsigned)r265build,
+                                 (unsigned)r265plan, r265ctl, (r265ctl & 1u),
+                                 (unsigned)r265polls, r265fsr, r265far,
+                                 (unsigned)r265fw,
+                                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265srWord * 4u) : 0u));
+                        IOLog("enchilada-adreno: %s\n", r265RowP1);
+                    } else {
+                        IOLog("enchilada-adreno: gmu265p1=refused-plan plan=%u nab=%u\
+",
+                              (unsigned)r265plan, (unsigned)r265nabs);
+                    }
+                } else {
+                    IOLog("enchilada-adreno: gmu265p1=refused-build build=%u\
+",
+                          (unsigned)r265build);
+                }
+            }
+        }
+        snprintf(r265RowP2, sizeof r265RowP2,
+                 "gmu265p2=both_clears_260_order=1 qa=%08x qi=%08x mask=%08x "
+                 "fw=%08x sr=%08x ctl=%08x bit0=%u",
+                 (unsigned)r265qaw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265qiWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265maskWord * 4u) : 0u),
+                 (unsigned)r265fw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265srWord * 4u) : 0u),
+                 r265ctl, (r265ctl & 0x00000001u));
+        IOLog("enchilada-adreno: %s\n", r265RowP2);
+        snprintf(r265RowL, sizeof r265RowL,
+                 "gmu265l=mode=%d gd=%08x cf=%08x gx_on=%d gxoff=%d ctl=%08x survived=1",
+                 r265mode,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? (((rd32(sGmuFwVa, cfgWord * 4u)) & 0x00010000u) ? 1 : 0) : 0),
+                 (unsigned)((sGmuFwVa ? rd32(sGmuFwVa, r265stWord * 4u) : 0u) & 0x000000c0u ? 1 : 0),
+                 r265ctl);
+        IOLog("enchilada-adreno: %s\n", r265RowL);
+            } else if (r265mode == 266u) {
+        const uint32_t r265verWord = 0x2bf8u;
+        const uint32_t r265ctlWord = 0x5180u;
+        const uint32_t r265qiWord = 0x5184u;
+        const uint32_t r265qaWord = 0x5185u;
+        const uint32_t r265iniWord = 0x5186u;
+        const uint32_t r265stWord = 0x50d0u;
+        const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+        const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+        const uint32_t r265fwWord = 0x501cu;
+        const uint32_t r265srWord = 0x5000u;
+        const uint32_t r265cpWord = 0x5101u;
+        const uint32_t r265maskWord = 0x5193u;
+        const uint32_t r265aocWord = 0x9304u;
+        const uint32_t r265clrWord = 0x5191u;
+        snprintf(r265RowP0, sizeof r265RowP0,
+                 "gmu266p0=pre=1 ver=%08x qi=%08x qtbl=%08x fw=%08x st=%08x gd=%08x cf=%08x cx_on=%d",
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265verWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265qiWord * 4u) : 0u),
+                 (unsigned)r265qtbl,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265fwWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265stWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 r265cxOn);
+        IOLog("enchilada-adreno: %s\n", r265RowP0);
+        snprintf(r265RowC, sizeof r265RowC,
+                 "gmu266c=census=1 5180=%08x 5181=%08x 5184=%08x 5185=%08x 5186=%08x 5192=%08x 9305=%08x",
+                 (unsigned)r265seenCtl,
+                 (unsigned)r265seenBank,
+                 (unsigned)r265seenQi,
+                 (unsigned)r265seenQa,
+                 (unsigned)r265seenIni,
+                 (unsigned)r265seenStat,
+                 (unsigned)r265seenAo);
+        IOLog("enchilada-adreno: %s\n", r265RowC);
+        if (!r265cxOn) {
+            IOLog("enchilada-adreno: gmu266p1=refused-cx-down cx=%08x\
+", r265cx);
+        } else if (r265geom != 0u || gSmmuVa == 0u) {
+            IOLog("enchilada-adreno: gmu266p1=refused-geometry geom=%u\
+",
+                  (unsigned)r265geom);
+        } else if (r265qtbl == 0u) {
+            IOLog("enchilada-adreno: gmu266p1=refused-no-qtbl\
+");
+        } else if (!&armcpu_dma_alloc_writable) {
+            IOLog("enchilada-adreno: gmu266p1=no-alloc-symbol\
+");
+        } else {
+            if (!s265phys) {
+                s265phys = armcpu_dma_alloc_writable (4ull * 4096ull, &s265virt);
+            }
+            const uint64_t r265base =
+                static_cast<uint64_t>(r265qtbl) & ~static_cast<uint64_t>(0x1fffffull);
+            if (!s265phys || !s265virt) {
+                IOLog("enchilada-adreno: gmu266p1=alloc-failed\
+");
+            } else {
+                struct adreno_iommu_id2 d265 = {};
+                const uint32_t id2w265 = rd32(gSmmuVa, 0x28u);
+                int ok265 = 0;
+                const uint32_t r265ias = (adreno_iommu_id2_decode(id2w265, &d265) == 0)
+                    ? (adreno_iommu_va_size(id2w265, 2u, &ok265)) : 0u;
+                const uint32_t r265oas = adreno_iommu_stage1_oas(id2w265);
+                const uint32_t prot265 = kAdrenoLpaePteValid | kAdrenoLpaePteAf;
+                struct adreno_lpae_geo l265 = {};
+                const uint32_t r265lpaeg = adreno_lpae_geometry(
+                    (r265ias >= 32u) ? r265ias : 36u, 12u, &l265);
+                uint32_t r265need = 0u;
+                const uint32_t r265bytes = (r265lpaeg != 0u) ? 99u
+                    : adreno_table_bytes_needed(&l265, 0x200000ull, &r265need);
+                struct adreno_table_result t265 = {};
+                const uint32_t r265build =
+                    (r265lpaeg != 0u || r265bytes != 0u) ? 99u
+                    : adreno_table_build(&l265, (uint64_t)s265virt, s265phys,
+                                         0x2d800000ull, r265base, 0x200000ull,
+                                         prot265, &t265);
+                uint32_t r265fills = 0u;
+                uint32_t r265plan = 99u;
+                uint32_t r265nabs = 0u;
+                if (r265build == 0u) {
+                    struct adreno_smmu_ctx_params p265 = {};
+                    p265.cbndx = 0u;
+                    p265.asid = 0u;
+                    p265.ttbr = t265.root_paddr;
+                    p265.ias = (r265ias >= 32u) ? r265ias : 36u;
+                    p265.oas = (r265oas >= 32u) ? r265oas : 36u;
+                    const uint32_t r265id0 = rd32(gSmmuVa, 0x20u);
+                    p265.coherent_walk = adreno_iommu_coherent_walk(r265id0, 0u);
+                    p265.ttbr1 = 0u;
+                    p265.aarch64 = 1u;
+                    p265.vmid16 = 0u;
+                    p265.vmid = 0u;
+                    struct adreno_smmu_ctx_write plan265[12];
+                    struct adreno_install_write abs265[12];
+                    uint32_t nplan265 = 0u;
+                    const int r265pl = adreno_smmu_ctx_plan(&p265, plan265, 12u, &nplan265);
+                    const uint32_t r265abs = adreno_install_absolute(
+                        &g265, 0u, plan265, nplan265, abs265, 12u, &r265nabs);
+                    r265plan = (r265pl != 0 || r265abs != 0u) ? 98u : (uint32_t)nplan265;
+                    if (r265plan == 9u) {
+                        uint32_t k265;
+                        for (k265 = 0u; k265 < r265nabs; ++k265) {
+                            const uintptr_t r265frame =
+                                (abs265[k265].gr1 != 0u)
+                                ? static_cast<uintptr_t>(gSmmuVa) + (1u << g265.pgshift)
+                                : static_cast<uintptr_t>(gSmmuVa);
+                            if (abs265[k265].is_64bit) {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r265frame +
+                                    static_cast<uintptr_t>(abs265[k265].offset)) =
+                                    abs265[k265].value;
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r265frame +
+                                    static_cast<uintptr_t>(abs265[k265].offset) + 4u) =
+                                    abs265[k265].value_hi;
+                            } else {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r265frame +
+                                    static_cast<uintptr_t>(abs265[k265].offset)) =
+                                    abs265[k265].value;
+                            }
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint64_t r265rootOff =
+                            (t265.root_paddr >= s265phys) ? (t265.root_paddr - s265phys) : 0ull;
+                        const uint64_t r265span =
+                            static_cast<uint64_t>(t265.tables) * 4096ull;
+                        const uint64_t r265raw0 = *reinterpret_cast<volatile uint64_t *>(
+                            static_cast<uintptr_t>(s265virt) + r265rootOff);
+                        const uint64_t r265l1pa = r265raw0 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r265l1 = (r265l1pa >= s265phys &&
+                                                 r265l1pa < s265phys + r265span)
+                            ? *reinterpret_cast<volatile uint64_t *>(
+                                static_cast<uintptr_t>(s265virt) + (r265l1pa - s265phys))
+                            : 0ull;
+                        const uint64_t r265l2pa = r265l1 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r265tab1 = adreno_lpae_table_pte(r265l1pa);
+                        const uint64_t r265tab2 = adreno_lpae_table_pte(r265l2pa);
+                        const uint64_t r265leaf = adreno_lpae_leaf_pte(prot265, 2u, r265base);
+                        const uint64_t r265l1off =
+                            (r265l1pa >= s265phys && r265l1pa < s265phys + r265span)
+                            ? (r265l1pa - s265phys) : 0ull;
+                        const uint64_t r265l2off =
+                            (r265l2pa >= s265phys && r265l2pa < s265phys + r265span)
+                            ? (r265l2pa - s265phys) : 0ull;
+                        if (r265l1off != 0ull && r265l2off != 0ull) {
+                            uint64_t r265i;
+                            for (r265i = 0ull; r265i < 512ull; ++r265i) {
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s265virt) + r265i * 8ull) =
+                                    r265tab1;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s265virt) +
+                                    r265l1off + r265i * 8ull) = r265tab2;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s265virt) +
+                                    r265l2off + r265i * 8ull) = r265leaf;
+                            }
+                            __asm__ volatile("dsb sy" ::: "memory");
+                            r265fills = 3u;
+                        }
+                        uint64_t r265q;
+                        for (r265q = 0ull; r265q < r265span; r265q += 64ull) {
+                            __asm__ volatile("dc civac, %0" :: "r"(
+                                static_cast<uintptr_t>(s265virt) + r265q) : "memory");
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        if (gSmmuVa) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                static_cast<uintptr_t>(gSmmuVa) +
+                                static_cast<uintptr_t>(g265.cb_base) + 0x58u) = 0xc00001feu;
+                            __asm__ volatile("dsb sy" ::: "memory");
+                        }
+                                                gmuW[r265fwWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        r265qaw = (uint32_t)s265phys;
+                        gmuW[r265qaWord] = r265qaw;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265qiWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265srWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265cpWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265srWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r265fw2 = 0u; r265fw2 < 200000u; ++r265fw2) {
+                            r265fw = sGmuFwVa ? rd32(sGmuFwVa, r265fwWord * 4u) : 0u;
+                            if (r265fw == 0xbabefaceu) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        const uint32_t r265aoPre = sGmuFwVa ? rd32(sGmuFwVa, 9305u * 4u) : 0u;
+                        gmuW[r265aocWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint32_t r265aoPost = sGmuFwVa ? rd32(sGmuFwVa, 9305u * 4u) : 0u;
+                        snprintf(r265RowD, sizeof r265RowD,
+                                 "gmu266d=ao_clear=1 pre9305=%08x post9305=%08x",
+                                 (unsigned)r265aoPre, (unsigned)r265aoPost);
+                        IOLog("enchilada-adreno: %s\n", r265RowD);
+                        char r265RowE[352];
+                        const uint32_t r265hfiPre = sGmuFwVa ? rd32(sGmuFwVa, 5192u * 4u) : 0u;
+                        gmuW[r265clrWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint32_t r265hfiPost = sGmuFwVa ? rd32(sGmuFwVa, 5192u * 4u) : 0u;
+                        snprintf(r265RowE, sizeof r265RowE,
+                                 "gmu266e=hfi_clear=1 pre5192=%08x post5192=%08x",
+                                 (unsigned)r265hfiPre, (unsigned)r265hfiPost);
+                        IOLog("enchilada-adreno: %s\n", r265RowE);
+                        gmuW[r265maskWord] = 0xff7fffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265iniWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r265polls = 0u; r265polls < 200000u; ++r265polls) {
+                            r265ctl = sGmuFwVa ? rd32(sGmuFwVa, r265ctlWord * 4u) : 0u;
+                            if ((r265ctl & 0x00000001u) != 0u) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        const uint32_t r265fsr = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g265.cb_base + 0x58u) : 0u;
+                        const uint32_t r265far = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g265.cb_base + 0x60u) : 0u;
+                        snprintf(r265RowP1, sizeof r265RowP1,
+                                 "gmu266p1=hfi=1 fills=%u build=%u plan=%u ctl=%08x "
+                                 "bit0=%u polls=%u fsr=%08x far=%08x "
+                                 "fw=%08x sr=%08x",
+                                 (unsigned)r265fills, (unsigned)r265build,
+                                 (unsigned)r265plan, r265ctl, (r265ctl & 1u),
+                                 (unsigned)r265polls, r265fsr, r265far,
+                                 (unsigned)r265fw,
+                                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265srWord * 4u) : 0u));
+                        IOLog("enchilada-adreno: %s\n", r265RowP1);
+                    } else {
+                        IOLog("enchilada-adreno: gmu266p1=refused-plan plan=%u nab=%u\
+",
+                              (unsigned)r265plan, (unsigned)r265nabs);
+                    }
+                } else {
+                    IOLog("enchilada-adreno: gmu266p1=refused-build build=%u\
+",
+                          (unsigned)r265build);
+                }
+            }
+        }
+        snprintf(r265RowP2, sizeof r265RowP2,
+                 "gmu266p2=both_clears_swapped=1 qa=%08x qi=%08x mask=%08x "
+                 "fw=%08x sr=%08x ctl=%08x bit0=%u",
+                 (unsigned)r265qaw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265qiWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265maskWord * 4u) : 0u),
+                 (unsigned)r265fw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265srWord * 4u) : 0u),
+                 r265ctl, (r265ctl & 0x00000001u));
+        IOLog("enchilada-adreno: %s\n", r265RowP2);
+        snprintf(r265RowL, sizeof r265RowL,
+                 "gmu266l=mode=%d gd=%08x cf=%08x gx_on=%d gxoff=%d ctl=%08x survived=1",
+                 r265mode,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? (((rd32(sGmuFwVa, cfgWord * 4u)) & 0x00010000u) ? 1 : 0) : 0),
+                 (unsigned)((sGmuFwVa ? rd32(sGmuFwVa, r265stWord * 4u) : 0u) & 0x000000c0u ? 1 : 0),
+                 r265ctl);
+        IOLog("enchilada-adreno: %s\n", r265RowL);
+            } else if (r265mode == 267u) {
+        const uint32_t r265verWord = 0x2bf8u;
+        const uint32_t r265ctlWord = 0x5180u;
+        const uint32_t r265qiWord = 0x5184u;
+        const uint32_t r265qaWord = 0x5185u;
+        const uint32_t r265iniWord = 0x5186u;
+        const uint32_t r265stWord = 0x50d0u;
+        const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+        const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+        const uint32_t r265fwWord = 0x501cu;
+        const uint32_t r265srWord = 0x5000u;
+        const uint32_t r265cpWord = 0x5101u;
+        const uint32_t r265maskWord = 0x5193u;
+        const uint32_t r265aocWord = 0x9304u;
+        const uint32_t r265clrWord = 0x5191u;
+        snprintf(r265RowP0, sizeof r265RowP0,
+                 "gmu267p0=pre=1 ver=%08x qi=%08x qtbl=%08x fw=%08x st=%08x gd=%08x cf=%08x cx_on=%d",
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265verWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265qiWord * 4u) : 0u),
+                 (unsigned)r265qtbl,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265fwWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265stWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 r265cxOn);
+        IOLog("enchilada-adreno: %s\n", r265RowP0);
+        snprintf(r265RowC, sizeof r265RowC,
+                 "gmu267c=census=1 5180=%08x 5181=%08x 5184=%08x 5185=%08x 5186=%08x 5192=%08x 9305=%08x",
+                 (unsigned)r265seenCtl,
+                 (unsigned)r265seenBank,
+                 (unsigned)r265seenQi,
+                 (unsigned)r265seenQa,
+                 (unsigned)r265seenIni,
+                 (unsigned)r265seenStat,
+                 (unsigned)r265seenAo);
+        IOLog("enchilada-adreno: %s\n", r265RowC);
+        if (!r265cxOn) {
+            IOLog("enchilada-adreno: gmu267p1=refused-cx-down cx=%08x\
+", r265cx);
+        } else if (r265geom != 0u || gSmmuVa == 0u) {
+            IOLog("enchilada-adreno: gmu267p1=refused-geometry geom=%u\
+",
+                  (unsigned)r265geom);
+        } else if (r265qtbl == 0u) {
+            IOLog("enchilada-adreno: gmu267p1=refused-no-qtbl\
+");
+        } else if (!&armcpu_dma_alloc_writable) {
+            IOLog("enchilada-adreno: gmu267p1=no-alloc-symbol\
+");
+        } else {
+            if (!s265phys) {
+                s265phys = armcpu_dma_alloc_writable (4ull * 4096ull, &s265virt);
+            }
+            const uint64_t r265base =
+                static_cast<uint64_t>(r265qtbl) & ~static_cast<uint64_t>(0x1fffffull);
+            if (!s265phys || !s265virt) {
+                IOLog("enchilada-adreno: gmu267p1=alloc-failed\
+");
+            } else {
+                struct adreno_iommu_id2 d265 = {};
+                const uint32_t id2w265 = rd32(gSmmuVa, 0x28u);
+                int ok265 = 0;
+                const uint32_t r265ias = (adreno_iommu_id2_decode(id2w265, &d265) == 0)
+                    ? (adreno_iommu_va_size(id2w265, 2u, &ok265)) : 0u;
+                const uint32_t r265oas = adreno_iommu_stage1_oas(id2w265);
+                const uint32_t prot265 = kAdrenoLpaePteValid | kAdrenoLpaePteAf;
+                struct adreno_lpae_geo l265 = {};
+                const uint32_t r265lpaeg = adreno_lpae_geometry(
+                    (r265ias >= 32u) ? r265ias : 36u, 12u, &l265);
+                uint32_t r265need = 0u;
+                const uint32_t r265bytes = (r265lpaeg != 0u) ? 99u
+                    : adreno_table_bytes_needed(&l265, 0x200000ull, &r265need);
+                struct adreno_table_result t265 = {};
+                const uint32_t r265build =
+                    (r265lpaeg != 0u || r265bytes != 0u) ? 99u
+                    : adreno_table_build(&l265, (uint64_t)s265virt, s265phys,
+                                         0x2d800000ull, r265base, 0x200000ull,
+                                         prot265, &t265);
+                uint32_t r265fills = 0u;
+                uint32_t r265plan = 99u;
+                uint32_t r265nabs = 0u;
+                if (r265build == 0u) {
+                    struct adreno_smmu_ctx_params p265 = {};
+                    p265.cbndx = 0u;
+                    p265.asid = 0u;
+                    p265.ttbr = t265.root_paddr;
+                    p265.ias = (r265ias >= 32u) ? r265ias : 36u;
+                    p265.oas = (r265oas >= 32u) ? r265oas : 36u;
+                    const uint32_t r265id0 = rd32(gSmmuVa, 0x20u);
+                    p265.coherent_walk = adreno_iommu_coherent_walk(r265id0, 0u);
+                    p265.ttbr1 = 0u;
+                    p265.aarch64 = 1u;
+                    p265.vmid16 = 0u;
+                    p265.vmid = 0u;
+                    struct adreno_smmu_ctx_write plan265[12];
+                    struct adreno_install_write abs265[12];
+                    uint32_t nplan265 = 0u;
+                    const int r265pl = adreno_smmu_ctx_plan(&p265, plan265, 12u, &nplan265);
+                    const uint32_t r265abs = adreno_install_absolute(
+                        &g265, 0u, plan265, nplan265, abs265, 12u, &r265nabs);
+                    r265plan = (r265pl != 0 || r265abs != 0u) ? 98u : (uint32_t)nplan265;
+                    if (r265plan == 9u) {
+                        uint32_t k265;
+                        for (k265 = 0u; k265 < r265nabs; ++k265) {
+                            const uintptr_t r265frame =
+                                (abs265[k265].gr1 != 0u)
+                                ? static_cast<uintptr_t>(gSmmuVa) + (1u << g265.pgshift)
+                                : static_cast<uintptr_t>(gSmmuVa);
+                            if (abs265[k265].is_64bit) {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r265frame +
+                                    static_cast<uintptr_t>(abs265[k265].offset)) =
+                                    abs265[k265].value;
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r265frame +
+                                    static_cast<uintptr_t>(abs265[k265].offset) + 4u) =
+                                    abs265[k265].value_hi;
+                            } else {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r265frame +
+                                    static_cast<uintptr_t>(abs265[k265].offset)) =
+                                    abs265[k265].value;
+                            }
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint64_t r265rootOff =
+                            (t265.root_paddr >= s265phys) ? (t265.root_paddr - s265phys) : 0ull;
+                        const uint64_t r265span =
+                            static_cast<uint64_t>(t265.tables) * 4096ull;
+                        const uint64_t r265raw0 = *reinterpret_cast<volatile uint64_t *>(
+                            static_cast<uintptr_t>(s265virt) + r265rootOff);
+                        const uint64_t r265l1pa = r265raw0 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r265l1 = (r265l1pa >= s265phys &&
+                                                 r265l1pa < s265phys + r265span)
+                            ? *reinterpret_cast<volatile uint64_t *>(
+                                static_cast<uintptr_t>(s265virt) + (r265l1pa - s265phys))
+                            : 0ull;
+                        const uint64_t r265l2pa = r265l1 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r265tab1 = adreno_lpae_table_pte(r265l1pa);
+                        const uint64_t r265tab2 = adreno_lpae_table_pte(r265l2pa);
+                        const uint64_t r265leaf = adreno_lpae_leaf_pte(prot265, 2u, r265base);
+                        const uint64_t r265l1off =
+                            (r265l1pa >= s265phys && r265l1pa < s265phys + r265span)
+                            ? (r265l1pa - s265phys) : 0ull;
+                        const uint64_t r265l2off =
+                            (r265l2pa >= s265phys && r265l2pa < s265phys + r265span)
+                            ? (r265l2pa - s265phys) : 0ull;
+                        if (r265l1off != 0ull && r265l2off != 0ull) {
+                            uint64_t r265i;
+                            for (r265i = 0ull; r265i < 512ull; ++r265i) {
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s265virt) + r265i * 8ull) =
+                                    r265tab1;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s265virt) +
+                                    r265l1off + r265i * 8ull) = r265tab2;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s265virt) +
+                                    r265l2off + r265i * 8ull) = r265leaf;
+                            }
+                            __asm__ volatile("dsb sy" ::: "memory");
+                            r265fills = 3u;
+                        }
+                        uint64_t r265q;
+                        for (r265q = 0ull; r265q < r265span; r265q += 64ull) {
+                            __asm__ volatile("dc civac, %0" :: "r"(
+                                static_cast<uintptr_t>(s265virt) + r265q) : "memory");
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        if (gSmmuVa) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                static_cast<uintptr_t>(gSmmuVa) +
+                                static_cast<uintptr_t>(g265.cb_base) + 0x58u) = 0xc00001feu;
+                            __asm__ volatile("dsb sy" ::: "memory");
+                        }
+                                                gmuW[r265fwWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        r265qaw = (uint32_t)s265phys;
+                        gmuW[r265qaWord] = r265qaw;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265qiWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265srWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265cpWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265srWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r265fw2 = 0u; r265fw2 < 200000u; ++r265fw2) {
+                            r265fw = sGmuFwVa ? rd32(sGmuFwVa, r265fwWord * 4u) : 0u;
+                            if (r265fw == 0xbabefaceu) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        char r265RowE[352];
+                        const uint32_t r265hfiPre = sGmuFwVa ? rd32(sGmuFwVa, 5192u * 4u) : 0u;
+                        gmuW[r265clrWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint32_t r265hfiPost = sGmuFwVa ? rd32(sGmuFwVa, 5192u * 4u) : 0u;
+                        snprintf(r265RowE, sizeof r265RowE,
+                                 "gmu267e=hfi_clear=1 pre5192=%08x post5192=%08x",
+                                 (unsigned)r265hfiPre, (unsigned)r265hfiPost);
+                        IOLog("enchilada-adreno: %s\n", r265RowE);
+                        IODelay(100u);
+                        char r265RowF[352];
+                        const uint32_t r265re5192 = sGmuFwVa ? rd32(sGmuFwVa, 5192u * 4u) : 0u;
+                        snprintf(r265RowF, sizeof r265RowF,
+                                 "gmu267f=spaced_re5192=1 v=%08x",
+                                 (unsigned)r265re5192);
+                        IOLog("enchilada-adreno: %s\n", r265RowF);
+                        const uint32_t r265aoPre = sGmuFwVa ? rd32(sGmuFwVa, 9305u * 4u) : 0u;
+                        gmuW[r265aocWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint32_t r265aoPost = sGmuFwVa ? rd32(sGmuFwVa, 9305u * 4u) : 0u;
+                        snprintf(r265RowD, sizeof r265RowD,
+                                 "gmu267d=ao_clear=1 pre9305=%08x post9305=%08x",
+                                 (unsigned)r265aoPre, (unsigned)r265aoPost);
+                        IOLog("enchilada-adreno: %s\n", r265RowD);
+                        gmuW[r265maskWord] = 0xff7fffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r265iniWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r265polls = 0u; r265polls < 200000u; ++r265polls) {
+                            r265ctl = sGmuFwVa ? rd32(sGmuFwVa, r265ctlWord * 4u) : 0u;
+                            if ((r265ctl & 0x00000001u) != 0u) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        const uint32_t r265fsr = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g265.cb_base + 0x58u) : 0u;
+                        const uint32_t r265far = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g265.cb_base + 0x60u) : 0u;
+                        snprintf(r265RowP1, sizeof r265RowP1,
+                                 "gmu267p1=hfi=1 fills=%u build=%u plan=%u ctl=%08x "
+                                 "bit0=%u polls=%u fsr=%08x far=%08x "
+                                 "fw=%08x sr=%08x",
+                                 (unsigned)r265fills, (unsigned)r265build,
+                                 (unsigned)r265plan, r265ctl, (r265ctl & 1u),
+                                 (unsigned)r265polls, r265fsr, r265far,
+                                 (unsigned)r265fw,
+                                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265srWord * 4u) : 0u));
+                        IOLog("enchilada-adreno: %s\n", r265RowP1);
+                    } else {
+                        IOLog("enchilada-adreno: gmu267p1=refused-plan plan=%u nab=%u\
+",
+                              (unsigned)r265plan, (unsigned)r265nabs);
+                    }
+                } else {
+                    IOLog("enchilada-adreno: gmu267p1=refused-build build=%u\
+",
+                          (unsigned)r265build);
+                }
+            }
+        }
+        snprintf(r265RowP2, sizeof r265RowP2,
+                 "gmu267p2=both_clears_spaced=1 qa=%08x qi=%08x mask=%08x "
+                 "fw=%08x sr=%08x ctl=%08x bit0=%u",
+                 (unsigned)r265qaw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265qiWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265maskWord * 4u) : 0u),
+                 (unsigned)r265fw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r265srWord * 4u) : 0u),
+                 r265ctl, (r265ctl & 0x00000001u));
+        IOLog("enchilada-adreno: %s\n", r265RowP2);
+        snprintf(r265RowL, sizeof r265RowL,
+                 "gmu267l=mode=%d gd=%08x cf=%08x gx_on=%d gxoff=%d ctl=%08x survived=1",
+                 r265mode,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? (((rd32(sGmuFwVa, cfgWord * 4u)) & 0x00010000u) ? 1 : 0) : 0),
+                 (unsigned)((sGmuFwVa ? rd32(sGmuFwVa, r265stWord * 4u) : 0u) & 0x000000c0u ? 1 : 0),
+                 r265ctl);
+        IOLog("enchilada-adreno: %s\n", r265RowL);
             }
 }
 if (fwKey >= 18u && fwKey <= 21u) {
