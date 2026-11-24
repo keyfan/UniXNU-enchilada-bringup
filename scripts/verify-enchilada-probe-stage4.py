@@ -199,7 +199,7 @@ def main():
     # ROUND 199 drives the GX GDSC through `gxW[...]`; same treatment.
     _outside = re.sub(r'gxW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey >= 7u && fwKey <= 255u' in code and
+          'fwKey >= 7u && fwKey <= 258u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
     check('if (fwKey == 45u) {' in code and
@@ -456,6 +456,11 @@ def main():
     _k253255r = ''
     if _i253255r > 0:
         _k253255r = code[_i253255r:].split(
+            '\nif (fwKey == 256u || fwKey == 257u || fwKey == 258u) {\n', 1)[0]
+    _i256258r = code.find('if (fwKey == 256u || fwKey == 257u || fwKey == 258u) {')
+    _k256258r = ''
+    if _i256258r > 0:
+        _k256258r = code[_i256258r:].split(
             '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
     check(_i238240r > 0 and _k238240r != '' and
           _k238240r.count(_p1r) == 0 and _k238240r.count(_p0r) == 0,
@@ -475,6 +480,9 @@ def main():
     check(_i253255r > 0 and _k253255r != '' and
           _k253255r.count(_p1r) == 0 and _k253255r.count(_p0r) == 0,
           'R295 the position keys carry none of the pinned pulse literals')
+    check(_i256258r > 0 and _k256258r != '' and
+          _k256258r.count(_p1r) == 0 and _k256258r.count(_p0r) == 0,
+          'R296 the separation keys carry none of the pinned pulse literals')
     _i145147r = code.find('if (fwKey == 145u || fwKey == 146u || fwKey == 147u) {')
     _k145147r = ''
     if _i145147r > 0:

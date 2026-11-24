@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 42,
-          'ID1 is re-read at most forty-three times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254 and 255), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 43,
+          'ID1 is re-read at most forty-four times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257 and 258), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 255u' in _fw,
+    check('fwKey >= 7u && fwKey <= 258u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 255u)' in code,
+    check('(fwKey >= 7u && fwKey <= 258u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -7263,6 +7263,11 @@ def main():
     _k253255 = ''
     if _i253255 > 0:
         _k253255 = code[_i253255:].split(
+            '\nif (fwKey == 256u || fwKey == 257u || fwKey == 258u) {\n', 1)[0]
+    _i256258 = code.find('if (fwKey == 256u || fwKey == 257u || fwKey == 258u) {')
+    _k256258 = ''
+    if _i256258 > 0:
+        _k256258 = code[_i256258:].split(
             '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
     check(_k238240 != '', 'R290 the separation keys sit before the ladder')
     _rows290 = ('gmu238p0', 'gmu238p1', 'gmu238p2', 'gmu238l=',
@@ -7624,6 +7629,60 @@ def main():
     check('raise_in_reset=1' in _a253 and 'raise_after_reset=1' in _a254 and
           'raise_in_reset_retry=1' in _a255,
           'R295 each row names where its arm puts the raise')
+
+    # ---- R296: keys 256/257/258 separate address, raise and transition.
+    check(_i256258 > 0 and _k256258 != '',
+          'R296 the separation keys are present in the source')
+    _rows296 = ('gmu256p0', 'gmu256p1', 'gmu256p2', 'gmu256l=',
+                'gmu257p0', 'gmu257p1', 'gmu257p2', 'gmu257l=',
+                'gmu258p0', 'gmu258p1', 'gmu258p2', 'gmu258l=')
+    check(all(_w in _k256258 for _w in _rows296),
+          'R296 every row of the three keys is formatted: %s'
+          % [w for w in _rows296 if w not in _k256258])
+    _rest296 = _k256258.split('} else if (r256mode == 257u) {')[1]
+    _a256 = _k256258.split('} else if (r256mode == 257u) {')[0]
+    _a257 = _rest296.split('} else if (r256mode == 258u) {')[0]
+    _a258 = _rest296.split('} else if (r256mode == 258u) {')[1]
+    check(_a256.count('gmuW[') == 7 and _a257.count('gmuW[') == 8 and
+          _a258.count('gmuW[') == 9,
+          'R296 the arms carry seven, eight and nine stores (got %d, %d, %d)'
+          % (_a256.count('gmuW['), _a257.count('gmuW['), _a258.count('gmuW[')))
+    check(_a256.count('gmuW[r256qiWord] = 0u;') == 0 and
+          _a256.count('gmuW[r256qiWord] = 1u;') == 0,
+          'R296 key 256 never touches the queue descriptor at all')
+    check(_a256.count('gmuW[r256qaWord] = r256qaw;') == 1,
+          'R296 key 256 does write the new table base into the queue address')
+    check(_a257.count('gmuW[r256qiWord] = 0u;') == 0 and
+          _a257.count('gmuW[r256qiWord] = 1u;') == 1,
+          'R296 key 257 writes the descriptor once, with no clear in front of it')
+    check(_a258.count('gmuW[r256qiWord] = 0u;') == 1 and
+          _a258.count('gmuW[r256qiWord] = 1u;') == 1,
+          'R296 key 258 keeps the clear and the raise as a pair')
+    check(_a258.count('gmuW[r256qaWord] = r256qtbl;') == 1 and
+          _a258.count('gmuW[r256qaWord] = r256qaw;') == 0,
+          'R296 key 258 writes back the address the kernel already had')
+    for _tag, _arm in (('256', _a256), ('257', _a257), ('258', _a258)):
+        check(_arm.count('0x5191u') == 0 and _arm.count('0x9304u') == 0,
+              'R296 key %s still carries neither interrupt clear' % _tag)
+        check(_arm.count('gmuW[r256maskWord] = 0xff7fffffu;') == 1,
+              'R296 key %s keeps the mask that R294 proved harmless' % _tag)
+        check(_arm.count('gmuW[r256fwWord] = 0u;') == 1 and
+              _arm.count('gmuW[r256cpWord] = 0u;') == 1 and
+              _arm.count('gmuW[r256srWord] = 1u;') == 1 and
+              _arm.count('gmuW[r256srWord] = 0u;') == 1 and
+              _arm.count('gmuW[r256iniWord] = 1u;') == 1,
+              'R296 key %s keeps the surviving preamble stores' % _tag)
+        check(_arm.count('0xbabefaceu') == 1 and _arm.count('dc civac') == 1 and
+              _arm.count('0xc00001feu') == 1,
+              'R296 key %s still fills the table pages and polls the sentinel' % _tag)
+        check(_arm.index('gmu%s' % _tag) < _arm.index('gmuW['),
+              'R296 key %s prints its census row before its first store' % _tag)
+    check('const int r256mode = (fwKey >= 258u) ? 258 : ((fwKey >= 257u) ? 257 '
+          ': 256);' in code,
+          'R296 the mode selector is written out, not flattened into one arm')
+    check('address_only=1' in _a256 and 'raise_without_clear=1' in _a257 and
+          'raise_with_kernel_address=1' in _a258,
+          'R296 each row names what its arm separates')
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:

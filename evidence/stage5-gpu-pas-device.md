@@ -9030,3 +9030,52 @@ R294 把致死点判成「复位之后再举起描述符」。本轮把同一笔
 
 **119.7 下一步（R296）**
 把「143 与 253 的矛盾」拆成两个可一次判死的变量：**256 = 存活骨架 + 只改 `HFI_QTBL_ADDR`（写新表基址）而完全不碰 `HFI_QTBL_INFO`**（判「换地址」本身是否致死）；**257 = 存活骨架 + 只写 `HFI_QTBL_INFO = 1` 一次（不先清 0，即没有 0→1 跃变）**（判跃变）；**258 = 存活骨架 + 先清 `qi = 0` 再写 `qi = 1`，但地址写回内核自己的那张表（`r256qtbl` 读回值）**（判「跃变 + 原地址」是否接近 143 的存活条件）。
+
+## 一百二十、R296：判据是「启动时描述符处于什么状态」，不是跃变也不是地址（键 256/257/258）
+
+**120.1 一句话**
+R295 把「举手」搬到复位前后都死，于是本轮把 143 与 253 的三处差别各做一个臂：**256 只改 `HFI_QTBL_ADDR`、完全不碰 `HFI_QTBL_INFO`**、**257 只写一次 `HFI_QTBL_INFO = 1`（不先清 0，无跃变）**、**258 清 0 再举 1 但地址写回内核自己那张表**。结果**三臂全部零字节**。把三臂与 R294 键 250（活）逐笔对齐后，判据浮出来了：**凡是让描述符停在 1 的形状都死，凡是让它停在 0 的形状都活** —— 与跃变无关、与地址无关、甚至与我们是否写过它无关。
+
+**120.2 三键设计**
+
+三臂共用 R293/R294 已被证明能活的骨架（装 CB0、分配四页并建表、每页 512 条目全填、`dc civac`、清 `CB_FSR`、`CM3_FW_INIT_RESULT = 0`、复位脉冲与 `0xbabeface` 等待、`GMU2HOST_INTR_MASK = 0xff7fffff`、`HFI_CTRL_INIT = 1`、200000 拍轮询），都不写两个中断 CLR：
+
+- **256（七笔，`address_only`）**：`fw=0 → qa=新表基址 → sr=1 → cp=0 → sr=0 → mask → ini=1`，**描述符一笔都不写**（保持内核留下的状态）。
+- **257（八笔，`raise_without_clear`）**：256 + 一笔 `HFI_QTBL_INFO = 1`，前面没有清 0，因此没有 0→1 跃变。
+- **258（九笔，`raise_with_kernel_address`）**：256 + 清 0 + 举 1，但 `HFI_QTBL_ADDR` 写回的是**内核自己那张表**的地址（`r256qtbl` 读回值），不是本轮新建的表。
+
+每臂的普查行都落在第一笔存储之前；256 锚 R295 键 253 的最近一次真实落地 boot（`644404938` / `b72145af…`），257 与 258 锚上一键。
+
+**120.3 逐字读数**
+
+- **256**：`rows: gmu256p0=0 gmu256p1=0 gmu256p2=0 gmu256l=0`；窗口 sha256 **`b72145afafb87af744d6d14fa9e4c5b8562e3d5c1bde5d0ffbceba279396fa7c`**、`boot_id` **`644404938`**；判定句 `THE WINDOW IS STILL THE PREVIOUS ROUND'S BYTES …; this boot committed nothing, so the round ended before it could print`；`THE ROUND NEVER REACHED ITS TAIL ROW`。
+- **257**：四行同样全 0、同窗口同 `boot_id`；判定句 `FRESH WINDOW BUT ITS STAMPS NAME []`（锚定归因失败提示，不是新读数）。
+- **258**：四行同样全 0、同窗口同 `boot_id`。
+- 三键都 `flash readback matches: True`、钥匙块回读 `enchilada-pas-exec=25N` 一致 ⇒ 刷写无误。
+
+**120.4 判决**
+
+1. **描述符停在 1 就是死**：256 一笔都不写却死 ⇒ 内核自己把描述符留在 1，**致死的是启动那一刻它处于 1 这个状态**，不是我们的某笔写。
+2. **跃变不是判据**：257 没有 0→1 跃变，照样死。
+3. **地址不是判据**：250（R294，活）写的是**新表基址**，258（死）写的是**内核自己的地址** ⇒ 地址两边都试过，生死不随地址变。
+4. **于是「活」的形状只有一个共同点**：`HFI_QTBL_INFO` 在写启动字时是 **0**。R293 键 247/248、R294 键 250、R290 键 240 全部如此；R291 键 241/242/243、R292 键 245、R293 键 249、R294 键 251/252、R295 键 253/254/255、本轮 256/257/258 全部相反。
+5. **与 143 的矛盾收窄到一处**：143 写 `HFI_QTBL_INFO = 1` 后复位、被接受且四行落地。按本轮判据它应该死。它相对 256/257/258 还多的东西只有**两个中断 CLR（`GMU2HOST_INTR_CLR` 与 `AO_HOST_INTERRUPT_CLR` 各 `0xffffffff`）** —— 这正是 R297 的第一变量。
+6. **HFI 仍未接受**：本轮没有任何新的 `ctl` 读数，`gd=00222001`、`cf=00088400`（bit16=0）、`gx_on=0`、`st=000000d4` ⇒ G1 未关闭，GPU 未渲染一帧。
+
+**120.5 边界与读数陷阱**
+
+- 「零字节」= 这一轮没活到第一次刷盘；靠 `flash readback matches: True` 与钥匙块回读排除刷写问题。
+- 窗口 sha 相同 ≠ 写了同样的字节，而是**本轮没写窗口**；`boot_id` 相同即证明这是上一轮的窗口文件。
+- 257/258 的 `FRESH WINDOW BUT ITS STAMPS NAME []` 是锚定归因失败提示；逐键必须重锚。
+- 本轮三臂的「致死」与 R295 三臂同形，**不要把「连续两轮全死」读成「设备坏了」** —— 判定脚本每次都先确认刷写回读一致。
+
+**120.6 门禁与工具**
+
+- host 门 25/25 + 51/51 + 32/32；probe 门 **33/33**（store 预算 1025 → **1049**，新增独立断言 `R296 the three keys separate the address, the raise and the transition`）；stage4 **68/68**、stage5 **55/55**、stage6 **2422/2422**（新增约 30 条 R296 断言段，ID1 重读预算 42 → 43）；全量 `ran 46 of 48, FAILING: 0`；mode-selector **51 selectors / upper 258 / 自证 FAIL / VERDICT PASS**。
+- 静态门 `r296_static.py`（由 `r295_static.py` 派生）：真产物 **PASS**（`required+survivors: 110 checked in both artefacts`、`key marker 'enchilada-pas-exec': kernel=1 payload=2`、forbidden `gmu259a/gmu260a/gmu261a` 三零、固件 32768 B sha 钉住）；对 **R295 产物**（`r295-kernel\\kernel.macho r295-payload\\payload.img`）**FAIL 12**。
+- 构建：CI **#414 `45331956397` success**；分支 `r296-transition` commit `07b0c411d6bd4215af8fa643b1193db4b114135c`、tree `d825373482984bd64d187da48da6a1a7b9d25879`（base `89e501092f28`，535 已有 + 5 上传）。产物：`work\\tmp\\r296-kernel\\kernel.macho` **126,586,880 B sha256 `ce81b1ae1a2d149243e5004bbd7d38c123504edc52cd534fe257eaccf4c84264`**、`work\\tmp\\r296-payload\\payload.img` **150,994,944 B sha256 `8caef06cade8104da2f6877aa13edf602760f3f90aa76363da86e7fd64eb13a8`**。
+- 重键（`r170_rekey.py … "enchilada-pas-exec=2" "enchilada-pas-exec=25N"`，cwd `work\\tmp`）：p256 / p257 / p258 各 150,994,944 B。
+- 生成器 `work\\tmp\\r296_block.py` 继续用「读 245 原始臂 + 按 `STORES` 字典删/插」的外科写法；258 的地址回写是**单独一条正则替换**（`gmuW[r256qaWord] = r256qaw;` → `gmuW[r256qaWord] = r256qtbl;`），因此「写内核地址」这件事在源码里是逐字可查的。
+
+**120.7 下一步（R297）**
+按判决 5，143 与本轮三臂的唯一剩余差别是**两个中断 CLR**：**259 = 256 的七笔 + 两个 CLR（`0x5191`/`0x9304` 各 `0xffffffff`）**（判「恢复 CLR 能否让描述符停在 1 的形状活下来」）；**260 = 250 的存活形状 + 两个 CLR**（判「CLR 会不会把活的形状弄死」，双向对照）；**261 = 259 + 写回内核地址（即 143 的完整链，含复位与两个 CLR）**（判「143 能被接受」是否真能被重放）。
