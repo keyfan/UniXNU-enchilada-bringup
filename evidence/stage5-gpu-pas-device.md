@@ -8803,3 +8803,47 @@ R289 的三键写回的都是普查行读到的**陈旧队列地址**（`ad98500
 - **242**：同 241，但启动之后立刻再把描述符清 0（`@POST2@`）⇒ 判 HFI 启动是否需要描述符在启动**之后**继续有效。
 - **243**：同 241，接受之后敲一次带外门铃（`BOOT_SLUMBER` set 22 / ack 30）⇒ 一旦 HFI 接受，带外服务是否可用（R275/R276 的否定回答只在「HFI 未接受」条件下成立）。
 - 目标不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧。
+
+## 一百一十五、R291：把描述符清零移到复位之前、再在启动前举起 —— 三键全部零字节
+
+**115.1 一句话**
+R290 判「描述符在 CM3 运行期间保持有效 = 死」，本轮把描述符的处理整个倒过来：**241 在复位脉冲之前先清描述符、在 `HFI_CTRL_INIT` 之前再举起**（这样固件重启时看不到有效队列表，而启动那一刻表是在的）；**242 同 241，但在控制字轮询之后再清一次**；**243 同 241，并在启动字之后敲一次带外门铃**（`BOOT_SLUMBER` set 22 / ack 30，10 ms 轮询后清 ack）。三键都照 R289/R290 证明过的键 143 全配方（填三页 + `dc civac` + 写 `HFI_QTBL_ADDR` + `QTBL_INFO=1` + 复位脉冲 + 等 `0xbabeface` + 两个中断 CLR + 掩码 + 写启动字）。**结果是三键全部零字节**：`gmu241p0/p1/p2/gmu241l`、`gmu242p0/p1/p2/gmu241l2`、`gmu243p0/p1/p2/gmu241l3` **计数全 0**，三份窗口 sha256 都是 **`41ada9c94a468e50a9e62cd7a1211f519cd6dcccf3cd669ebe93c7337f9e1e7b`**、`boot_id` 都是 **`642521717`** —— 也就是 R290 键 240 那一轮的窗口原封未动。**本轮没有拿到任何新的寄存器读数**，因此它对「举起时机」这个问题没有回答。
+
+**115.2 三键设计**
+- 共用前导（键 143 全配方，与 R290 逐笔相同）：分配四页 → `adreno_table_build`（IOVA `0x2d800000`）→ `adreno_smmu_ctx_plan` + 九笔 CB0 → **每页 512 条目全填合法描述符** → `dc civac` → 清 `CB_FSR`（`0xc00001feu`）→ `CM3_FW_INIT_RESULT = 0` → `HFI_QTBL_ADDR = 本轮新表的物理基址` → `HFI_QTBL_INFO = 1` → 复位脉冲（`CM3_SYSRESET=1` → `PWR_COL_CP_RESP=0` → `CM3_SYSRESET=0` → 200000 拍等 `0xbabeface`）→ `GMU2HOST_INTR_CLR=0xffffffff` + `AO_HOST_INTERRUPT_CLR=0xffffffff` → `GMU2HOST_INTR_MASK=0xff7fffff`。
+- **241**：前导的**第一步**把描述符清 0（在复位之前），在掩码之后、启动字之前把 `QTBL_INFO` 重新写 1。行 `gmu241p2=raised_before_init=1 qa=… qi=… mask=… fw=… sr=… ctl=… bit0=…`。
+- **242**：同 241，且控制字轮询结束之后再写一次 `QTBL_INFO = 0`。行 `gmu242p2=raised_then_cleared=1 …`。
+- **243**：同 241，且启动字之后写 `BOOT_SLUMBER_OPTION=0`、`GX_VOTE_IDX=0`、`MX_VOTE_IDX=0`、`HOST2GMU_INTR_SET=0x00400000`（set 22），100×`IODelay(100u)` 轮询 `GMU2HOST_INTR_INFO` 的 bit30，再写 `0x40000000`（ack 30）清。行 `gmu243p2=oob=1 ack=… info=… bs=… gx=… mx=…`。
+- 块规模：**45,151 字符 / 794 行 / opens=87 closes=87**、块内 `gmuW[` **39**（三臂 11 / 12 / 16）、探针全文件 **1,779,420 字符 / 29,906 行**、全文件 `gmuW[...] =` 实测 **940**。
+
+**115.3 逐字读数（设备自写）**
+- **241** 零字节：`rows: gmu241p0=0 gmu241p1=0 gmu241p2=0 gmu241l=0`，`row key detected from stamps []`，窗口 sha256 `41ada9c94a468e50a9e62cd7a1211f519cd6dcccf3cd669ebe93c7337f9e1e7b`，`boot_id 642521717`，`THE WINDOW IS STILL THE PREVIOUS ROUND'S BYTES`；刷写回读一致（`flash readback matches: True`）。
+- **242** 零字节：`rows: gmu242p0=0 gmu242p1=0 gmu242p2=0 gmu241l2=0`，同窗口 sha、同 `boot_id 642521717`；因为这一键的 runner 没有锚定上一轮的 `boot_id`（`PREV_BOOT = 0`），判定句打到 `FRESH WINDOW BUT ITS STAMPS NAME []` 这个分支 —— **这是判定脚本的诚实拒绝，不是「本轮有新窗口」**。
+- **243** 零字节：`rows: gmu243p0=0 gmu243p1=0 gmu243p2=0 gmu241l3=0`，同窗口 sha、同 `boot_id 642521717`；同样因为未锚定走到 `FRESH WINDOW BUT ITS STAMPS NAME []`，`doorbell acked None info None slumber option None votes None None`。
+- 三份窗口文件都是 33,554,432 B，sha 与 R290 键 240 的窗口逐字相同 ⇒ **没有任何一轮写过窗口**。
+
+**115.4 判决**
+1. **本轮没有任何寄存器读数**：三键全零字节，`ctl` bit0、`cf` bit16、`fsr` 这些都没有新证据 ⇒ 「把描述符清零移到复位之前再举起」这个时序**既没有被证实也没有被排除**。
+2. **「整轮消失」这种死法在本轮复现了三次**（241/242/243），而结构上只差一两笔的 R290 键 240（描述符在复位期间有效、轮询之后清）与 R289 键 237 都活下来了 ⇒ **死法不是稳定的关于某一笔写**；它至少和「这一轮从哪一步开始就没能刷出去」有关，可能就是日志介质把整批行丢掉。
+3. **R290 的「描述符保持有效 = 死」必须降级为「在这三次观测里两者同现」**：本轮 241/242/243 都把描述符清在复位**之前**（也就是不复现 R290 那个形状），但它们同样死；同时 R289 键 237 与 R290 键 240 在描述符有效的形状下活着。单凭「描述符有效/无效」这条线切不开生死。
+4. **HFI 依然没有被接受**（本轮连读数都没有，所以只能说：没有观察到接受）。
+5. **流程缺陷（要记）**：只给 241 做了锚定，242/243 的 `PREV_BOOT`/`PREV_SHA` 还是 0 ⇒ 它们的判定句无法做「窗口是否刷新」的判断。**锚定必须逐键做，且当上一键零字节时，下一键应锚到「最后一次真实观测到的 boot」而不是上一键的名字**。
+
+**115.5 边界与读数陷阱**
+- **零字节 = 这一轮死在第一次刷盘之前**；窗口 sha 不变、`boot_id` 不变、`exec_key` 仍是更早那一轮 —— 三者要一起看，任何一个单独看都会误判。
+- **不要用「上一键的 boot」做锚**如果那一键零字节：本轮 242/243 就是例子；正确锚是「最近一次真实落地轮次的 boot」。
+- runner 的判定分支在 `_fresh` 为假时给的是「窗口仍是上一轮字节」，在 `_fresh` 为真但 stamp 不匹配时给的是「新窗口但 stamp 命名别的键」—— 这两句都是**拒绝归因**，不是观测结果。
+- 本轮 `qinfo`/`qtbl` 都没有被读到，所以不能再说「写进去的是新地址还是陈旧地址」。
+
+**115.6 门禁与工具（本轮全部通过）**
+- **静态门** `work\tmp\r291_static.py`：对真产物 **PASS**（`required+survivors: 110 checked in both artefacts`、`key marker 'enchilada-pas-exec': kernel=1 payload=2`、forbidden `gmu244a/gmu245a/gmu246a` 三零、固件 32768 B sha `b07f9029…` 钉住）；对 **R290 产物** 传 `r290-kernel\kernel.macho r290-payload\payload.img` → **FAIL 12**（12 条 REQUIRED 全 `kernel=0 payload=0`）⇒ 区分能力自证成立。
+- **探针门** `scripts/check-enchilada-adreno-probe.py`：store 预算 **901 → 940**，并新增两条独立断言（`gmuW[r241qiWord] = 0u;` 至少两次、`gmuW[r241setWord] = 0x40000000u;` 存在）——**不再往那条巨长消息串里插句子**，R290 那次插坏留下空串残迹的教训。修完 **30/30 PASS**。
+- **host 门** 25/25 + 51/51 + 32/32 + 各 contract PASS；**stage4 63/63**、**stage5 50/50**、**stage6 2287/2287**；全量 `..\tmp\r239_allgates.py` → **ran 46 of 48, FAILING: 0**；`work\tmp\check_mode_selector.py` → **46 selectors / upper 243 / 自证 FAIL / VERDICT PASS**。
+- **CI** #409 `45298367330` **success 28/28**（分支 `r291-raise` commit `9596d6f8eab265deca9171a2a5f65622ed08576f`、tree `8e47a220232e8956f1a1991e5c77bb8bed7134fc`、base main `da1cc8b8c118`，534 已有 + 6 上传）。
+- 产物：`work\tmp\r291-kernel\kernel.macho` 126,550,016 B sha256 `ec263f61cf12e0d3c2205e9ffcfd8600c70ecf60100cffb0b925c92311044ca5`；`work\tmp\r291-payload\payload.img` 150,994,944 B sha256 `2608684902c4acf330a8f86ad33340fc96f1028f88bea4eb0d153e2291ed7e1b`。重键 p241 `88df721e20bc6d3f368f2ce19b434493b1a178b9d0e8d57aeeb7cd7ad598bea6`、p242 `2db8a7b78a8108a22c68d2053f3ec949824c5088b89719fe9ecbf43baf79ba4d`、p243 `91804c44d0215c459884ac43bd113ecfa572940f8ff8fee22a82265a82b0b089`。
+- 工具：`work\tmp\r291_mkgen.py`（从 `r290_block.py` 做受控文本手术：链式改名 240→243/239→242/238→241、`OLD_HDR` 显式改成 238/239/240、复位前 `qi` 写 0、插 `@RAISE@` 与 `@POST2@`、`EX_REST_LIGHT` 只在需要时发射）、`r291_gate3.py`、`r291_gates45.py`、`r291_gates6.py`、`r291_mkstatic.py`/`r291_static.py`/`r291_static_check.py`、`r291_mkrun.py`/`r291_s24N_run.py`、`r291_rowscheck.py`、`r291_anchor.py`、`r291_wait.py`、`peek_ci.py <run_id>`。
+- 教训：**`python -c` 里绝不要写带引号/花括号/`elif` 的代码**（PowerShell 把整段打碎成 `ParserError`，本轮两次）；**`git show :path` 的输出是 UTF-8**（PowerShell 重定向才是 UTF-16LE，混用会把探针写坏）；**`source_rows()` 是无参函数**，静态门自检要读 `mod.PROBE` 的工作副本（读 index 版会看不到本轮刚落的块，本轮因此误报 12 条 REQUIRED 缺失）；**runner 的 `verdict.append` 带 `{}` 时检查 `.format(` 必须按括号配平取窗口**，定长 4 行窗口会误报。
+
+**115.7 下一步（R292）**
+- **先量死法本身，而不是再猜密码**：**244** = 完全不做任何 store、只按五步各打一行（零写控制键）——若它也零字节，则「整轮消失」与写无关，是介质/刷盘的性质；**245** = 241 的同一形状（重复一次），判三连死是否可复现；**246** = 只做「清描述符 → 打一行 → 退出」，把致死点夹在最小形状里。三键都要保证**至少一行落在任何一笔 store 之前**，并且逐键锚到最近一次真实落地的 boot。
+- 其余状态不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧；G1（GDSCR bit16 由什么置起）仍未关闭。
