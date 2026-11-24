@@ -141,7 +141,7 @@ def main():
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
     check(code.count('rd32(gSmmuVa, 0x24u)') <= 48,
-          'ID1 is re-read at most forty-nine times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266 and 267), '
+          'ID1 is re-read at most forty-nine times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269 and 270), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 267u' in _fw,
+    check('fwKey >= 7u && fwKey <= 270u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 267u)' in code,
+    check('(fwKey >= 7u && fwKey <= 270u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -7283,6 +7283,11 @@ def main():
     _k265267 = ''
     if _i265267 > 0:
         _k265267 = code[_i265267:].split(
+            '\nif (fwKey == 268u || fwKey == 269u || fwKey == 270u) {\n', 1)[0]
+    _i268270 = code.find('if (fwKey == 268u || fwKey == 269u || fwKey == 270u) {')
+    _k268270 = ''
+    if _i268270 > 0:
+        _k268270 = code[_i268270:].split(
             '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
     check(_k238240 != '', 'R290 the separation keys sit before the ladder')
     _rows290 = ('gmu238p0', 'gmu238p1', 'gmu238p2', 'gmu238l=',
@@ -7823,6 +7828,52 @@ def main():
           'R298 each row names the clear its arm carries and the one it does not')
     check(_i265267 > 0 and _k265267 != '',
           'R299 the both-clear keys are present in the source')
+    check(_i268270 > 0 and _k268270 != '',
+          'R303 the post-acceptance keys are present in the source')
+    _r303a = _k268270.split('} else if (r268mode == 269u) {')[0].split(
+        'if (r268mode == 268u) {')[1]
+    _r303rest = _k268270.split('} else if (r268mode == 269u) {')[1]
+    _r303b = _r303rest.split('} else {')[0]
+    _r303c = _r303rest.split('} else {')[1]
+    check(_k268270.count('< 512ull') == 3,
+          'R303 each key fills every entry of the three table pages, as key 143 did')
+    for _tag, _arm in (('268', _r303a), ('269', _r303b), ('270', _r303c)):
+        check(_arm.count('gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xff7fffffu;') == 1 and
+              _arm.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1,
+              'R303 key %s carries the mask store and the start word of the shape ' % _tag)
+        check(_arm.count('0xc00001feu') == 1,
+              'R303 key %s clears the context fault status word before it starts' % _tag)
+    check(_r303a.count('gmu268m=after_acceptance_hfi') == 1 and
+          _r303a.count('gmu268n=after_acceptance_cm3') == 1 and
+          _r303a.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS] = 0u;') == 0,
+          'R303 key 268 reads the HFI block and the CM3 words right after acceptance '
+          'and writes nothing after its start word')
+    check(_r303b.count('gmu269m=settled=1') == 1 and
+          _r303b.count('gmu269f=settled_hfi') == 1 and
+          _r303b.count('gmu269n=settled_cm3') == 1 and
+          _r303b.count('for (r303w = 0u; r303w < 200000u; ++r303w)') == 2,
+          'R303 key 269 runs one more full polling window before it reads the same words')
+    check(_r303c.count('gmu270m=after_repeat=1') == 1 and
+          _r303c.count('gmu270n=after_clear=1') == 1 and
+          _r303c.count('gmu270f=cleared_hfi') == 1 and
+          _r303c.count('gmu270o=cleared_cm3') == 1 and
+          _r303c.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS] = 0u;') == 1,
+          'R303 key 270 reads the control word five times and then clears it by hand')
+    check(_k268270.count('ADRENO_GMU_BOOT_V1_CM3_SYSRESET * 4u') >= 3 and
+          _k268270.count('ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG * 4u') >= 3 and
+          _k268270.count('ADRENO_GMU_BOOT_V1_CM3_CFG * 4u') >= 3 and
+          _k268270.count('ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG * 4u') >= 3 and
+          _k268270.count('ADRENO_GMU_BOOT_V1_PWR_COL_CP_RESP * 4u') >= 3 and
+          _k268270.count('ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO * 4u') >= 7 and
+          _k268270.count('ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK * 4u') >= 3,
+          'R303 every key reads the CM3 reset, boot-config, config and CP words')
+    check(_k268270.count('gmur303') >= 10,
+          'R303 the shared rows are labelled without any key number, so no window '
+          'can be mistaken for another key')
+    check('const int r268mode = (fwKey >= 270u) ? 270 : ((fwKey >= 269u) ? 269 : 268);'
+          in _k268270,
+          'R303 the mode selector names the three keys in order')
+
     _a265 = _k265267.split('} else if (r265mode == 266u) {')[0].split(
         'if (r265mode == 265u) {')[1]
     _rest299 = _k265267.split('} else if (r265mode == 266u) {')[1]
