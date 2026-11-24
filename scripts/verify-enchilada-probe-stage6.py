@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 40,
-          'ID1 is re-read at most forty-one times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248 and 249), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 41,
+          'ID1 is re-read at most forty-two times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251 and 252), '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 249u' in _fw,
+    check('fwKey >= 7u && fwKey <= 252u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 249u)' in code,
+    check('(fwKey >= 7u && fwKey <= 252u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -7253,6 +7253,11 @@ def main():
     _k247249 = ''
     if _i247249 > 0:
         _k247249 = code[_i247249:].split(
+            '\nif (fwKey == 250u || fwKey == 251u || fwKey == 252u) {\n', 1)[0]
+    _i250252 = code.find('if (fwKey == 250u || fwKey == 251u || fwKey == 252u) {')
+    _k250252 = ''
+    if _i250252 > 0:
+        _k250252 = code[_i250252:].split(
             '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
     check(_k238240 != '', 'R290 the separation keys sit before the ladder')
     _rows290 = ('gmu238p0', 'gmu238p1', 'gmu238p2', 'gmu238l=',
@@ -7500,6 +7505,67 @@ def main():
     check('seven_stores=1' in _a248 and 'nine_stores=1' in _a249 and
           'four_stores=1' in _a247,
           'R293 each row names how many stores its arm kept')
+
+    # ---- R294: keys 250/251/252 split the two stores that separate seven from nine.
+    # R293 lost the nine-store round twice while the seven-store round landed every row,
+    # so each of these keys keeps the seven-store preamble and adds exactly one of the two
+    # stores back, plus a control that adds both.
+    check(_i250252 > 0 and _k250252 != '',
+          'R294 the split keys are present in the source')
+    _rows294 = ('gmu250p0', 'gmu250p1', 'gmu250p2', 'gmu250l=',
+                'gmu251p0', 'gmu251p1', 'gmu251p2', 'gmu251l=',
+                'gmu252p0', 'gmu252p1', 'gmu252p2', 'gmu252l=')
+    check(all(_w in _k250252 for _w in _rows294),
+          'R294 every row of the three keys is formatted: %s'
+          % [w for w in _rows294 if w not in _k250252])
+    check(_k250252.count('gmuW[') == 25,
+          'R294 the three keys carry twenty-five pointer stores (got %d)'
+          % _k250252.count('gmuW['))
+    _rest294 = _k250252.split('} else if (r250mode == 251u) {')[1]
+    _a250 = _k250252.split('} else if (r250mode == 251u) {')[0]
+    _a251 = _rest294.split('} else if (r250mode == 252u) {')[0]
+    _a252 = _rest294.split('} else if (r250mode == 252u) {')[1]
+    for _tag, _arm, _want in (('250', _a250, 8), ('251', _a251, 8),
+                              ('252', _a252, 9)):
+        check(_arm.count('gmuW[') == _want,
+              'R294 key %s keeps %d stores (got %d)'
+              % (_tag, _want, _arm.count('gmuW[')))
+    check(_a250.count('gmuW[r250maskWord] = 0xff7fffffu;') == 1 and
+          _a250.count('gmuW[r250qiWord] = 1u;') == 0,
+          'R294 key 250 writes the mask and never raises the descriptor')
+    check(_a251.count('gmuW[r250maskWord] = 0xff7fffffu;') == 0 and
+          _a251.count('gmuW[r250qiWord] = 1u;') == 1,
+          'R294 key 251 raises the descriptor and never writes the mask')
+    check(_a252.count('gmuW[r250maskWord] = 0xff7fffffu;') == 1 and
+          _a252.count('gmuW[r250qiWord] = 1u;') == 1,
+          'R294 key 252 writes both, which is the nine-store reproduction')
+    for _tag, _arm in (('250', _a250), ('251', _a251), ('252', _a252)):
+        check(_arm.count('0x5191u') == 0 and _arm.count('0x9304u') == 0,
+              'R294 key %s still carries neither interrupt clear' % _tag)
+        check(_arm.count('gmuW[r250fwWord] = 0u;') == 1 and
+              _arm.count('gmuW[r250qaWord] = r250qaw;') == 1 and
+              _arm.count('gmuW[r250cpWord] = 0u;') == 1,
+              'R294 key %s keeps the three stores of the seven-store preamble' % _tag)
+        check(_arm.count('gmuW[r250qiWord] = 0u;') == 1 and
+              _arm.count('gmuW[r250srWord] = 1u;') == 1 and
+              _arm.count('gmuW[r250srWord] = 0u;') == 1 and
+              _arm.count('gmuW[r250iniWord] = 1u;') == 1,
+              'R294 key %s keeps the descriptor clear, both reset halves and the '
+              'start word' % _tag)
+        check(_arm.index('gmu%s' % _tag) < _arm.index('gmuW['),
+              'R294 key %s prints its census row before its first store' % _tag)
+        check(_arm.count('0xbabefaceu') == 1 and _arm.count('dc civac') == 1 and
+              _arm.count('0xc00001feu') == 1,
+              'R294 key %s still fills the table pages and polls the sentinel' % _tag)
+    check(_a252.index('gmuW[r250qiWord] = 1u;') <
+          _a252.index('gmuW[r250iniWord] = 1u;'),
+          'R294 key 252 raises the descriptor before the start word')
+    check('const int r250mode = (fwKey >= 252u) ? 252 : ((fwKey >= 251u) ? 251 '
+          ': 250);' in code,
+          'R294 the mode selector is written out, not flattened into one arm')
+    check('mask_only=1' in _a250 and 'raise_only=1' in _a251 and
+          'both_again=1' in _a252,
+          'R294 each row names which of the two stores its arm added')
 
     print('%d/%d checks passed' % (checks - len(fails), checks))
     if fails:
