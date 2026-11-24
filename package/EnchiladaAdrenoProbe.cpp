@@ -1533,7 +1533,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            ((fwKey >= 7u && fwKey <= 258u));
+                            ((fwKey >= 7u && fwKey <= 261u));
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -31839,6 +31839,764 @@ if (fwKey == 256u || fwKey == 257u || fwKey == 258u) {
                  (unsigned)((sGmuFwVa ? rd32(sGmuFwVa, r256stWord * 4u) : 0u) & 0x000000c0u ? 1 : 0),
                  r256ctl);
         IOLog("enchilada-adreno: %s\n", r256RowL);
+            }
+}
+
+if (fwKey == 259u || fwKey == 260u || fwKey == 261u) {
+    char r259RowP0[352];
+    char r259RowP1[352];
+    char r259RowP2[352];
+    char r259RowL[352];
+    unsigned r259polls = 0u;
+    unsigned r259fw2 = 0u;
+    uint32_t r259qaw = 0u;
+    uint32_t r259ctl = 0u;
+    uint32_t r259fw = 0u;
+    static uint64_t s259phys = 0;
+    static uint64_t s259virt = 0;
+    const int r259mode = (fwKey >= 261u) ? 261 : ((fwKey >= 260u) ? 260 : 259);
+    const uint32_t r259qtbl = sGmuFwVa
+        ? rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR * 4u) : 0u;
+    struct adreno_install_geo g259;
+    const uint32_t r259id1 = gSmmuVa ? rd32(gSmmuVa, 0x24u) : 0u;
+    const uint32_t r259geom = adreno_install_cb_geometry(r259id1, &g259);
+    const uint32_t r259cx = gGpuccVa ? rd32(gGpuccVa, kCxOffset) : 0u;
+    const int r259cxOn = adreno_domain_cx_is_on(r259cx);
+    if (r259mode == 259u) {
+        const uint32_t r259verWord = 0x2bf8u;
+        const uint32_t r259ctlWord = 0x5180u;
+        const uint32_t r259qiWord = 0x5184u;
+        const uint32_t r259qaWord = 0x5185u;
+        const uint32_t r259iniWord = 0x5186u;
+        const uint32_t r259stWord = 0x50d0u;
+        const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+        const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+        const uint32_t r259fwWord = 0x501cu;
+        const uint32_t r259srWord = 0x5000u;
+        const uint32_t r259cpWord = 0x5101u;
+        const uint32_t r259maskWord = 0x5193u;
+        const uint32_t r259clrWord = 0x5191u;
+        const uint32_t r259aocWord = 0x9304u;
+        snprintf(r259RowP0, sizeof r259RowP0,
+                 "gmu259p0=pre=1 ver=%08x qi=%08x qtbl=%08x fw=%08x st=%08x gd=%08x cf=%08x cx_on=%d",
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259verWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259qiWord * 4u) : 0u),
+                 (unsigned)r259qtbl,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259fwWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259stWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 r259cxOn);
+        IOLog("enchilada-adreno: %s\n", r259RowP0);
+        if (!r259cxOn) {
+            IOLog("enchilada-adreno: gmu259p1=refused-cx-down cx=%08x\
+", r259cx);
+        } else if (r259geom != 0u || gSmmuVa == 0u) {
+            IOLog("enchilada-adreno: gmu259p1=refused-geometry geom=%u\
+",
+                  (unsigned)r259geom);
+        } else if (r259qtbl == 0u) {
+            IOLog("enchilada-adreno: gmu259p1=refused-no-qtbl\
+");
+        } else if (!&armcpu_dma_alloc_writable) {
+            IOLog("enchilada-adreno: gmu259p1=no-alloc-symbol\
+");
+        } else {
+            if (!s259phys) {
+                s259phys = armcpu_dma_alloc_writable (4ull * 4096ull, &s259virt);
+            }
+            const uint64_t r259base =
+                static_cast<uint64_t>(r259qtbl) & ~static_cast<uint64_t>(0x1fffffull);
+            if (!s259phys || !s259virt) {
+                IOLog("enchilada-adreno: gmu259p1=alloc-failed\
+");
+            } else {
+                struct adreno_iommu_id2 d259 = {};
+                const uint32_t id2w259 = rd32(gSmmuVa, 0x28u);
+                int ok259 = 0;
+                const uint32_t r259ias = (adreno_iommu_id2_decode(id2w259, &d259) == 0)
+                    ? (adreno_iommu_va_size(id2w259, 2u, &ok259)) : 0u;
+                const uint32_t r259oas = adreno_iommu_stage1_oas(id2w259);
+                const uint32_t prot259 = kAdrenoLpaePteValid | kAdrenoLpaePteAf;
+                struct adreno_lpae_geo l259 = {};
+                const uint32_t r259lpaeg = adreno_lpae_geometry(
+                    (r259ias >= 32u) ? r259ias : 36u, 12u, &l259);
+                uint32_t r259need = 0u;
+                const uint32_t r259bytes = (r259lpaeg != 0u) ? 99u
+                    : adreno_table_bytes_needed(&l259, 0x200000ull, &r259need);
+                struct adreno_table_result t259 = {};
+                const uint32_t r259build =
+                    (r259lpaeg != 0u || r259bytes != 0u) ? 99u
+                    : adreno_table_build(&l259, (uint64_t)s259virt, s259phys,
+                                         0x2d800000ull, r259base, 0x200000ull,
+                                         prot259, &t259);
+                uint32_t r259fills = 0u;
+                uint32_t r259plan = 99u;
+                uint32_t r259nabs = 0u;
+                if (r259build == 0u) {
+                    struct adreno_smmu_ctx_params p259 = {};
+                    p259.cbndx = 0u;
+                    p259.asid = 0u;
+                    p259.ttbr = t259.root_paddr;
+                    p259.ias = (r259ias >= 32u) ? r259ias : 36u;
+                    p259.oas = (r259oas >= 32u) ? r259oas : 36u;
+                    const uint32_t r259id0 = rd32(gSmmuVa, 0x20u);
+                    p259.coherent_walk = adreno_iommu_coherent_walk(r259id0, 0u);
+                    p259.ttbr1 = 0u;
+                    p259.aarch64 = 1u;
+                    p259.vmid16 = 0u;
+                    p259.vmid = 0u;
+                    struct adreno_smmu_ctx_write plan259[12];
+                    struct adreno_install_write abs259[12];
+                    uint32_t nplan259 = 0u;
+                    const int r259pl = adreno_smmu_ctx_plan(&p259, plan259, 12u, &nplan259);
+                    const uint32_t r259abs = adreno_install_absolute(
+                        &g259, 0u, plan259, nplan259, abs259, 12u, &r259nabs);
+                    r259plan = (r259pl != 0 || r259abs != 0u) ? 98u : (uint32_t)nplan259;
+                    if (r259plan == 9u) {
+                        uint32_t k259;
+                        for (k259 = 0u; k259 < r259nabs; ++k259) {
+                            const uintptr_t r259frame =
+                                (abs259[k259].gr1 != 0u)
+                                ? static_cast<uintptr_t>(gSmmuVa) + (1u << g259.pgshift)
+                                : static_cast<uintptr_t>(gSmmuVa);
+                            if (abs259[k259].is_64bit) {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r259frame +
+                                    static_cast<uintptr_t>(abs259[k259].offset)) =
+                                    abs259[k259].value;
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r259frame +
+                                    static_cast<uintptr_t>(abs259[k259].offset) + 4u) =
+                                    abs259[k259].value_hi;
+                            } else {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r259frame +
+                                    static_cast<uintptr_t>(abs259[k259].offset)) =
+                                    abs259[k259].value;
+                            }
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint64_t r259rootOff =
+                            (t259.root_paddr >= s259phys) ? (t259.root_paddr - s259phys) : 0ull;
+                        const uint64_t r259span =
+                            static_cast<uint64_t>(t259.tables) * 4096ull;
+                        const uint64_t r259raw0 = *reinterpret_cast<volatile uint64_t *>(
+                            static_cast<uintptr_t>(s259virt) + r259rootOff);
+                        const uint64_t r259l1pa = r259raw0 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r259l1 = (r259l1pa >= s259phys &&
+                                                 r259l1pa < s259phys + r259span)
+                            ? *reinterpret_cast<volatile uint64_t *>(
+                                static_cast<uintptr_t>(s259virt) + (r259l1pa - s259phys))
+                            : 0ull;
+                        const uint64_t r259l2pa = r259l1 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r259tab1 = adreno_lpae_table_pte(r259l1pa);
+                        const uint64_t r259tab2 = adreno_lpae_table_pte(r259l2pa);
+                        const uint64_t r259leaf = adreno_lpae_leaf_pte(prot259, 2u, r259base);
+                        const uint64_t r259l1off =
+                            (r259l1pa >= s259phys && r259l1pa < s259phys + r259span)
+                            ? (r259l1pa - s259phys) : 0ull;
+                        const uint64_t r259l2off =
+                            (r259l2pa >= s259phys && r259l2pa < s259phys + r259span)
+                            ? (r259l2pa - s259phys) : 0ull;
+                        if (r259l1off != 0ull && r259l2off != 0ull) {
+                            uint64_t r259i;
+                            for (r259i = 0ull; r259i < 512ull; ++r259i) {
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s259virt) + r259i * 8ull) =
+                                    r259tab1;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s259virt) +
+                                    r259l1off + r259i * 8ull) = r259tab2;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s259virt) +
+                                    r259l2off + r259i * 8ull) = r259leaf;
+                            }
+                            __asm__ volatile("dsb sy" ::: "memory");
+                            r259fills = 3u;
+                        }
+                        uint64_t r259q;
+                        for (r259q = 0ull; r259q < r259span; r259q += 64ull) {
+                            __asm__ volatile("dc civac, %0" :: "r"(
+                                static_cast<uintptr_t>(s259virt) + r259q) : "memory");
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        if (gSmmuVa) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                static_cast<uintptr_t>(gSmmuVa) +
+                                static_cast<uintptr_t>(g259.cb_base) + 0x58u) = 0xc00001feu;
+                            __asm__ volatile("dsb sy" ::: "memory");
+                        }
+                                                gmuW[r259fwWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        r259qaw = (uint32_t)s259phys;
+                        gmuW[r259qaWord] = r259qaw;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259srWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259cpWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259srWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r259fw2 = 0u; r259fw2 < 200000u; ++r259fw2) {
+                            r259fw = sGmuFwVa ? rd32(sGmuFwVa, r259fwWord * 4u) : 0u;
+                            if (r259fw == 0xbabefaceu) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        gmuW[r259clrWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259aocWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259maskWord] = 0xff7fffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259iniWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r259polls = 0u; r259polls < 200000u; ++r259polls) {
+                            r259ctl = sGmuFwVa ? rd32(sGmuFwVa, r259ctlWord * 4u) : 0u;
+                            if ((r259ctl & 0x00000001u) != 0u) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        const uint32_t r259fsr = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g259.cb_base + 0x58u) : 0u;
+                        const uint32_t r259far = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g259.cb_base + 0x60u) : 0u;
+                        snprintf(r259RowP1, sizeof r259RowP1,
+                                 "gmu259p1=hfi=1 fills=%u build=%u plan=%u ctl=%08x "
+                                 "bit0=%u polls=%u fsr=%08x far=%08x "
+                                 "fw=%08x sr=%08x",
+                                 (unsigned)r259fills, (unsigned)r259build,
+                                 (unsigned)r259plan, r259ctl, (r259ctl & 1u),
+                                 (unsigned)r259polls, r259fsr, r259far,
+                                 (unsigned)r259fw,
+                                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259srWord * 4u) : 0u));
+                        IOLog("enchilada-adreno: %s\n", r259RowP1);
+                    } else {
+                        IOLog("enchilada-adreno: gmu259p1=refused-plan plan=%u nab=%u\
+",
+                              (unsigned)r259plan, (unsigned)r259nabs);
+                    }
+                } else {
+                    IOLog("enchilada-adreno: gmu259p1=refused-build build=%u\
+",
+                          (unsigned)r259build);
+                }
+            }
+        }
+        snprintf(r259RowP2, sizeof r259RowP2,
+                 "gmu259p2=clears_descriptor_untouched=1 qa=%08x qi=%08x mask=%08x "
+                 "fw=%08x sr=%08x ctl=%08x bit0=%u",
+                 (unsigned)r259qaw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259qiWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259maskWord * 4u) : 0u),
+                 (unsigned)r259fw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259srWord * 4u) : 0u),
+                 r259ctl, (r259ctl & 0x00000001u));
+        IOLog("enchilada-adreno: %s\n", r259RowP2);
+        snprintf(r259RowL, sizeof r259RowL,
+                 "gmu259l=mode=%d gd=%08x cf=%08x gx_on=%d gxoff=%d ctl=%08x survived=1",
+                 r259mode,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? (((rd32(sGmuFwVa, cfgWord * 4u)) & 0x00010000u) ? 1 : 0) : 0),
+                 (unsigned)((sGmuFwVa ? rd32(sGmuFwVa, r259stWord * 4u) : 0u) & 0x000000c0u ? 1 : 0),
+                 r259ctl);
+        IOLog("enchilada-adreno: %s\n", r259RowL);
+            } else if (r259mode == 260u) {
+        const uint32_t r259verWord = 0x2bf8u;
+        const uint32_t r259ctlWord = 0x5180u;
+        const uint32_t r259qiWord = 0x5184u;
+        const uint32_t r259qaWord = 0x5185u;
+        const uint32_t r259iniWord = 0x5186u;
+        const uint32_t r259stWord = 0x50d0u;
+        const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+        const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+        const uint32_t r259fwWord = 0x501cu;
+        const uint32_t r259srWord = 0x5000u;
+        const uint32_t r259cpWord = 0x5101u;
+        const uint32_t r259maskWord = 0x5193u;
+        const uint32_t r259clrWord = 0x5191u;
+        const uint32_t r259aocWord = 0x9304u;
+        snprintf(r259RowP0, sizeof r259RowP0,
+                 "gmu260p0=pre=1 ver=%08x qi=%08x qtbl=%08x fw=%08x st=%08x gd=%08x cf=%08x cx_on=%d",
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259verWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259qiWord * 4u) : 0u),
+                 (unsigned)r259qtbl,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259fwWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259stWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 r259cxOn);
+        IOLog("enchilada-adreno: %s\n", r259RowP0);
+        if (!r259cxOn) {
+            IOLog("enchilada-adreno: gmu260p1=refused-cx-down cx=%08x\
+", r259cx);
+        } else if (r259geom != 0u || gSmmuVa == 0u) {
+            IOLog("enchilada-adreno: gmu260p1=refused-geometry geom=%u\
+",
+                  (unsigned)r259geom);
+        } else if (r259qtbl == 0u) {
+            IOLog("enchilada-adreno: gmu260p1=refused-no-qtbl\
+");
+        } else if (!&armcpu_dma_alloc_writable) {
+            IOLog("enchilada-adreno: gmu260p1=no-alloc-symbol\
+");
+        } else {
+            if (!s259phys) {
+                s259phys = armcpu_dma_alloc_writable (4ull * 4096ull, &s259virt);
+            }
+            const uint64_t r259base =
+                static_cast<uint64_t>(r259qtbl) & ~static_cast<uint64_t>(0x1fffffull);
+            if (!s259phys || !s259virt) {
+                IOLog("enchilada-adreno: gmu260p1=alloc-failed\
+");
+            } else {
+                struct adreno_iommu_id2 d259 = {};
+                const uint32_t id2w259 = rd32(gSmmuVa, 0x28u);
+                int ok259 = 0;
+                const uint32_t r259ias = (adreno_iommu_id2_decode(id2w259, &d259) == 0)
+                    ? (adreno_iommu_va_size(id2w259, 2u, &ok259)) : 0u;
+                const uint32_t r259oas = adreno_iommu_stage1_oas(id2w259);
+                const uint32_t prot259 = kAdrenoLpaePteValid | kAdrenoLpaePteAf;
+                struct adreno_lpae_geo l259 = {};
+                const uint32_t r259lpaeg = adreno_lpae_geometry(
+                    (r259ias >= 32u) ? r259ias : 36u, 12u, &l259);
+                uint32_t r259need = 0u;
+                const uint32_t r259bytes = (r259lpaeg != 0u) ? 99u
+                    : adreno_table_bytes_needed(&l259, 0x200000ull, &r259need);
+                struct adreno_table_result t259 = {};
+                const uint32_t r259build =
+                    (r259lpaeg != 0u || r259bytes != 0u) ? 99u
+                    : adreno_table_build(&l259, (uint64_t)s259virt, s259phys,
+                                         0x2d800000ull, r259base, 0x200000ull,
+                                         prot259, &t259);
+                uint32_t r259fills = 0u;
+                uint32_t r259plan = 99u;
+                uint32_t r259nabs = 0u;
+                if (r259build == 0u) {
+                    struct adreno_smmu_ctx_params p259 = {};
+                    p259.cbndx = 0u;
+                    p259.asid = 0u;
+                    p259.ttbr = t259.root_paddr;
+                    p259.ias = (r259ias >= 32u) ? r259ias : 36u;
+                    p259.oas = (r259oas >= 32u) ? r259oas : 36u;
+                    const uint32_t r259id0 = rd32(gSmmuVa, 0x20u);
+                    p259.coherent_walk = adreno_iommu_coherent_walk(r259id0, 0u);
+                    p259.ttbr1 = 0u;
+                    p259.aarch64 = 1u;
+                    p259.vmid16 = 0u;
+                    p259.vmid = 0u;
+                    struct adreno_smmu_ctx_write plan259[12];
+                    struct adreno_install_write abs259[12];
+                    uint32_t nplan259 = 0u;
+                    const int r259pl = adreno_smmu_ctx_plan(&p259, plan259, 12u, &nplan259);
+                    const uint32_t r259abs = adreno_install_absolute(
+                        &g259, 0u, plan259, nplan259, abs259, 12u, &r259nabs);
+                    r259plan = (r259pl != 0 || r259abs != 0u) ? 98u : (uint32_t)nplan259;
+                    if (r259plan == 9u) {
+                        uint32_t k259;
+                        for (k259 = 0u; k259 < r259nabs; ++k259) {
+                            const uintptr_t r259frame =
+                                (abs259[k259].gr1 != 0u)
+                                ? static_cast<uintptr_t>(gSmmuVa) + (1u << g259.pgshift)
+                                : static_cast<uintptr_t>(gSmmuVa);
+                            if (abs259[k259].is_64bit) {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r259frame +
+                                    static_cast<uintptr_t>(abs259[k259].offset)) =
+                                    abs259[k259].value;
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r259frame +
+                                    static_cast<uintptr_t>(abs259[k259].offset) + 4u) =
+                                    abs259[k259].value_hi;
+                            } else {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r259frame +
+                                    static_cast<uintptr_t>(abs259[k259].offset)) =
+                                    abs259[k259].value;
+                            }
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint64_t r259rootOff =
+                            (t259.root_paddr >= s259phys) ? (t259.root_paddr - s259phys) : 0ull;
+                        const uint64_t r259span =
+                            static_cast<uint64_t>(t259.tables) * 4096ull;
+                        const uint64_t r259raw0 = *reinterpret_cast<volatile uint64_t *>(
+                            static_cast<uintptr_t>(s259virt) + r259rootOff);
+                        const uint64_t r259l1pa = r259raw0 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r259l1 = (r259l1pa >= s259phys &&
+                                                 r259l1pa < s259phys + r259span)
+                            ? *reinterpret_cast<volatile uint64_t *>(
+                                static_cast<uintptr_t>(s259virt) + (r259l1pa - s259phys))
+                            : 0ull;
+                        const uint64_t r259l2pa = r259l1 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r259tab1 = adreno_lpae_table_pte(r259l1pa);
+                        const uint64_t r259tab2 = adreno_lpae_table_pte(r259l2pa);
+                        const uint64_t r259leaf = adreno_lpae_leaf_pte(prot259, 2u, r259base);
+                        const uint64_t r259l1off =
+                            (r259l1pa >= s259phys && r259l1pa < s259phys + r259span)
+                            ? (r259l1pa - s259phys) : 0ull;
+                        const uint64_t r259l2off =
+                            (r259l2pa >= s259phys && r259l2pa < s259phys + r259span)
+                            ? (r259l2pa - s259phys) : 0ull;
+                        if (r259l1off != 0ull && r259l2off != 0ull) {
+                            uint64_t r259i;
+                            for (r259i = 0ull; r259i < 512ull; ++r259i) {
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s259virt) + r259i * 8ull) =
+                                    r259tab1;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s259virt) +
+                                    r259l1off + r259i * 8ull) = r259tab2;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s259virt) +
+                                    r259l2off + r259i * 8ull) = r259leaf;
+                            }
+                            __asm__ volatile("dsb sy" ::: "memory");
+                            r259fills = 3u;
+                        }
+                        uint64_t r259q;
+                        for (r259q = 0ull; r259q < r259span; r259q += 64ull) {
+                            __asm__ volatile("dc civac, %0" :: "r"(
+                                static_cast<uintptr_t>(s259virt) + r259q) : "memory");
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        if (gSmmuVa) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                static_cast<uintptr_t>(gSmmuVa) +
+                                static_cast<uintptr_t>(g259.cb_base) + 0x58u) = 0xc00001feu;
+                            __asm__ volatile("dsb sy" ::: "memory");
+                        }
+                                                gmuW[r259fwWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        r259qaw = (uint32_t)s259phys;
+                        gmuW[r259qaWord] = r259qaw;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259qiWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259srWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259cpWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259srWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r259fw2 = 0u; r259fw2 < 200000u; ++r259fw2) {
+                            r259fw = sGmuFwVa ? rd32(sGmuFwVa, r259fwWord * 4u) : 0u;
+                            if (r259fw == 0xbabefaceu) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        gmuW[r259clrWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259aocWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259maskWord] = 0xff7fffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259iniWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r259polls = 0u; r259polls < 200000u; ++r259polls) {
+                            r259ctl = sGmuFwVa ? rd32(sGmuFwVa, r259ctlWord * 4u) : 0u;
+                            if ((r259ctl & 0x00000001u) != 0u) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        const uint32_t r259fsr = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g259.cb_base + 0x58u) : 0u;
+                        const uint32_t r259far = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g259.cb_base + 0x60u) : 0u;
+                        snprintf(r259RowP1, sizeof r259RowP1,
+                                 "gmu260p1=hfi=1 fills=%u build=%u plan=%u ctl=%08x "
+                                 "bit0=%u polls=%u fsr=%08x far=%08x "
+                                 "fw=%08x sr=%08x",
+                                 (unsigned)r259fills, (unsigned)r259build,
+                                 (unsigned)r259plan, r259ctl, (r259ctl & 1u),
+                                 (unsigned)r259polls, r259fsr, r259far,
+                                 (unsigned)r259fw,
+                                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259srWord * 4u) : 0u));
+                        IOLog("enchilada-adreno: %s\n", r259RowP1);
+                    } else {
+                        IOLog("enchilada-adreno: gmu260p1=refused-plan plan=%u nab=%u\
+",
+                              (unsigned)r259plan, (unsigned)r259nabs);
+                    }
+                } else {
+                    IOLog("enchilada-adreno: gmu260p1=refused-build build=%u\
+",
+                          (unsigned)r259build);
+                }
+            }
+        }
+        snprintf(r259RowP2, sizeof r259RowP2,
+                 "gmu260p2=clears_descriptor_cleared=1 qa=%08x qi=%08x mask=%08x "
+                 "fw=%08x sr=%08x ctl=%08x bit0=%u",
+                 (unsigned)r259qaw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259qiWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259maskWord * 4u) : 0u),
+                 (unsigned)r259fw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259srWord * 4u) : 0u),
+                 r259ctl, (r259ctl & 0x00000001u));
+        IOLog("enchilada-adreno: %s\n", r259RowP2);
+        snprintf(r259RowL, sizeof r259RowL,
+                 "gmu260l=mode=%d gd=%08x cf=%08x gx_on=%d gxoff=%d ctl=%08x survived=1",
+                 r259mode,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? (((rd32(sGmuFwVa, cfgWord * 4u)) & 0x00010000u) ? 1 : 0) : 0),
+                 (unsigned)((sGmuFwVa ? rd32(sGmuFwVa, r259stWord * 4u) : 0u) & 0x000000c0u ? 1 : 0),
+                 r259ctl);
+        IOLog("enchilada-adreno: %s\n", r259RowL);
+            } else if (r259mode == 261u) {
+        const uint32_t r259verWord = 0x2bf8u;
+        const uint32_t r259ctlWord = 0x5180u;
+        const uint32_t r259qiWord = 0x5184u;
+        const uint32_t r259qaWord = 0x5185u;
+        const uint32_t r259iniWord = 0x5186u;
+        const uint32_t r259stWord = 0x50d0u;
+        const uint32_t gdscrWord = ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR;
+        const uint32_t cfgWord = (ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR + 1u);
+        const uint32_t r259fwWord = 0x501cu;
+        const uint32_t r259srWord = 0x5000u;
+        const uint32_t r259cpWord = 0x5101u;
+        const uint32_t r259maskWord = 0x5193u;
+        const uint32_t r259clrWord = 0x5191u;
+        const uint32_t r259aocWord = 0x9304u;
+        snprintf(r259RowP0, sizeof r259RowP0,
+                 "gmu261p0=pre=1 ver=%08x qi=%08x qtbl=%08x fw=%08x st=%08x gd=%08x cf=%08x cx_on=%d",
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259verWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259qiWord * 4u) : 0u),
+                 (unsigned)r259qtbl,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259fwWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259stWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 r259cxOn);
+        IOLog("enchilada-adreno: %s\n", r259RowP0);
+        if (!r259cxOn) {
+            IOLog("enchilada-adreno: gmu261p1=refused-cx-down cx=%08x\
+", r259cx);
+        } else if (r259geom != 0u || gSmmuVa == 0u) {
+            IOLog("enchilada-adreno: gmu261p1=refused-geometry geom=%u\
+",
+                  (unsigned)r259geom);
+        } else if (r259qtbl == 0u) {
+            IOLog("enchilada-adreno: gmu261p1=refused-no-qtbl\
+");
+        } else if (!&armcpu_dma_alloc_writable) {
+            IOLog("enchilada-adreno: gmu261p1=no-alloc-symbol\
+");
+        } else {
+            if (!s259phys) {
+                s259phys = armcpu_dma_alloc_writable (4ull * 4096ull, &s259virt);
+            }
+            const uint64_t r259base =
+                static_cast<uint64_t>(r259qtbl) & ~static_cast<uint64_t>(0x1fffffull);
+            if (!s259phys || !s259virt) {
+                IOLog("enchilada-adreno: gmu261p1=alloc-failed\
+");
+            } else {
+                struct adreno_iommu_id2 d259 = {};
+                const uint32_t id2w259 = rd32(gSmmuVa, 0x28u);
+                int ok259 = 0;
+                const uint32_t r259ias = (adreno_iommu_id2_decode(id2w259, &d259) == 0)
+                    ? (adreno_iommu_va_size(id2w259, 2u, &ok259)) : 0u;
+                const uint32_t r259oas = adreno_iommu_stage1_oas(id2w259);
+                const uint32_t prot259 = kAdrenoLpaePteValid | kAdrenoLpaePteAf;
+                struct adreno_lpae_geo l259 = {};
+                const uint32_t r259lpaeg = adreno_lpae_geometry(
+                    (r259ias >= 32u) ? r259ias : 36u, 12u, &l259);
+                uint32_t r259need = 0u;
+                const uint32_t r259bytes = (r259lpaeg != 0u) ? 99u
+                    : adreno_table_bytes_needed(&l259, 0x200000ull, &r259need);
+                struct adreno_table_result t259 = {};
+                const uint32_t r259build =
+                    (r259lpaeg != 0u || r259bytes != 0u) ? 99u
+                    : adreno_table_build(&l259, (uint64_t)s259virt, s259phys,
+                                         0x2d800000ull, r259base, 0x200000ull,
+                                         prot259, &t259);
+                uint32_t r259fills = 0u;
+                uint32_t r259plan = 99u;
+                uint32_t r259nabs = 0u;
+                if (r259build == 0u) {
+                    struct adreno_smmu_ctx_params p259 = {};
+                    p259.cbndx = 0u;
+                    p259.asid = 0u;
+                    p259.ttbr = t259.root_paddr;
+                    p259.ias = (r259ias >= 32u) ? r259ias : 36u;
+                    p259.oas = (r259oas >= 32u) ? r259oas : 36u;
+                    const uint32_t r259id0 = rd32(gSmmuVa, 0x20u);
+                    p259.coherent_walk = adreno_iommu_coherent_walk(r259id0, 0u);
+                    p259.ttbr1 = 0u;
+                    p259.aarch64 = 1u;
+                    p259.vmid16 = 0u;
+                    p259.vmid = 0u;
+                    struct adreno_smmu_ctx_write plan259[12];
+                    struct adreno_install_write abs259[12];
+                    uint32_t nplan259 = 0u;
+                    const int r259pl = adreno_smmu_ctx_plan(&p259, plan259, 12u, &nplan259);
+                    const uint32_t r259abs = adreno_install_absolute(
+                        &g259, 0u, plan259, nplan259, abs259, 12u, &r259nabs);
+                    r259plan = (r259pl != 0 || r259abs != 0u) ? 98u : (uint32_t)nplan259;
+                    if (r259plan == 9u) {
+                        uint32_t k259;
+                        for (k259 = 0u; k259 < r259nabs; ++k259) {
+                            const uintptr_t r259frame =
+                                (abs259[k259].gr1 != 0u)
+                                ? static_cast<uintptr_t>(gSmmuVa) + (1u << g259.pgshift)
+                                : static_cast<uintptr_t>(gSmmuVa);
+                            if (abs259[k259].is_64bit) {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r259frame +
+                                    static_cast<uintptr_t>(abs259[k259].offset)) =
+                                    abs259[k259].value;
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r259frame +
+                                    static_cast<uintptr_t>(abs259[k259].offset) + 4u) =
+                                    abs259[k259].value_hi;
+                            } else {
+                                *reinterpret_cast<volatile uint32_t *>(
+                                    r259frame +
+                                    static_cast<uintptr_t>(abs259[k259].offset)) =
+                                    abs259[k259].value;
+                            }
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        const uint64_t r259rootOff =
+                            (t259.root_paddr >= s259phys) ? (t259.root_paddr - s259phys) : 0ull;
+                        const uint64_t r259span =
+                            static_cast<uint64_t>(t259.tables) * 4096ull;
+                        const uint64_t r259raw0 = *reinterpret_cast<volatile uint64_t *>(
+                            static_cast<uintptr_t>(s259virt) + r259rootOff);
+                        const uint64_t r259l1pa = r259raw0 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r259l1 = (r259l1pa >= s259phys &&
+                                                 r259l1pa < s259phys + r259span)
+                            ? *reinterpret_cast<volatile uint64_t *>(
+                                static_cast<uintptr_t>(s259virt) + (r259l1pa - s259phys))
+                            : 0ull;
+                        const uint64_t r259l2pa = r259l1 & kAdrenoLpaePteAddrMask;
+                        const uint64_t r259tab1 = adreno_lpae_table_pte(r259l1pa);
+                        const uint64_t r259tab2 = adreno_lpae_table_pte(r259l2pa);
+                        const uint64_t r259leaf = adreno_lpae_leaf_pte(prot259, 2u, r259base);
+                        const uint64_t r259l1off =
+                            (r259l1pa >= s259phys && r259l1pa < s259phys + r259span)
+                            ? (r259l1pa - s259phys) : 0ull;
+                        const uint64_t r259l2off =
+                            (r259l2pa >= s259phys && r259l2pa < s259phys + r259span)
+                            ? (r259l2pa - s259phys) : 0ull;
+                        if (r259l1off != 0ull && r259l2off != 0ull) {
+                            uint64_t r259i;
+                            for (r259i = 0ull; r259i < 512ull; ++r259i) {
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s259virt) + r259i * 8ull) =
+                                    r259tab1;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s259virt) +
+                                    r259l1off + r259i * 8ull) = r259tab2;
+                                *reinterpret_cast<volatile uint64_t *>(
+                                    static_cast<uintptr_t>(s259virt) +
+                                    r259l2off + r259i * 8ull) = r259leaf;
+                            }
+                            __asm__ volatile("dsb sy" ::: "memory");
+                            r259fills = 3u;
+                        }
+                        uint64_t r259q;
+                        for (r259q = 0ull; r259q < r259span; r259q += 64ull) {
+                            __asm__ volatile("dc civac, %0" :: "r"(
+                                static_cast<uintptr_t>(s259virt) + r259q) : "memory");
+                        }
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        if (gSmmuVa) {
+                            *reinterpret_cast<volatile uint32_t *>(
+                                static_cast<uintptr_t>(gSmmuVa) +
+                                static_cast<uintptr_t>(g259.cb_base) + 0x58u) = 0xc00001feu;
+                            __asm__ volatile("dsb sy" ::: "memory");
+                        }
+                                                gmuW[r259fwWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        r259qaw = (uint32_t)s259phys;
+                        gmuW[r259qaWord] = r259qaw;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259qiWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259srWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259cpWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259srWord] = 0u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r259fw2 = 0u; r259fw2 < 200000u; ++r259fw2) {
+                            r259fw = sGmuFwVa ? rd32(sGmuFwVa, r259fwWord * 4u) : 0u;
+                            if (r259fw == 0xbabefaceu) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        gmuW[r259clrWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259aocWord] = 0xffffffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259maskWord] = 0xff7fffffu;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259qiWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        gmuW[r259iniWord] = 1u;
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        for (r259polls = 0u; r259polls < 200000u; ++r259polls) {
+                            r259ctl = sGmuFwVa ? rd32(sGmuFwVa, r259ctlWord * 4u) : 0u;
+                            if ((r259ctl & 0x00000001u) != 0u) {
+                                break;
+                            }
+                            IODelay(1u);
+                        }
+                        const uint32_t r259fsr = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g259.cb_base + 0x58u) : 0u;
+                        const uint32_t r259far = gSmmuVa
+                            ? rd32(gSmmuVa, (unsigned)g259.cb_base + 0x60u) : 0u;
+                        snprintf(r259RowP1, sizeof r259RowP1,
+                                 "gmu261p1=hfi=1 fills=%u build=%u plan=%u ctl=%08x "
+                                 "bit0=%u polls=%u fsr=%08x far=%08x "
+                                 "fw=%08x sr=%08x",
+                                 (unsigned)r259fills, (unsigned)r259build,
+                                 (unsigned)r259plan, r259ctl, (r259ctl & 1u),
+                                 (unsigned)r259polls, r259fsr, r259far,
+                                 (unsigned)r259fw,
+                                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259srWord * 4u) : 0u));
+                        IOLog("enchilada-adreno: %s\n", r259RowP1);
+                    } else {
+                        IOLog("enchilada-adreno: gmu261p1=refused-plan plan=%u nab=%u\
+",
+                              (unsigned)r259plan, (unsigned)r259nabs);
+                    }
+                } else {
+                    IOLog("enchilada-adreno: gmu261p1=refused-build build=%u\
+",
+                          (unsigned)r259build);
+                }
+            }
+        }
+        snprintf(r259RowP2, sizeof r259RowP2,
+                 "gmu261p2=clears_clear_and_raise=1 qa=%08x qi=%08x mask=%08x "
+                 "fw=%08x sr=%08x ctl=%08x bit0=%u",
+                 (unsigned)r259qaw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259qiWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259maskWord * 4u) : 0u),
+                 (unsigned)r259fw,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, r259srWord * 4u) : 0u),
+                 r259ctl, (r259ctl & 0x00000001u));
+        IOLog("enchilada-adreno: %s\n", r259RowP2);
+        snprintf(r259RowL, sizeof r259RowL,
+                 "gmu261l=mode=%d gd=%08x cf=%08x gx_on=%d gxoff=%d ctl=%08x survived=1",
+                 r259mode,
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, gdscrWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? rd32(sGmuFwVa, cfgWord * 4u) : 0u),
+                 (unsigned)(sGmuFwVa ? (((rd32(sGmuFwVa, cfgWord * 4u)) & 0x00010000u) ? 1 : 0) : 0),
+                 (unsigned)((sGmuFwVa ? rd32(sGmuFwVa, r259stWord * 4u) : 0u) & 0x000000c0u ? 1 : 0),
+                 r259ctl);
+        IOLog("enchilada-adreno: %s\n", r259RowL);
             }
 }
 

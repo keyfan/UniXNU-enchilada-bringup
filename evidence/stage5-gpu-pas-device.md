@@ -9079,3 +9079,58 @@ R295 把「举手」搬到复位前后都死，于是本轮把 143 与 253 的�
 
 **120.7 下一步（R297）**
 按判决 5，143 与本轮三臂的唯一剩余差别是**两个中断 CLR**：**259 = 256 的七笔 + 两个 CLR（`0x5191`/`0x9304` 各 `0xffffffff`）**（判「恢复 CLR 能否让描述符停在 1 的形状活下来」）；**260 = 250 的存活形状 + 两个 CLR**（判「CLR 会不会把活的形状弄死」，双向对照）；**261 = 259 + 写回内核地址（即 143 的完整链，含复位与两个 CLR）**（判「143 能被接受」是否真能被重放）。
+
+## 一百二十一、R297：两个中断 CLR 既救不了停在 1 的形状，也会把活着的形状弄死（键 259/260/261）
+
+**121.1 一句话**
+R296 把 143 与本轮三臂的唯一剩余差别收窄到**两个中断 CLR**（`GMU2HOST_INTR_CLR` `0x5191` 与 `AO_HOST_INTERRUPT_CLR` `0x9304` 各 `0xffffffff`）。本轮三臂：**259 = 256 的七笔 + 两个 CLR（描述符一笔都不写）**、**260 = R294 键 250 的存活形状（描述符只清 0、不举）+ 两个 CLR**、**261 = 143 的完整链（清、举、复位、两个 CLR、掩码、启动字）**。结果**三臂全部零字节**，窗口 sha256 仍是 `b72145afafb87af744d6d14fa9e4c5b8562e3d5c1bde5d0ffbceba279396fa7c`、`boot_id` 仍是 `644404938` ⇒ **CLR 既不能把「描述符停在 1」的形状救活，还会把「描述符停在 0」的存活形状弄死**；143 的「被接受」在今天的表上不可重放。
+
+**121.2 三键设计**
+
+三臂共用 R293/R294 已被证明能活的骨架（装 CB0、分配四页并建表、每页 512 条目全填、`dc civac`、清 `CB_FSR`、`CM3_FW_INIT_RESULT = 0`、复位脉冲与 `0xbabeface` 等待、`GMU2HOST_INTR_MASK = 0xff7fffff`、`HFI_CTRL_INIT = 1`、200000 拍轮询），差别只在两个 CLR 与描述符：
+
+- **259（九笔，`clears_descriptor_untouched`）**：`fw=0 → qa=新表基址 → clr → aoc → sr=1 → cp=0 → sr=0 → mask → ini=1`；**`HFI_QTBL_INFO` 一笔都不写**，保持内核留下的 1。
+- **260（十笔，`clears_descriptor_cleared`）**：259 + 一笔 `HFI_QTBL_INFO = 0`，**只清不举**（即 250 的存活形状），仍带两个 CLR —— 双向对照臂。
+- **261（十一笔，`clears_clear_and_raise`）**：259 + 清 0 + 举 1，即 143 的完整链。
+
+每臂的普查行都落在第一笔存储之前；CLR 都写在掩码与启动字之前，与 143 同序。逐键重锚：259 锚 R296 键 256 那轮最近一次真实落地（`644404938` / `b72145af…`），260 锚 259、261 锚 260；因 259/260 都是零字节，按既定规则（前键零字节则锚最近一次真实落地）260/261 实际沿用同一锚。
+
+**121.3 逐字读数**
+
+- **259**（15:11:44 起；payload `7a93ac1e12268237ed7184418887622a18e634e7a12e5fd382870bdc1d9ffa3e`）：15:11:45 gate PASS、15:11:56 `flash system_b OK`、15:11:57 boot sent、15:12:37 back in recovery；`key block 31145: device == payload -> True`（键块 `enchilada-pas-exec=259 -no_slto_`）、`system_b head 8 MiB` sha256 `7167a2c0dd410110e2a340e04a803c36499159a626e5aec3252d16b4ce7997e9` 与 payload 头一致、`flash readback matches: True`；窗口 33,554,432 B sha256 `b72145afafb87af744d6d14fa9e4c5b8562e3d5c1bde5d0ffbceba279396fa7c`。runner 在判定块因 `_hl.sha259` 笔误崩溃（`AttributeError: module 'hashlib' has no attribute 'sha259'`），窗口与日志都已落盘，用 `r297_judge.py` 复判：`rows: gmu259p0=0 gmu259p1=0 gmu259p2=0 gmu259l=0`、`row key detected from stamps []`、`VERDICT: THE WINDOW IS STILL THE PREVIOUS ROUND'S BYTES (boot_id 644404938, sha unchanged); this boot committed nothing`。
+- **260**（15:14:09 起；payload `8d98bf90df828f1b6fb42541ad795a75c21e506c3e27c8e37d7b73e39936d893`）：15:14:10 gate PASS、15:14:21 flash OK、15:14:22 boot sent、15:15:32 回 TWRP；`key block 31145: device == payload -> True`、`flash readback matches: True`；四行全 0、窗口 sha256 `b72145af…`、`boot_id 644404938`、`row key detected from stamps []`、同一条「仍在上一轮字节」判定。
+- **261**（15:15:53 起；payload `82c048da0192e9edac2a78dea510d0a88b6423f0dcf811532f70441a5c07000a`）：15:15:54 gate PASS、15:16:05 flash OK、15:16:06 boot sent、15:16:46 回 TWRP；同样 `key block ... True` / `flash readback matches: True`；四行全 0、同窗口同 `boot_id`。
+- 三键前后各一次 `REBOOT_TO_TWRP_GATE: PASS (3 checks, 0 failures)`（boot_a md5 `ca8ddd7a5af345636cad8c5bf645fee2`），三次刷写后都回读了钥匙块与 8 MiB 头 ⇒ 三键都不是「刷错镜像」。
+
+**121.4 判决**
+
+1. **CLR 不能救停 1 的形状**：259 与 256 的差别只有两个 CLR，256 死、259 也死 ⇒ 恢复 CLR 不改变结论。
+2. **CLR 会杀活着的形状**：260 用的是 250 的原样存活形状（描述符清 0、不举），只多了两个 CLR，结果死。按 R296 判据（写启动字时描述符为 0 就活）它本该活 ⇒ **CLR 本身带毒**；143 的「被接受」不能再用「CLR 无害」解释。
+3. **143 不可重放**：261 把 143 的完整链逐笔重放，仍死 ⇒ 143 那次被接受依赖探针之外的变量（那一轮的产物/表状态或时序），不是这条链本身的性质。
+4. **必须写明的 caveat**：250 的「活」是在 R294 那版构建上观测的，本轮没有同一 build 的「无 CLR」阳性对照；判决 2 成立的前提是「260 的形状与 250 等价（只差 CLR）」。若跨轮构建差异本身就能致死，本条需要 R298 的同 build 对照复核。判决 1 与 3 不依赖这个前提（259/261 都是本轮同 build 内的同骨架对照）。
+5. **HFI 仍未被接受**：本轮没有任何新的 `ctl` 读数（窗口里仍是上一轮那份日志），G1 未关闭，GPU 未渲染一帧。
+
+**121.5 边界与读数陷阱**
+
+- 「零字节」= 没活到第一次刷盘；三键窗口 sha 与 `boot_id` 全同，且每次回读一致 ⇒ 不是刷写问题，也不是设备坏了。
+- 259 的判定来自复判脚本（runner 笔误崩溃），崩的是打印不是采集；窗口与设备日志都是 runner 落盘的原件。
+- `enchilada-pas-exec=259 -no_slto_` 的尾巴是 `mcopy` 重写 config 时补的填充字节（config 1377 → 1379 B），不是键值损坏。
+- 260/261 的锚定来自「前键零字节则锚最近一次真实落地」的既定规则；`row key detected from stamps []` 说明本轮没留下自己的 stamp，归因只能靠锚。
+- 窗口 sha 相同 ≠ 写了同样的字节，而是**本轮没写窗口**；`boot_id` 相同即证明这是上一轮的窗口文件。
+
+**121.6 门禁与工具**
+
+- 取件：CI **#415 run `45338328882` success**（`2026-11-24T06:09:18Z → 06:28:54Z`）；分支 `r297-clears` commit `6e67fd86b1c4ea01e7330262709c172081de8e20`、tree `3a8133c4f152dc8f9154bf3efa1dddc5321465b8`（base main `7b8b91c8b30718760d9926c54d90d48781e5d312`，5 个文件：probe + 4 个验证脚本）。artifacts：kernel 78,981,473 B、payload 83,149,893 B、logs 3,743,603 B。
+- 下载 payload 的教训：artifact API 的 302 跳到签名 blob URL 后**不能带 `Authorization`**，否则 401 `Server failed to authenticate the request`；本轮改用签名 URL + 8 线程 Range 分块（`work\\tmp\\r297_dl.py`，913.3 s，8 段各重试 6 次）取回，zip sha256 `c389eac92deb2c2f5083a411c0df15fd89ebf2d736c6456ebc797a6e35ac1870`、`testzip()` 无坏项。
+- 产物：`work\\tmp\\r297-kernel\\kernel.macho` **126,586,880 B sha256 `ea2842b3a582ba9ae18c1eb8ec1a5bdc1b52b8676e7a07c6ed4a60253a3c7d38`**；`work\\tmp\\r297-payload\\payload.img` **150,994,944 B sha256 `d3bca99533d19b76b7f1f4008a8caa9fe3d070f031b84625d00e15daecb1585b`**。
+- 静态门 `work\\tmp\\r297_static.py`：真产物 **PASS**（`required+survivors: 110 checked in both artefacts`、marker `kernel=1 payload=2`、forbidden `gmu262a/gmu263a/gmu264a` 三零、固件 32768 B sha 钉住）；对 **R296 产物**（`r296-kernel\\kernel.macho r296-payload\\payload.img`）**FAIL 12**（12 条 gmu259/260/261 行全 kernel=0 payload=0）⇒ 区分能力自证成立。
+- 重键（`work\\tmp\\r179_rekey.py`，cwd `work\\tmp`）：p259 `7a93ac1e12268237ed7184418887622a18e634e7a12e5fd382870bdc1d9ffa3e`、p260 `8d98bf90df828f1b6fb42541ad795a75c21e506c3e27c8e37d7b73e39936d893`、p261 `82c048da0192e9edac2a78dea510d0a88b6423f0dcf811532f70441a5c07000a`，各 150,994,944 B。
+- 门禁：host **25/25 + 51/51 + 25/25 + 32/32** + 各 contract PASS；probe **34/34**（store 预算保持 **1049**，新增独立断言 `R297 the clear keys carry none of the pinned pulse literals`）；stage4 **69/69**、stage5 **56/56**、stage6 **2448/2448**（新增约 30 条 R297 断言段，ID1 重读预算 43 → 44）；全量 `r239_allgates.py` → `ran 46 of 48, FAILING: 0`；`work\\tmp\\check_mode_selector.py` → **52 selectors / upper 261 / 自证 FAIL / VERDICT PASS**。
+- 块 `work\\tmp\\r297_block.py`：43,251 字符 / 759 行 / `gmuW[` 30（9/10/11）；probe 源 2,012,181 字符 / 33,985 行。
+
+**121.7 下一步（R298）**
+
+1. **同 build 阳性对照**：**262 = 260 去掉两个 CLR**（严格等于 250 的存活形状），先确认「描述符停在 0 的形状」在本版产物上仍然活 —— 这是判决 2 的前提。
+2. **CLR 二分**：**263 = 262 + 只 `GMU2HOST_INTR_CLR`**；**264 = 262 + 只 `AO_HOST_INTERRUPT_CLR`**。把毒性定到某一个 CLR 上。
+3. **顺序与掩码对照**：**265 = 262 + 两个 CLR 放在启动字之后**（先启动后清中断），检验是否只是「启动前清中断」这个顺序致死；**266 = 262 + 掩码换成 `0xffffffff`**（与 143 的掩码差异）。
+4. 若 262 也死，则判决 2 作废，把「死亡」归到跨轮构建/表状态上，改用旧产物重放 143 原链做同轮对照。
