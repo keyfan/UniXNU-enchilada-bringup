@@ -8847,3 +8847,46 @@ R290 判「描述符在 CM3 运行期间保持有效 = 死」，本轮把描述�
 **115.7 下一步（R292）**
 - **先量死法本身，而不是再猜密码**：**244** = 完全不做任何 store、只按五步各打一行（零写控制键）——若它也零字节，则「整轮消失」与写无关，是介质/刷盘的性质；**245** = 241 的同一形状（重复一次），判三连死是否可复现；**246** = 只做「清描述符 → 打一行 → 退出」，把致死点夹在最小形状里。三键都要保证**至少一行落在任何一笔 store 之前**，并且逐键锚到最近一次真实落地的 boot。
 - 其余状态不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧；G1（GDSCR bit16 由什么置起）仍未关闭。
+
+## 一百一十六、R292：先量「整轮消失」这个死法本身（键 244/245/246）
+
+**116.1 一句话**
+R291 三个键全部零字节之后，本轮不再猜寄存器，而是直接量这个死法：一个**完全不写任何 GMU 字**的轮次（键 244）**五行全落地**，一个**只写一笔**描述符清零的轮次（键 246）**两行都落地且清零生效**，而**逐笔复现 R291 键 241 的十一笔形状**（键 245）**连死两次**。于是「整轮消失」不再能归给介质本身，它和这一轮写了多少笔绑在一起。
+
+**116.2 三键设计**
+- **244**：零 store。先打一行普查（`ver/ctl/qi/qa/st/gd/cf/fw/sr`），再五步各等一毫秒打一行（`step/ver/st/gd/cf/fw`），最后打尾行。整键不碰 `HFI_CTRL_INIT`、不碰 `CM3_SYSRESET`、不碰描述符。
+- **245**：从探针里把 R291 键 241 那一臂的源码**原样切出、整段改名为 245**（`arm241.replace("241", "245")`），所以它是 241 的逐字复现：清描述符在复位脉冲之前、启动字之前再举起、掩码在启动字之前、十一笔 store。
+- **246**：最小的夹逼形状 —— 打一行普查 → **唯一一笔 store**（`HFI_QTBL_INFO = 0`，即描述符清零）→ 再打一行把描述符读回 → 尾行。
+
+**116.3 逐字读数（设备自写）**
+- **键 244**：`boot_id 587771363` / 窗口 `54e4b5a0d4943e23ff7eb09020a05158308f4878062ff40c39ecaa4f4d90b472`。`rows: gmu244p0=1 gmu244q%u=0 gmu244l=1`（行名里的 `%u` 是字面量，实际五行由 `gmu244q\d+=` 另行数得 **5**）；`census row: ver 00000000 st 000000d4`；`cadence rows the medium kept: 5 of 5`；`rail after the round: gd 00222001 cf 00088400 gx_on 0`。判定句 `THE WHOLE NO-STORE ROUND SURVIVED, so losing a round is caused by a store`。
+- **键 245**：**两次都是零字节**。第一次 `rows: gmu245p0=0 gmu245p1=0 gmu245p2=0 gmu245l=0`、`row key detected from stamps [244]`（锚还指着 244 的窗口）；重锚到 244 的 `587771363 / 54e4b5a0…` 之后再跑，`window sha256` 仍是 `54e4b5a0d4943e23ff7eb09020a05158308f4878062ff40c39ecaa4f4d90b472`、`boot_id` 仍是 `587771363`，判定句 `THE WINDOW IS STILL THE PREVIOUS ROUND'S BYTES (boot_id 587771363, sha unchanged); this boot committed nothing, so the round ended before it could print`。
+- **键 246**：`boot_id 587672940` / 窗口 `03060bc93cfc5908a4198fedd3b05863e156d122aa1a3fda9f0df4969fbfe39d`。`rows: gmu246p0=1 gmu246p1=1 gmu246l=1`；`descriptor before 00000001 after 00000000 queue address ad98b000`；`init result babeface reset word 00000000 after the single store`；`rail after the round: gd 00222001 cf 00088400 gx_on 0`。
+
+**116.4 判决**
+1. **零 store 的轮次能整轮活下来**（244 五行 + 普查 + 尾行全落地，且它是本轮唯一没有任何 GMU 写的键）⇒ 「整轮消失」不是介质的无条件性质。
+2. **一笔 store 也不致命**（246 两行都落地、`HFI_QTBL_INFO` 确实从 `00000001` 读到 `00000000`、`fw=babeface`）⇒ 致死点不在「有没有写」这个二分上。
+3. **十一笔形状连死两次**（245 两次零字节，且第二次是重锚之后仍然零字节）⇒ R291 的三连死是**这个形状**的性质，不是那三次引导的偶然。
+4. 于是边界落在**一笔与十一笔之间**：致死不是单笔，而是某一笔（或某几笔的组合、或累计写入）。R293 的题目因此变成**二分 store 数**：把 241/245 的十一笔逐笔删到剩七笔、四笔、两笔，看哪一档开始死。
+5. **HFI 本轮没有任何新读数**（245 死、244/246 不碰启动字）⇒ G1（GDSCR bit16 由什么置起）仍未关闭，`ctl` bit0 无从观察。
+6. 三条旁证同向：`st=000000d4`（GX_HM_GDSC_POWER_OFF 与 GX_HM_CLK_OFF 都置）、`gd=00222001`（SW_COLLAPSE 仍置、power-up 未置）、`cf=00088400`（bit16=0）。
+
+**116.5 边界与读数陷阱**
+- 「零字节」只能读成**这一轮没活到第一次刷盘**；它不等于「这些 store 没执行」。
+- **锚必须每键重锚，哪怕上一键落地了**：244 落地后 245 的 runner 还指着 R290/R291 的旧锚，第一次跑出来的 `row key detected from stamps [244]` 就是它 —— 那一次的结果不能用来判 245。
+- **行名里的 `%u` 会被当字面量去数**：244 的 `gmu244q%u` 计到 0，而同一份日志里 `gmu244q\d+=` 数到 5；行表与判定句必须用同一个口径，否则同一轮会给出两个互相矛盾的「落地行数」。
+- **判定脚本的字符串比较要按真实位数**：246 的描述符读回是 `00000000`（八位十六进制），而脚本写的是 `_q1 == "0"`，于是把「清零生效」印成了「清零没生效」；读数以 `descriptor before 00000001 after 00000000` 为准。
+- 探针门本轮把 store 预算从 **940 抬到 952**（244 零笔、245 十一笔、246 一笔），并新增两条独立断言（244 不写任何 `gmuW[...]`、246 只写一笔）。
+- 静态门 `r292_static.py`：真产物 **PASS**（`required+survivors: 108 checked in both artefacts`、`key marker 'enchilada-pas-exec': kernel=1 payload=2`、forbidden `gmu247a=/gmu248a=/gmu249a=` 三零、固件 32768 B sha `b07f9029…`），对 **R291 产物 FAIL 10** ⇒ 区分能力自证成立。
+
+**116.6 门禁与工具**
+- 构建：CI **#410 `45304747158` success**（28 个 step 全 success，含 Build kernel / Build payload / Upload）；分支 `r292-loss` commit `32bafb67aabc963139bd4f18868ed64417e3e0b7`、tree `e624a6fe74c7e1cd813a32de2229bb419594a510`（base main `7b62e2bde04e`，535 已有 + 5 上传）。
+- 产物：`work\\tmp\\r292-kernel\\kernel.macho` 126,550,016 B sha256 `6649f01cd6ac983d2961f94893a4c522b64e802bbbd9b5c5b58a2d71894f1ed5`；`work\\tmp\\r292-payload\\payload.img` 150,994,944 B sha256 `d33f2609733bd3d580b312a0dcf3771429b29b1506c65dfd0f3214feb0aace8a`。
+- 重键（`r170_rekey.py … "enchilada-pas-exec=2" "enchilada-pas-exec=24N"`）：p244 `361980791c795d6926fc5307dff8356e9d52c74d17ec6e8239a52ce18fa08a41`、p245 `4db491681f47c9114ced1a7188320dd3cf8345497b007576f63b4ea700f62952`、p246 `762f9ff9e0d2c0d7ec796096707d859ba5924ee444b482da1b6fa85cc6d9ec51`。
+- 门禁：host 门 25/25 + 51/51 + 25/25 + 32/32；probe 门 **30/30**；stage4 **64/64**、stage5 **51/51**、stage6 **2313/2313**；全量 `ran 46 of 48, FAILING: 0`；模式选择器 **47 个 / 上界 246 / 自证 FAIL / VERDICT PASS**。
+- 本轮新工具：`work\\tmp\\r292_block.py`（手写生成器：245 从探针里整段复制 241 那一臂，244/246 手写）、`r292_count.py`、`r292_gate3.py`、`r292_gates6.py`、`r292_fix1.py`、`r292_fix2.py`（选择器变量必须叫 `r244mode` 而不是 `r245mode`，否则模式守卫会把它读成 `(247, 246)`）、`r292_rows.py`、`r292_mkstatic.py`、`r292_fix3.py`（forbidden 曾错成 `gmu2247a=`）、`r292_static_check.py`、`r292_mkrun.py`、`r292_rowscheck.py`、`r292_anchor.py`。
+
+**116.7 下一步（R293）**
+- **二分 store 数**：以 245 的十一笔为起点，做**七笔**、**四笔**、**两笔**三个递减形状（保留「清描述符 → 复位 → 写地址 → 描述符举起 → 掩码 → 启动字」这条骨架，按优先级删：先删两个中断 CLR、再删 `PWR_COL_CP_RESP`、再删掩码），看哪一档开始零字节。若四笔活、七笔死，就再细分到五笔/六笔。
+- 每个键**第一行必须在第一笔 store 之前**，并且逐键重锚到上一键（无论上一键是否落地）。
+- 其余状态不变：准入表 `modeled=9 / satisfied=0`、`CONFIG_XNU_NATIVE_ADRENO=n`、GPU 未渲染一帧；G1 仍未关闭。
