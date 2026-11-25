@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 270u' in _fw,
+    check('fwKey >= 7u && fwKey <= 273u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 270u)' in code,
+    check('(fwKey >= 7u && fwKey <= 273u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -7288,6 +7288,11 @@ def main():
     _k268270 = ''
     if _i268270 > 0:
         _k268270 = code[_i268270:].split(
+            '\nif (fwKey == 271u || fwKey == 272u || fwKey == 273u) {\n', 1)[0]
+    _i271273 = code.find('if (fwKey == 271u || fwKey == 272u || fwKey == 273u) {')
+    _k271273 = ''
+    if _i271273 > 0:
+        _k271273 = code[_i271273:].split(
             '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
     check(_k238240 != '', 'R290 the separation keys sit before the ladder')
     _rows290 = ('gmu238p0', 'gmu238p1', 'gmu238p2', 'gmu238l=',
@@ -7873,6 +7878,58 @@ def main():
     check('const int r268mode = (fwKey >= 270u) ? 270 : ((fwKey >= 269u) ? 269 : 268);'
           in _k268270,
           'R303 the mode selector names the three keys in order')
+
+    check(_i271273 > 0 and _k271273 != '',
+          'R304 the acceptance follow-up keys are present in the source')
+    check(_k271273.count('gmuW[') == 16,
+          'R304 the three keys carry sixteen pointer stores (got %d)'
+          % _k271273.count('gmuW['))
+    _b304a1 = '\n    } else if (r271mode == 272u) {\n'
+    _b304a2 = '\n    } else {\n'
+    check(_k271273.count(_b304a1) == 1 and _k271273.count(_b304a2) == 2,
+          'R304 the arm boundaries are single, so each arm can be sliced')
+    _p304i = _k271273.index('if (r271mode == 271u) {')
+    _p304j = _k271273.index(_b304a1)
+    _p304k = _k271273.rindex(_b304a2)
+    _pre304 = _k271273[:_p304i]
+    _r304a = _k271273[_p304i:_p304j]
+    _r304b = _k271273[_p304j + 1:_p304k]
+    _r304c = _k271273[_p304k + 1:]
+    check(_k271273.count('< 512ull') == 3,
+          'R304 each key fills every entry of the three table pages, as key 143 did')
+    for _tag, _arm in (('271', _r304a), ('272', _r304b), ('273', _r304c)):
+        check(_arm.count('gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xff7fffffu;') == 1 and
+              _arm.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1 and
+              _arm.count('0xc00001feu') == 1,
+              'R304 key %s replays the mask store, the start word and the fault '
+              'clear of the shape' % _tag)
+    check(_pre304.count('gmur304z=before_start') == 1 and
+          _pre304.count('0x5188u * 4u') == 1 and
+          _pre304.count('0x518fu * 4u') == 1,
+          'R304 the shared preamble prints the whole HFI block before the start word')
+    check(_r304a.count('gmu271q=ext_after') == 1 and
+          _r304a.count('0x5188u * 4u') == 1 and
+          _r304a.count('0x518fu * 4u') == 1 and
+          _r304a.count('HFI_CTRL_STATUS] = 0u;') == 0,
+          'R304 key 271 prints the same block again after acceptance and writes nothing')
+    check(_r304b.count('gmu272q=queue_page') == 1 and
+          _r304b.count('reinterpret_cast<volatile uint32_t *>') == 9 and
+          _r304b.count('HFI_CTRL_STATUS] = 0u;') == 0,
+          'R304 key 272 reads the queue page that the published address points at')
+    check(_r304c.count('gmu273p=doorbell_set=1') == 1 and
+          _r304c.count('gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] = 0x00400000u;') == 1 and
+          _r304c.count('HFI_CTRL_STATUS] = 0u;') == 1 and
+          _r304c.count('IODelay(100u);') == 1,
+          'R304 key 273 clears the control word by hand and then rings the doorbell')
+    check(_r304c.index('HFI_CTRL_STATUS] = 0u;') <
+          _r304c.index('gmuW[ADRENO_GMU_BOOT_V1_HOST2GMU_INTR_SET] = 0x00400000u;'),
+          'R304 key 273 clears the control word before it rings the doorbell')
+    check('const int r271mode = (fwKey >= 273u) ? 273 : ((fwKey >= 272u) ? 272 : 271);'
+          in _k271273,
+          'R304 the mode selector names the three keys in order')
+    check(_k271273.count('gmur304') >= 11 and _k271273.count('gmur303') == 0,
+          'R304 the shared rows carry this round''s label, so a key-271 window '
+          'cannot read as R303')
 
     _a265 = _k265267.split('} else if (r265mode == 266u) {')[0].split(
         'if (r265mode == 265u) {')[1]

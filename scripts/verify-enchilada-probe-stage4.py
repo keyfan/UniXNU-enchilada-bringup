@@ -199,7 +199,7 @@ def main():
     # ROUND 199 drives the GX GDSC through `gxW[...]`; same treatment.
     _outside = re.sub(r'gxW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey >= 7u && fwKey <= 270u' in code and
+          'fwKey >= 7u && fwKey <= 273u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
     check('if (fwKey == 45u) {' in code and
@@ -481,6 +481,11 @@ def main():
     _k268270r = ''
     if _i268270r > 0:
         _k268270r = code[_i268270r:].split(
+            '\nif (fwKey == 271u || fwKey == 272u || fwKey == 273u) {\n', 1)[0]
+    _i271273r = code.find('if (fwKey == 271u || fwKey == 272u || fwKey == 273u) {')
+    _k271273r = ''
+    if _i271273r > 0:
+        _k271273r = code[_i271273r:].split(
             '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
     check(_i238240r > 0 and _k238240r != '' and
           _k238240r.count(_p1r) == 0 and _k238240r.count(_p0r) == 0,
@@ -516,6 +521,10 @@ def main():
           _k268270r.count(_p1r) == 1 and _k268270r.count(_p0r) == 1,
           'R303 the post-acceptance keys carry exactly one pinned pulse pair, the one '
           'their three keys share in the common preamble')
+    check(_i271273r > 0 and _k271273r != '' and
+          _k271273r.count(_p1r) == 1 and _k271273r.count(_p0r) == 1,
+          'R304 the acceptance follow-up keys carry exactly one pinned pulse pair, '
+          'the one their three keys share in the common preamble')
     _i145147r = code.find('if (fwKey == 145u || fwKey == 146u || fwKey == 147u) {')
     _k145147r = ''
     if _i145147r > 0:
@@ -525,9 +534,9 @@ def main():
     # is therefore about the total and about where the extra five live.
     check(_k8 != '' and _k0204r != '' and _k0507r != '' and _k0810r != '' and _k111113r != '' and
           _k114116r != '' and _k117119r != '' and _k120122r != '' and _k124126r != '' and
-          _k127129r != '' and _k130132r != '' and _k133135r != '' and _k136138r != '' and _k139141r != '' and _k142144r != '' and _k145147r != '' and _k148150r != '' and _k151153r != '' and _k154156r != '' and _k157159r != '' and _k160162r != '' and _k163165r != '' and _k166168r != '' and _k169171r != '' and _k172174r != '' and _k175177r != '' and _k178180r != '' and _k181183r != '' and _k184186r != '' and
-          code.count(_p1r) == 47 and code.count(_p0r) == 47 and
-          _k8.count(_p1r) == 47 and _k8.count(_p0r) == 47 and
+          _k127129r != '' and _k130132r != '' and _k133135r != '' and _k136138r != '' and _k139141r != '' and _k142144r != '' and _k145147r != '' and _k148150r != '' and _k151153r != '' and _k154156r != '' and _k157159r != '' and _k160162r != '' and _k163165r != '' and _k166168r != '' and _k169171r != '' and _k172174r != '' and _k175177r != '' and _k178180r != '' and _k181183r != '' and _k184186r != '' and _k271273r != '' and
+          code.count(_p1r) == 48 and code.count(_p0r) == 48 and
+          _k8.count(_p1r) == 48 and _k8.count(_p0r) == 48 and
           _k0204r.count(_p1r) == 2 and _k0204r.count(_p0r) == 2 and
           _k0507r.count(_p1r) == 3 and _k0507r.count(_p0r) == 3 and
           _k0810r.count(_p1r) == 3 and _k0810r.count(_p0r) == 3 and
@@ -586,7 +595,7 @@ def main():
           _k232234r.count(_p1r) == 0 and _k232234r.count(_p0r) == 0 and
           _k235237r != '' and
           _k235237r.count(_p1r) == 0 and _k235237r.count(_p0r) == 0,
-          'R168 the reset pulse stays pinned per block: once in the key-8 sub-block, twice in the R247 re-boot block, three times in each of the R248 and R249 blocks, once in most of the later blocks, and R303 adds one more, the single reset pulse that its three keys share in the common preamble')
+          'R168 the reset pulse stays pinned per block: once in the key-8 sub-block, twice in the R247 re-boot block, three times in each of the R248 and R249 blocks, once in most of the later blocks, and R303 adds one more, the single reset pulse that its three keys share in the common preamble, and R304 adds one more of the same kind for its own three keys')
     _live = (code.split('if (fwKey >= 9u) {', 1)[1].split('IOLog("enchilada-adreno: %s\\n", liveRow);', 1)[0]
              if 'if (fwKey >= 9u) {' in code else '')
     check(_live != '' and 'gmulive=intr=%08x hfistat=%08x ' in code and
