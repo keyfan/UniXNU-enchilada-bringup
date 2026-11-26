@@ -137,7 +137,7 @@ def main():
     # ROUND 199 drives the GX GDSC through `gxW[...]`; same treatment.
     _outside = re.sub(r'gxW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey >= 7u && fwKey <= 292u' in code and
+          'fwKey >= 7u && fwKey <= 295u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
     check('if (fwKey == 45u) {' in code and
@@ -598,10 +598,18 @@ def main():
     _k290292r = ''
     if _i290292r > 0:
         _k290292r = code[_i290292r:].split(
-            '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+            '\nif (fwKey == 293u || fwKey == 294u || fwKey == 295u) {\n', 1)[0]
     check(_i290292r > 0 and _k290292r != '' and
           _k290292r.count(_p1r) == 0 and _k290292r.count(_p0r) == 0,
           'R309 the read-route keys carry none of the pinned pulse literals')
+    _i293295r = code.find('if (fwKey == 293u || fwKey == 294u || fwKey == 295u) {')
+    _k293295r = ''
+    if _i293295r > 0:
+        _k293295r = code[_i293295r:].split(
+            '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+    check(_i293295r > 0 and _k293295r != '' and
+          _k293295r.count(_p1r) == 0 and _k293295r.count(_p0r) == 0,
+          'R313 the GPUCC-alias keys carry none of the pinned pulse literals')
     check(code.count('enchilada-gpucc-read') == 1 and
           code.count('unsigned gpuccRead = 0u;') == 1 and
           code.count('enchilada-gpucc-map') == 1 and

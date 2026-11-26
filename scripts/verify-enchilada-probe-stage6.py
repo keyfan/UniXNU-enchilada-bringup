@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 292u' in _fw,
+    check('fwKey >= 7u && fwKey <= 295u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 292u)' in code,
+    check('(fwKey >= 7u && fwKey <= 295u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -8090,7 +8090,7 @@ def main():
     _k290292 = ''
     if _i290292 > 0:
         _k290292 = code[_i290292:].split(
-            '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+            '\nif (fwKey == 293u || fwKey == 294u || fwKey == 295u) {\n', 1)[0]
     check(_i290292 > 0 and _k290292 != '',
           'R309 the three read-route keys are present in the source')
     check(_k290292.count('gmuW[') == 0,
@@ -8109,6 +8109,26 @@ def main():
           'R309 each read is guarded and defaults to the unread sentinel')
     check(_k290292.count('const int r290mode = (fwKey >= 292u) ? 292 : ((fwKey >= 291u) ? 291 : 290);') == 1,
           'R309 the mode selector names the three read routes in order')
+    _i293295 = code.find('if (fwKey == 293u || fwKey == 294u || fwKey == 295u) {')
+    _k293295 = ''
+    if _i293295 > 0:
+        _k293295 = code[_i293295:].split(
+            '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+    check(_i293295 > 0 and _k293295 != '',
+          'R313 the three GPUCC-alias keys are present in the source')
+    check(_k293295.count('gmuW[') == 16,
+          'R313 the alias block touches the GMU window 16 times (got %d)' % _k293295.count('gmuW['))
+    check(_k293295.count('gmu293a=alias_snapshot ok=1 mode=%d cx_gmu=%08x') == 1 and
+          _k293295.count('gmu294a=cx_gmu_enable wrote=1 pre=%08x post=%08x bit0=%u') == 1 and
+          _k293295.count('gmu295a=cxo_and_cxgmu_enable wrote=2 cxo_pre=%08x cxo_post=%08x') == 1,
+          'R313 each key prints its own row')
+    check(_k293295.count('const int r293mode = (fwKey >= 295u) ? 295 : ((fwKey >= 294u) ? 294 : 293);') == 1,
+          'R313 the mode selector names the three alias keys in order')
+    check(_k293295.count('if (sGmuFwVa != 0u) {') == 1 and
+          _k293295.count('reason=no-gmu-window') == 1,
+          'R313 the whole block is guarded on the GMU window')
+    check(_k293295.count('gmuW[0x9c26u]') == 5 and _k293295.count('gmuW[0x9c27u]') == 3,
+          'R313 the CX branch bits are addressed through the GMU alias')
     check(code.count('enchilada-gpucc-read') == 1 and
           code.count('unsigned gpuccRead = 0u;') == 1,
           'R309 the machinery parses exactly one gate argument')

@@ -330,8 +330,8 @@ def main():
         _re = __import__('re')
         check(text.count('*cfg = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE') == 1,
               'R167 exactly one pointer store writes CM3_BOOT_CONFIG')
-        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 1184,
-              'R305 the transport keys add seventeen more (keys 274, 275 and 276 replay the accepted shotgun shape and then put a legacy v1 message on the command queue, or ring the doorbell on an empty queue as the control: three stores each), '
+        check(len(_re.findall(r'gmuW\[[^\]]*\]\s*=[^=]', text)) == 1187,
+              'R313 the three GPUCC-alias keys add three more (keys 293, 294 and 295 read the GPUCC clock and GDSC words through the GMU alias and the two enable keys set one branch bit each), R305 the transport keys add seventeen more (keys 274, 275 and 276 replay the accepted shotgun shape and then put a legacy v1 message on the command queue, or ring the doorbell on an empty queue as the control: three stores each), '
               'R304 the acceptance follow-up keys add one more (keys 271, 272 and 273 replay the key 143 shotgun shape again, and key 273 rings the HOST2GMU doorbell after the start word is accepted), '
               'R168+R170+R171+R175+R178+R181+R186+R205 the pointer writes are exactly '
               'the ITCM loop, the pulse words, the three handshake words, the '

@@ -9554,3 +9554,91 @@ stage 5 绑定该窗口并把轨抬起来（`cx_after=80001fe0`）、stage 4 才
 剩下的障碍是「要跑任何键，就必须让 GPUCC 窗口被映射且两个状态字可读」，那要求把 GPUCC AHB 时钟/电源真正抬起来。
 这是 GX/CX 供电的移植工作，不是探针指令化的问题。下一轮起不再加键，转入 GPUCC 时钟/电源 bring-up。
 G1 仍未关闭（`gd=00222001`、`cf bit16=0`），GPU 未渲染一帧，进度仍约 15–20%。
+
+## 一百三十、R313–R315：GPUCC 别名通道、早期作用域、以及“映射本身就是墙”
+
+### 130.1 R313 的设计前提（CITED 上游）
+
+`drivers/clk/qcom/gpucc-sdm845.c` 给出 GPUCC 的寄存器偏移；GPUCC 物理基 `0x05090000` 落在探针已映射的
+GMU 窗口（`ADRENO_BOARD_GMU_BASE = 0x0506a000`）之内，差 `0x26000`，故 gmu dword 基为 `0x9800`。
+别名：`cx_gmu` `0x1098 → 0x9c26`、`cxo` `0x109c → 0x9c27`、`cx_gdscr` `0x106c → 0x9c1b`、
+`cx_hw_ctrl` `0x1540 → 0x9d50`、`gx_clamp` `0x1508 → 0x9d42`、`gmu_clk_src` `0x1120 → 0x9c48`、
+`pll1` `0x100 → 0x9840`。设想：不碰 GPUCC 自己的映射（已证危险），改从 GMU 窗口这一侧读写同一批寄存器。
+
+### 130.2 R313 的构建与门禁（HOST-VERIFIED / CI-VERIFIED）
+
+块 2,412 字符，probe 2,261,072 → 2,263,485；块内 16 处 `gmuW[`、其中 3 笔写。host 门 PASS、probe 39/39
+（store 预算 1184 → 1187）、stage4/5 PASS、stage6 2594/2594、全量 `ran 46 of 48, FAILING: 5`（全是
+设备离线导致的 debugfs/chipid 项）、mode-selector 62 / upper 295。CI #431 `45744880825` success，
+commit `a84da1477b189c89d7b9b2b5de4f9bc0090eaaf9`，kernel
+`f81d444bad71b21847c05ec3593f3a09b0d18160cad0c8fe4c058ecc3bc4bbbc`（126,652,416 B）、payload
+`7e2cdd7272f4b0390abb16ae885e8b948e09a0a48f742b8f30bd994e24c33bc2`。静态门对真产物 PASS、对 R312 产物 FAIL 4。
+
+### 130.3 R313 上机：三次都回来，一行都没有（DEVICE-VERIFIED）
+
+三键 293/294/295 都在 30 s 内回到 adb，窗口 sha 依次
+`2a7f0888c07bff1c4ebb8115b1ac81ca699a6d28be97c903f73aecfd7c8185af`、
+`1e25d40321f2b4bb1e52b4989bab7686bddb9cc17bef227d684b89297ca5f3e6`、
+`0caea5a1b498e41dc172c6a8c00ab3627e6b6e80ed41816c4ccb808bf31c47fa`，
+但**没有任何 `gmu293a`/`gmu294a`/`gmu295a` 行**；窗口里只有
+`rc=0 GPUCC=5090000 size=9000 mapped=0 read=0 cx=00000000 … verdict=gpucc-unmapped steps_left=9`
+与 `stage2=cx-down-gmu-not-mapped`。
+
+括号深度量测给出结构性原因：`if (fwKey == 293u …)` 在 `package/EnchiladaAdrenoProbe.cpp:36919`、
+**深度 10**，外层依次 `702`（函数）→ `1043 if (stage >= 4u)` → `1111 if (ioRow[0] != 0)` →
+`1138 if (!gSmmuVa)` → `1146 if (adreno_iommu_id2_decode(id2,&d) != 0)` → `1579 {` →
+`1600 if (fwArmed)` → `1617 if (kAdrenoGmuImageWords == 0u)` → `1632 if (!held)` →
+`1673 if (fwKey >= 8u)`；`fwKey` 在 `:1580` 声明、`fwArmed` 在 `:1581`。
+⇒ **所有 key ≥ 8 的块都嵌在 `if (fwArmed)` 里**，而安静构建永不武装 ⇒ 键块被**跳过**，不是冻死。
+R312 键 290 打不出行是同一原因。此判决同时收回了「别名快照不能做成键块」之外的一切解释。
+
+### 130.4 R314：把块移到深度 1、用自己的参数（HOST-VERIFIED / CI-VERIFIED）
+
+新块插在 `    if (stage >= 4u) {` 之前、括号深度 1；用**自己的** boot 参数 `enchilada-alias`
+（296/297/298）派发，自己 `armcpu_map_physical(ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE)`，
+末尾 `gDone = true; return;` 保证只跑一次。probe 2,263,485 → 2,267,174。
+门禁：host PASS、probe 39/39、stage4 81/81、stage5 68/68、stage6 2594/2594、全量
+`ran 46 of 48, FAILING: 0`（设备在线）、mode-selector 62/295。
+CI #432 `45754431391` success，commit `069cc1166636e4b695c6b34169bd49408f3e3182`，kernel
+`afee665a216d749ff4938766fc6a447f01b95dfcf408d92a119e34591aa13c3c`、payload
+`ff024e827d6fce66b78f61146d885f718ea1a7a5074571749d0b5ff6005cbe1f`。
+三键 payload 用等长 args 变体生成（`r311_variant.py --drop … --add "enchilada-alias=29N"`，镜像字节数不变）。
+
+### 130.5 R314 上机：只读的那一臂也冻死（DEVICE-VERIFIED）
+
+键 296（只读六字、零写）：13:00:16 gate rc=0 → flash OKAY → boot OKAY → 13:00:35 fastboot released →
+**`RESULT: DID NOT COME BACK in 200 s`**。冻结与键块位置、武装链、GPUCC 窗口都无关。
+
+### 130.6 R315：把「映射」与「读」拆开（HOST-VERIFIED / CI-VERIFIED / DEVICE-VERIFIED）
+
+同一颗 R315 内核上三臂：
+
+* **301**：不映射、不读，只打一行 —— **回来**，行 `gmu301a=early_print_only ok=1 mapped=0 row=only`，
+  窗口 sha `eab6c61e3909e4e01f0d019ec8dbca47eb41baaf353d39ce2bc93c8cda12a6c8`。
+* **299**：只映射 GMU 窗口、零读 —— **冻死**（14:23:53 起 200 s 无 adb）。
+* **300**：映射 + 读一个字 —— 未跑，299 已给出答案。
+
+构建：CI #433 `45763768530` success，commit `b734a42f472e71e85d339cc3bcdae8e3231c1910`，kernel
+`412289a03a296022ea59c89fd00a39da35a4d4407add5a0710e07a9c872b06ab`（126,652,416 B）、payload
+`d8d44ea50c71fae01cc01d37836dcb3200c28b17feeccd89b8f23a8e7dd95611`。门禁：host PASS、probe 39/39、
+stage4 81/81、stage5 68/68、stage6 2594/2594、全量 `ran 46 of 48, FAILING: 0`、mode-selector 62/295；
+静态门对 R315 真产物 PASS、对 R314 产物 FAIL 3。
+
+### 130.7 判决（本轮的核心结论）
+
+1. 深度 1 的早期块、自己的 boot 参数、打印路径都是好的（301）。
+2. **在 CX 上电之前映射任何一个 GPU 域窗口，会把机器挂死**，即使一个字节都不读（299）。
+3. 因此 R305 274–276、R306 280–282、R307 283–285、R309 290、R314 296 的全部冻结**是同一个动作**。
+4. 形式化表述：**CX 域起来之前，GPU 没有任何可用 MMIO；而通过 GPUCC 抬 CX 本身就是那个会挂的动作。**
+   别名通道、GPUCC 直读、读写闸门，至此全部封死。
+5. 剩下的入口是 R304 已测到的**固件**：CM3 对 HFI 启动字应答（`HFI_CTRL_STATUS` bit0，poll 2，12 次采样
+   里 9 次），随后不从队列取消息、不回写、不抬 CX。它缺的输入是电轨/VSENSE，不是我们写的任何寄存器。
+
+### 130.8 边界与未做
+
+* 冻结页的全部证据仍是「`stage:` 空白 + 控制台框空 + `IRQ=0`」——诊断页由冻结路径补画，
+  不能证明块执行到哪一行；本轮新增的 301 行是**正向**证据（同一颗内核上能打印），据此排除了
+  「深度 1 的打印本身有问题」。
+* 键 300（映射 + 一次读）未跑，因为 299 已把「读」从因果链里摘掉。
+* R313/R314/R315 三次上机的失败样本各 1 次，都是「一次引导的采样」；同一颗内核上 301 成功 1/1。
+  这里不主张统计强度，只主张因果闭链（299 与 301 只差一次映射调用）。

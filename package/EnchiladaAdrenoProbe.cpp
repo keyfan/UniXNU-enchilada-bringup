@@ -1040,6 +1040,97 @@ extern "C" void enchilada_adreno_poll(void) {
     // The decode itself is the contract's: adreno_iommu_id2_decode() returns
     // ias/ipa/pa plus the version gate, and adreno_iommu_stage1_words() mixes
     // ias into the round-83 TCR/TTBR words. Nothing here re-derives a field.
+    // R314: THE EARLY GPUCC-ALIAS BLOCK.  Depth 1, before the stage-4 chain, so it runs on
+    // the first tick of any boot that asks for it -- no GMU image, no armed chain, no GPUCC
+    // window.  R313 measured why the key-block form cannot work: every `fwKey ==` block sits
+    // at depth 10 under `if (fwArmed)`, and three boots of keys 293/294/295 came back in 30 s
+    // with zero rows because a quiet boot never reaches them.
+    //
+    // GPUCC lives inside the GMU window (0x5090000 - 0x506a000 = 0x26000 -> dword 0x9800), and
+    // `gmuW[]` has been writing GX GDSCR (0x9c03) through it since R274.  The words below are
+    // the clock-branch registers from gpucc-sdm845.c: cx_gmu_clk 0x1098 -> 0x9c26 (enable bit
+    // 0), cxo_clk 0x109c -> 0x9c27, cx_gdsc 0x106c -> 0x9c1b, cx_hw_ctrl 0x1540 -> 0x9d50,
+    // gmu_clk_src 0x1120 -> 0x9c48, pll1 0x100 -> 0x9840.
+    {
+        unsigned aliasKey = 0u;
+        if (PE_parse_boot_argn("enchilada-alias", &aliasKey, sizeof aliasKey) &&
+            aliasKey >= 296u && aliasKey <= 301u) {
+            static uintptr_t s314AliasWin = 0;
+            char r314Row[320];
+            if (aliasKey == 301u) {
+                snprintf(r314Row, sizeof r314Row,
+                         "gmu301a=early_print_only ok=1 mapped=%d row=only",
+                         (s314AliasWin == 0u) ? 0 : 1);
+                IOLog("enchilada-adreno: %s\n", r314Row);
+                gDone = true;
+                return;
+            }
+            if (s314AliasWin == 0u && &armcpu_map_physical) {
+                s314AliasWin = (uintptr_t)armcpu_map_physical(ADRENO_BOARD_GMU_BASE,
+                                                             ADRENO_BOARD_GMU_SIZE);
+            }
+            if (aliasKey == 299u) {
+                snprintf(r314Row, sizeof r314Row,
+                         "gmu299a=early_map_only ok=1 win=%08x reads=0",
+                         (unsigned)s314AliasWin);
+                IOLog("enchilada-adreno: %s\n", r314Row);
+                gDone = true;
+                return;
+            }
+            if (aliasKey == 300u) {
+                volatile uint32_t *aliasW300 = (volatile uint32_t *)s314AliasWin;
+                const uint32_t oneWord = aliasW300[0x9c26u];
+                snprintf(r314Row, sizeof r314Row,
+                         "gmu300a=early_one_read ok=1 win=%08x cx_gmu=%08x bit0=%u",
+                         (unsigned)s314AliasWin, oneWord, (unsigned)(oneWord & 1u));
+                IOLog("enchilada-adreno: %s\n", r314Row);
+                gDone = true;
+                return;
+            }
+            if (s314AliasWin == 0u) {
+                snprintf(r314Row, sizeof r314Row,
+                         "gmu%u=early_alias ok=0 reason=no-gmu-window",
+                         (unsigned)aliasKey);
+                IOLog("enchilada-adreno: %s\n", r314Row);
+                gDone = true;
+                return;
+            }
+            volatile uint32_t *aliasW = (volatile uint32_t *)s314AliasWin;
+            const uint32_t cxgmuPre = aliasW[0x9c26u];
+            const uint32_t cxoPre = aliasW[0x9c27u];
+            const uint32_t cxgdscrPre = aliasW[0x9c1bu];
+            const uint32_t cxhwPre = aliasW[0x9d50u];
+            const uint32_t rcgPre = aliasW[0x9c48u];
+            const uint32_t pllPre = aliasW[0x9840u];
+            if (aliasKey == 296u) {
+                snprintf(r314Row, sizeof r314Row,
+                         "gmu296a=early_alias ok=1 win=%08x cx_gmu=%08x cxo=%08x "
+                         "cx_gdscr=%08x cx_hw=%08x rcg=%08x pll=%08x",
+                         (unsigned)s314AliasWin, cxgmuPre, cxoPre, cxgdscrPre,
+                         cxhwPre, rcgPre, pllPre);
+            } else if (aliasKey == 297u) {
+                aliasW[0x9c26u] = cxgmuPre | 1u;
+                __asm__ volatile("dsb sy" ::: "memory");
+                const uint32_t cxgmuPost = aliasW[0x9c26u];
+                snprintf(r314Row, sizeof r314Row,
+                         "gmu297a=early_cxgmu_enable wrote=1 pre=%08x post=%08x bit0=%u "
+                         "cx_gdscr=%08x",
+                         cxgmuPre, cxgmuPost, (unsigned)(cxgmuPost & 1u), cxgdscrPre);
+            } else {
+                aliasW[0x9c27u] = cxoPre | 1u;
+                aliasW[0x9c26u] = cxgmuPre | 1u;
+                __asm__ volatile("dsb sy" ::: "memory");
+                snprintf(r314Row, sizeof r314Row,
+                         "gmu298a=early_cxo_enable wrote=2 cxo_pre=%08x cxo_post=%08x "
+                         "cxgmu_post=%08x cx_hw=%08x rcg_post=%08x pll_post=%08x",
+                         cxoPre, aliasW[0x9c27u], aliasW[0x9c26u], aliasW[0x9d50u],
+                         aliasW[0x9c48u], aliasW[0x9840u]);
+            }
+            IOLog("enchilada-adreno: %s\n", r314Row);
+            gDone = true;       // one shot: never run the rest of the probe on this boot
+            return;
+        }
+    }
     if (stage >= 4u) {
         char ioRow[220];
         ioRow[0] = 0;
@@ -1581,7 +1672,7 @@ extern "C" void enchilada_adreno_poll(void) {
                         const bool fwArmed =
                             PE_parse_boot_argn("enchilada-pas-exec", &fwKey,
                                                sizeof fwKey) &&
-                            ((fwKey >= 7u && fwKey <= 292u));
+                            ((fwKey >= 7u && fwKey <= 295u));
                         // ROUND 217: make "which key did the kernel see?" answerable.
                         // R216's window was byte-identical to R215's while key 64's block
                         // ran and key 65's (identical guard set) did not, so the value the
@@ -36914,6 +37005,56 @@ if (fwKey == 290u || fwKey == 291u || fwKey == 292u) {
         snprintf(r290Row, sizeof r290Row, "gmu290a=blocks_run=1 mode=%d row=only", r290mode);
     }
     IOLog("enchilada-adreno: %s\n", r290Row);
+}
+
+if (fwKey == 293u || fwKey == 294u || fwKey == 295u) {
+    const int r293mode = (fwKey >= 295u) ? 295 : ((fwKey >= 294u) ? 294 : 293);
+    char r293Row[400];
+    if (sGmuFwVa != 0u) {
+        const uint32_t r293cxgmu = gmuW[0x9c26u];
+        const uint32_t r293cxo = gmuW[0x9c27u];
+        const uint32_t r293gdscr = gmuW[0x9c03u];
+        const uint32_t r293gxst = gmuW[0x9c04u];
+        const uint32_t r293cxgds = gmuW[0x9c1bu];
+        const uint32_t r293cxhw = gmuW[0x9d50u];
+        const uint32_t r293clamp = gmuW[0x9d42u];
+        const uint32_t r293rcg = gmuW[0x9c48u];
+        const uint32_t r293pll = gmuW[0x9840u];
+        snprintf(r293Row, sizeof r293Row,
+                 "gmu293a=alias_snapshot ok=1 mode=%d cx_gmu=%08x cxo=%08x cx_gdscr=%08x "
+                 "gx_gdscr=%08x gx_status=%08x cx_hw=%08x gx_clamp=%08x rcg=%08x pll=%08x",
+                 r293mode, r293cxgmu, r293cxo, r293cxgds, r293gdscr, r293gxst,
+                 r293cxhw, r293clamp, r293rcg, r293pll);
+        IOLog("enchilada-adreno: %s\n", r293Row);
+        if (r293mode == 294) {
+            gmuW[0x9c26u] = r293cxgmu | 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
+            IODelay(10u);
+            const uint32_t r293cxgmu2 = gmuW[0x9c26u];
+            snprintf(r293Row, sizeof r293Row,
+                     "gmu294a=cx_gmu_enable wrote=1 pre=%08x post=%08x bit0=%u",
+                     r293cxgmu, r293cxgmu2, (unsigned)(r293cxgmu2 & 1u));
+            IOLog("enchilada-adreno: %s\n", r293Row);
+        }
+        if (r293mode == 295) {
+            gmuW[0x9c27u] = r293cxo | 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
+            gmuW[0x9c26u] = r293cxgmu | 1u;
+            __asm__ volatile("dsb sy" ::: "memory");
+            IODelay(10u);
+            const uint32_t r293cxo2 = gmuW[0x9c27u];
+            const uint32_t r293cxgmu3 = gmuW[0x9c26u];
+            const uint32_t r293cxhw2 = gmuW[0x9d50u];
+            snprintf(r293Row, sizeof r293Row,
+                     "gmu295a=cxo_and_cxgmu_enable wrote=2 cxo_pre=%08x cxo_post=%08x cxgmu_post=%08x cx_hw=%08x",
+                     r293cxo, r293cxo2, r293cxgmu3, r293cxhw2);
+            IOLog("enchilada-adreno: %s\n", r293Row);
+        }
+    } else {
+        snprintf(r293Row, sizeof r293Row,
+                 "gmu293a=alias_snapshot ok=0 mode=%d reason=no-gmu-window", r293mode);
+        IOLog("enchilada-adreno: %s\n", r293Row);
+    }
 }
 
 if (fwKey >= 18u && fwKey <= 21u) {
