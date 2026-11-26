@@ -9659,3 +9659,23 @@ stage4 81/81、stage5 68/68、stage6 2594/2594、全量 `ran 46 of 48, FAILING: 
 而是原文件里的裸撇号把相邻元素**吞并成一个字符串**，历轮用正则数元素时被少算了（那些计数从未经过
 `tomllib`）。修复后每个元素重新独立，计数才第一次等于真实元素数；随后追加本轮的一条记录，得
 **145/162/171**。
+
+### 130.10 自动回 TWRP 的两条路都试过了：都不行（DEVICE-VERIFIED）
+
+用户要求「运行时卡死也能回 TWRP」。两个只改 boot-args、不新建内核的 payload（都由键 299 那张
+`r315-p299-payload` 等长改出，镜像字节数不变）：
+
+| payload | args 变化 | sha256 | 结果 |
+|---|---|---|---|
+| `r316-p299-autoreset` | `sheng-autoreset=2400` → `0090` | `dcb8288b5d25d581a0cc268e9f6f1157097889a043bf7f5268a0addb16a49c38` | 14:46:39 引导 → **260 s 未回** |
+| `r316-p299-wd` | 上面再加 `sheng-disable-watchdogd=1` → `=0`，autoreset `=0060` | `5f4f6148a7fbfeeeaf849b7b5a7a6720b74105c7136120e4317204c4592d20e1` | 15:06:32 引导 → **200 s 未回** |
+
+两次都刷写成功（`Sending 'system_b' 147456 KB OKAY`、`Booting OKAY`），机器也确实接手了内核
+（`fastboot released after 6 s`），随后进入 R315 已描述的那个状态：屏幕停在诊断页、`adb` 与 `fastboot`
+都没有。
+
+与源码一致：`package/BootLog.c:1273` 的 autoreset 判断跑在日志写线程里，需要那一轮 UFS 写成功；
+`package/BootReset.c` 的 `boot_reset_watchdog()` 是返回 1 的桩（`no hypervisor watchdog backstop on
+enchilada (%u s requested)`），而 `com.apple.watchdogd` 走的是 Apple 的 watchdog 策略、不是 SoC 的
+`PMIC` 硬狗。**结论：这套内核里没有任何一条软件路径能在「IRQ 关掉的硬锁」之后把机器带回来，唯一
+恢复方式是人工长按电源键约 12 秒。** 这不是缺陷，是当前移植阶段的硬边界，已作为上机纪律写进交接。
