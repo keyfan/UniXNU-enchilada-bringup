@@ -9679,3 +9679,25 @@ stage4 81/81、stage5 68/68、stage6 2594/2594、全量 `ran 46 of 48, FAILING: 
 enchilada (%u s requested)`），而 `com.apple.watchdogd` 走的是 Apple 的 watchdog 策略、不是 SoC 的
 `PMIC` 硬狗。**结论：这套内核里没有任何一条软件路径能在「IRQ 关掉的硬锁」之后把机器带回来，唯一
 恢复方式是人工长按电源键约 12 秒。** 这不是缺陷，是当前移植阶段的硬边界，已作为上机纪律写进交接。
+
+### 130.11 复现与落点：GMU 窗口的映射 2/2 冻死，而墙外还有两个非 GPU 域的控制器（DEVICE-VERIFIED / CITED）
+
+键 299（只映射 GMU 窗口、零读）在同一天再跑一次：15:13:29 引导、`fastboot released after 6 s`、
+**200 s 未回**。加上 14:23:53 那次，**2/2 冻死**；同一颗内核上键 301（不映射不读、只打一行）1/1 回来。
+作为对照，GPUCC 窗口的映射此前是 1/2（R313 零构建矩阵 A 格）。⇒ 「CX 断电时映射 GPU 域窗口」至少对
+GMU 窗口是**确定性**的，对 GPUCC 窗口是概率性的，两者都不再是可用通道。
+
+由此得到的下一步方向不是再换窗口，而是**离开 GPU 域**：GPU 的上电链在他处，且这些控制器不在 GPU 电源域里，
+映射它们不会触发同一个 AHB 停摆：
+
+* `GCC`（`0x00100000`，`gcc_gpu_cfg_ahb_clk` 与 `gfx3d` 时钟的父级）—— 上游 `gpucc-sdm845.c` 的
+  `cx_gmu_clk` / `gfx3d_clk_src` 都挂在 GCC 的 `gcc_gpu_cfg_ahb_clk` 与 `gpll` 上，mainline 的顺序是先开
+  GCC 侧 AHB 时钟再碰 GPUCC；
+* `RPMh` / `SPMI`（PMIC 电轨与 VSENSE）—— CX/GX 的 `vdd` 由 PMIC 提供，固件等的「rail up」就是它。
+
+两者都是**普通 SoC 域**，探针已有 `armcpu_map_physical` 的能力，不需要 GPU 上电即可访问。
+下一轮（R317）的计划：键 302 = 只映射 GCC 窗口并读 `CFG_AHB` 相关寄存器（零写）；
+键 303 = 在 GCC 窗口里打开 GPU 的 AHB/配置时钟后**再**回到 GPUCC 状态读；键 304 = 走 SPMI 读 PMIC 的
+CX/GX 轨道状态（只读）。判读顺序：302 必须回来（否则「映射非 GPU 窗口」也被同一个缺陷污染，
+那问题就不在电源域而在 `armcpu_map_physical` 的通用路径上）；302 回来而 303 冻 ⇒ 时间/顺序问题；
+303 回来后 GPUCC 状态字可读 ⇒ 供电链终于接上，可以回到 R305 的 HFI 传输实验。
