@@ -140,8 +140,8 @@ def main():
                       ('0x28u', 'GR0_ID2')):
         check(_ro.count('rd32(gSmmuVa, %s)' % off) == 1,
               '%s (byte %s) is read exactly once before the write keys' % (name, off))
-    check(code.count('rd32(gSmmuVa, 0x24u)') <= 48,
-          'ID1 is re-read at most forty-nine times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269 and 270), '
+    check(code.count('rd32(gSmmuVa, 0x24u)') <= 49,
+          'ID1 is re-read at most fifty times more (keys 71, 72, 95, 97, 99, 102, 108, 111, 114, 117, 120, 124, 127, 130, 133, 136, 139, 142, 145, 148, 151, 154, 157, 160, 163, 166, 169, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269 and 270), plus the one its shared preamble adds for keys 274/275/276, '
           'not in a loop')
     check('rd32(gSmmuVa, 0x28u)' in code and
           code.index('rd32(gSmmuVa, 0x28u)') < code.index('rd32(gSmmuVa, 0x20u)'),
@@ -1223,7 +1223,7 @@ def main():
                       .split('// ---- ROUND 109 stage 7:', 1)[0])
            if '// ---- ROUND 168:' in text else '')
     check(_fw != '', 'R168 the block is delimited, so its boundary is assertable')
-    check('fwKey >= 7u && fwKey <= 273u' in _fw,
+    check('fwKey >= 7u && fwKey <= 292u' in _fw,
           'R168 it is armed by its own key values (7..8 and 15..21 for the HFI '
           'ladder); 3..6 keep their evidence')
     check('!kAdrenoGmuBlobPresent' in _fw and 'kAdrenoGmuImageWords == 0u' in _fw,
@@ -1698,7 +1698,7 @@ def main():
     check('if (fwKey >= 22u && fwKey <= 25u) {' in code,
           'R180 the rail block is CLOSED at key 25, so key 26 cannot re-run the '
           'doorbell or the SPTPRAC write on its way to the dump')
-    check('(fwKey >= 7u && fwKey <= 273u)' in code,
+    check('(fwKey >= 7u && fwKey <= 292u)' in code,
           'R182 keys 7 to 29 are armed by the same boot-arg window, still '
           'inside 1..6 stages and with no new boot argument')
     check(_k26 != '', 'R180 key 26 exists')
@@ -7293,7 +7293,27 @@ def main():
     _k271273 = ''
     if _i271273 > 0:
         _k271273 = code[_i271273:].split(
-            '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+            '\nif (fwKey == 274u || fwKey == 275u || fwKey == 276u) {\n', 1)[0]
+    _i274276 = code.find('if (fwKey == 274u || fwKey == 275u || fwKey == 276u) {')
+    _k274276 = ''
+    if _i274276 > 0:
+        _k274276 = code[_i274276:].split(
+            '\nif (fwKey == 280u || fwKey == 281u || fwKey == 282u) {\n', 1)[0]
+    _i280282 = code.find('if (fwKey == 280u || fwKey == 281u || fwKey == 282u) {')
+    _k280282 = ''
+    if _i280282 > 0:
+        _k280282 = code[_i280282:].split(
+            '\nif (fwKey == 283u || fwKey == 284u || fwKey == 285u) {\n', 1)[0]
+    _i283285 = code.find('if (fwKey == 283u || fwKey == 284u || fwKey == 285u) {')
+    _k283285 = ''
+    if _i283285 > 0:
+        _k283285 = code[_i283285:].split(
+            '\nif (fwKey == 286u || fwKey == 287u || fwKey == 288u) {\n', 1)[0]
+    _i286 = code.find('if (fwKey == 286u || fwKey == 287u || fwKey == 288u) {')
+    _k286 = ''
+    if _i286 > 0:
+        _k286 = code[_i286:].split(
+            '\nif (fwKey == 290u || fwKey == 291u || fwKey == 292u) {\n', 1)[0]
     check(_k238240 != '', 'R290 the separation keys sit before the ladder')
     _rows290 = ('gmu238p0', 'gmu238p1', 'gmu238p2', 'gmu238l=',
                 'gmu239p0', 'gmu239p1', 'gmu239p2', 'gmu238l2=',
@@ -7930,6 +7950,188 @@ def main():
     check(_k271273.count('gmur304') >= 11 and _k271273.count('gmur303') == 0,
           'R304 the shared rows carry this round''s label, so a key-271 window '
           'cannot read as R303')
+
+    check(_i274276 > 0 and _k274276 != '',
+          'R305 the transport keys are present in the source')
+    check(_k274276.count('gmuW[') == 18,
+          'R305 the three keys carry eighteen pointer stores: the shared preamble '
+          'publishes the table address, the table info and the CP message page, and '
+          'each arm still carries the mask, the start word and its doorbell (got %d)'
+          % _k274276.count('gmuW['))
+    _b305a1 = '\n    } else if (r274mode == 275u) {\n'
+    _b305a2 = '\n    } else {\n'
+    check(_k274276.count(_b305a1) == 1 and _k274276.count(_b305a2) == 2,
+          'R305 the arm boundaries are single, so each arm can be sliced')
+    _p305i = _k274276.index('if (r274mode == 274u) {')
+    _p305j = _k274276.index(_b305a1)
+    _p305k = _k274276.rindex(_b305a2)
+    _pre305 = _k274276[:_p305i]
+    _r305a = _k274276[_p305i:_p305j]
+    _r305b = _k274276[_p305j + 1:_p305k]
+    _r305c = _k274276[_p305k + 1:]
+    check(_k274276.count('< 512ull') == 3,
+          'R305 each key still fills every entry of the table pages')
+    for _tag, _arm in (('274', _r305a), ('275', _r305b), ('276', _r305c)):
+        check(_arm.count('gmuW[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xff7fffffu;') == 1 and
+              _arm.count('gmuW[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;') == 1 and
+              _arm.count('0xc00001feu') == 1,
+              'R305 key %s replays the mask store, the start word and the fault '
+              'clear of the accepted shape' % _tag)
+        check(_arm.count('HOST2GMU_INTR_SET] = 1u;') == 1,
+              'R305 key %s rings the bit 0 doorbell a6xx_hfi_queue_write uses' % _tag)
+    check(_pre305.count('gmur305') >= 3,
+          'R305 the shared preamble carries this round''s row label')
+    check(_r305a.count('hfi_sent_test') >= 1 and
+          _r305a.count('AdrenoHfiV1MakeHeader(1u, 1u, 5u)') == 1 and
+          _r305a.count('ADRENO_HFI_V1_QUEUE_WORDS') == 5,
+          'R305 key 274 puts one HFI_H2F_MSG_TEST header on the command queue, '
+          'through the tested header contract rather than a local shift')
+    check(_r305b.count('hfi_sent_init') >= 1 and
+          _r305b.count('AdrenoHfiV1MakeHeader(1u, 4u, 0u)') == 1 and
+          _r305b.count('r303hfiPa') >= 1 and
+          _r305b.count('ADRENO_HFI_V1_QUEUE_WORDS') == 8,
+          'R305 key 275 puts the four-word HFI_H2F_MSG_INIT on the command queue')
+    check('<< 8' not in _k274276,
+          'R305 the transport keys never re-derive a header field by hand')
+    check(_r305c.count('hfi_doorbell_only') >= 1 and
+          _r305c.count('cmd =') == 0 and
+          _r305c.count('ADRENO_HFI_V1_QUEUE_WORDS') == 4,
+          'R305 key 276 is the control: it rings the doorbell on an empty queue')
+    check(_pre305.count('armcpu_dma_alloc_writable(kHfiBytes, &hfiOwnVirt)') == 1 and
+          _pre305.count('gmur305t=own_table=1') == 1 and
+          _pre305.count('ADRENO_HFI_V1_QHDR0_OFFSET_WORDS') >= 1 and
+          _pre305.count('ADRENO_HFI_V1_RESP_QUEUE_ID') == 1,
+          'R305 the shared preamble builds a legacy v1 queue table itself, publishes '
+          'its address before the CM3 reset pulse and prints the row it published')
+    check(_k274276.count('if (r303hfiWin != 0u) {') == 3 and
+          _k274276.count('sHfiWin') == 0,
+          'R305 every arm takes the queue window under a guard, so a failed '
+          'allocation prints a skipped row instead of dereferencing address zero')
+    check(_pre305.count('gmuW[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG]') == 1 and
+          _pre305.count('3u * ADRENO_HFI_V1_PAGE_BYTES') == 1,
+          'R305 publishes the CP message page the firmware expects after the table')
+    check('const int r274mode = (fwKey >= 276u) ? 276 : ((fwKey >= 275u) ? 275 : 274);'
+          in _k274276,
+          'R305 the mode selector names the three keys in order')
+    check(_k274276.count('gmur305') >= 11 and _k274276.count('gmur304') == 0,
+          'R305 the shared rows carry this round''s label, so a key-274 window '
+          'cannot read as R304')
+    check(_i280282 > 0 and _k280282 != '',
+          'R306 the read-only keys are present in the source')
+    check(_k280282.count('gmuW[') == 0,
+          'R306 the three keys store nothing at all, so a hang cannot be a write '
+          '(got %d pointer stores)' % _k280282.count('gmuW['))
+    _a280 = _k280282.split('} else if (r280mode == 281u) {')[0].split(
+        'if (r280mode == 280u) {')[1]
+    check(_a280.count('rd32(') == 0 and
+          _a280.count('"gmu280a=no_mmio=1 mode=%d"') == 1,
+          'R306 key 280 prints one line and reads no window at all')
+    check(_k280282.count('rd32(gSmmuVa, 0x0u)') == 1 and
+          _k280282.count('rd32(gSmmuVa, 0x4u)') == 1 and
+          _k280282.count('gSmmuVa != 0u') == 2,
+          'R306 key 281 reads only the SMMU window, and guards it')
+    check(_k280282.count('HFI_CTRL_STATUS * 4u') == 1 and
+          _k280282.count('HFI_QTBL_ADDR * 4u') == 1 and
+          _k280282.count('HFI_QTBL_INFO * 4u') == 1,
+          'R306 key 282 reads the same three GMU words key 69 reads')
+
+    check(_i283285 > 0 and _k283285 != '',
+          'R307 the breadcrumb keys are present in the source')
+    check(_k283285.count('gmuW[') == 0,
+          'R307 the three keys store nothing at all')
+    check(_k283285.count(
+        'extern void boot_progress_stage(const char *) __attribute__((weak_import));') == 1,
+          'R307 the breadcrumb goes through the same weak symbol LegacyDisplayProbe uses')
+    check(_k283285.count('if (boot_progress_stage) boot_progress_stage(') == 2,
+          'R307 every arm drops one breadcrumb on entry and one carrying its row')
+    check(_k283285.count('"adreno 283: probe entered"') == 1,
+          'R307 the entry breadcrumb is a fixed short string, so a frozen page can '
+          'show it under 32 columns')
+    check(_k283285.count('"gmu283a=breadcrumb=1 label=enter row=only"') == 1 and
+          _k283285.count('"gmu284a=smmu_first=1 s0=%08x map=%d"') == 1 and
+          _k283285.count('"gmu285a=gmu_first=1 stat=%08x"') == 1,
+          'R307 each arm still prints its own row through IOLog')
+    check(_k283285.count('rd32(') == 2 and
+          _k283285.count('rd32(gSmmuVa, 0x0u)') == 1 and
+          _k283285.count('HFI_CTRL_STATUS * 4u') == 1,
+          'R307 the second and third arms read exactly one word each, and the first '
+          'reads none')
+    check('const int r283mode = (fwKey >= 285u) ? 285 : ((fwKey >= 284u) ? 284 : 283);'
+          in _k283285,
+          'R307 the mode selector names the three keys in order')
+    check(_i286 > 0 and _k286 != '',
+          'R308 the staged key is present in the source')
+    check(_k286.count('gmuW[') == 0,
+          'R308 the staged key stores nothing at all')
+    check(_k286.count('static unsigned s286step = 0;') == 1 and
+          _k286.count('static unsigned s286tick = 0;') == 1,
+          'R308 the key keeps its step and tick in statics, so every monitor '
+          'tick advances it by one and returns')
+    check(_k286.count('boot_progress_stage("adreno 286 t') == 3,
+          'R308 drops three breadcrumbs, each naming the action the NEXT tick '
+          'will take, so a hang inside that action leaves its name painted')
+    check(_k286.count('if (boot_progress_stage)') == 3,
+          'R308 every breadcrumb is behind its own null test')
+    check(_k286.count('"gmu286b=staged=1 mode=%d step=2 tick=%u val=%08x read=%d"') == 1 and
+          _k286.count('"gmu286c=staged=1 mode=%d step=3 tick=%u val=%08x read=%d"') == 1 and
+          _k286.count('"gmu286d=staged=1 mode=%d done=1 tick=%u"') == 1,
+          'R308 each step still prints its own row, after the action returned')
+    check(_k286.count('rd32(') == 4 and
+          _k286.count('ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS * 4u') == 2 and
+          _k286.count('rd32(gSmmuVa, 0x0u)') == 1 and _k286.count('rd32(gSmmuVa, 0xc0u)') == 1,
+          'R308 the risky steps are GMU status twice and one SMMU word, keyed by mode')
+    check(_k286.count('s286step == 0u') == 1 and _k286.count('s286step == 1u') == 1 and
+          _k286.count('s286step == 2u') == 1,
+          'R308 the four ticks are ordered by one step counter')
+    check('const int r286mode = (fwKey >= 288u) ? 288 : ((fwKey >= 287u) ? 287 : 286);'
+          in _k286,
+          'R308 the mode selector names the three staged keys in order')
+    _i290292 = code.find('if (fwKey == 290u || fwKey == 291u || fwKey == 292u) {')
+    _k290292 = ''
+    if _i290292 > 0:
+        _k290292 = code[_i290292:].split(
+            '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+    check(_i290292 > 0 and _k290292 != '',
+          'R309 the three read-route keys are present in the source')
+    check(_k290292.count('gmuW[') == 0,
+          'R309 the read-route keys store nothing at all (got %d)'
+          % _k290292.count('gmuW['))
+    check(_k290292.count('gmu290a=blocks_run=1 mode=%d row=only') == 1 and
+          _k290292.count('gmu291a=gmu_alias mapped=%d gdscr=%08x') == 1 and
+          _k290292.count('gmu292a=gpucc_direct mapped=%d cx=%08x') == 1,
+          'R309 each key prints its own row')
+    check(_k290292.count('rd32(sGmuFwVa, ADRENO_GMU_BOOT_V1_GPU_CC_GX_GDSCR * 4u)') == 1 and
+          _k290292.count('uint32_t cxDirect = 0xffffffffu;') == 1 and
+          _k290292.count('if (gGpuccVa)') == 1,
+          'R309 key 291 reads the alias once and key 292 reads the direct mapping once')
+    check(_k290292.count('if (sGmuFwVa)') == 1 and
+          _k290292.count('0xffffffffu') == 2,
+          'R309 each read is guarded and defaults to the unread sentinel')
+    check(_k290292.count('const int r290mode = (fwKey >= 292u) ? 292 : ((fwKey >= 291u) ? 291 : 290);') == 1,
+          'R309 the mode selector names the three read routes in order')
+    check(code.count('enchilada-gpucc-read') == 1 and
+          code.count('unsigned gpuccRead = 0u;') == 1,
+          'R309 the machinery parses exactly one gate argument')
+    check(code.count('const uint32_t cx = (gpuccRead && gGpuccVa)') == 1 and
+          code.count('const uint32_t gx = (gpuccRead && gGpuccVa)') == 1,
+          'R310 both GPUCC observations are ternary-gated on the argument and on the mapping')
+    check(code.count('enchilada-gpucc-map') == 1 and
+          code.count('unsigned gpuccMap = 0u;') == 1 and
+          code.count('if (!gGpuccVa && gpuccMap) {') == 1,
+          'R310 the mapping itself refuses unless its own boot argument asks for it')
+    check(code.count('\"gpucc-unmapped\"') == 1 and code.count('mapped=%d read=%d') == 1,
+          'R310 the row distinguishes never-mapped from mapped-but-unread')
+    check(code.count('"gpucc-unread"') == 1,
+          'R309 the row labels an unread domain instead of inventing a verdict')
+    check(code.count('read=%d cx=%08x gx=%08x') == 1,
+          'R309 the row publishes whether the two words were read at all')
+    check('const int r280mode = (fwKey >= 282u) ? 282 : ((fwKey >= 281u) ? 281 : 280);'
+          in _k280282,
+          'R306 the mode selector names the three keys in order')
+    check(_k280282.count("IOLog(\"enchilada-adreno: %s\\n\", r280Row);") == 1,
+          'R306 every arm prints once, after its reads, so silence still means '
+          'the first access never returned')
+
 
     _a265 = _k265267.split('} else if (r265mode == 266u) {')[0].split(
         'if (r265mode == 265u) {')[1]

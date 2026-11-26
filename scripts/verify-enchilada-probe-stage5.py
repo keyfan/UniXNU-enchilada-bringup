@@ -137,7 +137,7 @@ def main():
     # ROUND 199 drives the GX GDSC through `gxW[...]`; same treatment.
     _outside = re.sub(r'gxW\[[^\]]*\]\s*=[^=][^;]*;', '', _outside)
     check('// ---- ROUND 168:' in text and 'gmufw=load words=%u' in text and
-          'fwKey >= 7u && fwKey <= 273u' in code and
+          'fwKey >= 7u && fwKey <= 292u' in code and
           re.search(r'gmuW\[kAdrenoGmuItcmWord \+ wi\]\s*=\s*adreno_gmu_image\[wi\];', code),
           'R168 the ITCM load is a second pinned write exception (key 7/8)')
     check('if (fwKey == 45u) {' in code and
@@ -424,7 +424,12 @@ def main():
     _k271273r = ''
     if _i271273r > 0:
         _k271273r = code[_i271273r:].split(
-            '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+            '\nif (fwKey == 274u || fwKey == 275u || fwKey == 276u) {\n', 1)[0]
+    _i274276r = code.find('if (fwKey == 274u || fwKey == 275u || fwKey == 276u) {')
+    _k274276r = ''
+    if _i274276r > 0:
+        _k274276r = code[_i274276r:].split(
+            '\nif (fwKey == 280u || fwKey == 281u || fwKey == 282u) {\n', 1)[0]
     check(_i238240r > 0 and _k238240r != '' and
           _k238240r.count(_p1r) == 0 and _k238240r.count(_p0r) == 0,
           'R290 the separation keys carry none of the pinned pulse literals')
@@ -463,6 +468,10 @@ def main():
           _k271273r.count(_p1r) == 1 and _k271273r.count(_p0r) == 1,
           'R304 the acceptance follow-up keys carry exactly one pinned pulse pair, '
           'the one their three keys share in the common preamble')
+    check(_i274276r > 0 and _k274276r != '' and
+          _k274276r.count(_p1r) == 1 and _k274276r.count(_p0r) == 1,
+          'R305 the transport keys carry exactly one pinned pulse pair, '
+          'the one their three keys share in the common preamble')
     _i145147r = code.find('if (fwKey == 145u || fwKey == 146u || fwKey == 147u) {')
     _k145147r = ''
     if _i145147r > 0:
@@ -472,9 +481,9 @@ def main():
     # is therefore about the total and about where the extra five live.
     check(_k8 != '' and _k0204r != '' and _k0507r != '' and _k0810r != '' and _k111113r != '' and
           _k114116r != '' and _k117119r != '' and _k120122r != '' and _k124126r != '' and
-          _k127129r != '' and _k130132r != '' and _k133135r != '' and _k136138r != '' and _k139141r != '' and _k142144r != '' and _k145147r != '' and _k148150r != '' and _k151153r != '' and _k154156r != '' and _k157159r != '' and _k160162r != '' and _k163165r != '' and _k166168r != '' and _k169171r != '' and _k172174r != '' and _k175177r != '' and _k178180r != '' and _k181183r != '' and _k184186r != '' and _k271273r != '' and
-          code.count(_p1r) == 48 and code.count(_p0r) == 48 and
-          _k8.count(_p1r) == 48 and _k8.count(_p0r) == 48 and
+          _k127129r != '' and _k130132r != '' and _k133135r != '' and _k136138r != '' and _k139141r != '' and _k142144r != '' and _k145147r != '' and _k148150r != '' and _k151153r != '' and _k154156r != '' and _k157159r != '' and _k160162r != '' and _k163165r != '' and _k166168r != '' and _k169171r != '' and _k172174r != '' and _k175177r != '' and _k178180r != '' and _k181183r != '' and _k184186r != '' and _k271273r != '' and _k274276r != '' and
+          code.count(_p1r) == 49 and code.count(_p0r) == 49 and
+          _k8.count(_p1r) == 49 and _k8.count(_p0r) == 49 and
           _k0204r.count(_p1r) == 2 and _k0204r.count(_p0r) == 2 and
           _k0507r.count(_p1r) == 3 and _k0507r.count(_p0r) == 3 and
           _k0810r.count(_p1r) == 3 and _k0810r.count(_p0r) == 3 and
@@ -533,7 +542,7 @@ def main():
           _k232234r.count(_p1r) == 0 and _k232234r.count(_p0r) == 0 and
           _k235237r != '' and
           _k235237r.count(_p1r) == 0 and _k235237r.count(_p0r) == 0,
-          'R168 the reset pulse stays pinned per block: once in the key-8 sub-block, twice in the R247 re-boot block, three times in each of the R248 and R249 blocks, once in most of the later blocks, and R303 adds one more, the single reset pulse that its three keys share in the common preamble, and R304 adds one more of the same kind for its own three keys')
+          'R168 the reset pulse stays pinned per block: once in the key-8 sub-block, twice in the R247 re-boot block, three times in each of the R248 and R249 blocks, once in most of the later blocks, and R303 adds one more, the single reset pulse that its three keys share in the common preamble, and R304 adds one more of the same kind for its own three keys, and R305 adds one more for its transport keys')
     _live = (code.split('if (fwKey >= 9u) {', 1)[1].split('IOLog("enchilada-adreno: %s\\n", liveRow);', 1)[0]
              if 'if (fwKey >= 9u) {' in code else '')
     check(_live != '' and 'gmulive=intr=%08x hfistat=%08x ' in code and
@@ -561,6 +570,47 @@ def main():
     check(casts <= {'volatile uint32_t *', 'volatile uint8_t *',
                     'volatile uint64_t *', 'volatile const uint32_t *'},
           'the only pointer casts are the volatile window types (got %r)' % sorted(casts))
+    _i280282r = code.find('if (fwKey == 280u || fwKey == 281u || fwKey == 282u) {')
+    _k280282r = ''
+    if _i280282r > 0:
+        _k280282r = code[_i280282r:].split(
+            '\nif (fwKey == 283u || fwKey == 284u || fwKey == 285u) {\n', 1)[0]
+    check(_i280282r > 0 and _k280282r != '' and
+          _k280282r.count(_p1r) == 0 and _k280282r.count(_p0r) == 0,
+          'R306 the read-only keys carry none of the pinned pulse literals')
+    _i283285r = code.find('if (fwKey == 283u || fwKey == 284u || fwKey == 285u) {')
+    _k283285r = ''
+    if _i283285r > 0:
+        _k283285r = code[_i283285r:].split(
+            '\nif (fwKey == 286u || fwKey == 287u || fwKey == 288u) {\n', 1)[0]
+    check(_i283285r > 0 and _k283285r != '' and
+          _k283285r.count(_p1r) == 0 and _k283285r.count(_p0r) == 0,
+          'R307 the breadcrumb keys carry none of the pinned pulse literals')
+    _i286r = code.find('if (fwKey == 286u || fwKey == 287u || fwKey == 288u) {')
+    _k286r = ''
+    if _i286r > 0:
+        _k286r = code[_i286r:].split(
+            '\nif (fwKey == 290u || fwKey == 291u || fwKey == 292u) {\n', 1)[0]
+    check(_i286r > 0 and _k286r != '' and
+          _k286r.count(_p1r) == 0 and _k286r.count(_p0r) == 0,
+          'R308 the staged keys carry none of the pinned pulse literals')
+    _i290292r = code.find('if (fwKey == 290u || fwKey == 291u || fwKey == 292u) {')
+    _k290292r = ''
+    if _i290292r > 0:
+        _k290292r = code[_i290292r:].split(
+            '\nif (fwKey >= 18u && fwKey <= 21u) {\n', 1)[0]
+    check(_i290292r > 0 and _k290292r != '' and
+          _k290292r.count(_p1r) == 0 and _k290292r.count(_p0r) == 0,
+          'R309 the read-route keys carry none of the pinned pulse literals')
+    check(code.count('enchilada-gpucc-read') == 1 and
+          code.count('unsigned gpuccRead = 0u;') == 1 and
+          code.count('enchilada-gpucc-map') == 1 and
+          code.count('unsigned gpuccMap = 0u;') == 1 and
+          code.count('if (!gGpuccVa && gpuccMap) {') == 1,
+          'R309/R310 the GPUCC map and the two observations are each behind their own boot argument')
+    check(code.count('const uint32_t cx = (gpuccRead && gGpuccVa)') == 1 and
+          code.count('const uint32_t gx = (gpuccRead && gGpuccVa)') == 1,
+          'R310 both observations also require the mapping to exist before they dereference it')
 
     # --- H. write32 appears only as a struct field, never as a call -------
     # AdrenoPowerUpBackendV1Mmio carries a write32 member; the probe must not

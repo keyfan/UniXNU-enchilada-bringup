@@ -9515,3 +9515,42 @@ R303 把「接受之后固件什么都没做」写进了文档，本轮先把这
 1. **真正发一条 HFI v1 消息**：按 `a6xx_hfi.c:66-100` 的门铃约定（`HOST2GMU_INTR_SET` **bit0**，不是 bit22）与 `AdrenoHfiV1.h` 的 legacy 队列布局，在**被接受之后**把消息写进命令队列并敲门铃，然后读应答队列（`gmu<key>r` 行：`info/bit0/polls/cmd_wr/resp_rd/resp_wr/w0..w3`）。三键 = `HFI_H2F_MSG_TEST`（id 5，1 dword，最省）/ `HFI_H2F_MSG_INIT`（id 0，4 dwords）/ **空队列只敲门铃**（对照，判「门铃本身会不会被应答」）。
 2. **用 `sHfiWin` 重做队列页读数**（修掉 128.4-6 的空读数），并把 `PWR_COL_CP_MSG` 指向的页头一起读。
 3. 若三键都无应答 ⇒ 固件**没有在跑 HFI 循环**（它只做了 ACK），下一步就该问「它还缺什么前置条件」（GX/G1 电源、`CM3_CFG` 的位、`CM3_BOOT_CONFIG` 的 boot 模式），而不是继续换启动字的写法。
+
+## 一百二十九、R312：把「在死域上映射 SMMU 窗口」这一笔关进闸门 —— 安静构建首次让 stage 1..6 整轮返回（30 秒），但键块仍要等 GPUCC 窗口活着
+
+R305 以来的冻结（键 274/275/276、280、283、289、290 全部冻死）在本轮被拆成两个不同的东西。
+
+**阶梯定位（R310 内核，`r310_ladder.py`）。** stage 1 于 30 秒返回，行是
+`rc=0 GPUCC=5090000 size=9000 mapped=0 read=0 cx=ffffffff gx=ffffffff cx_on=1 gx_on=1 gx_off=1 verdict=gpucc-unmapped steps_left=9`
+—— 哨兵 `0xffffffff` 被 `cx_is_on()` 判成「上电」，于是 stage 2 走进「CX up」分支去映射并读 GMU 窗口，当场冻结。
+即冻结点落在 stage 2 的 GMU 触碰，而其入口是被我自己的哨兵骗开的。
+
+**R312 的唯一实质改动**（`package/EnchiladaAdrenoProbe.cpp:1062`）：KGSL SMMU 窗口的映射从无条件执行改为
+`const int smmuMapAllowed = adreno_domain_cx_is_on(cxNow);` 之后再
+`if (!gSmmuVa && &armcpu_map_physical && smmuMapAllowed)`，拒绝时打印
+`stage4=smmu-map-refused cx=%08x cx_on_now=%d why=domain-down`。
+
+CI #430 `45738666647`，kernel `ce810774bceabf94e2bcf1a430d8632ec3c49abb5ad98d21e544751795d77f04`，
+payload `a08fa705c06a6ffe1ed67f615bec415755e87ad0d905a72d4369cf380d353774`；
+host 25/25+51/51+32/32、probe 39/39、stage4 80/80、stage5 67/67、stage6 2588/2588、全量 ran 46 of 48 FAILING 0、mode-selector 61/upper 292。
+
+**同一颗内核上的三次引导，只差 boot 参数：**
+
+| # | args | 结果 |
+|---|---|---|
+| 1 | 全部闸门缺省 | **CAME BACK 30 s**，窗口 `e330229997b93d…`：`mapped=0 read=0 cx=00000000 cx_on=0 verdict=gpucc-unmapped`、`stage2=cx-down-gmu-not-mapped` |
+| 2 | `enchilada-pas-exec=290` | **CAME BACK 30 s**，窗口 `af0b4176e37dd3…`，但无 `gmu290a` 行 |
+| 3 | `enchilada-gpucc-map=1 enchilada-gpucc-read=1 enchilada-pas-exec=290` | **冻结**（180 s 无 adb） |
+
+第 1 次是里程碑：自 R305 起每一次带 `enchilada-adreno=6` 的引导都冻死，这一颗第一次让 stage 1..6 全跑完并回到 TWRP。
+第 2 次划出边界：探针能在带键构建下存活，但键块不打印 —— 键派发（`:1558-1560`）嵌在 `if (stage >= 6u)`（`:1163`）里，
+而那一块只在 IOMMU 闸门的 permitted 分支内可达，也就是要等 CX 读到「上电」。
+第 3 次解释了历史键轮为何曾打印出 `gmu271k` 一类行：先映射 GPUCC 窗口、读 CX 得 `00005ff4`（断电）、
+stage 5 绑定该窗口并把轨抬起来（`cx_after=80001fe0`）、stage 4 才 permitted、键才运行。
+今天照这条路走会冻结，而这正是 R309 注释里已写下的那个**概率性**危险：GPUCC 状态字在 GPUCC AHB 时钟关闭时读不到底；
+243 份历史窗口显示它多数时候在 ~29.4 秒返回 `cx=00005ff4`，今天没回。
+
+**结论（本轮）：** 确定性障碍 —— 在死域上映射 SMMU 窗口 —— 已修复并在设备上验证；
+剩下的障碍是「要跑任何键，就必须让 GPUCC 窗口被映射且两个状态字可读」，那要求把 GPUCC AHB 时钟/电源真正抬起来。
+这是 GX/CX 供电的移植工作，不是探针指令化的问题。下一轮起不再加键，转入 GPUCC 时钟/电源 bring-up。
+G1 仍未关闭（`gd=00222001`、`cf bit16=0`），GPU 未渲染一帧，进度仍约 15–20%。
