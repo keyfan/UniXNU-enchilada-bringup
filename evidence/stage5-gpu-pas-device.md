@@ -9701,3 +9701,114 @@ GMU 窗口是**确定性**的，对 GPUCC 窗口是概率性的，两者都不�
 CX/GX 轨道状态（只读）。判读顺序：302 必须回来（否则「映射非 GPU 窗口」也被同一个缺陷污染，
 那问题就不在电源域而在 `armcpu_map_physical` 的通用路径上）；302 回来而 303 冻 ⇒ 时间/顺序问题；
 303 回来后 GPUCC 状态字可读 ⇒ 供电链终于接上，可以回到 R305 的 HFI 传输实验。
+
+### 130.12 墙不在 GPU 域：映射 GCC 窗口同样冻死（DEVICE-VERIFIED）
+
+R316 结束时的推断是「离开 GPU 域，去 GCC 与 PMIC」，理由是 GPUCC/GMU 的映射在 CX 断开时会冻。
+R317 把这一推断直接测了：新块在**括号深度 1**、用**自己的 boot 参数** `enchilada-soc` 派发，
+三个键只改窗口与动作，`gDone = true; return;` 一次性执行，零 `gmuW[]` 写。
+
+构建与门禁（全部一次通过，未改动任何门禁脚本）：`check-enchilada-adreno-host.py` 25/25 + 51/51 +
+32/32、`check-enchilada-adreno-probe.py` **39/39**（零 store，预算不变）、stage4 **81/81**、
+stage5 **68/68**、stage6 **2594/2594**、全量 `ran 46 of 48, FAILING: 0`、
+`check_mode_selector.py` **62 selectors / upper 295 / PASS**（新键不使用 `fwKey`，故窗口字面量不变）。
+分支 `r317-socbase` commit `6b49c266fbeaf9624aae1f621bc174954842191d`（tree `566612e1f4cc…`）、
+CI **#434 `45777150128` success**、kernel `4652d5c489ebeddd0ae7f1f5306164792979435519d688018655235dcb9be13e`
+（126,668,800 B）、payload `96d316605951fb784905dcce46ca33653226a110eb2272e7dad5f3e57507bbdc`。
+静态门 `r317_static.py`：对真产物 **PASS**（`required+survivors: 211 checked in both artefacts`、
+`forbidden: 3 checked`、固件 sha 钉住），对 R315 产物 **FAIL 6**（自证成立）。
+三个 payload 由 `r311_variant.py` 等长改 args 得到（`--drop "enchilada-touch=4 sheng-touch-hid=1 sheng-lite=1"`
+`--add "enchilada-soc=<key>"`）：p302 `d32bb5c04957a3b0542ed7f9266e686284d1f7a6a6460a72b920d1ee90f5ce36`、
+p303 `afbc65ea879f4884c7fd01be3ac5a71acece0e5afbd66ecf84691fc7f77d22fd`、
+p304 `380889f78edb405c9d4bb70ecbe6943cbc3cb7a4136d7cc5b783d8e50effb8a9`。
+
+上机（`r310_win.py <dir> --key <N> --wait 220`，每键前 `--arm` 闸门 rc=0）：
+
+| 键 | 窗口 | 动作 | 结果 |
+|---|---|---|---|
+| 302 | GCC `0x00100000`，size `0x40000` | map + 读 `+0` `+4` `+0x1000` `+0x3FFFC` | 16:21:20 引导、`fastboot released after 6 s`、**220 s 未回 = 冻死** |
+| 303 | GCC `0x00100000`，size `0x1000` | map + 只读 `+0` `+4` | 16:34:38 引导、`fastboot released after 6 s`、**220 s 未回 = 冻死** |
+
+对照（此前同一台机器、同一颗内核）：键 **301**（不映射、不读，只打一行）1/1 回来；
+键 **299**（映射 GMU 窗口、零读）2/2 冻死；GPUCC 只映射 1/2 冻死。
+
+判决：**冻结点不在 GPU 电源域**。GCC 是完全独立的 SoC 域，且 `gcc_gpu_cfg_ahb_clk` 就在它里面，
+它在 CX 断开时本应可访问；它同样把机器冻死，且与窗口大小、读的个数无关（302 四读、303 两读，
+都是 1/1）。⇒ 嫌疑从「GPU 域窗口」移到两处之一：①`armcpu_map_physical` 本身（建立映射这个动作）；
+②「映射 MMIO 窗口后**任何**未上电区域的访问」——但 299 是零读也冻，权重偏向 ①。
+
+边界与未做：302/303 各只有一个样本（不是 2/2 的重复采样）；`304`（`armcpu_map_physical(0x100000, 0)`
+零尺寸调用）尚未上机；没有「映射非 GPU 窗口且零读」这一格 —— 那是 R318 的键 305，
+以及与它配对的 RAM 窗口两格（306 映射 + 读，307 只映射）。
+
+### 130.13 第三格：零长度调用 `armcpu_map_physical` 也冻死（DEVICE-VERIFIED）
+
+键 304 与 302/303 唯一的区别是**没有建立任何窗口**：`armcpu_map_physical(0x00100000, 0)`
+（length = 0），不读、不写、不保留映射，只打印调用返回值。
+
+16:48:14 引导、`fastboot released after 6 s`、**200 s 未回 = 冻死**。
+
+至此同一颗内核（R317，`4652d5c4…`）上的四次上位机读数：
+
+| 键 | 是否调用 `armcpu_map_physical` | 参数 | 结果 |
+|---|---|---|---|
+| 301 | **否** | — | 回来（1/1） |
+| 304 | 是 | `(0x00100000, 0)` | 冻死 |
+| 303 | 是 | `(0x00100000, 0x1000)` + 两读 | 冻死 |
+| 302 | 是 | `(0x00100000, 0x40000)` + 四读 | 冻死 |
+
+⇒ **存活与「是否调用映射器」一一对应（0/4 对 1/1）**，与窗口大小、读的个数、以及窗口属于哪个
+电源域都无关。实现（`drivers/ArmCpu/ArmCpu.cpp:358-363`）是
+`IOMemoryDescriptor::withPhysicalAddress(physical, length, kIODirectionIn)` + `map(kIOMapAnywhere |
+kIOMapInhibitCache)`；零长度也冻，说明冻结发生在**这条 IOKit 路径内部**，而不是在之后的寄存器访问里。
+
+尚未分辨的两种可能（R318 键 306/307 就是要分开它们）：
+①映射器在这个阶段对**任何**物理区间都不可用（IOKit 映射/分配路径本身）；
+②映射器可用，但 `kIOMapInhibitCache` 之后的**访问**在未上电区停摆 —— 304 不支持这条，
+因为它什么都没映射也没读。
+
+### 130.14 第四格：映射**普通内存**也冻死 —— 嫌疑锁定在映射器本身（DEVICE-VERIFIED）
+
+R318（键 305/306/307）的方块本来是为了分开「域」与「动作」两个轴，但 306 一跑就给出了更硬的结论。
+306 映射的是 `0x80000000`（内核自己就在用的普通 RAM），读一个字：
+
+17:16:36 引导、`fastboot released after 6 s`、**200 s 未回 = 冻死**。
+
+| 键 | 调用映射器 | 目标 | 长度 | 动作 | 结果 |
+|---|---|---|---|---|---|
+| 301 | **否** | — | — | 只打一行 | 回来 1/1 |
+| 304 | 是 | GCC `0x00100000` | **0** | 无 | 冻死 |
+| 302 | 是 | GCC `0x00100000` | `0x40000` | 四读 | 冻死 |
+| 303 | 是 | GCC `0x00100000` | `0x1000` | 两读 | 冻死 |
+| 299 | 是 | GMU `0x0506a000` | `0x30000` | 无 | 冻死 2/2 |
+| **306** | 是 | **RAM `0x80000000`** | `0x1000` | 一读 | **冻死** |
+
+⇒ 六次调用、六次冻死，一次不调用、一次存活；**目标区间（含普通内存）、长度（含 0）、读与不读、
+以及窗口属于哪个电源域，全都不改变结果**。这与 R312 零构建矩阵里 GPUCC 只映射「1/2 冻」的
+概率性一致：那 1 次「回来」是抽签抽到的，而不是安全。
+
+实现（`drivers/ArmCpu/ArmCpu.cpp:358-363`）：
+
+```c
+extern "C" uint64_t armcpu_map_physical (uint64_t physical, uint64_t length)
+{
+  OSSharedPtr<IOMemoryDescriptor> d (IOMemoryDescriptor::withPhysicalAddress (physical, length, kIODirectionIn), OSNoRetain);
+  IOMemoryMap *map = d ? d->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;   // kept: never released
+  return map ? static_cast<uint64_t> (map->getVirtualAddress ()) : 0;
+}
+```
+
+⇒ 冻结点在这条 IOKit 路径内部的某处（`withPhysicalAddress` 或 `map`），而不是在随后的寄存器访问里 ——
+零长度那一格（304）没有保留映射也没有读，同样冻死。
+
+**这与「历史上键块能落行」并不矛盾**：那些轮次同样是抽签，只是当时抽到了能返回的那一侧；R143–R273
+的成功样本集中在上午（11/24 20:47 与 11/25 08:05、09:35），而 11/25 10:00 之后连抽 6 次全冻。
+也就是说，当前这台机器/这颗 payload 组合下，映射器几乎不可用；「GPU 域」「CX 未上电」都不是必要条件。
+
+**下一步（离线可做）**：
+1. 读 XNU 的 `IOMemoryDescriptor::withPhysicalAddress` 与 `IOMemoryMap::map`（`iokit/IOKit/`）找这条路径里
+   可能无限等待的点：内核 map 的分配（`kIOMapAnywhere`）、`IOUncachedMemory` 的页表项建立、以及它是否
+   依赖某个需要中断才能推进的线程；
+2. 对照 `package/BootDiagExport.c:50` 的成功用法（截图，晚得多、且在不同线程/上下文里调用）——
+   若差别在「调用上下文」，那么结论就是**不能在轮询线程里做映射**，而应把映射搬到一次性上下文；
+3. 设备到手后先跑剩下的两格（305 GCC 只映射、307 RAM 只映射）确认「目标无关」，再决定是否改架构。

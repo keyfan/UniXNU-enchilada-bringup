@@ -1051,6 +1051,124 @@ extern "C" void enchilada_adreno_poll(void) {
     // the clock-branch registers from gpucc-sdm845.c: cx_gmu_clk 0x1098 -> 0x9c26 (enable bit
     // 0), cxo_clk 0x109c -> 0x9c27, cx_gdsc 0x106c -> 0x9c1b, cx_hw_ctrl 0x1540 -> 0x9d50,
     // gmu_clk_src 0x1120 -> 0x9c48, pll1 0x100 -> 0x9840.
+    // R317: THE FIRST NON-GPU-DOMAIN WINDOW.  GCC 0x00100000 is outside the GPU power domain:
+    // it holds gcc_gpu_cfg_ahb_clk, the parent of the GPUCC branch clocks, so it has to be
+    // reachable while CX is down -- and if mapping it also freezes, then the hazard is
+    // armcpu_map_physical itself, not the GPU rail.
+    {
+        unsigned socKey = 0u;
+        if (PE_parse_boot_argn("enchilada-soc", &socKey, sizeof socKey) &&
+            socKey >= 302u && socKey <= 304u) {
+            static uintptr_t s317SocWin = 0;
+            char r317Row[320];
+            if (&armcpu_map_physical == 0) {
+                snprintf(r317Row, sizeof r317Row,
+                         "gmu%d=no_mapper ok=0 reason=no-map-symbol", (int)socKey);
+                IOLog("enchilada-adreno: %s\n", r317Row);
+                gDone = true;
+                return;
+            }
+            if (socKey == 304u) {
+                const uint64_t zeroWin = armcpu_map_physical(0x00100000ull, 0ull);
+                snprintf(r317Row, sizeof r317Row,
+                         "gmu304a=map_zero ok=1 win=%08x size=%llx",
+                         (unsigned)zeroWin, 0ull);
+                IOLog("enchilada-adreno: %s\n", r317Row);
+                gDone = true;
+                return;
+            }
+            {
+                const uint64_t socSize = (socKey == 303u) ? 0x00001000ull : 0x00040000ull;
+                if (s317SocWin == 0u) {
+                    s317SocWin = (uintptr_t)armcpu_map_physical(0x00100000ull, socSize);
+                }
+                if (s317SocWin == 0u) {
+                    snprintf(r317Row, sizeof r317Row,
+                             "gmu%d=no_window ok=0 win=0 size=%llx",
+                             (int)socKey, socSize);
+                } else if (socKey == 302u) {
+                    volatile uint32_t *socW = (volatile uint32_t *)s317SocWin;
+                    const uint32_t a = socW[0x0000u];
+                    const uint32_t b = socW[0x0001u];
+                    const uint32_t c = socW[0x0400u];
+                    const uint32_t d = socW[0xfffcu];
+                    snprintf(r317Row, sizeof r317Row,
+                             "gmu302a=gcc_probe ok=1 win=%08x size=%llx a=%08x b=%08x c=%08x d=%08x",
+                             (unsigned)s317SocWin, socSize, a, b, c, d);
+                } else {
+                    volatile uint32_t *socW = (volatile uint32_t *)s317SocWin;
+                    const uint32_t a = socW[0x0000u];
+                    const uint32_t b = socW[0x0001u];
+                    snprintf(r317Row, sizeof r317Row,
+                             "gmu303a=gcc_small ok=1 win=%08x size=%llx a=%08x b=%08x",
+                             (unsigned)s317SocWin, socSize, a, b);
+                }
+            }
+            IOLog("enchilada-adreno: %s\n", r317Row);
+            gDone = true;
+            return;
+        }
+    }
+
+    // R318: WHICH DOMAIN, AND MAPPING VERSUS READING.  R317 froze on GCC (outside the GPU
+    // power domain) with reads present; key 301 showed a block that maps nothing is safe.
+    // These three arms only differ along two axes -- window (GCC / normal RAM) and action
+    // (map only / map and read) -- so the square closes with R317's 302 and 303.
+    {
+        unsigned soc2Key = 0u;
+        if (PE_parse_boot_argn("enchilada-soc2", &soc2Key, sizeof soc2Key) &&
+            soc2Key >= 305u && soc2Key <= 307u) {
+            static uintptr_t s318Win = 0;
+            char r318Row[320];
+            if (&armcpu_map_physical == 0) {
+                snprintf(r318Row, sizeof r318Row,
+                         "gmu%d=no_mapper ok=0 reason=no-map-symbol", (int)soc2Key);
+                IOLog("enchilada-adreno: %s\n", r318Row);
+                gDone = true;
+                return;
+            }
+            if (soc2Key == 305u) {
+                const uint64_t gccPa = 0x00100000ull;
+                const uint64_t gccSize = 0x00001000ull;
+                if (s318Win == 0u) {
+                    s318Win = (uintptr_t)armcpu_map_physical(gccPa, gccSize);
+                }
+                snprintf(r318Row, sizeof r318Row,
+                         "gmu305a=gcc_map_only ok=%d win=%08x pa=%llx size=%llx reads=0",
+                         (s318Win == 0u) ? 0 : 1, (unsigned)s318Win, gccPa, gccSize);
+            } else if (soc2Key == 306u) {
+                const uint64_t ramPa = 0x80000000ull;
+                const uint64_t ramSize = 0x00001000ull;
+                if (s318Win == 0u) {
+                    s318Win = (uintptr_t)armcpu_map_physical(ramPa, ramSize);
+                }
+                if (s318Win != 0u) {
+                    volatile uint32_t *ramW = (volatile uint32_t *)s318Win;
+                    const uint32_t first = ramW[0x0000u];
+                    snprintf(r318Row, sizeof r318Row,
+                             "gmu306a=ram_map_read ok=1 win=%08x pa=%llx size=%llx w0=%08x",
+                             (unsigned)s318Win, ramPa, ramSize, first);
+                } else {
+                    snprintf(r318Row, sizeof r318Row,
+                             "gmu306a=ram_map_read ok=0 win=0 pa=%llx size=%llx",
+                             ramPa, ramSize);
+                }
+            } else {
+                const uint64_t ramPa = 0x80000000ull;
+                const uint64_t ramSize = 0x00040000ull;
+                if (s318Win == 0u) {
+                    s318Win = (uintptr_t)armcpu_map_physical(ramPa, ramSize);
+                }
+                snprintf(r318Row, sizeof r318Row,
+                         "gmu307a=ram_map_only ok=%d win=%08x pa=%llx size=%llx reads=0",
+                         (s318Win == 0u) ? 0 : 1, (unsigned)s318Win, ramPa, ramSize);
+            }
+            IOLog("enchilada-adreno: %s\n", r318Row);
+            gDone = true;
+            return;
+        }
+    }
+
     {
         unsigned aliasKey = 0u;
         if (PE_parse_boot_argn("enchilada-alias", &aliasKey, sizeof aliasKey) &&
