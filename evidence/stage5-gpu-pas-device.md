@@ -10017,3 +10017,20 @@ R321 用 `ml_io_map` 换掉了两个入口里的 IOKit 构造器。于是 R314 �
 137.4 边界：本轮只证「装载 + 放复位 + 固件自检标记」；**没有**发布队列表、没有写掩码、没有断言 `HFI_CTRL_INIT`、也没有读 `PWR_COL_CP_MSG`；`match` 只比首末两字。样本各 1/1。
 137.5 工程副作用：`AdrenoGmuBlobV1.h` 是 gitignored 的生成物（113,521 字节），CI 里由 `generate-gmu-blob.py` 从头生成——因此**远端 main 的构建也会带上固件**，只要 CI 环境里能找到 `a630_gmu.bin`（R326 的 CI 已证明可以）。
 
+## 一百三十八、R328–R329：IOKit 的 DMA 分配器会在 IRQ 关闭的窗口里静默杀死探针线程；改用**内核静态缓冲 + `ml_static_vtop`** 之后，HFI 队列表第一次真的发布成功（`qtbl=a82c6000 qi=1 mask=ff7fffff`），但**写 `HFI_CTRL_INIT` 仍会让线程当场消失**
+
+### R328：`armcpu_dma_alloc_writable` 是一条死路（CI #445 `45968020847`，kernel `0e35facd…1b47`）
+- 键 325（冷启动 + 读 HFI 六字）**回来并落地**：`gmu325a=fw_up cx_hw=80001fe0 fw=babeface polls=21 ctl=00000000 qtbl=00000000 qi=00000000 info=00000000 mask=00000000 sr=00000000` ⇒ 固件在这条链上稳定起来（第二次独立样本）。
+- 键 326（`armcpu_dma_alloc_writable` 拿表 → 发布）**32 s/65 s 回来但零行**：window 里最后一行仍是上一轮的 `gmu325a`。归因：`armcpu_dma_alloc_writable` 的实现是 `IOBufferMemoryDescriptor`（`drivers/ArmCpu/ArmCpu.cpp` 文件头注释自述），**和 R319 判死的 `IOMemoryDescriptor::withPhysicalAddress` 同一条 IOKit 路径** ⇒ 在中断关闭的窗口里静默杀死线程。R321 的走廊只换了 `armcpu_map_physical`，没有换它。
+
+### R329：静态缓冲 + `ml_static_vtop`（CI #446 `45973358212`，kernel `a52cc53b…facd`，payload `d718babb…eafb`）
+- 改动：探针文件作用域加 `uintptr_t ml_static_vtop (uintptr_t) __attribute__((weak_import));`（`llvm-nm` 确认 kernel 导出 `_ml_static_vtop` @ `fffffff00ba1e294`），HFI 表改成 `static uint32_t s328HfiTable[(SHARED_BYTES + PAGE_BYTES)/4] __attribute__((aligned(4096)))`，物理地址用 `ml_static_vtop((uintptr_t) &s328HfiTable[0])` 取。**注意 `vm_offset_t` 在这个 TU 里不可见（`unknown type name`），要用 `uintptr_t`**；probe 门白名单要加 `'ml_static_vtop'`。
+- 键 326 **落地**：`gmu326a=hfi_published pa=a82c6000 qtbl=a82c6000 qi=00000001 t0=00000000 t1=00000078 qh0=00000001 qh1=00000001 mask=ff7fffff fw=babeface`
+  - `pa` 与 `qtbl` 回读一致（发布成功）、`qi=1`（`HFI_QTBL_INFO` 回读 1）、`t1=0x78=120` 正是 legacy v1 表长、`qh0=1`（命令队列 status 位）、`mask=ff7fffff`、`fw=babeface`（固件还活着）。
+  - ⇒ **HFI 队列表在真机上第一次真正发布成功**，而且不需要任何 IOKit 分配。
+- 键 327（326 + 写 `HFI_CTRL_INIT=1` + 200000 拍轮询 `ctl` bit0）**32 s 回来但零行**：window 里最后一行是上一轮的 `gmu326a`，`gmu327` 一次都不出现 ⇒ **写 `HFI_CTRL_INIT` 那一步就把探针线程干掉了**（与 R325 键 321 在无固件时的表现一致；现在有了固件和已发布的表，结论不变）。
+- 138.1 通道清单已经很清楚：`armcpu_map_physical` 走 `ml_io_map`（R321 修好）、物理地址用 `ml_static_vtop`（R329 修好）、**唯一还剩的 IOKit 出口是 `armcpu_dma_alloc_writable`，它不可用**。
+- 138.2 边界：`ml_static_vtop` 只对内核静态/线性映射区有效（R320 记过它带 `gPhysBase/gPhysSize` 区间检查）；本轮 `pa=a82c6000` 落在 DDR 内、固件跑起来也没报错，但没有验证 CM3 是否真的读到了那张表的内容（没有做「固件读表」的正向证据）。
+- 138.3 下一步必须二分「写 INIT 即死」：①发布表 + 写 INIT **但不轮询**（写完读一次 `ctl` 就打印）；②不发布表（`QTBL_INFO=0`）只写 INIT；③发布表 + 不写掩码 + 写 INIT。三者能把「写这一笔」与「写完固件开始跑」分开。
+- 138.4 另记：`r310_win.py` 读的 32 MiB 窗口是**覆盖写**，新一轮只写了几行时旧行仍在 ⇒ 判「有没有落地」必须看**本轮的新标签**（`gmu327` 一次都不出现才是死），不能看最后一行。
+

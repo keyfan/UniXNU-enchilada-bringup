@@ -321,7 +321,8 @@ def main():
                    #   * it resolves from libArmCpu.a at link time, exactly as
                    #     armcpu_scm_call does, so "no unexpected undefined symbols"
                    #     still means what it says.
-                   'armcpu_dma_alloc_writable'}
+                   'armcpu_dma_alloc_writable',
+                   'ml_static_vtop'}
         unexpected = sorted(u for u in undefined
                             if u not in allowed and not u.startswith('adreno_') and u != 'armcpu_map_physical')
         check(not unexpected, f'shim has no unexpected undefined symbols (unexpected={unexpected})')

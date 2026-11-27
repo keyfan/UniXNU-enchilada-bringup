@@ -276,6 +276,8 @@ int32_t armcpu_scm_call_full(uint64_t fn, uint64_t arginfo, uint64_t a2,
 // 4 GiB gate at the stage-7 allocation below).
 uint64_t armcpu_dma_alloc_writable(uint64_t bytes,
                                    uint64_t *out_virt) __attribute__((weak_import));
+// R329: virt -> phys for a kernel-static buffer, so the HFI queue table needs no IOKit allocation.
+uintptr_t ml_static_vtop (uintptr_t) __attribute__((weak_import));
 }
 
 namespace {
@@ -1674,6 +1676,128 @@ extern "C" void enchilada_adreno_poll(void) {
                           (unsigned) g[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO]);
             }
             IOLog ("enchilada-adreno: %s\n", r327Row);
+            gDone = true;
+            return;
+        }
+    }
+    {
+        unsigned hfiKey = 0u;
+        if (PE_parse_boot_argn ("enchilada-hfi2", &hfiKey, sizeof hfiKey) && hfiKey >= 325u && hfiKey <= 327u) {
+            static uintptr_t s328Win = 0u;
+            static uintptr_t s328Gmu = 0u;
+            char r328Row[460];
+            if (s328Win == 0u) s328Win = armcpu_map_physical (ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE);
+            if (s328Gmu == 0u) s328Gmu = armcpu_map_physical (ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
+            if (s328Win == 0u || s328Gmu == 0u || !kAdrenoGmuBlobPresent || kAdrenoGmuImageWords == 0u) {
+                snprintf (r328Row, sizeof r328Row, "gmu%u=hfi2 ok=0 mode=%u reason=no-window-or-blob",
+                          (unsigned) hfiKey, (unsigned) hfiKey);
+                IOLog ("enchilada-adreno: %s\n", r328Row);
+                gDone = true;
+                return;
+            }
+            volatile uint32_t *w = (volatile uint32_t *) s328Win;
+            volatile uint32_t *g = (volatile uint32_t *) s328Gmu;
+            w[0x1098u / 4u] = (w[0x1098u / 4u] | 1u);
+            w[0x109cu / 4u] = (w[0x109cu / 4u] | 1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            IODelay (2u);
+            w[0x106cu / 4u] = (w[0x106cu / 4u] & ~1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            for (uint32_t i = 0u; i < 2000u; ++i) {
+                if ((w[0x1540u / 4u] >> 31) & 1u) break;
+                IODelay (1u);
+            }
+            const uint32_t cxHw = w[0x1540u / 4u];
+            for (unsigned wi = 0u; wi < kAdrenoGmuImageWords; ++wi) {
+                g[kAdrenoGmuItcmWord + wi] = adreno_gmu_image[wi];
+                if ((wi & 0xffu) == 0xffu) __asm__ volatile ("dsb sy" ::: "memory");
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            g[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
+            g[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            uint32_t fwNow = 0u;
+            uint32_t fwPolls = 0u;
+            for (uint32_t i = 0u; i < 20000u; ++i) {
+                ++fwPolls;
+                fwNow = g[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT];
+                if (fwNow == 0xbabefaceu) break;
+                IODelay (1u);
+            }
+            if (hfiKey == 325u) {
+                snprintf (r328Row, sizeof r328Row,
+                          "gmu325a=fw_up cx_hw=%08x fw=%08x polls=%u ctl=%08x qtbl=%08x qi=%08x info=%08x mask=%08x sr=%08x",
+                          (unsigned) cxHw, (unsigned) fwNow, (unsigned) fwPolls,
+                          (unsigned) g[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS],
+                          (unsigned) g[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR],
+                          (unsigned) g[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO],
+                          (unsigned) g[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO],
+                          (unsigned) g[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK],
+                          (unsigned) g[ADRENO_GMU_BOOT_V1_CM3_SYSRESET]);
+            } else {
+                static uint32_t s328HfiTable[(ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES) / 4u]
+                    __attribute__((aligned(4096)));
+                const uint64_t hfiBytes = (uint64_t) ADRENO_HFI_V1_SHARED_BYTES + (uint64_t) ADRENO_HFI_V1_PAGE_BYTES;
+                const uint64_t hfiPa = (&ml_static_vtop)
+                    ? (uint64_t) ml_static_vtop ((uintptr_t) &s328HfiTable[0]) : 0u;
+                if (hfiPa == 0u) {
+                    snprintf (r328Row, sizeof r328Row, "gmu%u=hfi_table ok=0 mode=%u pa=%llx reason=no-vtop",
+                              (unsigned) hfiKey, (unsigned) hfiKey, (unsigned long long) hfiPa);
+                } else {
+                    volatile uint32_t *t = &s328HfiTable[0];
+                    for (uint32_t i = 0u; i < (uint32_t) (hfiBytes / 4u); ++i) t[i] = 0u;
+                    t[1] = ADRENO_HFI_V1_TABLE_SIZE_BYTES;
+                    t[2] = ADRENO_HFI_V1_QHDR0_OFFSET_WORDS;
+                    t[3] = ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+                    t[4] = ADRENO_HFI_V1_QUEUE_COUNT;
+                    t[5] = ADRENO_HFI_V1_QUEUE_COUNT;
+                    for (uint32_t qi = 0u; qi < ADRENO_HFI_V1_QUEUE_COUNT; ++qi) {
+                        const uint32_t id = (qi == 0u) ? ADRENO_HFI_V1_CMD_QUEUE_ID : ADRENO_HFI_V1_RESP_QUEUE_ID;
+                        volatile uint32_t *qh = t + ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + qi * ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+                        qh[0] = 1u;
+                        qh[1] = (uint32_t) (hfiPa + (uint64_t) (qi + 1u) * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+                        qh[2] = ADRENO_HFI_V1_QUEUE_TYPE (id);
+                        qh[3] = ADRENO_HFI_V1_QUEUE_WORDS;
+                        qh[6] = 1u; qh[7] = 1u; qh[8] = 1u;
+                        qh[10] = 0u; qh[11] = 0u;
+                    }
+                    __asm__ volatile ("dsb sy" ::: "memory");
+                    g[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = (uint32_t) hfiPa;
+                    g[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                    g[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] = (uint32_t) (hfiPa + 3u * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+                    g[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xff7fffffu;
+                    __asm__ volatile ("dsb sy" ::: "memory");
+                    const uint32_t qtbl = g[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR];
+                    const uint32_t qiNow = g[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO];
+                    if (hfiKey == 326u) {
+                        snprintf (r328Row, sizeof r328Row,
+                                  "gmu326a=hfi_published pa=%08x qtbl=%08x qi=%08x t0=%08x t1=%08x qh0=%08x qh1=%08x mask=%08x fw=%08x",
+                                  (unsigned) hfiPa, (unsigned) qtbl, (unsigned) qiNow, (unsigned) t[0], (unsigned) t[1],
+                                  (unsigned) t[6], (unsigned) t[18],
+                                  (unsigned) g[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK], (unsigned) fwNow);
+                    } else {
+                        g[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                        __asm__ volatile ("dsb sy" ::: "memory");
+                        uint32_t ctl = 0u;
+                        uint32_t bit0 = 0u;
+                        uint32_t polls = 0u;
+                        for (uint32_t i = 0u; i < 200000u; ++i) {
+                            ++polls;
+                            ctl = g[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
+                            bit0 = ctl & 1u;
+                            if (bit0) break;
+                            IODelay (1u);
+                        }
+                        snprintf (r328Row, sizeof r328Row,
+                                  "gmu327a=hfi_init pa=%08x qtbl=%08x qi=%08x fw=%08x ctl=%08x bit0=%u polls=%u info=%08x mask=%08x",
+                                  (unsigned) hfiPa, (unsigned) qtbl, (unsigned) qiNow, (unsigned) fwNow,
+                                  (unsigned) ctl, (unsigned) bit0, (unsigned) polls,
+                                  (unsigned) g[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO],
+                                  (unsigned) g[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK]);
+                    }
+                }
+            }
+            IOLog ("enchilada-adreno: %s\n", r328Row);
             gDone = true;
             return;
         }
