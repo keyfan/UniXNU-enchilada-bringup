@@ -1802,6 +1802,93 @@ extern "C" void enchilada_adreno_poll(void) {
             return;
         }
     }
+    {
+        unsigned hfi3 = 0u;
+        if (PE_parse_boot_argn ("enchilada-hfi3", &hfi3, sizeof hfi3) && hfi3 >= 328u && hfi3 <= 330u) {
+            static uintptr_t s330Win = 0u;
+            static uintptr_t s330Gmu = 0u;
+            static uint32_t s330Tbl[(ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES) / 4u]
+                __attribute__((aligned(4096)));
+            char r330Row[460];
+            if (s330Win == 0u) s330Win = armcpu_map_physical (ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE);
+            if (s330Gmu == 0u) s330Gmu = armcpu_map_physical (ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
+            if (s330Win == 0u || s330Gmu == 0u || !kAdrenoGmuBlobPresent || !(&ml_static_vtop)) {
+                snprintf (r330Row, sizeof r330Row, "gmu%u=hfi3 ok=0 mode=%u reason=no-window-blob-or-vtop",
+                          (unsigned) hfi3, (unsigned) hfi3);
+                IOLog ("enchilada-adreno: %s\n", r330Row);
+                gDone = true;
+                return;
+            }
+            volatile uint32_t *w = (volatile uint32_t *) s330Win;
+            volatile uint32_t *g = (volatile uint32_t *) s330Gmu;
+            w[0x1098u / 4u] = (w[0x1098u / 4u] | 1u);
+            w[0x109cu / 4u] = (w[0x109cu / 4u] | 1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            IODelay (2u);
+            w[0x106cu / 4u] = (w[0x106cu / 4u] & ~1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            for (uint32_t i = 0u; i < 2000u; ++i) {
+                if ((w[0x1540u / 4u] >> 31) & 1u) break;
+                IODelay (1u);
+            }
+            for (unsigned wi = 0u; wi < kAdrenoGmuImageWords; ++wi) {
+                g[kAdrenoGmuItcmWord + wi] = adreno_gmu_image[wi];
+                if ((wi & 0xffu) == 0xffu) __asm__ volatile ("dsb sy" ::: "memory");
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            g[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
+            g[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            uint32_t fwNow = 0u;
+            for (uint32_t i = 0u; i < 20000u; ++i) {
+                fwNow = g[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT];
+                if (fwNow == 0xbabefaceu) break;
+                IODelay (1u);
+            }
+            const uint64_t tblPa = (uint64_t) ml_static_vtop ((uintptr_t) &s330Tbl[0]);
+            volatile uint32_t *t = &s330Tbl[0];
+            for (uint32_t i = 0u; i < (uint32_t) ((ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES) / 4u); ++i) t[i] = 0u;
+            t[1] = ADRENO_HFI_V1_TABLE_SIZE_BYTES;
+            t[2] = ADRENO_HFI_V1_QHDR0_OFFSET_WORDS;
+            t[3] = ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+            t[4] = ADRENO_HFI_V1_QUEUE_COUNT;
+            t[5] = ADRENO_HFI_V1_QUEUE_COUNT;
+            for (uint32_t qi = 0u; qi < ADRENO_HFI_V1_QUEUE_COUNT; ++qi) {
+                const uint32_t id = (qi == 0u) ? ADRENO_HFI_V1_CMD_QUEUE_ID : ADRENO_HFI_V1_RESP_QUEUE_ID;
+                volatile uint32_t *qh = t + ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + qi * ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+                qh[0] = 1u;
+                qh[1] = (uint32_t) (tblPa + (uint64_t) (qi + 1u) * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+                qh[2] = ADRENO_HFI_V1_QUEUE_TYPE (id);
+                qh[3] = ADRENO_HFI_V1_QUEUE_WORDS;
+                qh[6] = 1u; qh[7] = 1u; qh[8] = 1u;
+                qh[10] = 0u; qh[11] = 0u;
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            const int publish = (hfi3 != 329u) ? 1 : 0;
+            g[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = (uint32_t) tblPa;
+            g[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = (publish != 0) ? 1u : 0u;
+            g[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] = (uint32_t) (tblPa + 3u * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+            if (hfi3 != 330u) g[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xff7fffffu;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            const uint32_t qtblPre = g[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR];
+            const uint32_t qiPre = g[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO];
+            g[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            const uint32_t ctl1 = g[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
+            const uint32_t info1 = g[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO];
+            const uint32_t fw1 = g[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT];
+            IODelay (20u);
+            const uint32_t ctl2 = g[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
+            snprintf (r330Row, sizeof r330Row,
+                      "gmu%ua=hfi3_init mode=%u publish=%d pa=%08x qtbl=%08x qi=%08x mask=%08x fw=%08x ctl1=%08x bit0=%u ctl2=%08x info1=%08x fw1=%08x",
+                      (unsigned) hfi3, (unsigned) hfi3, publish, (unsigned) tblPa, (unsigned) qtblPre,
+                      (unsigned) qiPre, (unsigned) g[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK], (unsigned) fwNow,
+                      (unsigned) ctl1, (unsigned) (ctl1 & 1u), (unsigned) ctl2, (unsigned) info1, (unsigned) fw1);
+            IOLog ("enchilada-adreno: %s\n", r330Row);
+            gDone = true;
+            return;
+        }
+    }
     if (stage >= 4u) {
         char ioRow[220];
         ioRow[0] = 0;
