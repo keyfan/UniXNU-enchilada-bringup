@@ -216,6 +216,8 @@ uint64_t armcpu_map_physical(uint64_t physical, uint64_t length) __attribute__((
 // It exists as a separate symbol precisely so the read-only mapping above keeps its
 // kIODirectionIn guarantee; a window that is written to must name this one instead.
 uint64_t armcpu_map_physical_rw(uint64_t physical, uint64_t length) __attribute__((weak_import));
+uint64_t armcpu_desc_only(uint64_t physical, uint64_t length) __attribute__((weak_import));
+uint64_t armcpu_io_map(uint64_t physical, uint64_t length) __attribute__((weak_import));
 // ROUND 110: the exported SMC entry point (ArmCpu.cpp). Same weak_import rule
 // and the same must-be-inside-extern-"C" reason as the line above: without it
 // the C++ compiler mangles the name and ld cannot match _armcpu_scm_call.
@@ -1164,6 +1166,113 @@ extern "C" void enchilada_adreno_poll(void) {
                          (s318Win == 0u) ? 0 : 1, (unsigned)s318Win, ramPa, ramSize);
             }
             IOLog("enchilada-adreno: %s\n", r318Row);
+            gDone = true;
+            return;
+        }
+    }
+
+    // R319: WHICH OF THE TWO CALLS IN armcpu_map_physical IS THE WALL.  R317/R318 froze on
+    // every mapping (GPUCC, GMU, GCC, plain RAM; zero length too) and returned only when
+    // nothing was mapped, so the hazard is withPhysicalAddress(...) or map().  Key 308 takes
+    // only the first call, key 310 the writable sibling (both calls, kIODirectionInOut), and
+    // key 309 both calls after a 0.2 s settle.
+    {
+        unsigned mapKey = 0u;
+        if (PE_parse_boot_argn("enchilada-maptest", &mapKey, sizeof mapKey) &&
+            mapKey >= 308u && mapKey <= 310u) {
+            static uintptr_t s319Win = 0;
+            char r319Row[320];
+            const uint64_t tPa = 0x00100000ull;
+            const uint64_t tSize = 0x00001000ull;
+            if (mapKey == 308u) {
+                if (&armcpu_desc_only == 0) {
+                    snprintf(r319Row, sizeof r319Row,
+                             "gmu308a=desc_only ok=0 reason=no-symbol");
+                } else {
+                    const uint64_t made = armcpu_desc_only(tPa, tSize);
+                    snprintf(r319Row, sizeof r319Row,
+                             "gmu308a=desc_only ok=%llu win=0 pa=%llx size=%llx mapped=0",
+                             made, tPa, tSize);
+                }
+            } else if (mapKey == 309u) {
+                unsigned settled = 0u;
+                while (settled < 200u) {
+                    if (&IODelay != 0) IODelay(1u);
+                    settled = settled + 1u;
+                }
+                if (&armcpu_map_physical == 0) {
+                    snprintf(r319Row, sizeof r319Row,
+                             "gmu309a=map_settled ok=0 reason=no-mapper settle=%u", settled);
+                } else {
+                    if (s319Win == 0u)
+                        s319Win = (uintptr_t)armcpu_map_physical(tPa, tSize);
+                    snprintf(r319Row, sizeof r319Row,
+                             "gmu309a=map_settled ok=%d win=%08x pa=%llx size=%llx settle=%u",
+                             (s319Win == 0u) ? 0 : 1, (unsigned)s319Win, tPa, tSize, settled);
+                }
+            } else {
+                if (&armcpu_map_physical_rw == 0) {
+                    snprintf(r319Row, sizeof r319Row,
+                             "gmu310a=map_rw ok=0 reason=no-symbol");
+                } else {
+                    if (s319Win == 0u)
+                        s319Win = (uintptr_t)armcpu_map_physical_rw(tPa, tSize);
+                    snprintf(r319Row, sizeof r319Row,
+                             "gmu310a=map_rw ok=%d win=%08x pa=%llx size=%llx dir=inout",
+                             (s319Win == 0u) ? 0 : 1, (unsigned)s319Win, tPa, tSize);
+                }
+            }
+            IOLog("enchilada-adreno: %s\n", r319Row);
+            gDone = true;
+            return;
+        }
+    }
+
+    // R320: A DEVICE WINDOW WITHOUT IOKIT.  R319 put the freeze in
+    // IOMemoryDescriptor::withPhysicalAddress(...) itself (key 308 called only that and
+    // froze; key 310 the same constructor writable, also froze), so this round maps through
+    // the pmap's own ml_io_map() instead: no descriptor, no IOKit task or VM object.  Key 313
+    // also reads HFI_CTRL_STATUS through the new mapping, so a returning 313 means the window
+    // is usable and the GPU work can resume on this corridor.
+    {
+        unsigned ioKey = 0u;
+        if (PE_parse_boot_argn("enchilada-iomap", &ioKey, sizeof ioKey) &&
+            ioKey >= 311u && ioKey <= 313u) {
+            static uintptr_t s320Win = 0;
+            char r320Row[320];
+            if (&armcpu_io_map == 0) {
+                snprintf(r320Row, sizeof r320Row,
+                         "gmu%d=io_map ok=0 reason=no-symbol", (int)ioKey);
+            } else if (ioKey == 311u) {
+                const uint64_t gccPa = 0x00100000ull;
+                const uint64_t gccSize = 0x00001000ull;
+                if (s320Win == 0u)
+                    s320Win = (uintptr_t)armcpu_io_map(gccPa, gccSize);
+                snprintf(r320Row, sizeof r320Row,
+                         "gmu311a=gcc_io_map ok=%d win=%08x pa=%llx size=%llx reads=0",
+                         (s320Win == 0u) ? 0 : 1, (unsigned)s320Win, gccPa, gccSize);
+            } else {
+                const uint64_t gmuPa = 0x0506a000ull;
+                const uint64_t gmuSize = 0x00030000ull;
+                if (s320Win == 0u)
+                    s320Win = (uintptr_t)armcpu_io_map(gmuPa, gmuSize);
+                if (ioKey == 312u) {
+                    snprintf(r320Row, sizeof r320Row,
+                             "gmu312a=gmu_io_map ok=%d win=%08x pa=%llx size=%llx reads=0",
+                             (s320Win == 0u) ? 0 : 1, (unsigned)s320Win, gmuPa, gmuSize);
+                } else if (s320Win == 0u) {
+                    snprintf(r320Row, sizeof r320Row,
+                             "gmu313a=gmu_io_read ok=0 win=0 pa=%llx size=%llx ctl=ffffffff",
+                             gmuPa, gmuSize);
+                } else {
+                    volatile uint32_t *w = (volatile uint32_t *)s320Win;
+                    const uint32_t ctl = w[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
+                    snprintf(r320Row, sizeof r320Row,
+                             "gmu313a=gmu_io_read ok=1 win=%08x pa=%llx size=%llx ctl=%08x",
+                             (unsigned)s320Win, gmuPa, gmuSize, ctl);
+                }
+            }
+            IOLog("enchilada-adreno: %s\n", r320Row);
             gDone = true;
             return;
         }

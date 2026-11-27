@@ -243,6 +243,11 @@ def main():
                    # that the one-word write goes through a mapping that was
                    # asked for by name instead of through the read-only window.
                    'armcpu_map_physical_rw', '_Z22armcpu_map_physical_rwyy',
+                   # Round 319: the descriptor-only half of the same hook, so the probe
+                   # can tell withPhysicalAddress(...) from map().
+                   'armcpu_desc_only', '_Z16armcpu_desc_onlyyy',
+                   # Round 320: the IOKit-free device mapping (ml_io_map).
+                   'armcpu_io_map',
                    'AdrenoPowerUpV1BoardGmuClockCount', 'AdrenoPowerUpV1BoardGpuClockCount',
                    'AdrenoPowerUpV1BoardIsA740Family', 'AdrenoPowerUpV1InputsValid',
                    'AdrenoPowerUpV1CountsAreDistinct', 'AdrenoPowerUpV1PlanSize',

@@ -362,6 +362,41 @@ extern "C" uint64_t armcpu_map_physical (uint64_t physical, uint64_t length)
   return map ? static_cast<uint64_t> (map->getVirtualAddress ()) : 0;
 }
 
+// ROUND 319: THE FIRST HALF OF armcpu_map_physical, ON ITS OWN -- build the descriptor and
+// return 1 without ever calling map().  Seven device-proven calls of armcpu_map_physical
+// (GPUCC, GMU, GCC and plain RAM; lengths 0, 0x1000, 0x40000 and 0x30000; with reads and
+// without) all froze the machine, while the one arm that mapped nothing returned, so the
+// hazard is inside this pair of calls.  Splitting them is the only way to learn which one
+// is the wall without disassembly.  The descriptor is NOT retained and NOT released: it is
+// a local OSSharedPtr, so this probe allocates nothing that outlives the call.
+extern "C" uint64_t armcpu_desc_only (uint64_t physical, uint64_t length)
+{
+  OSSharedPtr<IOMemoryDescriptor> d (IOMemoryDescriptor::withPhysicalAddress (physical, length, kIODirectionIn), OSNoRetain);
+  return d ? 1u : 0u;
+}
+
+// ROUND 320: A DEVICE WINDOW WITHOUT IOKIT.  R319 proved that the freeze lives in
+// IOMemoryDescriptor::withPhysicalAddress(...) -- key 308 took that call alone and froze, key
+// 310 took the same constructor with kIODirectionInOut and froze, while the arm that mapped
+// nothing returned.  So device windows must not go through IOKit at all.  ml_io_map() is the
+// pmap's own device mapping: cache-inhibited, in the io submap, no descriptor, no IOKit task
+// or VM object involved.  It is declared weak on purpose -- if a future kernel lacks it, the
+// call site tests the address and reports, instead of failing the build.
+//
+// THE SUBMAP IS SMALL ON PURPOSE: package/BootDiagExport.c records that ml_io_map could not
+// hold a ten-megabyte panel frame ("kmem_alloc failed with 3"), which is why that caller uses
+// the IOKit path for the framebuffer.  Our windows are 4 KiB (GCC), 192 KiB (GMU) and
+// 64 KiB (SMMU), i.e. exactly what this submap is for.
+extern "C" vm_offset_t ml_io_map (vm_offset_t phys_addr, vm_size_t size) __attribute__((weak_import));
+
+extern "C" uint64_t armcpu_io_map (uint64_t physical, uint64_t length)
+{
+  if (!&ml_io_map) return 0;
+  if (physical == 0 || length == 0) return 0;
+  return static_cast<uint64_t> (ml_io_map (static_cast<vm_offset_t> (physical),
+                                           static_cast<vm_size_t> (length)));
+}
+
 // ROUND 167: the WRITABLE sibling of armcpu_map_physical, for the one class of caller that
 // must modify a register window it does not own the memory of.
 //

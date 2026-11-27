@@ -9812,3 +9812,94 @@ extern "C" uint64_t armcpu_map_physical (uint64_t physical, uint64_t length)
 2. 对照 `package/BootDiagExport.c:50` 的成功用法（截图，晚得多、且在不同线程/上下文里调用）——
    若差别在「调用上下文」，那么结论就是**不能在轮询线程里做映射**，而应把映射搬到一次性上下文；
 3. 设备到手后先跑剩下的两格（305 GCC 只映射、307 RAM 只映射）确认「目标无关」，再决定是否改架构。
+
+## 一百三十一、R319–R320：墙是 IOKit 的 descriptor 构造器；换成 pmap 自己的 `ml_io_map` 之后，GPUCC 与 GMU 两个窗口都能映射、GMU 的 `HFI_CTRL_STATUS` 也能读出来
+
+R317/R318 已经把「调用 `armcpu_map_physical` 就一定冻死」测成 6/6（目标覆盖 GPUCC、GMU、GCC 与普通 RAM；
+长度覆盖 0、0x1000、0x40000、0x30000；有读与无读），而唯一活着的那一臂根本不调用它。剩下两种可能：
+冻在 `IOMemoryDescriptor::withPhysicalAddress(...)`，或者冻在随后的 `map()`。R319 把这两步拆开。
+
+### 131.1 R319 键 308：只建 descriptor、**从不** `map()` —— 冻死（DEVICE-VERIFIED）
+
+`drivers/ArmCpu/ArmCpu.cpp` 新增一个导出符号，只做构造器那一半：
+
+```c
+extern "C" uint64_t armcpu_desc_only (uint64_t physical, uint64_t length)
+{
+  OSSharedPtr<IOMemoryDescriptor> d (IOMemoryDescriptor::withPhysicalAddress (physical, length, kIODirectionIn), OSNoRetain);
+  return d ? 1u : 0u;   // never mapped, never released
+}
+```
+
+键 308（`enchilada-maptest=308`，深度 1 的早作用域、零 `gmuW[]` 写）08:48:48 `fastboot released`，
+**220 s 未回 = 冻死**。⇒ `map()` 根本没被调用，冻死已经发生。
+
+### 131.2 R319 键 310：可写兄弟（`kIODirectionInOut`，两次调用都在）—— 也冻死（DEVICE-VERIFIED）
+
+键 310 走 `armcpu_map_physical_rw(0x00100000, 0x1000)`，09:03:00 释放、**220 s 未回**。⇒ 不是方向问题。
+（键 309 未跑：它只在同一 tick 里先等 0.2 s 再映射，308 已把「时机」这一支排除。）
+
+### 131.3 判决：冻结点是 descriptor 构造器，九次调用九次冻死
+
+| 键 | 调用 | 目标 | 结果 |
+|---|---|---|---|
+| 301 | 无 | — | 回来 1/1 |
+| 304 / 302 / 303 | `armcpu_map_physical` | GCC | 冻死 |
+| 299 | `armcpu_map_physical` | GMU | 冻死 2/2 |
+| 306 / 307 | `armcpu_map_physical` | **普通 RAM** | 冻死 |
+| 305 | `armcpu_map_physical` | GCC 零读 | 冻死 |
+| **308** | **只有 `withPhysicalAddress`** | GCC | **冻死** |
+| **310** | `armcpu_map_physical_rw` | GCC | **冻死** |
+
+### 131.4 R320：换 pmap 自己的 `ml_io_map` 作为设备窗口通道
+
+`llvm-nm` 在已构建的 kernel 里确认这几条符号都在：
+
+```
+fffffff00ba1db14 S _ml_io_map
+fffffff00ba1e228 S _ml_io_map_wcomb
+fffffff00ba1e20c S _ml_io_map_with_prot
+fffffff00ba1e294 S _ml_static_ptovirt
+```
+
+`ml_io_map` 是 pmap 的 io submap 映射：不需要 descriptor、不经过 IOKit 的任务/VM 对象。
+本仓库自己的注释还留着一句实测（`package/BootDiagExport.c`）：`ml_io_map` 只在一个**十兆字节**的
+面板帧上失败过（`kmem_alloc failed with 3`），所以那个调用者改用 IOKit；而我们的窗口是 4 KiB 到 192 KiB。
+新增导出（`drivers/ArmCpu/ArmCpu.cpp`，`ml_io_map` 按 weak_import 声明，缺了也不会打断构建）：
+
+```c
+extern "C" vm_offset_t ml_io_map (vm_offset_t phys_addr, vm_size_t size) __attribute__((weak_import));
+
+extern "C" uint64_t armcpu_io_map (uint64_t physical, uint64_t length)
+{
+  if (!&ml_io_map) return 0;
+  if (physical == 0 || length == 0) return 0;
+  return static_cast<uint64_t> (ml_io_map (static_cast<vm_offset_t> (physical),
+                                          static_cast<vm_size_t> (length)));
+}
+```
+
+### 131.5 R320 三键：三个窗口全部映射成功，GMU 的寄存器也读出来了（DEVICE-VERIFIED）
+
+| 键 | 动作 | 设备自写行 | 结果 |
+|---|---|---|---|
+| **311** | `armcpu_io_map(GCC 0x00100000, 0x1000)`，零读 | `gmu311a=gcc_io_map ok=1 win=546ba000 pa=100000 size=1000 reads=0` | **回来** |
+| **312** | `armcpu_io_map(GMU 0x0506a000, 0x30000)`，零读 | `gmu312a=gmu_io_map ok=1 win=6ceba000 pa=506a000 size=30000 reads=0` | **回来** |
+| **313** | 同上，再读 `HFI_CTRL_STATUS` | `gmu313a=gmu_io_read ok=1 win=6d800000 pa=506a000 size=30000 ctl=00000000` | **回来** |
+
+时间戳：311 = 09:57:44、312 = 09:58:57、313 = 10:00:09（都在探针入口后约 29.3 s，与历史成功行的节奏一致）。
+每次都是 `flash rc=0`、`boot rc=0`、`fastboot released after 6 s`，窗口 sha256 分别为
+`4a5e600de589…f95be7`、`b83d17613403…25d4bc`、`30ab9ff7a7c4…3b45025`。
+
+⇒ **`ml_io_map` 通道可用**：GPUCC 与 GMU 两个窗口都能拿到内核 VA，GMU 的 `HFI_CTRL_STATUS` 也能安全读出
+（值 `00000000`，与「CM3 未启动」的既有状态一致）。这条通道完全绕开了 9/9 冻死的 IOKit 构造器。
+
+### 131.6 边界与下一步
+
+- 本节的「能用」是**这一颗 kernel（`4ed2c3cc8ac7…a76b46`）、这一次上机（各 1/1）**的结果；`ml_io_map` 的
+  submap 容量有限（十兆面板失败是实测），所以**每个窗口只映射一次、总量要小**，这正好符合我们的用法。
+- 下一步（R321）：把探针里所有窗口的取法从 `armcpu_map_physical` 换成 `armcpu_io_map` —— stage 1 的 GPUCC
+  两个状态字、stage 2 的 GMU 窗口、stage 4/6 的 SMMU 窗口 —— 然后在能用的通道上重跑 R312 的那条
+  「安静构建 → stage 1..6 整轮」路径与 GPUCC 状态读，把「CX 到底有没有上电」这一问重新打开。
+- 仍然未解决的：HFI 传输（R305 的 legacy 队列表与门铃）需要 CM3 活着，而 CM3 需要 CX 上电；G1
+  （GDSCR `cf` bit16）也仍未关闭。GPU 仍未渲染一帧。
