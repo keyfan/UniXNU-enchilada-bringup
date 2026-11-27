@@ -234,7 +234,12 @@ def main():
         # weak_import alias of the same platform hook) are also allowed.
         # Round 52: the pure AdrenoPowerUpV1 Plan/gate helpers resolve from the
         # SAME archive; Execute() is deliberately NOT called.
+        # R326: with the GMU firmware blob present the image-load path is compiled
+        # in for the first time, so the shim legitimately references five more
+        # entry points. Each is provided by the kernel build, like the ones above.
         allowed = {'IOLog', 'PE_parse_boot_argn', 'snprintf', '__stack_chk_fail', '__stack_chk_guard',
+                   'AdrenoHfiV1MakeHeader', '_Z7IOSleepj', 'boot_log_panic_flush',
+                   'boot_progress_stage', 'native_ufs_log_sync',
                    'AdrenoGmuBootV1BootState', '_Z19armcpu_map_physicalyy',
                    # Round 167: the WRITABLE sibling of that hook. It is a kernel
                    # entry point the shim calls but does not define, exactly like

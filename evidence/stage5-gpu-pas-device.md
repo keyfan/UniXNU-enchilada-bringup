@@ -9980,7 +9980,8 @@ R321 用 `ml_io_map` 换掉了两个入口里的 IOKit 构造器。于是 R314 �
 
 ## 一百三十六、R325：先开 `cx_gmu`/`cxo` 分支时钟再读 GMU —— 第一次拿到干净的 GMU 快照（`ctl=0 qtbl=0 qi=0 sr=1 info=0 mask=0`）；而写 CM3 控制字（`CM3_SYSRESET` 脉冲 / `HFI_CTRL_INIT`）会让探针线程再次静默结束
 
-同一颗 R325 kernel `bd100217…e0d261`（CI **#442 `45950617747`** success），三键用独立 arg `enchilada-cx3`、早期块（`work	mp325_block.py`，零 `gmuW[`）；门禁全绿（host 全部 contract、probe 39/39、stage4 81/81、stage5 68/68、stage6 2594/2594、全量 `ran 46 of 48, FAILING: 0`、mode-selector 62/upper 295）。
+同一颗 R325 kernel `bd100217…e0d261`（CI **#442 `45950617747`** success），三键用独立 arg `enchilada-cx3`、早期块（`work	mp
+325_block.py`，零 `gmuW[`）；门禁全绿（host 全部 contract、probe 39/39、stage4 81/81、stage5 68/68、stage6 2594/2594、全量 `ran 46 of 48, FAILING: 0`、mode-selector 62/upper 295）。
 
 | 键 | 动作 | 结果 |
 |---|---|---|
@@ -9994,4 +9995,25 @@ R321 用 `ml_io_map` 换掉了两个入口里的 IOKit 构造器。于是 R314 �
 136.4 **门铃本身无害**：322 写 `HOST2GMU_INTR_SET=1` 后 `ctl` 仍 0、`info` 仍 0 —— 没有 CM3 固件在跑，当然没有人应答；这符合预期，且证明写这个字不会挂。
 136.5 边界的诚实表述：本轮**没有**让 CM3 跑起来；`qtbl=0` 说明队列表发布路径（在 `if (fwArmed)` 块内）**从未执行过**——而 `fwArmed` 的武装条件正是下一轮要解开的东西。GPU 仍未渲染一帧。
 136.6 下一轮的形状：①找到 `fwArmed` 的置位条件（`package/EnchiladaAdrenoProbe.cpp` 里 `fwKey`/`fwArmed`/`kAdrenoGmuImageWords` 三者的关系），在没有它的前提下**手工**把固件段加载进 GMU 的 ITCM/DTCM 并发布队列表（`HFI_QTBL_ADDR/INFO`、`PWR_COL_CP_MSG`），②再解 `CM3_SYSRESET` 与 `HFI_CTRL_INIT`，③最后才谈 `ctl` bit0。
+
+## 一百三十七、R326–R327：把 GMU 固件编进内核、手工写进 CM3 的 ITCM，**然后放复位——固件第一次真的跑起来了**（`CM3_FW_INIT_RESULT` 在 20 拍内变成 `0xbabeface`）
+
+### R326：固件字节进内核（构建层）
+- `scripts/generate-gmu-blob.py --firmware-dir ..\tmp\a630-device-fw` 生成 `drivers/NativeAdreno/AdrenoGmuBlobV1.h`：`kAdrenoGmuBlobPresent 1`、`kAdrenoGmuImageBytes 32768`、`kAdrenoGmuImageWords 8192`、`kAdrenoGmuItcmWord 0x0C00u`、`kAdrenoGmuDtcmWord 0x1C00u`，头里记录固件 sha256，并断言「GENERATED / DO NOT COMMIT / 长度 32768 / 8192 字 / 数组真实尺寸 / present≠0」全部 PASS。
+- 编进来之后 probe 门把 5 个此前被死代码消掉的未定义符号报了出来（`AdrenoHfiV1MakeHeader`、`_Z7IOSleepj`、`boot_log_panic_flush`、`boot_progress_stage`、`native_ufs_log_sync`）⇒ 加进 shim 白名单，**probe 门回到 39/39**。CI **#443 `45956284158` success**（kernel `614cd17c…b4c9`、payload `5733aa0f…a964`）。
+- 设备验证：键 8（`enchilada-pas-exec=8`）**回来了**但只打出 stage 1–5、没有任何 `gmufw=` 行。原因查清：固件装载段嵌在 `if (ioRow[0] != 0)`（SMMU 映射被许可）之内，而安静构建里 CX 是关的、`stage4=smmu-map-refused cx=00000000 cx_on_now=0 why=domain-down`，**那段永远到不了**。这条否证很值钱：光把字节编进来不够，还得自己把 CX 打开并跳过那条许可链。
+
+### R327：手工冷启动链（键 323/324，独立 arg `enchilada-fw`、深度 1 早期块）
+块在早期作用域里自己做完整条链：开 `0x5091098`/`0x509109c` BIT0 → 清 CX GDSCR 的 `SW_COLLAPSE` 并等 `cx_hw` bit31 → 把 `adreno_gmu_image[0..8191]` 写进 `g[0x0C00+wi]`（每 256 字一次 `dsb sy`）→ 写 `CM3_BOOT_CONFIG = 0x02` → 回读校验；键 324 再放 `CM3_SYSRESET` 并轮询 `CM3_FW_INIT_RESULT`。
+
+| 键 | 设备读数（DEVICE-VERIFIED，同一颗 kernel `ea29761f…1413`，CI **#444 `45962283991`** success） |
+|---|---|
+| 323 | `gmu323a=fw_loaded cx_hw=80001fe0 sr=00000001 fw_pre=00000000 rb0=00043f80 rbl=00000000 bc=00000002 match=1 words=8192` |
+| 324 | `gmu324a=fw_run cx_hw=80001fe0 sr=00000000 fw=babeface polls=20 ctl=00000000 qtbl=00000000 qi=00000000 info=00000000` |
+
+137.1 **固件真的在 CM3 上跑起来了**：释放复位后 `CM3_FW_INIT_RESULT` 在 **20 拍（≈20 µs）**内从 0 变成 `0xbabeface` —— 这是本次移植自 R164 以来第一次让 GMU 固件执行；此前所有「固件沉默」都不是固件的问题，而是**固件字节从来没进过 CM3 的 ITCM、CM3 一直按在复位里**（R325 键 320 的 `sr=1 / qtbl=0` 已经预告）。
+137.2 **写入是可信的**：`rb0=00043f80` 与 `adreno_gmu_image[0]` 一致、末字也一致（`match=1`），`bc=00000002` 回读等于 `CM3_BOOT_CONFIG_VALUE`。8192 字全部落地。
+137.3 **固件起来之后的状态完全符合「等 HFI 表」**：`ctl=0`（还没被要求启动 HFI）、`qtbl=0`/`qi=0`（队列表地址与信息都还是 0，我们没发布）、`info=0`（没有任何中断）。⇒ 下一步就是发布队列表并断言 `HFI_CTRL_INIT`，`ctl` bit0 这一次应该会被真正的固件置起。
+137.4 边界：本轮只证「装载 + 放复位 + 固件自检标记」；**没有**发布队列表、没有写掩码、没有断言 `HFI_CTRL_INIT`、也没有读 `PWR_COL_CP_MSG`；`match` 只比首末两字。样本各 1/1。
+137.5 工程副作用：`AdrenoGmuBlobV1.h` 是 gitignored 的生成物（113,521 字节），CI 里由 `generate-gmu-blob.py` 从头生成——因此**远端 main 的构建也会带上固件**，只要 CI 环境里能找到 `a630_gmu.bin`（R326 的 CI 已证明可以）。
 
