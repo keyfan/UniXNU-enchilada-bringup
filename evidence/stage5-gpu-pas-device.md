@@ -9925,3 +9925,21 @@ R321 因此不动探针，只改 `drivers/ArmCpu/ArmCpu.cpp` 两个入口的**�
 132.5 门禁：host 25/25 + 51/51 + 32/32、probe 39/39、stage4 81/81、stage5 68/68、stage6 2594/2594、全量 `ran 46 of 48, FAILING: 0`、mode-selector PASS；`r321_static.py` 对真产物 PASS、按其派生链对 R320 产物 FAIL。
 132.6 边界：各形状 1–2 次样本、单颗 kernel；`ml_io_map` 的 io submap 容量有限，同一窗口只映射一次；本次没有验证写路径（`_rw`）在设备窗口上的实际效果，只有读。
 
+## 一百三十三、R322：通道修好之后，R314 的早期别名块终于真的跑起来了——GPUCC 时钟能读能写、能写进去并留住，而 CX 的 GDSCR 仍是 `00222001`（SW_COLLAPSE=1，域还是关的）
+
+R321 用 `ml_io_map` 换掉了两个入口里的 IOKit 构造器。于是 R314 早就编进 kernel 的早期别名块（键 296/297/298，独立 boot 参数 `enchilada-alias`、深度 1、自映射 GMU 窗口）第一次真正执行——它当初 1/1 冻死（13:00），这一轮 **3/3 都在 30 秒内回来**，且每一行都落地。**没有新构建**：同一颗 R321 kernel `5bac45c4…bb86a`，只换 boot 参数。
+
+**设备读数（DEVICE-VERIFIED）**
+
+| 键 | 臂 | 结果 |
+|---|---|---|
+| 296 | 只读六字快照 | `gmu296a=early_alias ok=1 win=2d57c000 cx_gmu=80004220 cxo=80000001 cx_gdscr=00222001 cx_hw=00005ff4 rcg=80000000 pll=00000000` |
+| 297 | `0x5091098`(cx_gmu_clk) BIT0 置 1 | `gmu297a=early_cxgmu_enable wrote=1 pre=80004220 post=80004221 bit0=1 cx_gdscr=00222001` |
+| 298 | 再置 `0x509109c`(cxo) BIT0 | `gmu298a=early_cxo_enable wrote=2 cxo_pre=80000001 cxo_post=80000001 cxgmu_post=80004221 cx_hw=00005ff4 rcg_post=80000000 pll_post=00000000` |
+
+133.1 **GPUCC 时钟读得出、写进去、留得住**：`cx_gmu` 从 `80004220` 变成 `80004221`（bit0 = CX GMU 时钟使能），回读确认；`cxo=80000001` 本来已经开着（写它不改变值，属正常）。这证明 R313 当时「别名快照做不成键块」只是**作用域/武装**问题，通道本身是好的。
+133.2 **CX 仍然关着，而且现在能说清缺哪一步**：`cx_gdscr=00222001` ⇒ bit0（`SW_COLLAPSE`）= 1，域处于 collapse；bit16（`POWER_UP_COMPLETE`）= 0。`cx_hw=00005ff4` 与历史上「侥幸读到」的那次一致。所以下一步不是猜，而是**清 `SW_COLLAPSE` 那一位并轮询 bit16**。
+133.3 **PLL1（Fabia）= 0**，`rcg=80000000`（根时钟开关在、但 PLL 未配置）⇒ 与 mainline `gpucc-sdm845.c` 的 CX GMU 分支要求（先配置 PLL1，再让 RCG 跑）吻合；只开 `cx_gmu_clk` 的 BIT0 不足以让分支真正供时钟。
+133.4 本轮的形状全部 1/1 样本、单颗 kernel；三键都是「一次做完就 `gDone = true; return;`」的一次性执行，不会重入。
+133.5 边界：没有写 GDSCR（`0x509106c`）、没有碰 PLL1 的配置寄存器，也还没验证写路径在**GDSC** 上的效果；这些留给下一轮。
+
