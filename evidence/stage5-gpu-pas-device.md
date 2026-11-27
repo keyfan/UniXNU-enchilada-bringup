@@ -9903,3 +9903,25 @@ extern "C" uint64_t armcpu_io_map (uint64_t physical, uint64_t length)
   「安静构建 → stage 1..6 整轮」路径与 GPUCC 状态读，把「CX 到底有没有上电」这一问重新打开。
 - 仍然未解决的：HFI 传输（R305 的 legacy 队列表与门铃）需要 CM3 活着，而 CM3 需要 CX 上电；G1
   （GDSCR `cf` bit16）也仍未关闭。GPU 仍未渲染一帧。
+
+## 一百三十二、R321：把「能用的通道」放进**原有入口**——九次冻死的那条 `armcpu_map_physical` 自己改走 `ml_io_map`，于是历史必冻的形状与 GMU 窗口都在真机上回来了
+
+R319 把墙钉在 `IOMemoryDescriptor::withPhysicalAddress(...)` 这个构造器上（键 308 只构造、不 `map()`，仍冻死；键 310 的可写兄弟也冻死）；R320 证明 pmap 的 `ml_io_map` 能映射 GCC（键 311）、GMU（键 312）并读出 `HFI_CTRL_STATUS`（键 313），三次都在 30 秒内回来。
+
+R321 因此不动探针，只改 `drivers/ArmCpu/ArmCpu.cpp` 两个入口的**函数体**：`armcpu_map_physical` 与 `armcpu_map_physical_rw` 先试 `ml_io_map`，返回非零即用；为零才退回原来的 IOKit 路径（io submap 小，`package/BootDiagExport.c` 记录过十兆面板在那里 `kmem_alloc failed with 3`）。`ml_io_map` 的声明放在**命名空间作用域**——第一版把它写进函数体，CI #438 立刻以 `ArmCpu.cpp:366:10: error: expected unqualified-id` + `use of undeclared identifier 'ml_io_map'` 拒绝（C++ 不允许块作用域的链接规范），修正后 CI #439 `45932215479` success。
+
+**设备读数（DEVICE-VERIFIED，同一颗 kernel `5bac45c4615b92a9e90fbad7ee1c029f091535b08cd0d3086eecd676216bb86a`，payload `f974ef48c54657a0e9ef0610a129f3694c5d90f896e3efcb2e7c747aef120265`）**
+
+| 形状 | 结果 | 关键行 |
+|---|---|---|
+| 安静构建 `enchilada-adreno=6` | CAME BACK 30 s | `mapped=0 read=0 cx=00000000 gx=00000000 cx_on=0 gx_on=0 gx_off=0 verdict=gpucc-unmapped steps_left=9`；`stage2=cx-down-gmu-not-mapped` |
+| **历史必冻** `gpucc-map=1 gpucc-read=1 pas-exec=2` | **CAME BACK 30 s（2/2）** | `mapped=1 read=1 cx=00005ff4 gx=00088400 cx_on=0 gx_on=0 gx_off=1 verdict=cx-DOWN steps_left=9` |
+| `gmu-map=1 gmu-read=1 gmu-force=1` | **CAME BACK 30 s（2/2）** | `stage2=gmu-read gmu=506a000 size=30000 general7=00000000 boot_state=1(cold)` |
+
+132.1 **R312 的 `r312-hist`（当时 10:21 冻死）现在是 2/2 回来并打出 GPUCC 的两个状态字** —— 这是 R305 以来第一次在不冻的前提下读到自己想要的寄存器。窗口 sha 依次 `851a9e0208df52e7147de6caf5475877820cd714e7f0ec0cbf430ac7bccb6337`（第一次）与重复样本（同形状）。
+132.2 **GMU 窗口经「原有入口」映射也活了**：`stage2=gmu-read` 说明 stage 2 通过 `armcpu_map_physical(0x0506a000, 0x30000)` 拿到内核 VA，并读 `GENERAL_7 = 00000000`、`boot_state=1(cold)` —— 之前 R311 的 `gmu-force` 正是冻在这里。
+132.3 **CX 仍然是关的**：`cx=00005ff4`、`cx_on=0`、`gx=00088400`、`gx_on=0`、`gx_off=1`、`verdict=cx-DOWN` —— 与 R310 阶梯时侥幸读到的那次逐位一致（`cx=00005ff4`）。所以「读得到」不等于「域已上电」；G1（GDSCR `cf` bit16=0、`gd=00222001`）仍未关闭，GPU 仍未渲染一帧。
+132.4 反汇编自证：`r321_verify.py` 在 `r321-kernel\kernel.macho` 里找到 `<_armcpu_map_physical>`，其函数体引用 `ml_io_map`（`references ml_io_map: True`），并且仍保留 IOKit 兜底分支（`bl __ZN18IOMemoryDescriptor19withPhysicalAddressEyyj`）——通道确实换在函数体内部，不是只改了注释。
+132.5 门禁：host 25/25 + 51/51 + 32/32、probe 39/39、stage4 81/81、stage5 68/68、stage6 2594/2594、全量 `ran 46 of 48, FAILING: 0`、mode-selector PASS；`r321_static.py` 对真产物 PASS、按其派生链对 R320 产物 FAIL。
+132.6 边界：各形状 1–2 次样本、单颗 kernel；`ml_io_map` 的 io submap 容量有限，同一窗口只映射一次；本次没有验证写路径（`_rw`）在设备窗口上的实际效果，只有读。
+

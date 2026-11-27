@@ -355,8 +355,21 @@ static void wdogPet (bool fromInterrupt)
 
 // A cache-inhibited kernel mapping of a physical range that stays for the boot (BootDiagExport's screenshot of the boot framebuffer);
 // 0 on failure. IOKit maps through the kernel map, not the small ml_io_map submap.
+extern "C" vm_offset_t ml_io_map (vm_offset_t phys_addr, vm_size_t size) __attribute__((weak_import));  // R321: the pmap device-mapping entry, declared at namespace scope (C++ forbids a linkage
+// specification inside a function body -- the build proved it)
 extern "C" uint64_t armcpu_map_physical (uint64_t physical, uint64_t length)
 {
+  // R321: THE CORRIDOR IS ml_io_map NOW.  Nine device-proven calls of this function froze the
+  // machine (R317-R319), including key 308, which took only IOMemoryDescriptor::withPhysicalAddress
+  // and never called map().  The pmap's own device mapping froze on none of the three windows it
+  // was given (R320 keys 311/312/313 mapped GCC, mapped the GMU window, and read HFI_CTRL_STATUS
+  // out of it), so it is tried first and IOKit stays only as a fallback for windows too large for
+  // the io submap (BootDiagExport records a 10 MB panel failing there with "kmem_alloc failed with 3").
+  if (&ml_io_map && physical != 0 && length != 0) {
+    const vm_offset_t va = ml_io_map (static_cast<vm_offset_t> (physical),
+                                      static_cast<vm_size_t> (length));
+    if (va != 0) return static_cast<uint64_t> (va);
+  }
   OSSharedPtr<IOMemoryDescriptor> d (IOMemoryDescriptor::withPhysicalAddress (physical, length, kIODirectionIn), OSNoRetain);
   IOMemoryMap *map = d ? d->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;   // kept: never released
   return map ? static_cast<uint64_t> (map->getVirtualAddress ()) : 0;
@@ -418,6 +431,13 @@ extern "C" uint64_t armcpu_io_map (uint64_t physical, uint64_t length)
 extern "C" uint64_t armcpu_map_physical_rw (uint64_t physical, uint64_t length)
 {
   if (physical == 0 || length == 0) return 0;
+  // R321: same corridor change as the read-only sibling above -- ml_io_map gives a kernel device
+  // mapping that stores actually reach, and it is the only path that has never frozen on us.
+  if (&ml_io_map) {
+    const vm_offset_t va = ml_io_map (static_cast<vm_offset_t> (physical),
+                                      static_cast<vm_size_t> (length));
+    if (va != 0) return static_cast<uint64_t> (va);
+  }
   OSSharedPtr<IOMemoryDescriptor> d (IOMemoryDescriptor::withPhysicalAddress (physical, length, kIODirectionInOut), OSNoRetain);
   IOMemoryMap *map = d ? d->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;   // kept: never released
   return map ? static_cast<uint64_t> (map->getVirtualAddress ()) : 0;
