@@ -9943,3 +9943,20 @@ R321 用 `ml_io_map` 换掉了两个入口里的 IOKit 构造器。于是 R314 �
 133.4 本轮的形状全部 1/1 样本、单颗 kernel；三键都是「一次做完就 `gDone = true; return;`」的一次性执行，不会重入。
 133.5 边界：没有写 GDSCR（`0x509106c`）、没有碰 PLL1 的配置寄存器，也还没验证写路径在**GDSC** 上的效果；这些留给下一轮。
 
+## 一百三十四、R323：从 AP 侧把 CX 真的抬起来了——清 `SW_COLLAPSE` 后 `cx_hw` 从 `00005ff4` 变 `80001fe0`，但 GDSCR 的 `POWER_UP_COMPLETE`（bit16）依旧 20000 拍不动
+
+同一颗 R323 kernel `5e4c2e85…154fff`（CI #440 `45940712126`），三键都在 30 秒内回来（**3/3**）。这是本移植第一次**由 AP 侧把 GPU 的一个域从 collapse 里拉出来**。
+
+| 键 | 动作 | 读数 |
+|---|---|---|
+| 314 | 只读快照 | `gmu314a=cx_pre ok=1 win=78800000 cx_gdscr=00222001 gx_gdscr=00222001 cx_hw=00005ff4 cx_gmu=80004220 cxo=80000001 pll=00000000 rcg=80000000 gx_st=00088400` |
+| 315 | 写 `0x509106c = 00222000`（清 `SW_COLLAPSE` bit0）→ 20000 拍轮询 bit16 | `gmu315a=cx_uncollapse wrote=00222000 now=f8222000 bit16=0 polls=20000 cx_hw=80001fe0 cx_gmu=80004220` |
+| 316 | 再置 PLL1 `0x5090100` bit0 与 RCG `0x5091120` bit0 | `gmu316a=cx_pll_rcg pll_pre=00000000 pll_post=00000001 rcg_pre=80000000 rcg_post=80000000 gdscr=f8222000 bit16=0 polls=20000` |
+
+134.1 **写路径在 GDSC 上有效、而且立竿见影**：`cx_gdscr` 从 `00222001`（bit0 = `SW_COLLAPSE` 置位 = 关）变成 `f8222000`（bit0 清、bit31 `PWR_ON` 置起）——这是标准的「GDSC 请求上电」形态，与 mainline `gdsc_toggle_logic(GDSC_ON)` 写出来的形状一致。
+134.2 **域真的上电了**：`cx_hw`（`0x5091540`）从 `00005ff4` 变成 `80001fe0`，与 R201（CX 通过 RSC 投轨道那次）读到的一模一样 ⇒ CX 域已 on，不是只有寄存器位在变。
+134.3 **但 `POWER_UP_COMPLETE`（GDSCR bit16）一次都没置起**，20000 拍（≈0.32 s，带 `IODelay(1u)`）全是 0。**这与 GX 的 G1 是同一种签名**（R198–R201：GDSCR 四笔写生效、`cf` bit16 永不置起，而 CX 那次两侧都报完成）——现在可以确定：**bit16 不是上电的必要条件**，域可以在它保持 0 的情况下真的上电（`cx_hw` 为证）。
+134.4 **PLL1 的 bit0 可写可读**（`00000000 → 00000001`），但 RCG（`0x1120`）读回仍是 `80000000`（只有 bit31），说明仅置 enable 位不足以让分支时钟真正跑起来；`gpucc-sdm845.c` 那套需要配置 PLL 的 div/cal 并等锁，这一轮没有做。
+134.5 三键都是「一步做完就 `gDone = true; return;`」的一次性执行，1/1 样本；`win=78800000` 是 `ml_io_map` 给的 GPUCC 内核 VA。
+134.6 边界的诚实表述：本轮证明的是**「从 AP 侧清 `SW_COLLAPSE` 能把 CX 拉起来」**与**「bit16 可以不置起」**；没有证明 GX 侧同样可行（GX 的 GDSCR `0x509100c` 只读没写），也没有验证在 CX on 之后 HFI/CM3 是否开始应答。
+

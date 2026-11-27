@@ -1358,6 +1358,67 @@ extern "C" void enchilada_adreno_poll(void) {
             return;
         }
     }
+    {
+        uint64_t cxKey = 0u;
+        if (PE_parse_boot_argn("enchilada-cx", &cxKey, sizeof cxKey) && cxKey >= 314u && cxKey <= 316u) {
+            static uintptr_t s314CxWin = 0u;
+            char r314Row[420];
+            if (s314CxWin == 0u && &armcpu_map_physical) {
+                s314CxWin = static_cast<uintptr_t>(armcpu_map_physical(ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE));
+            }
+            if (s314CxWin == 0u) {
+                snprintf(r314Row, sizeof r314Row, "gmu314a=cx ok=0 mode=%u reason=no-window", static_cast<unsigned>(cxKey));
+                IOLog("enchilada-adreno: %s\n", r314Row);
+            } else {
+                volatile uint32_t *w = reinterpret_cast<volatile uint32_t *>(s314CxWin);
+                const uint32_t cxg = w[0x106cu / 4u];
+                const uint32_t gxg = w[0x100cu / 4u];
+                const uint32_t cxh = w[0x1540u / 4u];
+                const uint32_t ck  = w[0x1098u / 4u];
+                const uint32_t xo  = w[0x109cu / 4u];
+                const uint32_t pl  = w[0x0100u / 4u];
+                const uint32_t rc  = w[0x1120u / 4u];
+                const uint32_t gxs = w[0x1010u / 4u];
+                snprintf(r314Row, sizeof r314Row, "gmu314a=cx_pre ok=1 win=%08x cx_gdscr=%08x gx_gdscr=%08x cx_hw=%08x cx_gmu=%08x cxo=%08x pll=%08x rcg=%08x gx_st=%08x",
+                         static_cast<unsigned>(s314CxWin), cxg, gxg, cxh, ck, xo, pl, rc, gxs);
+                IOLog("enchilada-adreno: %s\n", r314Row);
+                if (cxKey >= 315u) {
+                    const uint32_t want = cxg & ~1u;
+                    w[0x106cu / 4u] = want;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    unsigned polls = 0u;
+                    uint32_t now = w[0x106cu / 4u];
+                    while (polls < 20000u && (now & 0x00010000u) == 0u) {
+                        IODelay(1u);
+                        now = w[0x106cu / 4u];
+                        ++polls;
+                    }
+                    snprintf(r314Row, sizeof r314Row, "gmu315a=cx_uncollapse wrote=%08x now=%08x bit16=%u polls=%u cx_hw=%08x cx_gmu=%08x",
+                             want, now, static_cast<unsigned>((now >> 16) & 1u), polls, w[0x1540u / 4u], w[0x1098u / 4u]);
+                    IOLog("enchilada-adreno: %s\n", r314Row);
+                }
+                if (cxKey >= 316u) {
+                    const uint32_t plPre = w[0x0100u / 4u];
+                    const uint32_t rcPre = w[0x1120u / 4u];
+                    w[0x0100u / 4u] = plPre | 1u;
+                    w[0x1120u / 4u] = rcPre | 1u;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    unsigned polls2 = 0u;
+                    uint32_t now2 = w[0x106cu / 4u];
+                    while (polls2 < 20000u && (now2 & 0x00010000u) == 0u) {
+                        IODelay(1u);
+                        now2 = w[0x106cu / 4u];
+                        ++polls2;
+                    }
+                    snprintf(r314Row, sizeof r314Row, "gmu316a=cx_pll_rcg pll_pre=%08x pll_post=%08x rcg_pre=%08x rcg_post=%08x gdscr=%08x bit16=%u polls=%u",
+                             plPre, w[0x0100u / 4u], rcPre, w[0x1120u / 4u], now2, static_cast<unsigned>((now2 >> 16) & 1u), polls2);
+                    IOLog("enchilada-adreno: %s\n", r314Row);
+                }
+            }
+            gDone = true;
+            return;
+        }
+    }
     if (stage >= 4u) {
         char ioRow[220];
         ioRow[0] = 0;
