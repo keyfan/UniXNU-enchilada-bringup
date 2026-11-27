@@ -9962,7 +9962,8 @@ R321 用 `ml_io_map` 换掉了两个入口里的 IOKit 构造器。于是 R314 �
 
 ## 一百三十五、R324：GX 也能从 AP 侧请求上电（GDSCR `00222001 → 08222000`、GX 状态 `00088400 → 01080400`），而**在 GMU 时钟未开时读 GMU 寄存器会让探针线程静默结束**（键 318/319 零行、系统照常启动）
 
-同一颗 R324 kernel `26a193f5…e21f88`（CI **#441 `45946483019`** success）。三键都用独立 boot 参数 `enchilada-cx2`、深度 1 的早期块（`work	mp324_block.py`，块 4,878 字符 / 16 对花括号 / 零 `gmuW[`），门禁全绿（host 81 组 contract、probe 39/39、stage4 81/81、stage5 68/68、stage6 2594/2594、全量 `ran 46 of 48, FAILING: 0`、mode-selector 62/upper 295）。
+同一颗 R324 kernel `26a193f5…e21f88`（CI **#441 `45946483019`** success）。三键都用独立 boot 参数 `enchilada-cx2`、深度 1 的早期块（`work	mp
+324_block.py`，块 4,878 字符 / 16 对花括号 / 零 `gmuW[`），门禁全绿（host 81 组 contract、probe 39/39、stage4 81/81、stage5 68/68、stage6 2594/2594、全量 `ran 46 of 48, FAILING: 0`、mode-selector 62/upper 295）。
 
 | 键 | 动作 | 结果 |
 |---|---|---|
@@ -9976,4 +9977,21 @@ R321 用 `ml_io_map` 换掉了两个入口里的 IOKit 构造器。于是 R314 �
 135.4 归因：318/319 与 317 的唯一结构差异是**它们读 GMU 窗口的寄存器**（`g[0x5180u]` 等），而此刻 `cx_gmu`（`0x5091098`）的 BIT0 = 0 —— GMU 分支时钟没开。**在时钟关着的域上做 AHB 读，会让发起线程消失**（不是系统挂死，这与 R291–R296 那种整机冻结不同）。这与「读未上电域会挂」的旧观测同源，但这次第一次能量化到「线程级静默、系统级无恙」。
 135.5 边界的诚实表述：没有给 `HFI_CTRL_STATUS` 读到任何值，因此**本轮没有回答「HFI 拒绝是不是电源态拒绝」**；它把那个问题的前提修好了一半（CX 能上电），并指出读取 GMU 之前必须先开 `cx_gmu`/`cxo` 时钟。
 135.6 下一步的形状已很清楚：先置 `0x5091098` BIT0 与 `0x509109c` BIT0（R322 键 297/298 已证明这两笔写能留住），**再**读 GMU，然后把掩码/复位/`HFI_CTRL_INIT` 重放一次。
+
+## 一百三十六、R325：先开 `cx_gmu`/`cxo` 分支时钟再读 GMU —— 第一次拿到干净的 GMU 快照（`ctl=0 qtbl=0 qi=0 sr=1 info=0 mask=0`）；而写 CM3 控制字（`CM3_SYSRESET` 脉冲 / `HFI_CTRL_INIT`）会让探针线程再次静默结束
+
+同一颗 R325 kernel `bd100217…e0d261`（CI **#442 `45950617747`** success），三键用独立 arg `enchilada-cx3`、早期块（`work	mp325_block.py`，零 `gmuW[`）；门禁全绿（host 全部 contract、probe 39/39、stage4 81/81、stage5 68/68、stage6 2594/2594、全量 `ran 46 of 48, FAILING: 0`、mode-selector 62/upper 295）。
+
+| 键 | 动作 | 结果 |
+|---|---|---|
+| 320 | 置 `0x5091098` BIT0 + `0x509109c` BIT0 → 等 CX 上电 → 读 GMU 六字 | **回来 30 s，行落地**：`gmu320a=clk_hfi cgm_pre=80004220 cgm_post=80004221 cxo_pre=80000001 cxo_post=80000001 cx_hw=80001fe0 ctl=00000000 qtbl=00000000 qi=00000000 sr=00000001 info=00000000 mask=00000000` |
+| 321 | 同前 + 写掩码 `0xff7fffff` + `CM3_SYSRESET` 1→0 脉冲 + `HFI_CTRL_INIT=1` + 200000 拍轮询 `ctl` bit0 | **回来 32 s，零行** |
+| 322 | 同前（时钟+CX 上电）+ 写 `HOST2GMU_INTR_SET=1` 门铃 | **回来 30 s，行落地**：`gmu322a=clk_doorbell ctl_pre=00000000 ctl=00000000 fw_pre=00000000 fw=00000000 info=00000000 mask=00000000 cx_hw=80001fe0` |
+
+136.1 **R324 的诊断被证实并修好**：`cx_gmu` 从 `80004220` 变 `80004221`（BIT0 置、留住），`cxo=80000001`，CX 上电到 `80001fe0`;此后再读 GMU 六字**全部安全返回**。这把「GMU 时钟未开时读 GMU 会静默杀死线程」（R324 键 318/319）钉成可复现、可规避的规则。
+136.2 **第一次拿到 GMU 的真实状态**：`ctl=0`（HFI 控制字 bit0=0）、`qtbl=0`（`HFI_QTBL_ADDR` **0**，队列表从未发布）、`qi=0`（`HFI_QTBL_INFO` **0**）、**`sr=1`（`CM3_SYSRESET` = 1，CM3 一直按在复位里）**、`info=0`、`mask=0`。⇒ 之前所有「HFI 拒绝」的观测，其物理前提是**固件从未被加载、队列表从未发布、CM3 从未解除复位**；这一点从数据上第一次看清楚。
+136.3 **写 CM3 控制字仍会杀死探针线程**：321 加了掩码写、`CM3_SYSRESET` 脉冲和 `HFI_CTRL_INIT`，三键里只有它零行（窗口整段无新行，系统 32 s 正常回来）。对照 322 只写门铃 `0x5194` ⇒ 正常。所以**致死的是 `CM3_SYSRESET`/`HFI_CTRL_INIT` 这组写**，与 AHB 时钟无关（此时钟已开）。这与 R297/R302 的「某些写会静默消失」同族，但这次精确到该组寄存器。
+136.4 **门铃本身无害**：322 写 `HOST2GMU_INTR_SET=1` 后 `ctl` 仍 0、`info` 仍 0 —— 没有 CM3 固件在跑，当然没有人应答；这符合预期，且证明写这个字不会挂。
+136.5 边界的诚实表述：本轮**没有**让 CM3 跑起来；`qtbl=0` 说明队列表发布路径（在 `if (fwArmed)` 块内）**从未执行过**——而 `fwArmed` 的武装条件正是下一轮要解开的东西。GPU 仍未渲染一帧。
+136.6 下一轮的形状：①找到 `fwArmed` 的置位条件（`package/EnchiladaAdrenoProbe.cpp` 里 `fwKey`/`fwArmed`/`kAdrenoGmuImageWords` 三者的关系），在没有它的前提下**手工**把固件段加载进 GMU 的 ITCM/DTCM 并发布队列表（`HFI_QTBL_ADDR/INFO`、`PWR_COL_CP_MSG`），②再解 `CM3_SYSRESET` 与 `HFI_CTRL_INIT`，③最后才谈 `ctl` bit0。
 

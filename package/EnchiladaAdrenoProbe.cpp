@@ -1518,6 +1518,94 @@ extern "C" void enchilada_adreno_poll(void) {
             return;
         }
     }
+    {
+        unsigned cx3Key = 0u;
+        if (PE_parse_boot_argn ("enchilada-cx3", &cx3Key, sizeof cx3Key) && cx3Key >= 320u && cx3Key <= 322u) {
+            static uintptr_t s325Win = 0u;
+            static uintptr_t s325Gmu = 0u;
+            char r325Row[620];
+            if (s325Win == 0u) {
+                s325Win = armcpu_map_physical (ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE);
+            }
+            if (s325Gmu == 0u) {
+                s325Gmu = armcpu_map_physical (ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
+            }
+            if (s325Win == 0u || s325Gmu == 0u) {
+                snprintf (r325Row, sizeof r325Row, "gmu%u=cx3 ok=0 mode=%u win=%08x gmu=%08x reason=no-window",
+                          (unsigned) cx3Key, (unsigned) cx3Key, (unsigned) s325Win, (unsigned) s325Gmu);
+                IOLog ("enchilada-adreno: %s\n", r325Row);
+                gDone = true;
+                return;
+            }
+            volatile uint32_t *w = (volatile uint32_t *) s325Win;
+            volatile uint32_t *g = (volatile uint32_t *) s325Gmu;
+            const uint32_t cgmPre = w[0x1098u / 4u];
+            const uint32_t cxoPre = w[0x109cu / 4u];
+            w[0x1098u / 4u] = (cgmPre | 1u);
+            w[0x109cu / 4u] = (cxoPre | 1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            IODelay (2u);
+            const uint32_t cgmPost = w[0x1098u / 4u];
+            const uint32_t cxoPost = w[0x109cu / 4u];
+            const uint32_t cxPre = w[0x106cu / 4u];
+            w[0x106cu / 4u] = (cxPre & ~1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            for (uint32_t i = 0u; i < 2000u; ++i) {
+                if ((w[0x1540u / 4u] >> 31) & 1u) {
+                    break;
+                }
+                IODelay (1u);
+            }
+            const uint32_t cxHw = w[0x1540u / 4u];
+            if (cx3Key == 320u) {
+                snprintf (r325Row, sizeof r325Row,
+                          "gmu320a=clk_hfi cgm_pre=%08x cgm_post=%08x cxo_pre=%08x cxo_post=%08x cx_hw=%08x ctl=%08x qtbl=%08x qi=%08x sr=%08x info=%08x mask=%08x",
+                          (unsigned) cgmPre, (unsigned) cgmPost, (unsigned) cxoPre, (unsigned) cxoPost,
+                          (unsigned) cxHw, (unsigned) g[0x5180u], (unsigned) g[0x5185u], (unsigned) g[0x5184u],
+                          (unsigned) g[0x5000u], (unsigned) g[0x5192u], (unsigned) g[0x5193u]);
+            } else if (cx3Key == 321u) {
+                const uint32_t ctlPre = g[0x5180u];
+                g[0x5193u] = 0xff7fffffu;
+                __asm__ volatile ("dsb sy" ::: "memory");
+                g[0x5000u] = 1u;
+                __asm__ volatile ("dsb sy" ::: "memory");
+                IODelay (1u);
+                g[0x5000u] = 0u;
+                __asm__ volatile ("dsb sy" ::: "memory");
+                IODelay (5u);
+                g[0x5186u] = 1u;
+                __asm__ volatile ("dsb sy" ::: "memory");
+                uint32_t bit0 = 0u;
+                uint32_t polls = 0u;
+                for (uint32_t i = 0u; i < 200000u; ++i) {
+                    ++polls;
+                    bit0 = g[0x5180u] & 1u;
+                    if (bit0 != 0u) {
+                        break;
+                    }
+                    IODelay (1u);
+                }
+                snprintf (r325Row, sizeof r325Row,
+                          "gmu321a=clk_hfi_init cx_hw=%08x ctl_pre=%08x ctl=%08x bit0=%u polls=%u qtbl=%08x qi=%08x info=%08x fw=%08x sr=%08x",
+                          (unsigned) cxHw, (unsigned) ctlPre, (unsigned) g[0x5180u], (unsigned) bit0, (unsigned) polls,
+                          (unsigned) g[0x5185u], (unsigned) g[0x5184u], (unsigned) g[0x5192u],
+                          (unsigned) g[0x5100u], (unsigned) g[0x5000u]);
+            } else {
+                const uint32_t ctlPre = g[0x5180u];
+                const uint32_t fwPre = g[0x5100u];
+                g[0x5194u] = 1u;
+                __asm__ volatile ("dsb sy" ::: "memory");
+                IODelay (5u);
+                snprintf (r325Row, sizeof r325Row,
+                          "gmu322a=clk_doorbell ctl_pre=%08x ctl=%08x fw_pre=%08x fw=%08x info=%08x mask=%08x cx_hw=%08x",
+                          (unsigned) ctlPre, (unsigned) g[0x5180u], (unsigned) fwPre, (unsigned) g[0x5100u],
+                          (unsigned) g[0x5192u], (unsigned) g[0x5193u], (unsigned) cxHw);
+            }
+            IOLog ("enchilada-adreno: %s\n", r325Row);
+            gDone = true;
+            return;
+        }
+    }
     if (stage >= 4u) {
         char ioRow[220];
         ioRow[0] = 0;
