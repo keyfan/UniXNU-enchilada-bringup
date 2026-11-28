@@ -10049,3 +10049,29 @@ CI **#447 `46006654853` success**（kernel `2e616351858f8a4dbabfcb5ebae2cba099e1
 139.3 后果与下一步：表所在的物理地址（`0xa82cb000`/`0xa82c6000`，内核静态缓冲）**从未进入 GMU 的 SMMU 上下文**。CM3 访问 DDR 要么走 GMU SMMU 的翻译、要么走另一条直通路径；R232–R234 已经证明这条 CB0 可以被编程（identity 2 MiB 块、`SCTLR=00001067`），而 R244 证明「队列表那一页没有被 CB0 覆盖」就会读表 fault。⇒ 下一轮要把**表的物理页映射进 GMU SMMU（identity 或指定 IOVA）**，并把 `QTBL_ADDR` 发布成固件能翻译的地址，然后再断言 INIT。
 139.4 边界：三键各 1/1；`ctl` 在 329 上始终是 0（没有表，固件不会启动 HFI，符合预期）；没有读到任何固件侧错误码（`CM3_FW_INIT_RESULT` 仍是 `babeface`，说明固件没崩、是我们这边先没的）。
 
+## 一百四十、R331：把 HFI 队列表页映射进 GMU SMMU（CB0）——`HFI_CTRL_INIT` 不再打死整机，传输缺口关闭；但固件仍不置 `HFI_CTRL_STATUS` bit0
+
+CI **#449 `46088861537` success**（kernel `6ef33e9a8e3f9f52e0825f1a1ecfd375dbfea0aa945a304b21574481ff4aa5c2`、payload `cecd9f1427bec70133072ceb031e9e1a7c0da1174ac0c176280df2089e23f8df`）。三键都用同一条冷启动前链，并在其上加了「建 2 MiB identity 块表 → 编程 CB0 九笔 → `SMR0`/`S2CR0` 路由」，只在「发布表 + INIT」上分岔。
+
+140.0 **先踩到一次构建坑（#448）**：第一次派发的探针（`46085847682`，kernel `2754952437…`、payload `60422aef…`）把 331/332/333 三段富代码全变成了「只剩 guard 一句」的桩。根因在 `package/EnchiladaAdrenoProbe.cpp:198-206`：`#if __has_include("AdrenoGmuBlobV1.h") … #else #define kAdrenoGmuBlobPresent 0 …`，该头由 `scripts/generate-gmu-blob.py` 从本机提取生成、被 gitignore，CI 上 `.cache/firmware` 为空时写 ABSENT stub；`!kAdrenoGmuBlobPresent` 是编译期常量，`if (… || !kAdrenoGmuBlobPresent || …)` 恒真 ⇒ guard 之后全部富行被死代码消除。#449 用 workflow 的两个 OPT-IN 输入 `extra_firmware_b64`（`a630_gmu.bin`，32768 B，sha256 `b07f9029…1621f`）与 `extra_firmware_layout="a630_gmu.bin:32768"` 把固件注入 `<device repo>/.cache/firmware/`，富行全部回来（`hfi4_setup/hfi4_table/hfi4_cb/hfi4_mapped/hfi4_init` 与 `hfi3_init` 各就位）。**教训：上机前必须先在产物 kernel.macho 里核对富行字符串存在。**
+
+| 键 | 形状 | 结果 |
+|---|---|---|
+| 331 | 建 identity 表 + 九笔 CB0 + 路由，**不发布不 INIT** | 落地（30 s 回 adb），见 140.1 |
+| 332 | 331 + 发布 + 掩码 + INIT，**单次读** | 落地（30 s），`gmu332e=… ctl=00000000 bit0=0 info=00000000` |
+| 333 | 331 + 发布 + 掩码 + INIT + 200000 拍轮询 | 落地（34 s），`gmu333e=… ctl=00000000 bit0=0 polls=200000 info=00800000` |
+
+331 逐字读数：`gmu331b=hfi4_table mode=331 tblpa=a82d0000 base=a8200000 fit=1 straddle=0 build=0 root=a82d4000 tables=3 writes=3 ias=48 oas=36`；`gmu331c=hfi4_cbplan mode=331 plan=0 n=9 abs=0 nab=9 cbndx=0 asid=0 ttbr=a82d4000 cw=1 id0=48016605`；`gmu331d=hfi4_cb mode=331 wrote=9 ttbr0=a82d4000/00000000 sctlr=00001067 tcr=00803510 tcr2=00038011 cbar=0001f300 smr=80000004 s2cr=00000000`；`gmu331e=hfi4_mapped mode=331 publish=0 pa=a82d0000 qtbl=00000000 qi=00000000 mask=00000000 fw=babeface nominit=1`。
+
+140.1 **传输缺口关闭（本轮最大进展）**：R330 的键 328/330（发布表 + INIT）**零行**、当场死机；R331 的键 332/333 在同一动作之上只多做了「CB0 identity 2 MiB 覆盖队列表页 + `SMR0=VALID|SID4` + `S2CR0=TRANS|CB0`」，结果**全部活着回来**（30/34 s 回 adb）。九笔 CB0 全部落位，readback 与 R232/R244 一致：`ttbr0=a82d4000/00000000`、`sctlr=00001067`、`tcr=00803510`、`cbar=0001f300`；并首次打出 `tcr2=00038011`（`SEP_UPSTREAM`+`AS`）。⇒ R244 的「表覆盖 + 路由」形状在「内核静态缓冲 + `ml_static_vtop`」上也成立：**旧死因 = 固件按表读时队列表页在 GMU SMMU 里没有翻译而 fault。这条从 R177 起追的老现象正式关闭。**
+
+140.2 **但固件仍不启动 HFI**：333 轮询 200000 拍后 `HFI_CTRL_STATUS` bit0 仍是 0（`ctl=00000000`）。发布侧落位正确：332/333 的 `qtbl=a82d0000`（= 我们发布的表 pa）、`qi=00000001`、`mask=ff7fffff`；331 未发布时 `qtbl=0/qi=0/mask=0`（符合「不发布就不写」）。`CM3_FW_INIT_RESULT` 一直 `babeface`。
+
+140.3 `info=0x00800000` = bit23 = **`A6XX_GMU_GMU2HOST_INTR_INFO_CM3_FAULT`**（HANDOFF.md:1678 明文；R250–R304 已多轮归因为「启动字之后延迟出现、留得住的状态」，且 R276 证明其背后没有硬件故障源）。⇒ 333 的 bit23 是**熟悉的 `CM3_FAULT` 再次出现**，不是新事件；`ctl` bit0 才是固件对 HFI 启动的应答（R304 钉住 `a6xx_gmu.c:242-255` 的读法），本轮它没置起。
+
+140.4 表结构未变：表头 `t[0..5]=0/120/6/12/2/2`（`AdrenoHfiV1.c:134` 的自检式 `m[0]==0 && m[1]==120 && m[2]==6 && m[3]==12` 通过），响应队列 type=`0xa04`（legacy resp id 4）。⇒ 缺口完全在固件侧的行为，不在我们这侧的表/映射。
+
+140.5 边界：三键各 1/1（各一次上机）；本轮未读 sGFSR / CB0 FSR（只看 `HFI_CTRL_STATUS` 与 `GMU2HOST_INTR_INFO`）；identity 映射只在 2 MiB 内成立，仅因内核静态缓冲 `a82d0000` 落在 2 MiB 块 `a8200000` 内（`fit=1`）。GPU 仍未渲染一帧，G1（GDSCR `cf` bit16）仍 0，准入表 `modeled=9/satisfied=0/BLOCKED`，`CONFIG_XNU_NATIVE_ADRENO=n`，进度约 15–20%。
+
+140.6 下一步（R332）：既然「INIT + 已覆盖的表」已能活，剩下的唯一缺口是「固件不置 `HFI_CTRL_STATUS` bit0」。要回答的是 legacy v1 启动握手缺哪一步：(a) 写 `HFI_CTRL_INIT` 之后是否还需敲 `HOST2GMU_INTR_SET` 的 bit0 门铃（R305 曾按 `a6xx_hfi.c` 设计过真发 legacy v1 INIT 消息）；(b) 固件究竟在哪一刻读队列表（R262/R264 已观察到「页第 4..7 字的内容会改变固件行为」，说明它确实读这页）；(c) 历史上 R303/R304 期间累计 12 采样里 9 次「被接受」（`ctl=00000001 bit0=1 polls=2`，键 268/269/271/273），要把它当时的形状与当前逐步对照，找出「会应答」的那一步差了哪一笔。
+
