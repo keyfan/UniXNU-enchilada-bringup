@@ -10210,3 +10210,35 @@ CI **#457 `46110219441` success**（kernel `c9319c3cec54fa7ecdcd80315539d9e8294c
 148.2 **fault 分毫未变**：355/356 与 352–354 完全一致（`fsr=00000402 far=282fd000 info=00800000`）。⇒ 既然 SMMU 本来就使能、CB0 页表也正确、alias 也装在正确 index，那 `far=tblPa&0x7fffffff` 的 `fsr=0x402` 就是一个**真实的 SMMU 页表翻译失败**，而不是 client-port 关闭。`FSR` 低 7 位 `0x02`（疑似 translation fault at level 2 —— 正落在我们放叶块的 level2，但内存里该叶块确实存在，`walk l2d=a8200401`），说明 SMMU 走的不是我们这条 CB0 表，或它在别处把该 VA 判失效。
 
 148.3 **R340 计划（把「SMMU 到底走不走 CB0 / 走到哪一级」测死）**：① 在 INIT 后**重读** CB0 的 `TTBR0/TCR/SCTLR`（检测 3 秒窗口内是否被别处改写）；② dump `CB_PAR(0x50)` 与 `CB_FSYNR0(0x68)`（PAR 给出走表得到的中间地址/属性，FSYNR0 给 fault 来源位）；③ **S2CR0 type=fault 判别器**：把 `S2CR0=0x00020000`（type=2 fault）后发布+INIT——若 fault 签名/位置随 SID4 变成「立即 fault」而与我们见到的 `far=282fd000` 不同，就说明 GMU 流走的不是 SID4/CB0；若签名相同，则确证走的正是 SID4→CB0。arg `enchilada-hfi13`，key 358..360。
+
+## 一百四十九、R340：改 SID4 路由就整机死 ⇒ GMU 流确实走 SID4/CB0；CB0 在 INIT 窗口里没被改写；下一个结构性嫌疑是 `CB_TCR.EAE(bit31)=0`
+
+CI **#458 `46112879357` success**（kernel `53c2ab3b379036073b4e37855a7849265e848d0a4c0254b3a4f4b96e84a56188`、payload `7022b78e95c96c4a48e9ec5de0c26b266197dde482d0d5b84f897caaf81b6705`，注入 `a630_gmu.bin`，`hfi13_*` 富行全在场）。三键都发布物理址 `qtbl=tblPa`、identity + 正确索引的 alias：
+
+| 键 | 形状 | 结果 |
+|---|---|---|
+| 358 | 标准路由（`SMR0=0x80000004`、`S2CR0=0`）+ INIT + 事后全量 dump | 正常启动，8 行齐全（见下） |
+| 359 | **`S2CR0=0x00020000`（type=FAULT）** | 窗口与 358 **逐字节相同**（sha `d5c8f074…`）、**无任何 `gmu359*` 行** ⇒ 内核在打印第一行之前就死了 |
+| 360 | **`SMR0=0`（SID4 变未识别流）** | 同样陈旧窗口 `d5c8f074…`、无 `gmu360*` 行 ⇒ 同样早死 |
+
+键 358 读数（34 s 回 adb）：
+```
+gmu358a=hfi13_setup mode=358 cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1
+gmu358b=hfi13_table mode=358 tblpa=a82fd000 pabase=a8200000 alias=28200000
+gmu358c=hfi13_walk mode=358 r0=a8302003 l1i=a8303003 l1d=a8304003 l2i=a8200401 l2d=a8200401 i2=321 d4=16384
+gmu358d=hfi13_cbplan mode=358 plan=0 n=9 abs=0 nab=9 cbndx=0 cbbase=8000 ttbr=a8301000 cw=1 ias=48 oas=36
+gmu358e=hfi13_cb mode=358 wrote=9 ttbr0=a8301000/00000000 sctlr=00001067 tcr=00803510 cbar=0001f300 smr=80000004 s2cr=00000000 fw=babeface
+gmu358f=hfi13_pub mode=358 pa=a82fd000 qtbl=a82fd000 qi=00000001 mask=ff7fffff preinfo=00000000
+gmu358g=hfi13_init mode=358 ctl=00000000 bit0=0 polls=200000 info=00800000
+gmu358h=hfi13_late mode=358 fsr=00000402 far=282fd000 fsynr0=00000021 par=00000000 t0=a8301000/00000000 tcr=00803510 sctlr=00001067 info=00800000
+```
+
+149.1 **GMU 流确实走 SID4**：只改 `S2CR0`（type fault）或 `SMR0`（清 SID4 映射），整机在探针块打印第一行之前就死。两者都是**纯 GR0 路由寄存器**的改动，和页表内容无关 ⇒ 说明有一路活跃的 SID4 事务，且它直接决定机器能不能活。R244 的 key 95/96 能活，是因为它们没有把「已发布的表 + INIT」放进这么多轮里跑；本轮说明**路由不是摆设**。
+
+149.2 **CB0 在 INIT 窗口内没有被改写**：`t0/tcr/sctlr` 在 INIT + `IODelay(20)` 之后与写完后立即读到的值**逐位相同**（`a8301000/00000000`、`00803510`、`00001067`），所以不是别人把我们的上下文冲掉了。`PAR(0x50)=00000000`（SMMU-500 的 CB_PAR 只由 AT 命令更新，普通 fault 不写，故此值为空是预期）。
+
+149.3 **fault 依旧、且与是否映 alias 无关**：`fsr=00000402 far=282fd000 fsynr0=00000021`。在 353/354/358 里 alias 已经明确装进了 level-1 idx 0（`l1d=a8304003`、`l2d=a8200401`，VA `0x28200000`→PA `0xa8200000`），fault 却没有一丝变化 ⇒ **SMMU 的 walk 没有按我们的长描述符表走**。
+
+149.4 **下一个结构性嫌疑：`CB_TCR` bit31 = `EAE`（Extended Address Enable）**。`adreno_smmu_ctx_tcr()` 只拼 `TG0/SH0/IRGN0/ORGN0/T0SZ/T1SZ/EPD0/EPD1`（`drivers/NativeAdreno/AdrenoSmmuCtxWordV1.c:120-128`），**不置 bit31**，因此我们写下去的 `tcr=0x00803510` 的 `EAE=0`。而 `EAE=0` 在 SMMU-500 里选的是 **32 位短描述符 walk**，我们的表是 48 位、4 级、3-bit type 的**长描述符**表 ⇒ 无论内存里放什么，walk 都会得到垃圾并在（被截断的）输入地址上报 translation fault。这与「描述符正确、索引正确、CB 未改写、fault 恒定」的观测完全一致。
+
+149.5 **R341 计划**：把计划的 TCR 写入在 `adreno_smmu_ctx_plan()` 之后就地 `|= 0x80000000u`（不动驱动，只改探针落笔值），三键都用 `EAE=1`：**361=identity+alias**（若 fault 消失，即证实 walk 模式错）、**362=只 alias**、**363=只 identity**。362/363 用来判 CM3 到底发的是哪个地址：若 363 的 `far` 变成 `a82fd000`，说明 CM3 用的是完整 PA、此前的「去 BIT31」是 walk 假象；若仍是 `282fd000`，则 CM3 真的截断。arg `enchilada-hfi14`。
