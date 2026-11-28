@@ -10178,3 +10178,35 @@ CI **#455 `46105539656` success**（kernel `632ebd7c81d8d8ecb0fda9437c16b2462196
 146.3 **顺带发现的 bug**：R336/R337 里 `off346 = tblPa346 & 0x1ffffull` 的掩码写成 `0x1ffff`（128 KiB−1），本应 `0x1fffff`（2 MiB−1），导致 `iovaVal` 偏移算错（`0x6001d000` 而非 `0x600fd000`）——但因 IOVA 方案已废，不再相关；R338 已彻底删掉 off/iova 变量。
 
 146.4 **R338 设计（修正 alias，物理址发布）**：R334/R335 的 alias 分支把描述符写进了**错误的一级 index**——alias VA `0x28200000` 的 level-1 index 是 **0**，而当时用 `lvl_idx(paBase,1)`=**2** 去写，所以 alias 从未真正安装（R334/R335 的「alias 无效」是索引 bug，不是结论）。R338 = 发布物理址 `tblPa` + 在 CB0 里把 **BIT31 清掉的地址 `0x28200000`→PA `paBase`** 装进正确 index（l1 idx 0 / l2 idx 0x141）：**352=只 identity**（对照）、**353=只 alias**、**354=identity+alias 双分支**。arg `enchilada-hfi11`，key 352..354。
+
+## 一百四十七、R338：把 BIT31 清零地址装进**正确**的一级 index 后仍 fault——原来是 GPU SMMU 全局 `sCR0` 把 client port 关了（`SMMUEN=0, CLIENTPD=1, GFERROR=1`）
+
+CI **#456 `46107979820` success**（kernel `69b71d9b5452aaaef544471e07fbee997766b4c3294007c461945f450e24c609`、payload `db6098d2a12b8dcbb49ed452a00c8b69865c9b829003e8973723d068aeb83888`，注入 `a630_gmu.bin`，`hfi11_*` 富行全在场）。三键都发布**物理址** `qtbl=tblPa`，修正 R334/R335 的索引 bug（alias VA `0x28200000` 的一级 index 应为 **0**）：
+
+| 键 | 形状 | 描述符 dump（`gmu*c=hfi11_walk`） | late |
+|---|---|---|---|
+| 352 | 只 identity（对照） | `r0=a8302003 l1i=a8303003 l1d=0 l2i=a8200401 l2d=0 i2=321 d4=16384` | `fsr=00000402 far=282fd000 info=00800000` |
+| 353 | 只 alias（`0x28200000`→paBase） | `r0=a8302003 l1i=0 l1d=a8304003 l2i=0 l2d=a8200401 i2=321 d4=16384`（alias 终于在 l1 idx 0 装上了） | `fsr=00000402 far=282fd000 info=00800000` |
+| 354 | identity+alias 双分支 | `r0=a8302003 l1i=a8303003 l1d=a8304003 l2i=a8200401 l2d=a8200401 i2=321 d4=16384` | `fsr=00000402 far=282fd000 info=00800000` |
+
+147.1 **判决**：alias 这次**装对了**（353 的 `l1d=a8304003` 在 index 0、`l2d=a8200401` 在 `0x141`；354 两分支都在），但三键 `late` **逐字相同**（`fsr=00000402 far=282fd000`）。⇒ **CB0 的页表根本不在这个地址的翻译路径上**，改页表无济于事。
+
+147.2 **根因（读全局 `sCR0`）**：三键 `gmu*f=hfi11_glob scr0=00200626`。按 ARM SMMU-500 `sCR0` 位定义：`bit0=SMMUEN`、`bit1=CLIENTPD`、`bit2=GFERROR`（W1C）、`bit3=GFATAL`（W1C）。`0x00200626` ⇒ **`SMMUEN=0`（SMMU 未使能）、`CLIENTPD=1`（client port 关闭）、`GFERROR=1`（全局故障）**。⇒ 无论 CB0 页表怎么建，GPU 客户端的访问都被 client-port-disable 终止为 fault。这解释了 339–354 全部「干净 translation fault」且 alias 无效；也解释了为什么故障地址是 `PA&0x7fffffff`（client-port-disabled 终止时的地址记录）。`SMR0=0x80000004`/`S2CR0=0x00000000` 与我们写入一致（但 SMMUEN=0 使它们不生效）。
+
+147.3 **R339 设计**：在发布+INIT 前**使能 GPU SMMU**——写 `sCR0 = (old | SMMUEN(0x1) | 清 GFERROR(0x4) | 清 GFATAL(0x8)) & ~CLIENTPD(0x2)`，读回 `sCR0`/`sGFSR(0x48)` 前后值，再发布+INIT。arg `enchilada-hfi12`，key 355..357：**355**=identity+alias+使能+发布+INIT；**356**=同上且在使能后重新断言 SMR0/S2CR0；**357**=只使能 `sCR0`（安全对照：不发布不 INIT，先确认使能本身不打死系统）。
+
+## 一百四十八、R339：`sCR0` 位解错了——`0x00200626` 表示 GPU SMMU **本来就已使能**（`CLIENTPD(bit0)=0, GFRE(bit1)=1, GFIE(bit2)=1`）；「使能」写只清掉了 GFRE，fault 分毫未变
+
+CI **#457 `46110219441` success**（kernel `c9319c3cec54fa7ecdcd80315539d9e8294c52ac6ad9cb782d45344b41ef8db3`、payload `cb8aa16be6965b8914a45f8d343db4f7abf32d35e765d7b33ed5320715843261`，注入 `a630_gmu.bin`，`hfi12_*` 富行全在场）。三键都发布物理址 `qtbl=tblPa`：
+
+| 键 | 形状 | 关键读数 |
+|---|---|---|
+| 357 | 只写 `sCR0`（安全对照，不发布不 INIT） | 正常启动；`gmu357f glob scr0=00200626 smr0=80000004 s2cr0=00000000 gfsr=00000000`；`gmu357g scr0 pre=00200626 want=0020062d post=00200624 gpre=00000000 gpost=00000000`；`gmu357j late fsr=00000400 far=00000000 info=00000000 scr0=00200624` |
+| 355 | 写 `sCR0` + 发布 + INIT | `gmu355g pre=00200626 want=0020062d post=00200624`；`gmu355h pub pa=a82fd000 qtbl=a82fd000 qi=00000001`；`gmu355i init ctl=00000000 bit0=0 info=00800000`；`gmu355j late fsr=00000402 far=282fd000 info=00800000 scr0=00200624` |
+| 356 | 同上 + 使能后重断言 SMR0/S2CR0 | 与 355 逐字相同（`scr0 post=00200624`、`late fsr=00000402 far=282fd000`） |
+
+148.1 **判决（更正 R338 的位解读）**：ARM SMMU-500 `sCR0` 的 **bit0 是 `CLIENTPD`**（不是 `SMMUEN`）、bit1 `GFRE`、bit2 `GFIE`。`0x00200626` ⇒ **`CLIENTPD=0`（客户端口已开，SMMU 已使能）**、`GFRE=1`、`GFIE=1`、另有 bit5/6/9/10/21。我们写的 `want=0x0020062d`（多设 bit0、清 bit1、置 bit2/3）**只有 bit1（GFRE）真的被清成 `post=0x00200624`**，bit0 写不进（保持 0=已使能）。⇒ **R338「SMMU 未使能、client port 关」的前提是错的；GPU SMMU 本来就是开的。** SR0/SMR0/S2CR0 配置本来就生效。
+
+148.2 **fault 分毫未变**：355/356 与 352–354 完全一致（`fsr=00000402 far=282fd000 info=00800000`）。⇒ 既然 SMMU 本来就使能、CB0 页表也正确、alias 也装在正确 index，那 `far=tblPa&0x7fffffff` 的 `fsr=0x402` 就是一个**真实的 SMMU 页表翻译失败**，而不是 client-port 关闭。`FSR` 低 7 位 `0x02`（疑似 translation fault at level 2 —— 正落在我们放叶块的 level2，但内存里该叶块确实存在，`walk l2d=a8200401`），说明 SMMU 走的不是我们这条 CB0 表，或它在别处把该 VA 判失效。
+
+148.3 **R340 计划（把「SMMU 到底走不走 CB0 / 走到哪一级」测死）**：① 在 INIT 后**重读** CB0 的 `TTBR0/TCR/SCTLR`（检测 3 秒窗口内是否被别处改写）；② dump `CB_PAR(0x50)` 与 `CB_FSYNR0(0x68)`（PAR 给出走表得到的中间地址/属性，FSYNR0 给 fault 来源位）；③ **S2CR0 type=fault 判别器**：把 `S2CR0=0x00020000`（type=2 fault）后发布+INIT——若 fault 签名/位置随 SID4 变成「立即 fault」而与我们见到的 `far=282fd000` 不同，就说明 GMU 流走的不是 SID4/CB0；若签名相同，则确证走的正是 SID4→CB0。arg `enchilada-hfi13`，key 358..360。
