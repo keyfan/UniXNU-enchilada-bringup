@@ -3049,8 +3049,9 @@ extern "C" void enchilada_adreno_poll(void) {
             static uint8_t s379Blob[8u * 4096u] __attribute__((aligned(4096)));
             char r379Row[560];
             const unsigned mode379 = hfi19;
-            const int pubIova379 = (mode379 == 380u) ? 0 : 1;
-            const int fullInit379 = (mode379 == 381u) ? 0 : 1;
+            const int sid5On379 = (mode379 == 380u) ? 0 : 1;
+            const int pubIova379 = (mode379 == 381u) ? 1 : 0;
+            const int fullInit379 = 1;
             const uint32_t pollMax379 = 2000u;
             if (s379Win == 0u) s379Win = (uintptr_t) armcpu_map_physical (ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE);
             if (s379Gmu == 0u) s379Gmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
@@ -3080,10 +3081,10 @@ extern "C" void enchilada_adreno_poll(void) {
             const uint32_t id1_379 = (s379Smmu != 0u) ? rd32 (s379Smmu, 0x24u) : 0u;
             const uint32_t geom379 = (s379Smmu != 0u) ? adreno_install_cb_geometry (id1_379, &geo379) : 1u;
             snprintf (r379Row, sizeof r379Row,
-                      "gmu%ua=hfi19_setup mode=%u cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d fullinit=%d pubiova=%d pollmax=%u",
+                      "gmu%ua=hfi19_setup mode=%u cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d sid5=%d fullinit=%d pubiova=%d pollmax=%u",
                       (unsigned) mode379, (unsigned) mode379, (unsigned) cx379, cxOn379, (unsigned) geom379,
                       (unsigned) geo379.pgshift, (unsigned) geo379.cb_base, (unsigned) geo379.num_context_banks,
-                      (s379Smmu != 0u) ? 1 : 0, fullInit379, pubIova379, (unsigned) pollMax379);
+                      (s379Smmu != 0u) ? 1 : 0, sid5On379, fullInit379, pubIova379, (unsigned) pollMax379);
             IOLog ("enchilada-adreno: %s\n", r379Row);
             if (cxOn379 == 0) { IOLog ("enchilada-adreno: gmu%ub=hfi19 refused-cx-down\n", (unsigned) mode379); gDone = true; return; }
             if (s379Smmu == 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi19 refused-no-smmu-window\n", (unsigned) mode379); gDone = true; return; }
@@ -3218,8 +3219,15 @@ extern "C" void enchilada_adreno_poll(void) {
             __asm__ volatile ("dsb sy" ::: "memory");
             volatile uint32_t *smr379 = (volatile uint32_t *) (static_cast<uintptr_t>(s379Smmu) + 0x800u);
             volatile uint32_t *s2cr379 = (volatile uint32_t *) (static_cast<uintptr_t>(s379Smmu) + 0xc00u);
-            smr379[0] = (uint32_t) (0x80000000u | 4u);
-            s2cr379[0] = (uint32_t) cbndx379;
+            smr379[0] = 0u;
+            s2cr379[0] = 0u;
+            if (sid5On379 != 0) {
+                smr379[5] = (uint32_t) (0x80000000u | 5u);
+                s2cr379[5] = (uint32_t) cbndx379;
+            } else {
+                smr379[0] = (uint32_t) (0x80000000u | 4u);
+                s2cr379[0] = (uint32_t) cbndx379;
+            }
             __asm__ volatile ("dsb sy" ::: "memory");
             volatile uint32_t *fsr379 = (volatile uint32_t *) (static_cast<uintptr_t>(s379Smmu) + cbBase379 + 0x58u);
             fsr379[0] = 0xffffffffu;
@@ -3244,9 +3252,10 @@ extern "C" void enchilada_adreno_poll(void) {
                       (unsigned) sct379, (unsigned) tcr379, (unsigned) bar379, (unsigned) tlbiStat379);
             IOLog ("enchilada-adreno: %s\n", r379Row);
             snprintf (r379Row, sizeof r379Row,
-                      "gmu%uf=hfi19_glob mode=%u scr0=%08x smr0=%08x s2cr0=%08x gfsr=%08x gfsynr1=%08x",
+                      "gmu%uf=hfi19_glob mode=%u scr0=%08x smr0=%08x s2cr0=%08x smr5=%08x s2cr5=%08x gfsr=%08x gfsynr1=%08x",
                       (unsigned) mode379, (unsigned) mode379, (unsigned) rd32 (s379Smmu, 0x0u),
                       (unsigned) rd32 (s379Smmu, 0x800u), (unsigned) rd32 (s379Smmu, 0xc00u),
+                      (unsigned) rd32 (s379Smmu, 0x814u), (unsigned) rd32 (s379Smmu, 0xc14u),
                       (unsigned) rd32 (s379Smmu, 0x48u), (unsigned) rd32 (s379Smmu, 0x54u));
             IOLog ("enchilada-adreno: %s\n", r379Row);
             uint32_t parPa379 = 0u;
@@ -3275,7 +3284,7 @@ extern "C" void enchilada_adreno_poll(void) {
                       (unsigned) mode379, (unsigned) mode379, (unsigned) parPa379, (unsigned) parAl379,
                       (unsigned) parIo379, (unsigned) atsr379);
             IOLog ("enchilada-adreno: %s\n", r379Row);
-            if (fullInit379 != 0) g379[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;
+            if (sid5On379 != 0) g379[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;
             for (unsigned wi = 0u; wi < kAdrenoGmuImageWords; ++wi) {
                 g379[kAdrenoGmuItcmWord + wi] = adreno_gmu_image[wi];
                 if ((wi & 0xffu) == 0xffu) __asm__ volatile ("dsb sy" ::: "memory");
@@ -3283,7 +3292,7 @@ extern "C" void enchilada_adreno_poll(void) {
             __asm__ volatile ("dsb sy" ::: "memory");
             g379[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;
             g379[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
-            if (fullInit379 != 0) {
+            if (sid5On379 != 0) {
                 g379[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = (uint32_t) pubAddr379;
                 g379[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
                 g379[ADRENO_GMU_BOOT_V1_AHB_FENCE_RANGE_0] = (uint32_t) 0x802800a0u;
@@ -3312,7 +3321,7 @@ extern "C" void enchilada_adreno_poll(void) {
                 IODelay (1u);
             }
             uint32_t sptp379 = 0u;
-            if (fullInit379 != 0) {
+            if (sid5On379 != 0) {
                 g379[ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL] = ADRENO_GMU_BOOT_V1_SPTPRAC_ON_VALUE;
                 __asm__ volatile ("dsb sy" ::: "memory");
                 for (uint32_t i = 0u; i < 200u; ++i) {
@@ -3331,7 +3340,7 @@ extern "C" void enchilada_adreno_poll(void) {
                       (unsigned) g379[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS],
                       (unsigned) sptp379);
             IOLog ("enchilada-adreno: %s\n", r379Row);
-            if (fullInit379 == 0) {
+            if (sid5On379 == 0) {
                 g379[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = (uint32_t) pubAddr379;
                 g379[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
                 g379[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] = (uint32_t) (pubAddr379 + 3u * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
