@@ -10552,3 +10552,38 @@ IOVA 那一路，CM3 读到了真数据、队列表头合法（`size=120`、`qhd
    就能把 `[0x60000000, 0x61000000)` 全部映射进来，让表、两个队列、CP_MSG 都在范围内。
 2. **补 AHB/GDSC/RPMh**：R346 的读数（fence/SFR/CP_MSG 读回 0、`CM3_CFG` 正常）说明
    GMU 窗口的 AHB wrapper 段没上电。上游靠 `a6xx_rpmh_start` + GDSC，我们从没做。
+
+## 一百六十、R350：`CX_GMU_CBCR` 的 wake/sleep 字段（`0xf0f`）本身就是致死动作
+
+R349 的结论把下一步指向「让 CM3 读到表之后不要撞死」。R350 一次加了两个动作：扩展 IOVA 映射
+与 CX_GMU 时钟的 wake/sleep 字段。三键里 391（IOVA + `0xf0f` + INIT）与 393（**PA** + `0xf0f` + INIT）
+都在日志落盘前死（窗口仍是 R349 键 390 的 `ac25eda4…`），而此前同一骨架**不带 `0xf0f`** 的
+384/390（PA + INIT）都是活的。
+
+| 键 | 发布值 | `0xf0f` | INIT | 结果 |
+|---|---|---|---|---|
+| 384 / 390 | PA | 无 | 有 | **活** |
+| 391 | IOVA | 有 | 有 | **死** |
+| 393 | **PA** | **有** | 有 | **死** |
+
+⇒ **判决：`w[0x1098/4] |= 0xf0f`（把 CX_GMU_CBCR 的 SLEEP/W AKE 字段都写成 0xf）是新的致死动作**，
+与 IOVA、与表内容、与扩展 init 都无关。上游 `gpucc-sdm845.c` 是在 **branch 还 disabled** 时
+`regmap_update_bits(0x1098, 0xff0, 0xf0f)`，之后才 `clk_prepare_enable()` 置 bit0；我们的块顺序相反
+（先 `|=1` 使能，再把 `0xf0f` OR 进正在跑的 branch）。R351 就是去把「顺序」与「字段」分开。
+
+## 一百六十一、R351：字段本身有毒，不是顺序——`CX_GMU_CBCR` 保持 bootloader 留下的 `0x4221` 就好
+
+R351 三键全部 PA 发布、无扩展 init、写 INIT、poll 200，只改时钟写的顺序：
+
+| 键 | 时钟动作 | 结果 |
+|---|---|---|
+| 394 | 先写 `0xf0f`，再置 bit0（上游顺序） | **死**（窗口仍是 `ac25eda4…`） |
+| 395 | 只写 `0xf0f`，**永不置 bit0** | **死**（同一陈旧窗口） |
+| 396 | 只置 bit0（基线，即历轮一直在做的） | **活**，12 行全出，窗口 `48062b7e…` |
+
+396 的关键读数：`gmu396m=hfi24_clk mode=396 clkmode=0 cxgmu=00004221 cxo=00000001 cxgdscr=f8222000`。
+
+`cxgmu=0x4221` 拆开看：bit0（CLK_ENABLE）=1、bits7:4（SLEEP）=**2**、bits11:8（WAKE）=**2**。
+⇒ **bootloader 早已把 wake/sleep 配成 2/2 并置了使能**，`0xf0f` 会把它们改成 `0xf/0xf`——
+对这个 branch 是非法配置，时钟停振，GMU 侧 AHB 访问全部挂死。**结论：`0x1098` 一个字都不要写，
+顺序也不是问题，字段值才是。** 同时 396 的 `cxgdscr=f8222000` 证明 CX GDSC 已上电（bit31=1）。
