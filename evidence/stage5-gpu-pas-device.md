@@ -10242,3 +10242,21 @@ gmu358h=hfi13_late mode=358 fsr=00000402 far=282fd000 fsynr0=00000021 par=000000
 149.4 **下一个结构性嫌疑：`CB_TCR` bit31 = `EAE`（Extended Address Enable）**。`adreno_smmu_ctx_tcr()` 只拼 `TG0/SH0/IRGN0/ORGN0/T0SZ/T1SZ/EPD0/EPD1`（`drivers/NativeAdreno/AdrenoSmmuCtxWordV1.c:120-128`），**不置 bit31**，因此我们写下去的 `tcr=0x00803510` 的 `EAE=0`。而 `EAE=0` 在 SMMU-500 里选的是 **32 位短描述符 walk**，我们的表是 48 位、4 级、3-bit type 的**长描述符**表 ⇒ 无论内存里放什么，walk 都会得到垃圾并在（被截断的）输入地址上报 translation fault。这与「描述符正确、索引正确、CB 未改写、fault 恒定」的观测完全一致。
 
 149.5 **R341 计划**：把计划的 TCR 写入在 `adreno_smmu_ctx_plan()` 之后就地 `|= 0x80000000u`（不动驱动，只改探针落笔值），三键都用 `EAE=1`：**361=identity+alias**（若 fault 消失，即证实 walk 模式错）、**362=只 alias**、**363=只 identity**。362/363 用来判 CM3 到底发的是哪个地址：若 363 的 `far` 变成 `a82fd000`，说明 CM3 用的是完整 PA、此前的「去 BIT31」是 walk 假象；若仍是 `282fd000`，则 CM3 真的截断。arg `enchilada-hfi14`。
+
+## 一百五十、R341：fault 对我们的 S1 页表完全免疫（EAE 无关、alias 无关、identity 无关）⇒ 嫌疑转向 stage-2
+
+CI **#459 `46115796876` success**（kernel `d2b199b329b3c0e1186fa9e5d9e032bba738d68e203843d6cbabb8195dbdd2a3`、payload `ba0d4cee1c6f855f24f8db86192226352746960c0725d07d00b0da18b8bf036e`，`hfi14_*` 富行齐全）。三键都把计划里的 TCR 落笔改成 `|= 0x80000000`（EAE=1），落笔后回读 `tcr=80803510` 确认生效：
+
+| 键 | 映射 | 结果 |
+|---|---|---|
+| 361 | identity + alias | `fsr=00000402 far=282fd000` |
+| 362 | **只 alias**（`0x28200000`→paBase，`0xa82xxxxx` 不映） | `fsr=00000402 far=282fd000` —— **逐字相同** |
+| 363 | **只 identity**（`0xa82xxxxx` 映，`0x282xxxxx` 不映） | `fsr=00000402 far=282fd000` —— **逐字相同** |
+
+三键共有的读数字段：`ttbr0=a8301000/00000000`、`tcr=80803510`、`sctlr=00001067`、`scr0=00200626`、`smr0=80000004`、`s2cr0=00000000`、`gfsr=00000000`、`par=00000000`、`info=00800000`、`ctl=00000000 bit0=0 polls=200000`。
+
+150.1 **EAE 不是原因**：`tcr` 的 bit31 已经置起（`0x80803510`），长描述符模式确认生效，fault 一点没变。
+150.2 **fault 与「我们的 S1 表映了哪个 VA」完全无关**：362 只映 `0x282xxxxx` 时 fault 仍在 `0x282fd000`；363 只映 `0xa82xxxxx` 时 fault **还是**在 `0x282fd000`。若 walk 真的在读我们的表，这两键至少有一个应改观。⇒ **walker 没有使用我们编程的 S1 表**，或根本不走 S1。
+150.3 **`fsr=0x402` 的 bit10**：SMMU-500 的 CB_FSR 中 bit10 是 stage 指示位；`0x402` 因此更像**一次 stage-2 的 translation fault**（FS 低 7 位 `0x02`），而我们从未编程 `CB_S2TTB0/VTCR`，stage-2 表为空 ⇒ 无论 S1 怎么改都必然 fault，这与 361/362/363 的观测**完全一致**。
+150.4 由此回看 R340：改 `S2CR0`（type=fault）或 `SMR0`（SID4 未识别）会整机死，说明这路 SID4 事务确实活跃且路由承重；R339 的 `sCR0` 位解（bit0=CLIENTPD，已使能）也不冲突。
+150.5 **R342 计划**：① 读 SMMU 全局故障寄存器组 `sGFAR(0x40)`/`sGFSR(0x48)`/`sGFSYNR0(0x50)`/`sGFSYNR1(0x54)`/`sGFSYNR2(0x58)`——`sGFSYNR1` 是**上一条全局故障的 SID**，可直接证实/否证 SID4；② 写 `S2CR0 = 1`（BYPASS）看机器是否存活、`info` 是否清零（若活，说明 fatal 的是翻译路径本身）；③ 同时把 `SMR1=0x80000005`/`S2CR1=0` 也置上，排除「GMU 其实是 SID5」。arg `enchilada-hfi15`，key 364..366。
