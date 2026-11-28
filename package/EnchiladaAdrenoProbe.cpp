@@ -3040,6 +3040,243 @@ extern "C" void enchilada_adreno_poll(void) {
             return;
         }
     }
+    {
+        unsigned hfi9 = 0u;
+        if (PE_parse_boot_argn ("enchilada-hfi9", &hfi9, sizeof hfi9) && hfi9 >= 346u && hfi9 <= 348u) {
+            static uintptr_t s346Win = 0u;
+            static uintptr_t s346Gmu = 0u;
+            static uintptr_t s346Smmu = 0u;
+            static uint8_t s346Blob[8u * 4096u] __attribute__((aligned(4096)));
+            char r346Row[460];
+            const unsigned mode346 = hfi9;
+            if (s346Win == 0u) s346Win = (uintptr_t) armcpu_map_physical (ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE);
+            if (s346Gmu == 0u) s346Gmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
+            if (s346Win == 0u || s346Gmu == 0u || !kAdrenoGmuBlobPresent || !(&ml_static_vtop)) {
+                snprintf (r346Row, sizeof r346Row, "gmu%ua=hfi9 ok=0 mode=%u reason=no-window-blob-or-vtop",
+                          (unsigned) mode346, (unsigned) mode346);
+                IOLog ("enchilada-adreno: %s\n", r346Row);
+                gDone = true;
+                return;
+            }
+            volatile uint32_t *w346 = (volatile uint32_t *) s346Win;
+            volatile uint32_t *g346 = (volatile uint32_t *) s346Gmu;
+            w346[0x1098u / 4u] = (w346[0x1098u / 4u] | 1u);
+            w346[0x109cu / 4u] = (w346[0x109cu / 4u] | 1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            IODelay (2u);
+            w346[0x106cu / 4u] = (w346[0x106cu / 4u] & ~1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            for (uint32_t i = 0u; i < 2000u; ++i) {
+                if ((w346[0x1540u / 4u] >> 31) & 1u) break;
+                IODelay (1u);
+            }
+            for (unsigned wi = 0u; wi < kAdrenoGmuImageWords; ++wi) {
+                g346[kAdrenoGmuItcmWord + wi] = adreno_gmu_image[wi];
+                if ((wi & 0xffu) == 0xffu) __asm__ volatile ("dsb sy" ::: "memory");
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            g346[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
+            g346[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            uint32_t fwNow346 = 0u;
+            for (uint32_t i = 0u; i < 20000u; ++i) {
+                fwNow346 = g346[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT];
+                if (fwNow346 == 0xbabefaceu) break;
+                IODelay (1u);
+            }
+            const uint32_t cx346 = rd32 (s346Win, kCxOffset);
+            const int cxOn346 = adreno_domain_cx_is_on (cx346);
+            if (s346Smmu == 0u && cxOn346) s346Smmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_KGSL_SMMU_BASE, ADRENO_BOARD_KGSL_SMMU_SIZE);
+            struct adreno_install_geo geo346 = {};
+            const uint32_t id1_346 = (s346Smmu != 0u) ? rd32 (s346Smmu, 0x24u) : 0u;
+            const uint32_t geom346 = (s346Smmu != 0u) ? adreno_install_cb_geometry (id1_346, &geo346) : 1u;
+            snprintf (r346Row, sizeof r346Row,
+                      "gmu%ua=hfi9_setup mode=%u cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d",
+                      (unsigned) mode346, (unsigned) mode346, (unsigned) cx346, cxOn346, (unsigned) geom346,
+                      (unsigned) geo346.pgshift, (unsigned) geo346.cb_base, (unsigned) geo346.num_context_banks,
+                      (s346Smmu != 0u) ? 1 : 0);
+            IOLog ("enchilada-adreno: %s\n", r346Row);
+            if (cxOn346 == 0) { IOLog ("enchilada-adreno: gmu%ub=hfi9 refused-cx-down fw=%08x\n", (unsigned) mode346, (unsigned) fwNow346); gDone = true; return; }
+            if (s346Smmu == 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi9 refused-no-smmu-window\n", (unsigned) mode346); gDone = true; return; }
+            if (geom346 != 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi9 refused-geometry\n", (unsigned) mode346); gDone = true; return; }
+            const uint32_t cbndx346 = 0u;
+            const uint32_t cbBase346 = geo346.cb_base + (cbndx346 << geo346.pgshift);
+            const uint64_t tblPa346 = (uint64_t) ml_static_vtop ((uintptr_t) &s346Blob[0]);
+            const uint64_t paBase346 = tblPa346 & ~((uint64_t) 0x1fffffull);
+            const uint64_t off346 = tblPa346 & (uint64_t) 0x1ffffull;
+            const uint32_t iovaBase346 = (mode346 == 347u) ? 0x40000000u : 0x60000000u;
+            const uint64_t iovaVal346 = (uint64_t) iovaBase346 + off346;
+            const int dual346 = (mode346 == 348u) ? 1 : 0;
+            volatile uint32_t *t346 = reinterpret_cast<volatile uint32_t *> (&s346Blob[0]);
+            for (uint32_t i = 0u; i < (uint32_t) ((ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES) / 4u); ++i) t346[i] = 0u;
+            t346[1] = ADRENO_HFI_V1_TABLE_SIZE_BYTES;
+            t346[2] = ADRENO_HFI_V1_QHDR0_OFFSET_WORDS;
+            t346[3] = ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+            t346[4] = ADRENO_HFI_V1_QUEUE_COUNT;
+            t346[5] = ADRENO_HFI_V1_QUEUE_COUNT;
+            for (uint32_t qi = 0u; qi < ADRENO_HFI_V1_QUEUE_COUNT; ++qi) {
+                const uint32_t id = (qi == 0u) ? ADRENO_HFI_V1_CMD_QUEUE_ID : ADRENO_HFI_V1_RESP_QUEUE_ID;
+                volatile uint32_t *qh = t346 + ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + qi * ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+                qh[0] = 1u;
+                qh[1] = (uint32_t) (iovaVal346 + (uint64_t) (qi + 1u) * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+                qh[2] = ADRENO_HFI_V1_QUEUE_TYPE (id);
+                qh[3] = ADRENO_HFI_V1_QUEUE_WORDS;
+                qh[6] = 1u; qh[7] = 1u; qh[8] = 1u;
+                qh[10] = 0u; qh[11] = 0u;
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            struct adreno_lpae_geo l346 = {};
+            adreno_lpae_geometry ((uint32_t) 48u, (uint32_t) 12u, &l346);
+            const uint64_t prot346 = (uint64_t) (kAdrenoLpaePteValid | kAdrenoLpaePteAf);
+            const uint64_t iovaB346 = (uint64_t) iovaBase346;
+            const uint32_t iIdent346 = adreno_lpae_lvl_idx (iovaB346, 0u, &l346);
+            const uint32_t l1Iova346 = adreno_lpae_lvl_idx (iovaB346, 1u, &l346);
+            const uint32_t l2Iova346 = adreno_lpae_lvl_idx (iovaB346, 2u, &l346);
+            const uint32_t l1Ident346 = adreno_lpae_lvl_idx (paBase346, 1u, &l346);
+            const uint32_t l2Ident346 = adreno_lpae_lvl_idx (paBase346, 2u, &l346);
+            const uint64_t paRoot346 = tblPa346 + (uint64_t) (4u * 4096u);
+            const uint64_t paL1 = tblPa346 + (uint64_t) (5u * 4096u);
+            const uint64_t paL2hi = tblPa346 + (uint64_t) (6u * 4096u);
+            const uint64_t paL2lo = tblPa346 + (uint64_t) (7u * 4096u);
+            volatile uint64_t *tbl346 = reinterpret_cast<volatile uint64_t *> (&s346Blob[4u * 4096u]);
+            for (uint32_t i = 0u; i < 4u * 512u; ++i) tbl346[i] = 0ull;
+            volatile uint64_t *root346 = reinterpret_cast<volatile uint64_t *> (&s346Blob[4u * 4096u]);
+            volatile uint64_t *l1_346 = reinterpret_cast<volatile uint64_t *> (&s346Blob[5u * 4096u]);
+            volatile uint64_t *l2hi346 = reinterpret_cast<volatile uint64_t *> (&s346Blob[6u * 4096u]);
+            volatile uint64_t *l2lo346 = reinterpret_cast<volatile uint64_t *> (&s346Blob[7u * 4096u]);
+            root346[iIdent346] = adreno_lpae_table_pte (paL1);
+            l1_346[l1Iova346] = adreno_lpae_table_pte (paL2hi);
+            l2hi346[l2Iova346] = adreno_lpae_leaf_pte ((uint32_t) prot346, 2u, paBase346);
+            if (dual346 != 0) {
+                l1_346[l1Ident346] = adreno_lpae_table_pte (paL2lo);
+                l2lo346[l2Ident346] = adreno_lpae_leaf_pte ((uint32_t) prot346, 2u, paBase346);
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            for (uintptr_t a346 = (uintptr_t) &s346Blob[0]; a346 < (uintptr_t) &s346Blob[8u * 4096u]; a346 += 64u) {
+                __asm__ volatile ("dc cvac, %0" :: "r" (a346) : "memory");
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            snprintf (r346Row, sizeof r346Row,
+                      "gmu%ub=hfi9_table mode=%u tblpa=%08x pabase=%08x iova=%08x iovabase=%08x dual=%d",
+                      (unsigned) mode346, (unsigned) mode346, (unsigned) tblPa346, (unsigned) paBase346,
+                      (unsigned) iovaVal346, (unsigned) iovaB346, dual346);
+            IOLog ("enchilada-adreno: %s\n", r346Row);
+            snprintf (r346Row, sizeof r346Row,
+                      "gmu%uc=hfi9_walk mode=%u r0=%llx l1i=%llx l1d=%llx l2i=%llx l2d=%llx i2=%u d4=%u",
+                      (unsigned) mode346, (unsigned) mode346,
+                      (unsigned long long) root346[iIdent346], (unsigned long long) l1_346[l1Iova346],
+                      (unsigned long long) l1_346[l1Ident346], (unsigned long long) l2hi346[l2Iova346],
+                      (unsigned long long) l2lo346[l2Ident346], (unsigned) l2Iova346,
+                      (unsigned) ((uint32_t) (ml_static_vtop ((uintptr_t) &s346Blob[4u * 4096u]) - (uintptr_t) tblPa346)));
+            IOLog ("enchilada-adreno: %s\n", r346Row);
+            uint32_t ias346 = 0u;
+            uint32_t oas346 = 0u;
+            uint32_t id0_346 = 0u;
+            struct adreno_iommu_id2 d346 = {};
+            {
+                const uint32_t id2w = (s346Smmu != 0u) ? rd32 (s346Smmu, 0x28u) : 0u;
+                int ok346 = 0;
+                ias346 = (adreno_iommu_id2_decode (id2w, &d346) == 0) ? adreno_iommu_va_size (id2w, 2u, &ok346) : 0u;
+                oas346 = adreno_iommu_stage1_oas (id2w);
+                id0_346 = (s346Smmu != 0u) ? rd32 (s346Smmu, 0x20u) : 0u;
+            }
+            struct adreno_smmu_ctx_params p346;
+            p346.cbndx = cbndx346; p346.asid = 0u; p346.ttbr = paRoot346;
+            p346.ias = (ias346 >= 32u) ? ias346 : 36u;
+            p346.oas = (oas346 >= 32u) ? oas346 : 36u;
+            p346.coherent_walk = adreno_iommu_coherent_walk (id0_346, 0u);
+            p346.ttbr1 = 0u; p346.aarch64 = 1u; p346.vmid16 = 0u; p346.vmid = 0u;
+            struct adreno_smmu_ctx_write plan346[12];
+            struct adreno_install_write abs346[12];
+            uint32_t nplan346 = 0u, nabs346 = 0u;
+            const int plan346rc = adreno_smmu_ctx_plan (&p346, plan346, 12u, &nplan346);
+            const uint32_t abs346rc = adreno_install_absolute (&geo346, cbndx346, plan346, nplan346, abs346, 12u, &nabs346);
+            snprintf (r346Row, sizeof r346Row,
+                      "gmu%ud=hfi9_cbplan mode=%u plan=%d n=%u abs=%u nab=%u cbndx=%u cbbase=%04x ttbr=%08x cw=%u ias=%u oas=%u",
+                      (unsigned) mode346, (unsigned) mode346, plan346rc, (unsigned) nplan346, (unsigned) abs346rc,
+                      (unsigned) nabs346, (unsigned) cbndx346, (unsigned) cbBase346, (unsigned) paRoot346,
+                      (unsigned) p346.coherent_walk, (unsigned) ias346, (unsigned) oas346);
+            IOLog ("enchilada-adreno: %s\n", r346Row);
+            if (plan346rc != 0 || abs346rc != 0u) { gDone = true; return; }
+            for (uint32_t k346 = 0u; k346 < nabs346; ++k346) {
+                const uintptr_t r346frame = (abs346[k346].gr1 != 0u)
+                    ? static_cast<uintptr_t>(s346Smmu) + (static_cast<uintptr_t>(1u) << geo346.pgshift)
+                    : static_cast<uintptr_t>(s346Smmu);
+                volatile uint32_t *rw346 = (volatile uint32_t *) (r346frame + static_cast<uintptr_t>(abs346[k346].offset));
+                rw346[0] = abs346[k346].value;
+                if (abs346[k346].is_64bit) rw346[1] = abs346[k346].value_hi;
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            volatile uint32_t *smr346 = (volatile uint32_t *) (static_cast<uintptr_t>(s346Smmu) + 0x800u);
+            volatile uint32_t *s2cr346 = (volatile uint32_t *) (static_cast<uintptr_t>(s346Smmu) + 0xc00u);
+            smr346[0] = (uint32_t) (0x80000000u | 4u);
+            s2cr346[0] = (uint32_t) cbndx346;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            volatile uint32_t *fsr346 = (volatile uint32_t *) (static_cast<uintptr_t>(s346Smmu) + cbBase346 + 0x58u);
+            fsr346[0] = 0xffffffffu;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            const uint32_t t0l346 = rd32 (s346Smmu, cbBase346 + 0x20u);
+            const uint32_t t0h346 = rd32 (s346Smmu, cbBase346 + 0x24u);
+            const uint32_t sct346 = rd32 (s346Smmu, cbBase346 + 0x00u);
+            const uint32_t bar346 = rd32 (static_cast<uintptr_t>(s346Smmu) + (static_cast<uintptr_t>(1u) << geo346.pgshift), 0x000u);
+            snprintf (r346Row, sizeof r346Row,
+                      "gmu%ue=hfi9_cb mode=%u wrote=%u ttbr0=%08x/%08x sctlr=%08x cbar=%08x fw=%08x",
+                      (unsigned) mode346, (unsigned) mode346, (unsigned) nabs346, (unsigned) t0l346, (unsigned) t0h346,
+                      (unsigned) sct346, (unsigned) bar346, (unsigned) fwNow346);
+            IOLog ("enchilada-adreno: %s\n", r346Row);
+            snprintf (r346Row, sizeof r346Row,
+                      "gmu%uf=hfi9_glob mode=%u scr0=%08x sgfsr=%08x gfptr=%08x smr0=%08x s2cr0=%08x",
+                      (unsigned) mode346, (unsigned) mode346,
+                      (unsigned) rd32 (s346Smmu, 0x0u), (unsigned) rd32 (s346Smmu, 0x48u),
+                      (unsigned) rd32 (s346Smmu, 0x40u), (unsigned) rd32 (s346Smmu, 0x800u),
+                      (unsigned) rd32 (s346Smmu, 0xc00u));
+            IOLog ("enchilada-adreno: %s\n", r346Row);
+            const uint64_t pubAddr346 = iovaVal346;
+            g346[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = (uint32_t) pubAddr346;
+            g346[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+            g346[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] = (uint32_t) (pubAddr346 + 3u * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+            g346[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xff7fffffu;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            snprintf (r346Row, sizeof r346Row,
+                      "gmu%ug=hfi9_pub mode=%u pa=%08x qtbl=%08x qi=%08x mask=%08x preinfo=%08x",
+                      (unsigned) mode346, (unsigned) mode346, (unsigned) pubAddr346,
+                      (unsigned) g346[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR],
+                      (unsigned) g346[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO],
+                      (unsigned) g346[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK],
+                      (unsigned) g346[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO]);
+            IOLog ("enchilada-adreno: %s\n", r346Row);
+            g346[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            uint32_t ctl346 = 0u;
+            uint32_t bit0346 = 0u;
+            uint32_t polls346 = 0u;
+            for (uint32_t i = 0u; i < 200000u; ++i) {
+                ++polls346;
+                ctl346 = g346[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
+                bit0346 = (ctl346 & 1u);
+                if (bit0346) break;
+                IODelay (1u);
+            }
+            snprintf (r346Row, sizeof r346Row,
+                      "gmu%uh=hfi9_init mode=%u ctl=%08x bit0=%u polls=%u info=%08x smr=%08x s2cr=%08x",
+                      (unsigned) mode346, (unsigned) mode346, (unsigned) ctl346, (unsigned) bit0346, (unsigned) polls346,
+                      (unsigned) g346[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO],
+                      (unsigned) rd32 (s346Smmu, 0x800u), (unsigned) rd32 (s346Smmu, 0xc00u));
+            IOLog ("enchilada-adreno: %s\n", r346Row);
+            IODelay (20u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            snprintf (r346Row, sizeof r346Row,
+                      "gmu%ui=hfi9_late mode=%u fsr=%08x far=%08x farhi=%08x info=%08x",
+                      (unsigned) mode346, (unsigned) mode346,
+                      (unsigned) rd32 (s346Smmu, cbBase346 + 0x58u),
+                      (unsigned) rd32 (s346Smmu, cbBase346 + 0x60u),
+                      (unsigned) rd32 (s346Smmu, cbBase346 + 0x64u),
+                      (unsigned) g346[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO]);
+            IOLog ("enchilada-adreno: %s\n", r346Row);
+            gDone = true;
+            return;
+        }
+    }
     if (stage >= 4u) {
         char ioRow[220];
         ioRow[0] = 0;
