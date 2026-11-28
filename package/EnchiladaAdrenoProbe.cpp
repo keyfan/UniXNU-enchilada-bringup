@@ -2569,6 +2569,222 @@ extern "C" void enchilada_adreno_poll(void) {
             return;
         }
     }
+    {
+        unsigned hfi7 = 0u;
+        if (PE_parse_boot_argn ("enchilada-hfi7", &hfi7, sizeof hfi7) && hfi7 >= 340u && hfi7 <= 342u) {
+            static uintptr_t s340Win = 0u;
+            static uintptr_t s340Gmu = 0u;
+            static uintptr_t s340Smmu = 0u;
+            static uint8_t s340Blob[8u * 4096u] __attribute__((aligned(4096)));
+            char r340Row[320];
+            const unsigned mode340 = hfi7;
+            if (s340Win == 0u) s340Win = (uintptr_t) armcpu_map_physical (ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE);
+            if (s340Gmu == 0u) s340Gmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
+            if (s340Win == 0u || s340Gmu == 0u || !kAdrenoGmuBlobPresent || !(&ml_static_vtop)) {
+                snprintf (r340Row, sizeof r340Row, "gmu%ua=hfi7 ok=0 mode=%u reason=no-window-blob-or-vtop",
+                          (unsigned) mode340, (unsigned) mode340);
+                IOLog ("enchilada-adreno: %s\n", r340Row);
+                gDone = true;
+                return;
+            }
+            volatile uint32_t *w340 = (volatile uint32_t *) s340Win;
+            volatile uint32_t *g340 = (volatile uint32_t *) s340Gmu;
+            w340[0x1098u / 4u] = (w340[0x1098u / 4u] | 1u);
+            w340[0x109cu / 4u] = (w340[0x109cu / 4u] | 1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            IODelay (2u);
+            w340[0x106cu / 4u] = (w340[0x106cu / 4u] & ~1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            for (uint32_t i = 0u; i < 2000u; ++i) {
+                if ((w340[0x1540u / 4u] >> 31) & 1u) break;
+                IODelay (1u);
+            }
+            for (unsigned wi = 0u; wi < kAdrenoGmuImageWords; ++wi) {
+                g340[kAdrenoGmuItcmWord + wi] = adreno_gmu_image[wi];
+                if ((wi & 0xffu) == 0xffu) __asm__ volatile ("dsb sy" ::: "memory");
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            g340[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
+            g340[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            uint32_t fwNow340 = 0u;
+            for (uint32_t i = 0u; i < 20000u; ++i) {
+                fwNow340 = g340[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT];
+                if (fwNow340 == 0xbabefaceu) break;
+                IODelay (1u);
+            }
+            const uint32_t cx340 = rd32 (s340Win, kCxOffset);
+            const int cxOn340 = adreno_domain_cx_is_on (cx340);
+            if (s340Smmu == 0u && cxOn340) s340Smmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_KGSL_SMMU_BASE, ADRENO_BOARD_KGSL_SMMU_SIZE);
+            struct adreno_install_geo geo340 = {};
+            const uint32_t id1_340 = (s340Smmu != 0u) ? rd32 (s340Smmu, 0x24u) : 0u;
+            const uint32_t geom340 = (s340Smmu != 0u) ? adreno_install_cb_geometry (id1_340, &geo340) : 1u;
+            snprintf (r340Row, sizeof r340Row,
+                      "gmu%ua=hfi7_setup mode=%u cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d",
+                      (unsigned) mode340, (unsigned) mode340, (unsigned) cx340, cxOn340, (unsigned) geom340,
+                      (unsigned) geo340.pgshift, (unsigned) geo340.cb_base, (unsigned) geo340.num_context_banks,
+                      (s340Smmu != 0u) ? 1 : 0);
+            IOLog ("enchilada-adreno: %s\n", r340Row);
+            if (cxOn340 == 0) { IOLog ("enchilada-adreno: gmu%ub=hfi7 refused-cx-down fw=%08x\n", (unsigned) mode340, (unsigned) fwNow340); gDone = true; return; }
+            if (s340Smmu == 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi7 refused-no-smmu-window\n", (unsigned) mode340); gDone = true; return; }
+            if (geom340 != 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi7 refused-geometry\n", (unsigned) mode340); gDone = true; return; }
+            const uint64_t tblPa340 = (uint64_t) ml_static_vtop ((uintptr_t) &s340Blob[0]);
+            volatile uint32_t *t340 = reinterpret_cast<volatile uint32_t *> (&s340Blob[0]);
+            for (uint32_t i = 0u; i < (uint32_t) ((ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES) / 4u); ++i) t340[i] = 0u;
+            t340[1] = ADRENO_HFI_V1_TABLE_SIZE_BYTES;
+            t340[2] = ADRENO_HFI_V1_QHDR0_OFFSET_WORDS;
+            t340[3] = ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+            t340[4] = ADRENO_HFI_V1_QUEUE_COUNT;
+            t340[5] = ADRENO_HFI_V1_QUEUE_COUNT;
+            for (uint32_t qi = 0u; qi < ADRENO_HFI_V1_QUEUE_COUNT; ++qi) {
+                const uint32_t id = (qi == 0u) ? ADRENO_HFI_V1_CMD_QUEUE_ID : ADRENO_HFI_V1_RESP_QUEUE_ID;
+                volatile uint32_t *qh = t340 + ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + qi * ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+                qh[0] = 1u;
+                qh[1] = (uint32_t) (tblPa340 + (uint64_t) (qi + 1u) * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+                qh[2] = ADRENO_HFI_V1_QUEUE_TYPE (id);
+                qh[3] = ADRENO_HFI_V1_QUEUE_WORDS;
+                qh[6] = 1u; qh[7] = 1u; qh[8] = 1u;
+                qh[10] = 0u; qh[11] = 0u;
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            struct adreno_lpae_geo l340 = {};
+            adreno_lpae_geometry ((uint32_t) 48u, (uint32_t) 12u, &l340);
+            const uint64_t prot340 = (uint64_t) (kAdrenoLpaePteValid | kAdrenoLpaePteAf);
+            const uint64_t identBase340 = tblPa340 & ~((uint64_t) 0x1fffffull);
+            const uint64_t aliasBase340 = (tblPa340 & (uint64_t) 0x7fffffffull) & ~((uint64_t) 0x1fffffull);
+            const uint32_t rIdxIdent340 = adreno_lpae_lvl_idx (identBase340, 0u, &l340);
+            const uint32_t rIdxAlias340 = adreno_lpae_lvl_idx (aliasBase340, 0u, &l340);
+            const int sameRoot340 = (rIdxAlias340 == rIdxIdent340) ? 1 : 0;
+            const int aliasOn340 = (mode340 != 342u && aliasBase340 != identBase340 && sameRoot340) ? 1 : 0;
+            volatile uint64_t *tbl340 = reinterpret_cast<volatile uint64_t *> (&s340Blob[4u * 4096u]);
+            for (uint32_t i = 0u; i < 4u * 512u; ++i) tbl340[i] = 0ull;
+            const uint64_t paRoot340 = tblPa340 + (uint64_t) (4u * 4096u);
+            const uint64_t paL1 = tblPa340 + (uint64_t) (5u * 4096u);
+            const uint64_t paL2hi = tblPa340 + (uint64_t) (6u * 4096u);
+            const uint64_t paL2lo = tblPa340 + (uint64_t) (7u * 4096u);
+            volatile uint64_t *root340 = reinterpret_cast<volatile uint64_t *> (&s340Blob[4u * 4096u]);
+            volatile uint64_t *l1_340 = reinterpret_cast<volatile uint64_t *> (&s340Blob[5u * 4096u]);
+            volatile uint64_t *l2hi340 = reinterpret_cast<volatile uint64_t *> (&s340Blob[6u * 4096u]);
+            volatile uint64_t *l2lo340 = reinterpret_cast<volatile uint64_t *> (&s340Blob[7u * 4096u]);
+            root340[rIdxIdent340] = adreno_lpae_table_pte (paL1);
+            l1_340[adreno_lpae_lvl_idx (identBase340, 1u, &l340)] = adreno_lpae_table_pte (paL2hi);
+            l2hi340[adreno_lpae_lvl_idx (identBase340, 2u, &l340)] = adreno_lpae_leaf_pte ((uint32_t) prot340, 2u, identBase340);
+            if (aliasOn340 != 0) {
+                l1_340[adreno_lpae_lvl_idx (aliasBase340, 1u, &l340)] = adreno_lpae_table_pte (paL2lo);
+                l2lo340[adreno_lpae_lvl_idx (aliasBase340, 2u, &l340)] = adreno_lpae_leaf_pte ((uint32_t) prot340, 2u, identBase340);
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            uint32_t ias340 = 0u;
+            uint32_t oas340 = 0u;
+            uint32_t id0_340 = 0u;
+            struct adreno_iommu_id2 d340 = {};
+            {
+                const uint32_t id2w = (s340Smmu != 0u) ? rd32 (s340Smmu, 0x28u) : 0u;
+                int ok340 = 0;
+                ias340 = (adreno_iommu_id2_decode (id2w, &d340) == 0) ? adreno_iommu_va_size (id2w, 2u, &ok340) : 0u;
+                oas340 = adreno_iommu_stage1_oas (id2w);
+                id0_340 = (s340Smmu != 0u) ? rd32 (s340Smmu, 0x20u) : 0u;
+            }
+            snprintf (r340Row, sizeof r340Row,
+                      "gmu%ub=hfi7_table mode=%u tblpa=%08x ident=%08x alias=%08x aliasOn=%d root=%08x ias=%u oas=%u",
+                      (unsigned) mode340, (unsigned) mode340, (unsigned) tblPa340, (unsigned) identBase340,
+                      (unsigned) aliasBase340, aliasOn340, (unsigned) paRoot340, (unsigned) ias340, (unsigned) oas340);
+            IOLog ("enchilada-adreno: %s\n", r340Row);
+            struct adreno_smmu_ctx_params p340;
+            p340.cbndx = 0u; p340.asid = 0u; p340.ttbr = paRoot340;
+            p340.ias = (ias340 >= 32u) ? ias340 : 36u;
+            p340.oas = (oas340 >= 32u) ? oas340 : 36u;
+            p340.coherent_walk = adreno_iommu_coherent_walk (id0_340, 0u);
+            p340.ttbr1 = 0u; p340.aarch64 = 1u; p340.vmid16 = 0u; p340.vmid = 0u;
+            struct adreno_smmu_ctx_write plan340[12];
+            struct adreno_install_write abs340[12];
+            uint32_t nplan340 = 0u, nabs340 = 0u;
+            const int plan340rc = adreno_smmu_ctx_plan (&p340, plan340, 12u, &nplan340);
+            const uint32_t abs340rc = adreno_install_absolute (&geo340, 0u, plan340, nplan340, abs340, 12u, &nabs340);
+            snprintf (r340Row, sizeof r340Row,
+                      "gmu%uc=hfi7_cbplan mode=%u plan=%d n=%u abs=%u nab=%u cbndx=0 asid=0 ttbr=%08x cw=%u id0=%08x",
+                      (unsigned) mode340, (unsigned) mode340, plan340rc, (unsigned) nplan340, (unsigned) abs340rc,
+                      (unsigned) nabs340, (unsigned) paRoot340,
+                      (unsigned) p340.coherent_walk, (unsigned) id0_340);
+            IOLog ("enchilada-adreno: %s\n", r340Row);
+            if (plan340rc != 0 || abs340rc != 0u) { gDone = true; return; }
+            for (uint32_t k340 = 0u; k340 < nabs340; ++k340) {
+                const uintptr_t r340frame = (abs340[k340].gr1 != 0u)
+                    ? static_cast<uintptr_t>(s340Smmu) + (static_cast<uintptr_t>(1u) << geo340.pgshift)
+                    : static_cast<uintptr_t>(s340Smmu);
+                volatile uint32_t *rw340 = (volatile uint32_t *) (r340frame + static_cast<uintptr_t>(abs340[k340].offset));
+                rw340[0] = abs340[k340].value;
+                if (abs340[k340].is_64bit) rw340[1] = abs340[k340].value_hi;
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            volatile uint32_t *smr340 = (volatile uint32_t *) (static_cast<uintptr_t>(s340Smmu) + 0x800u);
+            volatile uint32_t *s2cr340 = (volatile uint32_t *) (static_cast<uintptr_t>(s340Smmu) + 0xc00u);
+            smr340[0] = (uint32_t) (0x80000000u | 4u);
+            s2cr340[0] = (uint32_t) 0u;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            const uint32_t preFsr340 = rd32 (s340Smmu, geo340.cb_base + 0x58u);
+            const uint32_t preFar340 = rd32 (s340Smmu, geo340.cb_base + 0x60u);
+            const uint32_t t0l340 = rd32 (s340Smmu, geo340.cb_base + 0x20u);
+            const uint32_t sct340 = rd32 (s340Smmu, geo340.cb_base + 0x00u);
+            const uint32_t bar340 = rd32 (static_cast<uintptr_t>(s340Smmu) + (static_cast<uintptr_t>(1u) << geo340.pgshift), 0x000u);
+            snprintf (r340Row, sizeof r340Row,
+                      "gmu%ud=hfi7_cb mode=%u wrote=%u ttbr0=%08x sctlr=%08x cbar=%08x prefsr=%08x prefar=%08x fw=%08x",
+                      (unsigned) mode340, (unsigned) mode340, (unsigned) nabs340, (unsigned) t0l340,
+                      (unsigned) sct340, (unsigned) bar340, (unsigned) preFsr340, (unsigned) preFar340, (unsigned) fwNow340);
+            IOLog ("enchilada-adreno: %s\n", r340Row);
+            const int pubLow340 = (mode340 == 341u) ? 1 : 0;
+            const uint64_t pubAddr340 = pubLow340 ? (tblPa340 & (uint64_t) 0x7fffffffull) : tblPa340;
+            const int publish340 = 1;
+            g340[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = (uint32_t) pubAddr340;
+            g340[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = publish340 ? 1u : 0u;
+            g340[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] = (uint32_t) (pubAddr340 + 3u * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+            g340[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xff7fffffu;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            snprintf (r340Row, sizeof r340Row,
+                      "gmu%ue=hfi7_pub mode=%u publish=%d pa=%08x qtbl=%08x qi=%08x mask=%08x preinfo=%08x",
+                      (unsigned) mode340, (unsigned) mode340, publish340, (unsigned) pubAddr340,
+                      (unsigned) g340[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR],
+                      (unsigned) g340[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO],
+                      (unsigned) g340[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK],
+                      (unsigned) g340[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO]);
+            IOLog ("enchilada-adreno: %s\n", r340Row);
+            g340[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            const uint32_t fsrImm340 = rd32 (s340Smmu, geo340.cb_base + 0x58u);
+            const uint32_t farImm340 = rd32 (s340Smmu, geo340.cb_base + 0x60u);
+            snprintf (r340Row, sizeof r340Row,
+                      "gmu%uf=hfi7_fault mode=%u fsr=%08x far=%08x",
+                      (unsigned) mode340, (unsigned) mode340, (unsigned) fsrImm340, (unsigned) farImm340);
+            IOLog ("enchilada-adreno: %s\n", r340Row);
+            uint32_t ctl340 = 0u;
+            uint32_t bit0340 = 0u;
+            uint32_t polls340 = 0u;
+            for (uint32_t i = 0u; i < 200000u; ++i) {
+                ++polls340;
+                ctl340 = g340[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
+                bit0340 = (ctl340 & 1u);
+                if (bit0340) break;
+                IODelay (1u);
+            }
+            snprintf (r340Row, sizeof r340Row,
+                      "gmu%ug=hfi7_init mode=%u publish=%d ctl=%08x bit0=%u polls=%u info=%08x smr=%08x s2cr=%08x",
+                      (unsigned) mode340, (unsigned) mode340, publish340, (unsigned) ctl340, (unsigned) bit0340, (unsigned) polls340,
+                      (unsigned) g340[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO],
+                      (unsigned) rd32 (s340Smmu, 0x800u), (unsigned) rd32 (s340Smmu, 0xc00u));
+            IOLog ("enchilada-adreno: %s\n", r340Row);
+            IODelay (20u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            const uint32_t lateFsr340 = rd32 (s340Smmu, geo340.cb_base + 0x58u);
+            const uint32_t lateFar340 = rd32 (s340Smmu, geo340.cb_base + 0x60u);
+            const uint32_t lateInfo340 = g340[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO];
+            snprintf (r340Row, sizeof r340Row,
+                      "gmu%uh=hfi7_late mode=%u fsr=%08x far=%08x info=%08x",
+                      (unsigned) mode340, (unsigned) mode340, (unsigned) lateFsr340, (unsigned) lateFar340, (unsigned) lateInfo340);
+            IOLog ("enchilada-adreno: %s\n", r340Row);
+            gDone = true;
+            return;
+        }
+    }
     if (stage >= 4u) {
         char ioRow[220];
         ioRow[0] = 0;
