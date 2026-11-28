@@ -2362,6 +2362,213 @@ extern "C" void enchilada_adreno_poll(void) {
             return;
         }
     }
+    {
+        unsigned hfi6 = 0u;
+        if (PE_parse_boot_argn ("enchilada-hfi6", &hfi6, sizeof hfi6) && hfi6 >= 337u && hfi6 <= 339u) {
+            static uintptr_t s337Win = 0u;
+            static uintptr_t s337Gmu = 0u;
+            static uintptr_t s337Smmu = 0u;
+            static uint8_t s337Blob[8u * 4096u] __attribute__((aligned(4096)));
+            char r337Row[320];
+            const unsigned mode337 = hfi6;
+            if (s337Win == 0u) s337Win = (uintptr_t) armcpu_map_physical (ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE);
+            if (s337Gmu == 0u) s337Gmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
+            if (s337Win == 0u || s337Gmu == 0u || !kAdrenoGmuBlobPresent || !(&ml_static_vtop)) {
+                snprintf (r337Row, sizeof r337Row, "gmu%ua=hfi6 ok=0 mode=%u reason=no-window-blob-or-vtop",
+                          (unsigned) mode337, (unsigned) mode337);
+                IOLog ("enchilada-adreno: %s\n", r337Row);
+                gDone = true;
+                return;
+            }
+            volatile uint32_t *w337 = (volatile uint32_t *) s337Win;
+            volatile uint32_t *g337 = (volatile uint32_t *) s337Gmu;
+            w337[0x1098u / 4u] = (w337[0x1098u / 4u] | 1u);
+            w337[0x109cu / 4u] = (w337[0x109cu / 4u] | 1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            IODelay (2u);
+            w337[0x106cu / 4u] = (w337[0x106cu / 4u] & ~1u);
+            __asm__ volatile ("dsb sy" ::: "memory");
+            for (uint32_t i = 0u; i < 2000u; ++i) {
+                if ((w337[0x1540u / 4u] >> 31) & 1u) break;
+                IODelay (1u);
+            }
+            for (unsigned wi = 0u; wi < kAdrenoGmuImageWords; ++wi) {
+                g337[kAdrenoGmuItcmWord + wi] = adreno_gmu_image[wi];
+                if ((wi & 0xffu) == 0xffu) __asm__ volatile ("dsb sy" ::: "memory");
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            g337[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
+            g337[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            uint32_t fwNow337 = 0u;
+            for (uint32_t i = 0u; i < 20000u; ++i) {
+                fwNow337 = g337[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT];
+                if (fwNow337 == 0xbabefaceu) break;
+                IODelay (1u);
+            }
+            const uint32_t cx337 = rd32 (s337Win, kCxOffset);
+            const int cxOn337 = adreno_domain_cx_is_on (cx337);
+            if (s337Smmu == 0u && cxOn337) s337Smmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_KGSL_SMMU_BASE, ADRENO_BOARD_KGSL_SMMU_SIZE);
+            struct adreno_install_geo geo337 = {};
+            const uint32_t id1_337 = (s337Smmu != 0u) ? rd32 (s337Smmu, 0x24u) : 0u;
+            const uint32_t geom337 = (s337Smmu != 0u) ? adreno_install_cb_geometry (id1_337, &geo337) : 1u;
+            snprintf (r337Row, sizeof r337Row,
+                      "gmu%ua=hfi6_setup mode=%u cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d",
+                      (unsigned) mode337, (unsigned) mode337, (unsigned) cx337, cxOn337, (unsigned) geom337,
+                      (unsigned) geo337.pgshift, (unsigned) geo337.cb_base, (unsigned) geo337.num_context_banks,
+                      (s337Smmu != 0u) ? 1 : 0);
+            IOLog ("enchilada-adreno: %s\n", r337Row);
+            if (cxOn337 == 0) { IOLog ("enchilada-adreno: gmu%ub=hfi6 refused-cx-down fw=%08x\n", (unsigned) mode337, (unsigned) fwNow337); gDone = true; return; }
+            if (s337Smmu == 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi6 refused-no-smmu-window\n", (unsigned) mode337); gDone = true; return; }
+            if (geom337 != 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi6 refused-geometry\n", (unsigned) mode337); gDone = true; return; }
+            const uint64_t tblPa337 = (uint64_t) ml_static_vtop ((uintptr_t) &s337Blob[0]);
+            volatile uint32_t *t337 = reinterpret_cast<volatile uint32_t *> (&s337Blob[0]);
+            for (uint32_t i = 0u; i < (uint32_t) ((ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES) / 4u); ++i) t337[i] = 0u;
+            t337[1] = ADRENO_HFI_V1_TABLE_SIZE_BYTES;
+            t337[2] = ADRENO_HFI_V1_QHDR0_OFFSET_WORDS;
+            t337[3] = ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+            t337[4] = ADRENO_HFI_V1_QUEUE_COUNT;
+            t337[5] = ADRENO_HFI_V1_QUEUE_COUNT;
+            for (uint32_t qi = 0u; qi < ADRENO_HFI_V1_QUEUE_COUNT; ++qi) {
+                const uint32_t id = (qi == 0u) ? ADRENO_HFI_V1_CMD_QUEUE_ID : ADRENO_HFI_V1_RESP_QUEUE_ID;
+                volatile uint32_t *qh = t337 + ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + qi * ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+                qh[0] = 1u;
+                qh[1] = (uint32_t) (tblPa337 + (uint64_t) (qi + 1u) * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+                qh[2] = ADRENO_HFI_V1_QUEUE_TYPE (id);
+                qh[3] = ADRENO_HFI_V1_QUEUE_WORDS;
+                qh[6] = 1u; qh[7] = 1u; qh[8] = 1u;
+                qh[10] = 0u; qh[11] = 0u;
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            const uint64_t base2m337 = tblPa337 & ~((uint64_t) 0x1fffffull);
+            const uint64_t span337 = (tblPa337 - base2m337) + (uint64_t) (ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES);
+            const int fit337 = (span337 <= 0x200000ull) ? 1 : 0;
+            struct adreno_lpae_geo l337 = {};
+            adreno_lpae_geometry ((uint32_t) 48u, (uint32_t) 12u, &l337);
+            struct adreno_table_result t337r = {};
+            const uint32_t prot337 = (uint32_t) (kAdrenoLpaePteValid | kAdrenoLpaePteAf);
+            uint32_t build337 = 99u;
+            if (fit337 != 0) {
+                build337 = adreno_table_build (&l337,
+                                               (uint64_t) (uintptr_t) &s337Blob[4u * 4096u],
+                                               tblPa337 + (uint64_t) (4u * 4096u),
+                                               base2m337, base2m337, 0x200000ull, prot337, &t337r);
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            uint32_t ias337 = 0u;
+            uint32_t oas337 = 0u;
+            uint32_t id0_337 = 0u;
+            struct adreno_iommu_id2 d337 = {};
+            {
+                const uint32_t id2w = (s337Smmu != 0u) ? rd32 (s337Smmu, 0x28u) : 0u;
+                int ok337 = 0;
+                ias337 = (adreno_iommu_id2_decode (id2w, &d337) == 0) ? adreno_iommu_va_size (id2w, 2u, &ok337) : 0u;
+                oas337 = adreno_iommu_stage1_oas (id2w);
+                id0_337 = (s337Smmu != 0u) ? rd32 (s337Smmu, 0x20u) : 0u;
+            }
+            snprintf (r337Row, sizeof r337Row,
+                      "gmu%ub=hfi6_table mode=%u tblpa=%08x base=%08x fit=%d build=%u root=%llx tables=%u writes=%u ias=%u oas=%u",
+                      (unsigned) mode337, (unsigned) mode337, (unsigned) tblPa337, (unsigned) base2m337,
+                      fit337, (unsigned) build337, (unsigned long long) t337r.root_paddr,
+                      (unsigned) t337r.tables, (unsigned) t337r.writes, (unsigned) ias337, (unsigned) oas337);
+            IOLog ("enchilada-adreno: %s\n", r337Row);
+            if (fit337 == 0 || build337 != 0u) { gDone = true; return; }
+            struct adreno_smmu_ctx_params p337;
+            p337.cbndx = 0u; p337.asid = 0u; p337.ttbr = t337r.root_paddr;
+            p337.ias = (ias337 >= 32u) ? ias337 : 36u;
+            p337.oas = (oas337 >= 32u) ? oas337 : 36u;
+            p337.coherent_walk = adreno_iommu_coherent_walk (id0_337, 0u);
+            p337.ttbr1 = 0u; p337.aarch64 = 1u; p337.vmid16 = 0u; p337.vmid = 0u;
+            struct adreno_smmu_ctx_write plan337[12];
+            struct adreno_install_write abs337[12];
+            uint32_t nplan337 = 0u, nabs337 = 0u;
+            const int plan337rc = adreno_smmu_ctx_plan (&p337, plan337, 12u, &nplan337);
+            const uint32_t abs337rc = adreno_install_absolute (&geo337, 0u, plan337, nplan337, abs337, 12u, &nabs337);
+            snprintf (r337Row, sizeof r337Row,
+                      "gmu%uc=hfi6_cbplan mode=%u plan=%d n=%u abs=%u nab=%u cbndx=0 asid=0 ttbr=%llx cw=%u id0=%08x",
+                      (unsigned) mode337, (unsigned) mode337, plan337rc, (unsigned) nplan337, (unsigned) abs337rc,
+                      (unsigned) nabs337, (unsigned long long) t337r.root_paddr,
+                      (unsigned) p337.coherent_walk, (unsigned) id0_337);
+            IOLog ("enchilada-adreno: %s\n", r337Row);
+            if (plan337rc != 0 || abs337rc != 0u) { gDone = true; return; }
+            for (uint32_t k337 = 0u; k337 < nabs337; ++k337) {
+                const uintptr_t r337frame = (abs337[k337].gr1 != 0u)
+                    ? static_cast<uintptr_t>(s337Smmu) + (static_cast<uintptr_t>(1u) << geo337.pgshift)
+                    : static_cast<uintptr_t>(s337Smmu);
+                volatile uint32_t *rw337 = (volatile uint32_t *) (r337frame + static_cast<uintptr_t>(abs337[k337].offset));
+                rw337[0] = abs337[k337].value;
+                if (abs337[k337].is_64bit) rw337[1] = abs337[k337].value_hi;
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            volatile uint32_t *smr337 = (volatile uint32_t *) (static_cast<uintptr_t>(s337Smmu) + 0x800u);
+            volatile uint32_t *s2cr337 = (volatile uint32_t *) (static_cast<uintptr_t>(s337Smmu) + 0xc00u);
+            smr337[0] = (uint32_t) (0x80000000u | 4u);
+            s2cr337[0] = (uint32_t) 0u;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            const uint32_t preFsr337 = rd32 (s337Smmu, geo337.cb_base + 0x58u);
+            const uint32_t preFar337 = rd32 (s337Smmu, geo337.cb_base + 0x60u);
+            const uint32_t t0l337 = rd32 (s337Smmu, geo337.cb_base + 0x20u);
+            const uint32_t sct337 = rd32 (s337Smmu, geo337.cb_base + 0x00u);
+            const uint32_t bar337 = rd32 (static_cast<uintptr_t>(s337Smmu) + (static_cast<uintptr_t>(1u) << geo337.pgshift), 0x000u);
+            snprintf (r337Row, sizeof r337Row,
+                      "gmu%ud=hfi6_cb mode=%u wrote=%u ttbr0=%08x sctlr=%08x cbar=%08x prefsr=%08x prefar=%08x fw=%08x",
+                      (unsigned) mode337, (unsigned) mode337, (unsigned) nabs337, (unsigned) t0l337,
+                      (unsigned) sct337, (unsigned) bar337, (unsigned) preFsr337, (unsigned) preFar337, (unsigned) fwNow337);
+            IOLog ("enchilada-adreno: %s\n", r337Row);
+            const int publish337 = (mode337 == 338u) ? 0 : 1;
+            g337[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = publish337 ? (uint32_t) tblPa337 : 0u;
+            g337[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = publish337 ? 1u : 0u;
+            g337[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] = (uint32_t) (tblPa337 + 3u * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+            g337[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xff7fffffu;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            snprintf (r337Row, sizeof r337Row,
+                      "gmu%ue=hfi6_pub mode=%u publish=%d pa=%08x qtbl=%08x qi=%08x mask=%08x preinfo=%08x",
+                      (unsigned) mode337, (unsigned) mode337, publish337, (unsigned) tblPa337,
+                      (unsigned) g337[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR],
+                      (unsigned) g337[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO],
+                      (unsigned) g337[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK],
+                      (unsigned) g337[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO]);
+            IOLog ("enchilada-adreno: %s\n", r337Row);
+            g337[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            const uint32_t fsrImm337 = rd32 (s337Smmu, geo337.cb_base + 0x58u);
+            const uint32_t farImm337 = rd32 (s337Smmu, geo337.cb_base + 0x60u);
+            const uint32_t fsynr337 = rd32 (s337Smmu, geo337.cb_base + 0x68u);
+            snprintf (r337Row, sizeof r337Row,
+                      "gmu%uf=hfi6_fault mode=%u fsr=%08x far=%08x fsynr0=%08x",
+                      (unsigned) mode337, (unsigned) mode337, (unsigned) fsrImm337, (unsigned) farImm337, (unsigned) fsynr337);
+            IOLog ("enchilada-adreno: %s\n", r337Row);
+            uint32_t ctl337 = 0u;
+            uint32_t bit0337 = 0u;
+            uint32_t polls337 = 0u;
+            for (uint32_t i = 0u; i < 200000u; ++i) {
+                ++polls337;
+                ctl337 = g337[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
+                bit0337 = (ctl337 & 1u);
+                if (bit0337) break;
+                IODelay (1u);
+            }
+            snprintf (r337Row, sizeof r337Row,
+                      "gmu%ug=hfi6_init mode=%u publish=%d ctl=%08x bit0=%u polls=%u info=%08x smr=%08x s2cr=%08x",
+                      (unsigned) mode337, (unsigned) mode337, publish337, (unsigned) ctl337, (unsigned) bit0337, (unsigned) polls337,
+                      (unsigned) g337[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO],
+                      (unsigned) rd32 (s337Smmu, 0x800u), (unsigned) rd32 (s337Smmu, 0xc00u));
+            IOLog ("enchilada-adreno: %s\n", r337Row);
+            if (mode337 == 339u) {
+                IODelay (20u);
+                __asm__ volatile ("dsb sy" ::: "memory");
+                const uint32_t lateFsr337 = rd32 (s337Smmu, geo337.cb_base + 0x58u);
+                const uint32_t lateFar337 = rd32 (s337Smmu, geo337.cb_base + 0x60u);
+                const uint32_t lateInfo337 = g337[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO];
+                snprintf (r337Row, sizeof r337Row,
+                          "gmu%uh=hfi6_late mode=%u fsr=%08x far=%08x info=%08x",
+                          (unsigned) mode337, (unsigned) mode337, (unsigned) lateFsr337, (unsigned) lateFar337, (unsigned) lateInfo337);
+                IOLog ("enchilada-adreno: %s\n", r337Row);
+            }
+            gDone = true;
+            return;
+        }
+    }
     if (stage >= 4u) {
         char ioRow[220];
         ioRow[0] = 0;
