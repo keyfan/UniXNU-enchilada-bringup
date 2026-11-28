@@ -10096,3 +10096,23 @@ CI **#450 `46092625856` success**（kernel `4ac80f0199843627ef350c09a478fa23dbd2
 141.5 下一步（R333，方向明确）：既然 `CM3_FAULT` 由 INIT 触发、且 AP 侧映射已通，就要问「CM3 在 HFI 启动路径里到底 fault 在什么地址/什么类型」。做法：INIT 之后立刻读 **CB0 `FSR`（0x58）/`FAR`（0x60）** 与 SMMU 全局故障状态、以及 `SMR0`/`S2CR0` 现场回读。判定：
 - CB0 `FSR` 有 translation/permission fault 且 `FAR` 指向队列表或队列环地址 ⇒ CM3 的读**确实**经过 SMMU 且被拒（地址/权限），下一步改 CB0 权限位（`S2CR0` 的 privcfg/`MEMATTR`）或把表放到固件期望的 GMU IOVA 区间（非 identity）；
 - `FSR` 无记录而 `CM3_FAULT` 仍在 ⇒ CM3 内部 fault（取指/数据），与 SMMU 无关，下一步查固件是否需要**第二段镜像/DTCM 数据**或 INIT 消息格式（legacy v1 wire）。
+
+## 一百四十二、R333：CB0 故障寄存器抓到了真相——CM3 读队列表用的是 **去掉 BIT31 的地址**（`0x282e2000`），CB0 只 identity 映了 `0xa8200000` ⇒ translation fault ⇒ `CM3_FAULT`
+
+CI **#451 `46095504337` success**（kernel `04684ab16aa4ae9e1319ff5ff8685d5d249c4b379cec5369eada96a29a031071`、payload `3dd5a61ff1232a5bfc8afbf03b785197b24ffb97131a0af04f0827f2aea10311`，均带 `extra_firmware_b64/layout` 注入 `a630_gmu.bin`，`hfi6_*` 富行全在场）。三键复用 R331 全套（冷启动 + 2 MiB identity 块表 + 九笔 CB0 + `SMR0=VALID|SID4` + `S2CR0=TRANS|CB0`），共 34 s 回 adb、8 行齐全：
+
+| 键 | 形状 | 关键读数 |
+|---|---|---|
+| 337 | 发布 + INIT + 读 CB0 `FSR`(0x58)/`FAR`(0x60)/`FSYNR0`(0x68) | `prefsr=00000400 prefar=00000000`（INIT 前）→ `fsr=00000400 far=00000000 fsynr0=00000021`（INIT 后**立即**读）→ `ctl=0 bit0=0 info=00800000` |
+| 338 | 同 337 但 `publish=0`（QTBL_ADDR=0/QTBL_INFO=0） | `preinfo=0` → `fsr=00000400 far=0 fsynr0=0` → `info=00000000`（**无 CM3_FAULT**） |
+| 339 | 同 337，但 INIT 后**立即读一次**再 `IODelay(20)` **后读一次**（latch/时序） | 立即：`fsr=00000400 far=00000000`；**延迟后：`fsr=00000402 far=282e2000 info=00800000`** |
+
+142.1 **突破口（键 339 的延迟采样）**：`FAR=0x282e2000` = 我们的队列表 PA **`0xa82e2000` 把 BIT31 清掉**得到。`FSR` 由 `0x400` 变 `0x402`（低位故障码由 0 变 2 = 一次 stage-1 地址翻译故障），且 `FAR` 精确指向表页本身。⇒ **CM3 固件去读 HFI 队列表时，发出的地址是 `0x282e2000`（BIT31 被清）**；而我们的 CB0 只 identity 覆盖 `0xa8200000–0xa83fffff`，`0x28200000` 区间根本没映射 ⇒ SMMU 抛 translation fault ⇒ GMU 总线报错 ⇒ `CM3_FAULT`。
+
+142.2 **为什么 337 立即读看不到、339 才看到**：337 在写 `HFI_CTRL_INIT` 后**立即**读 `FSR`（`0x400`，与 INIT 前一致），故障尚未被 SMMU 记账；339 在 `IODelay(20)` 后再读即得 `0x402/far=282e2000`。⇒ 故障是 INIT 之后**极短延迟内**发生的地址翻译失败，不是同步立即呈现。这与 R332「`CM3_FAULT` 只由写 `HFI_CTRL_INIT` 触发」完全吻合：写 INIT 才让固件去读表，读表才 fault。
+
+142.3 **键 338 对照确认「需要已发布的表」**：`publish=0` 时 `info=00000000`（无 `CM3_FAULT`）、`fsynr0=0`；`FSR` 仍停在静态的 `0x400`。⇒ 固件只有看到 `QTBL_INFO=1` 才会去读表，读表（用错地址）才 fault。注意 `0x400`（BIT10）在 INIT 之前就一直存在，是静态/复位值（我们的表构建/CB 编程并不产生新的 fault 记录），真正的新故障只体现在 BIT1（`0x402`）与 `FAR`。
+
+142.4 **修复假设（R334）**：既然固件用「去掉 BIT31 的表地址」去读，就在 CB0 里**再加一块 alias 映射**：`VA 0x28200000 → PA 0xa8200000`（2 MiB block，偏移同为 `0xe2000`，故 `0x282e2000` 恰好翻回真表 `0xa82e2000`、队环 `0x282e3000`→`0xa82e3000`）。若 alias 生效，则 SMMU 不再 translation fault、`CM3_FAULT` 应消失、`ctl` bit0 有望置起。R334 三键：340（identity + alias，发布高地址）/341（identity + alias，发布去 BIT31 的低地址）/342（只 identity 无 alias 的对照，复现 337 的 fault）。这样在同一份内核里做 A/B，一次上机就能判定 alias 是否为解。
+
+142.5 边界：`FSYNR0` 在 337 读到 `0x00000021`、338 为 0（与 fault 相关），但 `FSR` 的 FS 码精确语义（level/type）未在树内解码器里查实；本轮仍未读 SMMU 全局 `sGFSR`/CB `PAR`。GPU 仍未渲染一帧。

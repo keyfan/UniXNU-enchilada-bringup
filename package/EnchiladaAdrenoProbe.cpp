@@ -3041,18 +3041,18 @@ extern "C" void enchilada_adreno_poll(void) {
         }
     }
     {
-        unsigned hfi9 = 0u;
-        if (PE_parse_boot_argn ("enchilada-hfi9", &hfi9, sizeof hfi9) && hfi9 >= 346u && hfi9 <= 348u) {
+        unsigned hfi10 = 0u;
+        if (PE_parse_boot_argn ("enchilada-hfi10", &hfi10, sizeof hfi10) && hfi10 >= 349u && hfi10 <= 351u) {
             static uintptr_t s346Win = 0u;
             static uintptr_t s346Gmu = 0u;
             static uintptr_t s346Smmu = 0u;
             static uint8_t s346Blob[8u * 4096u] __attribute__((aligned(4096)));
             char r346Row[460];
-            const unsigned mode346 = hfi9;
+            const unsigned mode346 = hfi10;
             if (s346Win == 0u) s346Win = (uintptr_t) armcpu_map_physical (ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE);
             if (s346Gmu == 0u) s346Gmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
             if (s346Win == 0u || s346Gmu == 0u || !kAdrenoGmuBlobPresent || !(&ml_static_vtop)) {
-                snprintf (r346Row, sizeof r346Row, "gmu%ua=hfi9 ok=0 mode=%u reason=no-window-blob-or-vtop",
+                snprintf (r346Row, sizeof r346Row, "gmu%ua=hfi10 ok=0 mode=%u reason=no-window-blob-or-vtop",
                           (unsigned) mode346, (unsigned) mode346);
                 IOLog ("enchilada-adreno: %s\n", r346Row);
                 gDone = true;
@@ -3091,22 +3091,23 @@ extern "C" void enchilada_adreno_poll(void) {
             const uint32_t id1_346 = (s346Smmu != 0u) ? rd32 (s346Smmu, 0x24u) : 0u;
             const uint32_t geom346 = (s346Smmu != 0u) ? adreno_install_cb_geometry (id1_346, &geo346) : 1u;
             snprintf (r346Row, sizeof r346Row,
-                      "gmu%ua=hfi9_setup mode=%u cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d",
+                      "gmu%ua=hfi10_setup mode=%u cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d",
                       (unsigned) mode346, (unsigned) mode346, (unsigned) cx346, cxOn346, (unsigned) geom346,
                       (unsigned) geo346.pgshift, (unsigned) geo346.cb_base, (unsigned) geo346.num_context_banks,
                       (s346Smmu != 0u) ? 1 : 0);
             IOLog ("enchilada-adreno: %s\n", r346Row);
-            if (cxOn346 == 0) { IOLog ("enchilada-adreno: gmu%ub=hfi9 refused-cx-down fw=%08x\n", (unsigned) mode346, (unsigned) fwNow346); gDone = true; return; }
-            if (s346Smmu == 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi9 refused-no-smmu-window\n", (unsigned) mode346); gDone = true; return; }
-            if (geom346 != 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi9 refused-geometry\n", (unsigned) mode346); gDone = true; return; }
+            if (cxOn346 == 0) { IOLog ("enchilada-adreno: gmu%ub=hfi10 refused-cx-down fw=%08x\n", (unsigned) mode346, (unsigned) fwNow346); gDone = true; return; }
+            if (s346Smmu == 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi10 refused-no-smmu-window\n", (unsigned) mode346); gDone = true; return; }
+            if (geom346 != 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi10 refused-geometry\n", (unsigned) mode346); gDone = true; return; }
             const uint32_t cbndx346 = 0u;
             const uint32_t cbBase346 = geo346.cb_base + (cbndx346 << geo346.pgshift);
             const uint64_t tblPa346 = (uint64_t) ml_static_vtop ((uintptr_t) &s346Blob[0]);
             const uint64_t paBase346 = tblPa346 & ~((uint64_t) 0x1fffffull);
             const uint64_t off346 = tblPa346 & (uint64_t) 0x1ffffull;
-            const uint32_t iovaBase346 = (mode346 == 347u) ? 0x40000000u : 0x60000000u;
+            const uint32_t iovaBase346 = 0x60000000u;
             const uint64_t iovaVal346 = (uint64_t) iovaBase346 + off346;
-            const int dual346 = (mode346 == 348u) ? 1 : 0;
+            const uint64_t pubVal346 = (mode346 == 349u) ? tblPa346 : iovaVal346;
+            const int dual346 = (mode346 == 351u) ? 1 : 0;
             volatile uint32_t *t346 = reinterpret_cast<volatile uint32_t *> (&s346Blob[0]);
             for (uint32_t i = 0u; i < (uint32_t) ((ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES) / 4u); ++i) t346[i] = 0u;
             t346[1] = ADRENO_HFI_V1_TABLE_SIZE_BYTES;
@@ -3118,7 +3119,7 @@ extern "C" void enchilada_adreno_poll(void) {
                 const uint32_t id = (qi == 0u) ? ADRENO_HFI_V1_CMD_QUEUE_ID : ADRENO_HFI_V1_RESP_QUEUE_ID;
                 volatile uint32_t *qh = t346 + ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + qi * ADRENO_HFI_V1_QHDR_SIZE_WORDS;
                 qh[0] = 1u;
-                qh[1] = (uint32_t) (iovaVal346 + (uint64_t) (qi + 1u) * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+                qh[1] = (uint32_t) (pubVal346 + (uint64_t) (qi + 1u) * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
                 qh[2] = ADRENO_HFI_V1_QUEUE_TYPE (id);
                 qh[3] = ADRENO_HFI_V1_QUEUE_WORDS;
                 qh[6] = 1u; qh[7] = 1u; qh[8] = 1u;
@@ -3129,9 +3130,10 @@ extern "C" void enchilada_adreno_poll(void) {
             adreno_lpae_geometry ((uint32_t) 48u, (uint32_t) 12u, &l346);
             const uint64_t prot346 = (uint64_t) (kAdrenoLpaePteValid | kAdrenoLpaePteAf);
             const uint64_t iovaB346 = (uint64_t) iovaBase346;
-            const uint32_t iIdent346 = adreno_lpae_lvl_idx (iovaB346, 0u, &l346);
-            const uint32_t l1Iova346 = adreno_lpae_lvl_idx (iovaB346, 1u, &l346);
-            const uint32_t l2Iova346 = adreno_lpae_lvl_idx (iovaB346, 2u, &l346);
+            const uint64_t mapBase346 = (mode346 == 349u) ? paBase346 : iovaB346;
+            const uint32_t iIdent346 = adreno_lpae_lvl_idx (mapBase346, 0u, &l346);
+            const uint32_t l1Iova346 = adreno_lpae_lvl_idx (mapBase346, 1u, &l346);
+            const uint32_t l2Iova346 = adreno_lpae_lvl_idx (mapBase346, 2u, &l346);
             const uint32_t l1Ident346 = adreno_lpae_lvl_idx (paBase346, 1u, &l346);
             const uint32_t l2Ident346 = adreno_lpae_lvl_idx (paBase346, 2u, &l346);
             const uint64_t paRoot346 = tblPa346 + (uint64_t) (4u * 4096u);
@@ -3157,12 +3159,12 @@ extern "C" void enchilada_adreno_poll(void) {
             }
             __asm__ volatile ("dsb sy" ::: "memory");
             snprintf (r346Row, sizeof r346Row,
-                      "gmu%ub=hfi9_table mode=%u tblpa=%08x pabase=%08x iova=%08x iovabase=%08x dual=%d",
+                      "gmu%ub=hfi10_table mode=%u tblpa=%08x pabase=%08x iova=%08x iovabase=%08x dual=%d",
                       (unsigned) mode346, (unsigned) mode346, (unsigned) tblPa346, (unsigned) paBase346,
                       (unsigned) iovaVal346, (unsigned) iovaB346, dual346);
             IOLog ("enchilada-adreno: %s\n", r346Row);
             snprintf (r346Row, sizeof r346Row,
-                      "gmu%uc=hfi9_walk mode=%u r0=%llx l1i=%llx l1d=%llx l2i=%llx l2d=%llx i2=%u d4=%u",
+                      "gmu%uc=hfi10_walk mode=%u r0=%llx l1i=%llx l1d=%llx l2i=%llx l2d=%llx i2=%u d4=%u",
                       (unsigned) mode346, (unsigned) mode346,
                       (unsigned long long) root346[iIdent346], (unsigned long long) l1_346[l1Iova346],
                       (unsigned long long) l1_346[l1Ident346], (unsigned long long) l2hi346[l2Iova346],
@@ -3192,7 +3194,7 @@ extern "C" void enchilada_adreno_poll(void) {
             const int plan346rc = adreno_smmu_ctx_plan (&p346, plan346, 12u, &nplan346);
             const uint32_t abs346rc = adreno_install_absolute (&geo346, cbndx346, plan346, nplan346, abs346, 12u, &nabs346);
             snprintf (r346Row, sizeof r346Row,
-                      "gmu%ud=hfi9_cbplan mode=%u plan=%d n=%u abs=%u nab=%u cbndx=%u cbbase=%04x ttbr=%08x cw=%u ias=%u oas=%u",
+                      "gmu%ud=hfi10_cbplan mode=%u plan=%d n=%u abs=%u nab=%u cbndx=%u cbbase=%04x ttbr=%08x cw=%u ias=%u oas=%u",
                       (unsigned) mode346, (unsigned) mode346, plan346rc, (unsigned) nplan346, (unsigned) abs346rc,
                       (unsigned) nabs346, (unsigned) cbndx346, (unsigned) cbBase346, (unsigned) paRoot346,
                       (unsigned) p346.coherent_walk, (unsigned) ias346, (unsigned) oas346);
@@ -3220,25 +3222,24 @@ extern "C" void enchilada_adreno_poll(void) {
             const uint32_t sct346 = rd32 (s346Smmu, cbBase346 + 0x00u);
             const uint32_t bar346 = rd32 (static_cast<uintptr_t>(s346Smmu) + (static_cast<uintptr_t>(1u) << geo346.pgshift), 0x000u);
             snprintf (r346Row, sizeof r346Row,
-                      "gmu%ue=hfi9_cb mode=%u wrote=%u ttbr0=%08x/%08x sctlr=%08x cbar=%08x fw=%08x",
+                      "gmu%ue=hfi10_cb mode=%u wrote=%u ttbr0=%08x/%08x sctlr=%08x cbar=%08x fw=%08x",
                       (unsigned) mode346, (unsigned) mode346, (unsigned) nabs346, (unsigned) t0l346, (unsigned) t0h346,
                       (unsigned) sct346, (unsigned) bar346, (unsigned) fwNow346);
             IOLog ("enchilada-adreno: %s\n", r346Row);
             snprintf (r346Row, sizeof r346Row,
-                      "gmu%uf=hfi9_glob mode=%u scr0=%08x sgfsr=%08x gfptr=%08x smr0=%08x s2cr0=%08x",
+                      "gmu%uf=hfi10_glob mode=%u scr0=%08x smr0=%08x s2cr0=%08x",
                       (unsigned) mode346, (unsigned) mode346,
-                      (unsigned) rd32 (s346Smmu, 0x0u), (unsigned) rd32 (s346Smmu, 0x48u),
-                      (unsigned) rd32 (s346Smmu, 0x40u), (unsigned) rd32 (s346Smmu, 0x800u),
+                      (unsigned) rd32 (s346Smmu, 0x0u), (unsigned) rd32 (s346Smmu, 0x800u),
                       (unsigned) rd32 (s346Smmu, 0xc00u));
             IOLog ("enchilada-adreno: %s\n", r346Row);
-            const uint64_t pubAddr346 = iovaVal346;
+            const uint64_t pubAddr346 = pubVal346;
             g346[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = (uint32_t) pubAddr346;
             g346[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
             g346[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] = (uint32_t) (pubAddr346 + 3u * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
             g346[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xff7fffffu;
             __asm__ volatile ("dsb sy" ::: "memory");
             snprintf (r346Row, sizeof r346Row,
-                      "gmu%ug=hfi9_pub mode=%u pa=%08x qtbl=%08x qi=%08x mask=%08x preinfo=%08x",
+                      "gmu%ug=hfi10_pub mode=%u pa=%08x qtbl=%08x qi=%08x mask=%08x preinfo=%08x",
                       (unsigned) mode346, (unsigned) mode346, (unsigned) pubAddr346,
                       (unsigned) g346[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR],
                       (unsigned) g346[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO],
@@ -3258,7 +3259,7 @@ extern "C" void enchilada_adreno_poll(void) {
                 IODelay (1u);
             }
             snprintf (r346Row, sizeof r346Row,
-                      "gmu%uh=hfi9_init mode=%u ctl=%08x bit0=%u polls=%u info=%08x smr=%08x s2cr=%08x",
+                      "gmu%uh=hfi10_init mode=%u ctl=%08x bit0=%u polls=%u info=%08x smr=%08x s2cr=%08x",
                       (unsigned) mode346, (unsigned) mode346, (unsigned) ctl346, (unsigned) bit0346, (unsigned) polls346,
                       (unsigned) g346[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO],
                       (unsigned) rd32 (s346Smmu, 0x800u), (unsigned) rd32 (s346Smmu, 0xc00u));
@@ -3266,11 +3267,10 @@ extern "C" void enchilada_adreno_poll(void) {
             IODelay (20u);
             __asm__ volatile ("dsb sy" ::: "memory");
             snprintf (r346Row, sizeof r346Row,
-                      "gmu%ui=hfi9_late mode=%u fsr=%08x far=%08x farhi=%08x info=%08x",
+                      "gmu%ui=hfi10_late mode=%u fsr=%08x far=%08x info=%08x",
                       (unsigned) mode346, (unsigned) mode346,
                       (unsigned) rd32 (s346Smmu, cbBase346 + 0x58u),
                       (unsigned) rd32 (s346Smmu, cbBase346 + 0x60u),
-                      (unsigned) rd32 (s346Smmu, cbBase346 + 0x64u),
                       (unsigned) g346[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO]);
             IOLog ("enchilada-adreno: %s\n", r346Row);
             gDone = true;
