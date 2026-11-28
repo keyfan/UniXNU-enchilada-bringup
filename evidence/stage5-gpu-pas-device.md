@@ -10116,3 +10116,65 @@ CI **#451 `46095504337` success**（kernel `04684ab16aa4ae9e1319ff5ff8685d5d249c
 142.4 **修复假设（R334）**：既然固件用「去掉 BIT31 的表地址」去读，就在 CB0 里**再加一块 alias 映射**：`VA 0x28200000 → PA 0xa8200000`（2 MiB block，偏移同为 `0xe2000`，故 `0x282e2000` 恰好翻回真表 `0xa82e2000`、队环 `0x282e3000`→`0xa82e3000`）。若 alias 生效，则 SMMU 不再 translation fault、`CM3_FAULT` 应消失、`ctl` bit0 有望置起。R334 三键：340（identity + alias，发布高地址）/341（identity + alias，发布去 BIT31 的低地址）/342（只 identity 无 alias 的对照，复现 337 的 fault）。这样在同一份内核里做 A/B，一次上机就能判定 alias 是否为解。
 
 142.5 边界：`FSYNR0` 在 337 读到 `0x00000021`、338 为 0（与 fault 相关），但 `FSR` 的 FS 码精确语义（level/type）未在树内解码器里查实；本轮仍未读 SMMU 全局 `sGFSR`/CB `PAR`。GPU 仍未渲染一帧。
+
+## 一百四十三、R334：在 CB0 里补 alias（VA `0x28200000`→PA `0xa8200000`）**完全无效**——340（有 alias）与 342（无 alias）读数逐字相同
+
+CI **#452 `46098194478` success**（kernel `1a3c230c2628810cf68eed22d5f924344c9db318e9edd590610c271c2665d8a7`、payload `bb50a19e12ad07e27d7a690c13d68e4139c6cb31be43e6c1da5fdffea9848cbe`，均注入 `a630_gmu.bin`，`hfi7_*` 富行全在场）。三键在 R331/R333 全套上**手工建双分支 LPAE 树**（root→l1 两个分支，l2hi 映 identity `paBase`、l2lo 映 alias `0x28200000`→同 `paBase`）：
+
+| 键 | 形状 | 关键读数 |
+|---|---|---|
+| 340 | identity + alias（`aliasOn=1`），发布高址 `qtbl=tblPa` | `gmu340b tblpa=a82eb000 ident=a8200000 alias=28200000 aliasOn=1 root=a82ef000`；`gmu340d cb wrote=9 ttbr0=a82ef000`；`gmu340h late fsr=00000402 far=282eb000 info=00800000` |
+| 341 | identity + alias，发布去 BIT31 低址 | **两次上机均无 `gmu341*` 行**（flash/boot rc=0、32 s 回 adb，但窗口 sha 恒等于 340 的旧窗口）⇒ payload 未真正执行，暂记为 flaky |
+| 342 | 只 identity（`aliasOn=0`）对照 | `gmu342b … aliasOn=0`；`gmu342h late fsr=00000402 far=282eb000 info=00800000` |
+
+143.1 **判决**：340（`aliasOn=1`）与 342（`aliasOn=0`）的 `late` 行**逐字相同**（`fsr=00000402 far=282eb000`）。alias 描述符已在内存里建好，但对 SMMU 的取址零影响。⇒ 要么手工 alias 描述符没被 SMMU 走到，要么 CB0 上下文/TLB 陈旧，要么我们的表根本没被 SMMU 读到。`tblpa=a82eb000` 与 `far=282eb000` 精确对应 BIT31 清零，跨轮（339 `a82e2000`、340/342 `a82eb000`）都成立。
+
+143.2 **R334 没做到的事**：没在启动行里 dump 描述符内容，无法判断「描述符写对了没」；也没验证 identity 块本身是否被 SMMU 解析过。⇒ 下一步（R335）把描述符内容打出来，并测 cache 一致性与全新 CB1。
+
+
+## 一百四十四、R335：描述符内容证明 LPAE 表在内存里**完全正确**；清 cache、换全新 CB1 都无差别——SMMU 就是不按我们的树走那个去 BIT31 地址
+
+CI **#453 `46100521266` success**（kernel `7f0e54e8ee14ca30f57942cb4725f84e2ca580bec8ca4a6b736aa146cc781444`、payload `368b17bfeba7168565527d40139b4c93615b1396d32d3c614cbe8f97e5c2a1e3`，均注入 `a630_gmu.bin`，`hfi8_*` 富行全在场）。三键 34/34/36 s 回 adb、8 行齐全：343=双映射不清 cache（基线）；344=双映射 + `dc cvac` 把 8 页 blob 逐 64B 清到 PoC；345=双映射 + 清 cache + 用全新 `cbndx=1`（`S2CR0=1`）。
+
+- 三键描述符 dump 完全正确：`gmu*b=hfi8_desc … tblpa=a82f4000 root=a82f8000 l1=a82f9000 l2hi=a82fa000 l2lo=a82fb000 d4=16384 aliasOn=1 clean=0/1/1`；`gmu*c=hfi8_walk r0=a82f9003 l1a=a82fa003 l1b=a82fb003 l2a=a8200401 l2b=a8200401 i2a=321 i2b=321`（`r0` 指向 l1，两分支叶 pte 都是 `0xa8200401` = paBase `0xa8200000` + AF(0x400)+valid(0x1)；`i2=0x141=321` 两级 index 正确；`d4=16384` 证明 4 页表区物理连续）。
+- 343：`gmu343h=hfi8_late fsr=00000402 far=282f4000 info=00800000`。
+- 344（清 cache）：`gmu344h=… fsr=00000402 far=282f4000 info=00800000`，与 343 **逐字相同**。
+- 345（全新 CB1）：`gmu345d=hfi8_cbplan cbndx=1 cbbase=9000 ttbr=a82f8000`；`gmu345h=… fsr=00000402 far=282f4000 info=00800000`。
+
+144.1 **判决**：cache 清不清、CB0/CB1 都**无差别**，descriptor 内容**正确**，但 SMMU 依然在 `far=tblPa&0x7fffffff` 抛 translation fault（跨 `a82e2000`/`a82eb000`/`a82f4000` 三轮都成立）。⇒ 描述符/GDT/内存一致性都不是问题；问题在于「SMMU 没按我们这条 CB 的页表去翻译那个地址」或「固件发出的地址不在我们这条 CB 的归属/窗口里」。⇒ 转向查驱动模型：HFI 表的地址该是 **GMU IOVA**，不是物理地址。
+
+
+## 一百四十五、R336：改成发布 GMU IOVA（`0x60000000` 段）——但**只要 `enchilada-hfi9` 让 R336 块真跑，内核就崩、不落窗口**；基版与 out-of-range 参数都能启动
+
+**设计依据**：`drivers/NativeAdreno/AdrenoGmuBootV1.h:209` `uint32_t hfi_iova; /* GMU IOVA of the HFI table */`；a6xx GMU VA 窗口 `[0x60000000,0x80000000)`（`AdrenoGen1BackendV1.c` `kEnchiladaGen1GmuDummyIova=0x60000000`）。⇒ `HFI_QTBL_ADDR` 必须写 **GMU IOVA**，R331–R335 一直发布物理地址是 bug。CI **#454 `46103117553` success**（payload `84d979dbed0f3526e6f58ddea9f642975d0e8cb8a5913f18e89ac36492d55837`，`hfi9_*` 富行全在场）。三键 346=IOVA `0x60000000`（2 MiB 块→paBase）+发布 IOVA+INIT+dump；347=IOVA `0x40000000`（窗口外负对照）；348=IOVA `0x60000000` + 同时 identity 映 paBase（双分支）。
+
+145.1 **现象：三键变体全部拿到陈旧窗口**。346/347/348 上机（flash/boot rc=0、32 s 回 adb）窗口 sha 恒为 `253e6d74…`（= R335 键 345 上次窗口），无任何 `gmu346*` 行 ⇒ payload 没执行。
+
+145.2 **排查链（把「payload 坏」排除干净）**：
+- 已把 `r331_win.py` 改为先 `getprop ro.boot.slot_suffix` 再 **a、b 两个 system 分区都闪**（此前只闪 `system_b`，而设备曾在 `_a`）；重跑 346 仍陈旧。
+- 重跑**已知良好**的 `r335-p343-payload` → 窗口 sha `9b62a06b…`（新鲜）、8 行 `gmu343` 全在 ⇒ **flash/boot 机制正常**。
+- 重跑**未改**的 `r336-payload`（不带 arg）→ 窗口 sha `bdc6767e…`（新鲜），只有 `stage2=cx-down-gmu-not-mapped` ⇒ **基版 #454 payload 能启动**。
+- 字节比对 base vs `r336-p346-payload`：等长 150,994,944，仅 **568 字节不同**、全部落在 args 字段 `127642203..127642818`（base 有 `enchilada-pas-exec=2`，变体在末尾加了 `enchilada-hfi9=346` + 空格填充），结构干净 ⇒ **变体没被搞坏**。
+- **out-of-range 对照**：`enchilada-hfi9=349`（块被跳过）→ 窗口 sha `b51f45d1…`（新鲜）、`stage2=cx-down-gmu-not-mapped` ⇒ 能启动。
+
+145.3 **判决（高度可信）**：payload 结构完好、flash/boot 正常、基版与 out-of-range 参数都能启动；**只有让 R336 探针块真正执行（`hfi9`∈{346,347,348}）时内核才崩/不落窗口**。疑似新增的 SMMU `0x40/0x48/0x64` 读或「发布 `0x600f4000` 这类非 DRAM 的 IOVA 让 GMU 总线产生外部 abort」导致崩溃。
+
+145.4 **R337 隔离实验**（同一内核三键，arg `enchilada-hfi10`，key 349/350/351；去掉 `0x40/0x48/0x64` 三个可疑读，glob 行只打 `sCR0/SMR0/S2CR0`）：**349** = 发布**物理地址** + identity 映射（对照，预期能启动，且首次读到 `sCR0`）；**350** = 发布 IOVA `0x60000000` + 映射 iova→paBase（真正的 IOVA 实验，若崩即证明「发布非 DRAM IOVA 致死」）；**351** = IOVA + 同时 identity 映 paBase（双分支）。三键都 INIT 后轮询 200000 拍并读 CB `FSR/FAR`。
+
+## 一百四十六、R337：物理址发布能启动、发布 GMU IOVA（`0x600x x000`）直接崩机——IOVA 方案判死，回到「物理址 + 修正 BIT31 alias」
+
+CI **#455 `46105539656` success**（kernel `632ebd7c81d8d8ecb0fda9437c16b2462196588f4143b539abb24d128f6b7c58`、payload `86d8023c8db7d0456c0f36d6614d0db288560d2cac2849d62fa56b86dda15723`，注入 `a630_gmu.bin`，`hfi10_*` 富行全在场）。三键去掉 R336 可疑的 SMMU `0x40/0x48/0x64` 读（`glob` 行只打 `sCR0/SMR0/S2CR0`）：
+
+| 键 | 形状 | 关键读数 |
+|---|---|---|
+| 349 | 发布**物理址** `qtbl=tblPa`（对照） | 34 s 回 adb、8 行齐全；`gmu349e cb wrote=9 ttbr0=a8301000 sctlr=00001067`；`gmu349f glob scr0=00200626 smr0=80000004 s2cr0=00000000`；`gmu349h init ctl=00000000 bit0=0 polls=200000 info=00800000`；`gmu349i late fsr=00000402 far=282fd000 info=00800000` |
+| 350 | 发布 **GMU IOVA** `0x6001d000` | 32 s 回 adb，但窗口 sha `6167a45e…` **与 349 逐字节相同**、无 `gmu350*` 行 ⇒ payload 未执行/内核崩 |
+| 351 | IOVA `0x6001d000` + 同时 identity 映 paBase | 同上，陈旧窗口 `6167a45e…`、无 `gmu351*` 行 ⇒ 也崩 |
+
+146.1 **判决**：① 去掉 `0x40/0x48/0x64` 后物理址对照照常启动 ⇒ **R336 的崩溃不是那三个 SMMU 读**。② **发布 GMU IOVA（`0x600x x000`）会让内核直接崩/不落窗口；发布物理址（`0xa8…`）则存活**，并且 SMMU 在 CB0 里对一个干净的 translation fault 收场（`fsr=00000402 far=tblPa&0x7fffffff`）。⇒ IOVA 发布方案判死，回到「发布物理址 + 在 CB0 里修正 BIT31 清零后的取址」。
+
+146.2 **首次读到 SMMU 全局 `sCR0=0x00200626`**（非零，说明 GPU kgsl SMMU 的 stage-1 很可能是使能的；`SMR0=0x80000004`、`S2CR0=0x00000000` 与我们写入一致）。
+
+146.3 **顺带发现的 bug**：R336/R337 里 `off346 = tblPa346 & 0x1ffffull` 的掩码写成 `0x1ffff`（128 KiB−1），本应 `0x1fffff`（2 MiB−1），导致 `iovaVal` 偏移算错（`0x6001d000` 而非 `0x600fd000`）——但因 IOVA 方案已废，不再相关；R338 已彻底删掉 off/iova 变量。
+
+146.4 **R338 设计（修正 alias，物理址发布）**：R334/R335 的 alias 分支把描述符写进了**错误的一级 index**——alias VA `0x28200000` 的 level-1 index 是 **0**，而当时用 `lvl_idx(paBase,1)`=**2** 去写，所以 alias 从未真正安装（R334/R335 的「alias 无效」是索引 bug，不是结论）。R338 = 发布物理址 `tblPa` + 在 CB0 里把 **BIT31 清掉的地址 `0x28200000`→PA `paBase`** 装进正确 index（l1 idx 0 / l2 idx 0x141）：**352=只 identity**（对照）、**353=只 alias**、**354=identity+alias 双分支**。arg `enchilada-hfi11`，key 352..354。
