@@ -10075,3 +10075,24 @@ CI **#449 `46088861537` success**（kernel `6ef33e9a8e3f9f52e0825f1a1ecfd375dbfe
 
 140.6 下一步（R332）：既然「INIT + 已覆盖的表」已能活，剩下的唯一缺口是「固件不置 `HFI_CTRL_STATUS` bit0」。要回答的是 legacy v1 启动握手缺哪一步：(a) 写 `HFI_CTRL_INIT` 之后是否还需敲 `HOST2GMU_INTR_SET` 的 bit0 门铃（R305 曾按 `a6xx_hfi.c` 设计过真发 legacy v1 INIT 消息）；(b) 固件究竟在哪一刻读队列表（R262/R264 已观察到「页第 4..7 字的内容会改变固件行为」，说明它确实读这页）；(c) 历史上 R303/R304 期间累计 12 采样里 9 次「被接受」（`ctl=00000001 bit0=1 polls=2`，键 268/269/271/273），要把它当时的形状与当前逐步对照，找出「会应答」的那一步差了哪一笔。
 
+## 一百四十一、R332：把 `CM3_FAULT` 逼到「只由 `HFI_CTRL_INIT` 触发」——复位/门铃都无关，故障在固件 HFI 启动路径内部
+
+CI **#450 `46092625856` success**（kernel `4ac80f0199843627ef350c09a478fa23dbd2c339efab0969c349cbb57551380c`、payload `3a1d0c48d8cff6335defbd0a2ff76cbcee9972799f8202a9302b81ce4775ef52`，均带 `extra_firmware_b64/layout` 注入 `a630_gmu.bin`，富行复核 `hfi5_setup…hfi5_init` 全 8 条在场）。三键都复用 R331 已证的「2 MiB identity 块表 + 九笔 CB0 + `SMR0=VALID|SID4` + `S2CR0=TRANS|CB0`」，只在「发布之后的启动次序」上分岔：
+
+| 键 | 形状 | 结果 |
+|---|---|---|
+| 334 | 发布 → `FW_INIT_RESULT=0` → **CM3 复位脉冲** → 等 `babeface` → 清两路中断 → `INIT` → 200000 拍 | 落地（34 s），`preinfo=0`，复位后 `info=0`，INIT 后 `info=00800000`、`ctl=0 bit0=0` |
+| 335 | 同上但**不复位**，只清中断 → `INIT` | 落地，`preinfo=0`，INIT 后 `info=00800000`、`bit0=0` |
+| 336 | 334 + `INIT` 后敲 `HOST2GMU_INTR_SET=1` 门铃，读 RESP 队列/`CP_RESP` | 落地，`door=1`，仍 `info=00800000`、`bit0=0`、`cpresp=0` |
+
+141.1 **最关键的一行（本轮结论）**：三键的 `gmuNNNe=hfi5_pub` 都打出 **`preinfo=00000000`**——即写 `HFI_CTRL_INIT` **之前**，`GMU2HOST_INTR_INFO` bit23（`CM3_FAULT`）**不存在**；而 INIT 之后一律 `info=00800000`。键 334 还多打一行 `gmu334f=hfi5_reboot … fw=babeface polls=20 sysreset=00000000 ctl=00000000 info=00000000`——**CM3 复位重启到 `babeface` 后 info 仍是 0**。⇒ **`CM3_FAULT` 只由「写 `HFI_CTRL_INIT`」这一个动作触发**，与冷启动、CM3 复位、表是否武装都无关。这把故障从「固件初始就坏」彻底逼到「固件进入 HFI 启动处理路径时坏」。
+
+141.2 **复位与门铃都无关**：334（先武装表再复位）与 335（不复位）读数逐字相同（`preinfo=0` → `info=00800000`、`bit0=0`）；336 加 `HOST2GMU_INTR_SET=1` 门铃后仍 `bit0=0`、`cpresp=0`。⇒ 不是「复位没做」「门铃没敲」这类次序问题，也不是「固件没收到 INIT 通知」——固件收到了并去处理，处理过程中 fault。
+
+141.3 **发布与映射侧仍完全正常**：三键 `gmuNNNe=hfi5_pub` 都 `pa=a82d9000 qtbl=a82d9000 qi=00000001 mask=ff7fffff`；`gmuNNNd=hfi5_cb` 都 `wrote=9 ttbr0=a82dd000/00000000 sctlr=00001067 tcr=00803510 tcr2=00038011 cbar=0001f300 smr=80000004 s2cr=00000000`（与 R331 `a82d4000` 同形状，只是本轮静态缓冲落在 `a82d9000`）。⇒ 我们这侧的表/映射/路由无回归。
+
+141.4 边界：`cpresp=0`、RESP 队列 `ri/wi` 未进窗口——因为 `r331_win.py` 的抽取正则用 `[\x20-\x7e]{8,200}` **200 字符上限**把行尾截断了（`gmu336h` 只到 `cpresp=0000`）。下一轮把门铃/消息字段压进独立短行即可读到；另本轮仍未读 SMMU/CB0 的**故障明细寄存器**。
+
+141.5 下一步（R333，方向明确）：既然 `CM3_FAULT` 由 INIT 触发、且 AP 侧映射已通，就要问「CM3 在 HFI 启动路径里到底 fault 在什么地址/什么类型」。做法：INIT 之后立刻读 **CB0 `FSR`（0x58）/`FAR`（0x60）** 与 SMMU 全局故障状态、以及 `SMR0`/`S2CR0` 现场回读。判定：
+- CB0 `FSR` 有 translation/permission fault 且 `FAR` 指向队列表或队列环地址 ⇒ CM3 的读**确实**经过 SMMU 且被拒（地址/权限），下一步改 CB0 权限位（`S2CR0` 的 privcfg/`MEMATTR`）或把表放到固件期望的 GMU IOVA 区间（非 identity）；
+- `FSR` 无记录而 `CM3_FAULT` 仍在 ⇒ CM3 内部 fault（取指/数据），与 SMMU 无关，下一步查固件是否需要**第二段镜像/DTCM 数据**或 INIT 消息格式（legacy v1 wire）。
