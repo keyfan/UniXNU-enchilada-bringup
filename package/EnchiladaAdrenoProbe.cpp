@@ -3041,421 +3041,409 @@ extern "C" void enchilada_adreno_poll(void) {
         }
     }
     {
-        unsigned hfi31 = 0u;
-        if (PE_parse_boot_argn ("enchilada-hfi31", &hfi31, sizeof hfi31) && hfi31 >= 415u && hfi31 <= 417u) {
-            static uintptr_t s415Win = 0u;
-            static uintptr_t s415Gmu = 0u;
-            static uintptr_t s415Smmu = 0u;
-            static uintptr_t s415Gcc = 0u;
-            static uint8_t s415Blob[10u * 4096u] __attribute__((aligned(4096)));
-            char r415Row[560];
-            const unsigned mode415 = hfi31;
-            const int sid5On415 = 0;
-            const int pubIova415 = 0;   /* all keys publish PA: the GCC access is the only variable */
-const int aliasWide415 = 0;
-            const int initOn415 = 1;
-            const int fullInit415 = 0;
-            const int maskAll415 = 0;
-            const int walkOff415 = 0;
-            const int zeroTable415 = 0;
-            const int clkMode415 = 0;
-            const int gccMode415 = (mode415 == 415u) ? 0 : ((mode415 == 416u) ? 1 : 2);
-            const uint32_t pollMax415 = 200u;
-            if (s415Win == 0u) s415Win = (uintptr_t) armcpu_map_physical (ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE);
-            if (s415Gmu == 0u) s415Gmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
-            if (s415Gcc == 0u) s415Gcc = (uintptr_t) armcpu_map_physical ((uintptr_t) 0x00100000ull, (uintptr_t) 0x001f0000ull);
-            if (s415Win == 0u || s415Gmu == 0u || !kAdrenoGmuBlobPresent || !(&ml_static_vtop)) {
-                snprintf (r415Row, sizeof r415Row, "gmu%ua=hfi31 ok=0 mode=%u reason=no-window-blob-or-vtop",
-                          (unsigned) mode415, (unsigned) mode415);
-                IOLog ("enchilada-adreno: %s\n", r415Row);
+        unsigned hfi32 = 0u;
+        if (PE_parse_boot_argn ("enchilada-hfi32", &hfi32, sizeof hfi32) && hfi32 >= 418u && hfi32 <= 420u) {
+            static uintptr_t s418Win = 0u;
+            static uintptr_t s418Gmu = 0u;
+            static uintptr_t s418Smmu = 0u;
+            static uint8_t s418Blob[10u * 4096u] __attribute__((aligned(4096)));
+            char r418Row[560];
+            const unsigned mode418 = hfi32;
+            const int routeMode418 = (mode418 == 418u) ? 3 : ((mode418 == 419u) ? 34 : 4);
+            const int pubIova418 = 0;   /* all keys publish PA */
+const int aliasWide418 = 0;
+            const int initOn418 = 1;
+            const int fullInit418 = 0;
+            const int maskAll418 = 0;
+            const int walkOff418 = 0;
+            const int zeroTable418 = 0;
+            const int clkMode418 = 0;
+            const uint32_t pollMax418 = 200u;
+            if (s418Win == 0u) s418Win = (uintptr_t) armcpu_map_physical (ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE);
+            if (s418Gmu == 0u) s418Gmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
+            if (s418Win == 0u || s418Gmu == 0u || !kAdrenoGmuBlobPresent || !(&ml_static_vtop)) {
+                snprintf (r418Row, sizeof r418Row, "gmu%ua=hfi32 ok=0 mode=%u reason=no-window-blob-or-vtop",
+                          (unsigned) mode418, (unsigned) mode418);
+                IOLog ("enchilada-adreno: %s\n", r418Row);
                 gDone = true;
                 return;
             }
-            volatile uint32_t *w415 = (volatile uint32_t *) s415Win;
-            volatile uint32_t *c415 = (volatile uint32_t *) s415Gcc;
-            if (s415Gcc != 0u) {
-                if (gccMode415 == 0) {
-                    (void) c415[0x71004u / 4u];        /* read-only probe of the GCC block */
-                } else if (gccMode415 == 1) {
-                    c415[0x71004u / 4u] = 1u;          /* blind write, no read-modify-write */
-                } else {
-                    c415[0x71004u / 4u] = (c415[0x71004u / 4u] | 1u); /* RMW: the R357 shape */
-                }
-                __asm__ volatile ("dsb sy" ::: "memory");
-                IODelay (2u);
-            }
-            volatile uint32_t *g415 = (volatile uint32_t *) s415Gmu;
-            if (clkMode415 != 2) w415[0x1098u / 4u] = (w415[0x1098u / 4u] | 1u);
-            w415[0x109cu / 4u] = (w415[0x109cu / 4u] | 1u);
+            volatile uint32_t *w418 = (volatile uint32_t *) s418Win;
+            volatile uint32_t *g418 = (volatile uint32_t *) s418Gmu;
+            if (clkMode418 != 0) w418[0x1098u / 4u] = (w418[0x1098u / 4u] | 0x00000f0fu);
+            if (clkMode418 != 2) w418[0x1098u / 4u] = (w418[0x1098u / 4u] | 1u);
+            w418[0x109cu / 4u] = (w418[0x109cu / 4u] | 1u);
             __asm__ volatile ("dsb sy" ::: "memory");
             IODelay (2u);
-            w415[0x106cu / 4u] = (w415[0x106cu / 4u] & ~1u);
+            w418[0x106cu / 4u] = (w418[0x106cu / 4u] & ~1u);
             __asm__ volatile ("dsb sy" ::: "memory");
             for (uint32_t i = 0u; i < 2000u; ++i) {
-                if ((w415[0x1540u / 4u] >> 31) & 1u) break;
+                if ((w418[0x1540u / 4u] >> 31) & 1u) break;
                 IODelay (1u);
             }
-            const uint32_t cx415 = rd32 (s415Win, kCxOffset);
-            const int cxOn415 = adreno_domain_cx_is_on (cx415);
-            const uint32_t clkCxgmu415 = w415[0x1098u / 4u];
-            const uint32_t clkCxo415 = w415[0x109cu / 4u];
-            if (s415Smmu == 0u && cxOn415) s415Smmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_KGSL_SMMU_BASE, ADRENO_BOARD_KGSL_SMMU_SIZE);
-            struct adreno_install_geo geo415 = {};
-            const uint32_t id1_415 = (s415Smmu != 0u) ? rd32 (s415Smmu, 0x24u) : 0u;
-            const uint32_t geom415 = (s415Smmu != 0u) ? adreno_install_cb_geometry (id1_415, &geo415) : 1u;
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%ua=hfi31_setup mode=%u cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d sid5=%d fullinit=%d pubiova=%d maskall=%d initon=%d walkoff=%d zerotbl=%d clkmode=%d pollmax=%u",
-                      (unsigned) mode415, (unsigned) mode415, (unsigned) cx415, cxOn415, (unsigned) geom415,
-                      (unsigned) geo415.pgshift, (unsigned) geo415.cb_base, (unsigned) geo415.num_context_banks,
-                      (s415Smmu != 0u) ? 1 : 0, sid5On415, fullInit415, pubIova415, maskAll415, initOn415, walkOff415, zeroTable415, clkMode415, (unsigned) pollMax415);
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%um=hfi31_clk mode=%u clkmode=%d gccmode=%d cxgmu=%08x cxo=%08x cxgdscr=%08x g71004=%08x g7100c=%08x g71018=%08x g44038=%08x g71028=%08x",
-                      (unsigned) mode415, (unsigned) mode415, clkMode415, gccMode415, (unsigned) clkCxgmu415,
-                      (unsigned) clkCxo415, (unsigned) rd32 (s415Win, 0x106cu),
-                      (s415Gcc != 0u) ? (unsigned) rd32 (s415Gcc, 0x71004u) : 0u,
-                      (s415Gcc != 0u) ? (unsigned) rd32 (s415Gcc, 0x7100cu) : 0u,
-                      (s415Gcc != 0u) ? (unsigned) rd32 (s415Gcc, 0x71018u) : 0u,
-                      (s415Gcc != 0u) ? (unsigned) rd32 (s415Gcc, 0x44038u) : 0u,
-                      (s415Gcc != 0u) ? (unsigned) rd32 (s415Gcc, 0x71028u) : 0u);
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            if (cxOn415 == 0) { IOLog ("enchilada-adreno: gmu%ub=hfi31 refused-cx-down\n", (unsigned) mode415); gDone = true; return; }
-            if (s415Smmu == 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi31 refused-no-smmu-window\n", (unsigned) mode415); gDone = true; return; }
-            if (geom415 != 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi31 refused-geometry\n", (unsigned) mode415); gDone = true; return; }
-            const uint32_t cbndx415 = 0u;
-            const uint32_t cbBase415 = geo415.cb_base + (cbndx415 << geo415.pgshift);
-            const uint64_t tblPa415 = (uint64_t) ml_static_vtop ((uintptr_t) &s415Blob[0]);
-            const uint64_t paBase415 = tblPa415 & ~((uint64_t) 0x1fffffull);
-            const uint64_t off415 = tblPa415 & (uint64_t) 0x1fffffull;
-            const uint64_t aliasBase415 = paBase415 & (uint64_t) 0x7fffffffull;
-            const uint64_t iovaBlock415 = (uint64_t) 0x60000000ull;
-            const uint64_t iovaTbl415 = iovaBlock415 + off415;
-            const uint64_t pubAddr415 = (pubIova415 != 0) ? iovaTbl415 : tblPa415;
-            const unsigned iovaLeaves415 = 1u;
-            volatile uint32_t *t415 = (volatile uint32_t *) &s415Blob[0];
-            for (uint32_t i = 0u; i < (uint32_t) ((ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES) / 4u); ++i) t415[i] = 0u;
-            t415[1] = ADRENO_HFI_V1_TABLE_SIZE_BYTES;
-            t415[2] = ADRENO_HFI_V1_QHDR0_OFFSET_WORDS;
-            t415[3] = ADRENO_HFI_V1_QHDR_SIZE_WORDS;
-            t415[4] = ADRENO_HFI_V1_QUEUE_COUNT;
-            t415[5] = ADRENO_HFI_V1_QUEUE_COUNT;
+            const uint32_t cx418 = rd32 (s418Win, kCxOffset);
+            const int cxOn418 = adreno_domain_cx_is_on (cx418);
+            const uint32_t clkCxgmu418 = w418[0x1098u / 4u];
+            const uint32_t clkCxo418 = w418[0x109cu / 4u];
+            if (s418Smmu == 0u && cxOn418) s418Smmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_KGSL_SMMU_BASE, ADRENO_BOARD_KGSL_SMMU_SIZE);
+            struct adreno_install_geo geo418 = {};
+            const uint32_t id1_418 = (s418Smmu != 0u) ? rd32 (s418Smmu, 0x24u) : 0u;
+            const uint32_t geom418 = (s418Smmu != 0u) ? adreno_install_cb_geometry (id1_418, &geo418) : 1u;
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%ua=hfi32_setup mode=%u cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d route=%d fullinit=%d pubiova=%d maskall=%d initon=%d walkoff=%d zerotbl=%d clkmode=%d pollmax=%u",
+                      (unsigned) mode418, (unsigned) mode418, (unsigned) cx418, cxOn418, (unsigned) geom418,
+                      (unsigned) geo418.pgshift, (unsigned) geo418.cb_base, (unsigned) geo418.num_context_banks,
+                      (s418Smmu != 0u) ? 1 : 0, routeMode418, fullInit418, pubIova418, maskAll418, initOn418, walkOff418, zeroTable418, clkMode418, (unsigned) pollMax418);
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%um=hfi32_clk mode=%u clkmode=%d cxgmu=%08x cxo=%08x cxgdscr=%08x",
+                      (unsigned) mode418, (unsigned) mode418, clkMode418, (unsigned) clkCxgmu418,
+                      (unsigned) clkCxo418, (unsigned) rd32 (s418Win, 0x106cu));
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            if (cxOn418 == 0) { IOLog ("enchilada-adreno: gmu%ub=hfi32 refused-cx-down\n", (unsigned) mode418); gDone = true; return; }
+            if (s418Smmu == 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi32 refused-no-smmu-window\n", (unsigned) mode418); gDone = true; return; }
+            if (geom418 != 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi32 refused-geometry\n", (unsigned) mode418); gDone = true; return; }
+            const uint32_t cbndx418 = 0u;
+            const uint32_t cbBase418 = geo418.cb_base + (cbndx418 << geo418.pgshift);
+            const uint64_t tblPa418 = (uint64_t) ml_static_vtop ((uintptr_t) &s418Blob[0]);
+            const uint64_t paBase418 = tblPa418 & ~((uint64_t) 0x1fffffull);
+            const uint64_t off418 = tblPa418 & (uint64_t) 0x1fffffull;
+            const uint64_t aliasBase418 = paBase418 & (uint64_t) 0x7fffffffull;
+            const uint64_t iovaBlock418 = (uint64_t) 0x60000000ull;
+            const uint64_t iovaTbl418 = iovaBlock418 + off418;
+            const uint64_t pubAddr418 = (pubIova418 != 0) ? iovaTbl418 : tblPa418;
+            const unsigned iovaLeaves418 = 1u;
+            volatile uint32_t *t418 = (volatile uint32_t *) &s418Blob[0];
+            for (uint32_t i = 0u; i < (uint32_t) ((ADRENO_HFI_V1_SHARED_BYTES + ADRENO_HFI_V1_PAGE_BYTES) / 4u); ++i) t418[i] = 0u;
+            t418[1] = ADRENO_HFI_V1_TABLE_SIZE_BYTES;
+            t418[2] = ADRENO_HFI_V1_QHDR0_OFFSET_WORDS;
+            t418[3] = ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+            t418[4] = ADRENO_HFI_V1_QUEUE_COUNT;
+            t418[5] = ADRENO_HFI_V1_QUEUE_COUNT;
             for (uint32_t qi = 0u; qi < ADRENO_HFI_V1_QUEUE_COUNT; ++qi) {
                 const uint32_t id = (qi == 0u) ? ADRENO_HFI_V1_CMD_QUEUE_ID : ADRENO_HFI_V1_RESP_QUEUE_ID;
-                volatile uint32_t *qh = t415 + ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + qi * ADRENO_HFI_V1_QHDR_SIZE_WORDS;
+                volatile uint32_t *qh = t418 + ADRENO_HFI_V1_QHDR0_OFFSET_WORDS + qi * ADRENO_HFI_V1_QHDR_SIZE_WORDS;
                 qh[0] = 1u;
-                qh[1] = (uint32_t) (pubAddr415 + (uint64_t) (qi + 1u) * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+                qh[1] = (uint32_t) (pubAddr418 + (uint64_t) (qi + 1u) * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
                 qh[2] = ADRENO_HFI_V1_QUEUE_TYPE (id);
                 qh[3] = ADRENO_HFI_V1_QUEUE_WORDS;
                 qh[6] = 1u; qh[7] = 1u; qh[8] = 1u;
                 qh[10] = 0u; qh[11] = 0u;
             }
             __asm__ volatile ("dsb sy" ::: "memory");
-            struct adreno_lpae_geo l415 = {};
-            adreno_lpae_geometry ((uint32_t) 48u, (uint32_t) 12u, &l415);
-            const uint64_t prot415 = (uint64_t) (kAdrenoLpaePteValid | kAdrenoLpaePteAf);
-            const uint32_t l0Pa415 = adreno_lpae_lvl_idx (paBase415, 0u, &l415);
-            const uint32_t l1Pa415 = adreno_lpae_lvl_idx (paBase415, 1u, &l415);
-            const uint32_t l2Pa415 = adreno_lpae_lvl_idx (paBase415, 2u, &l415);
-            const uint32_t l0Al415 = adreno_lpae_lvl_idx (aliasBase415, 0u, &l415);
-            const uint32_t l1Al415 = adreno_lpae_lvl_idx (aliasBase415, 1u, &l415);
-            const uint32_t l2Al415 = adreno_lpae_lvl_idx (aliasBase415, 2u, &l415);
-            const uint32_t l0Io415 = adreno_lpae_lvl_idx (iovaBlock415, 0u, &l415);
-            const uint32_t l1Io415 = adreno_lpae_lvl_idx (iovaBlock415, 1u, &l415);
-            const uint32_t l2Io415 = adreno_lpae_lvl_idx (iovaBlock415, 2u, &l415);
-            const uint64_t paRoot415 = tblPa415 + (uint64_t) (4u * 4096u);
-            const uint64_t paL1_415 = tblPa415 + (uint64_t) (5u * 4096u);
-            const uint64_t paL2a415 = tblPa415 + (uint64_t) (6u * 4096u);
-            const uint64_t paL2b415 = tblPa415 + (uint64_t) (7u * 4096u);
-            const uint64_t paL2c415 = tblPa415 + (uint64_t) (8u * 4096u);
-            volatile uint64_t *tbl415 = (volatile uint64_t *) &s415Blob[4u * 4096u];
-            for (uint32_t i = 0u; i < 6u * 512u; ++i) tbl415[i] = 0ull;
-            volatile uint64_t *l1_415 = (volatile uint64_t *) &s415Blob[5u * 4096u];
-            volatile uint64_t *l2a415 = (volatile uint64_t *) &s415Blob[6u * 4096u];
-            volatile uint64_t *l2b415 = (volatile uint64_t *) &s415Blob[7u * 4096u];
-            volatile uint64_t *l2c415 = (volatile uint64_t *) &s415Blob[8u * 4096u];
-            tbl415[l0Pa415] = adreno_lpae_table_pte (paL1_415);
-            if (l0Al415 == l0Pa415) tbl415[l0Io415] = tbl415[l0Pa415];
-            else tbl415[l0Io415] = adreno_lpae_table_pte (paL1_415);
-            l1_415[l1Pa415] = adreno_lpae_table_pte (paL2a415);
-            l2a415[l2Pa415] = adreno_lpae_leaf_pte ((uint32_t) prot415, 2u, paBase415);
-            if (l1Al415 != l1Pa415) {
-                l1_415[l1Al415] = adreno_lpae_table_pte (paL2b415);
-                l2b415[l2Al415] = adreno_lpae_leaf_pte ((uint32_t) prot415, 2u, paBase415);
-                if (aliasWide415 != 0) {
-                    l2b415[l2Al415 + 1u] = adreno_lpae_leaf_pte ((uint32_t) prot415, 2u, paBase415 + (uint64_t) 0x200000ull);
-                    l2b415[l2Al415 + 2u] = adreno_lpae_leaf_pte ((uint32_t) prot415, 2u, paBase415 + (uint64_t) 0x400000ull);
-                    l2b415[l2Al415 + 3u] = adreno_lpae_leaf_pte ((uint32_t) prot415, 2u, paBase415 + (uint64_t) 0x600000ull);
+            struct adreno_lpae_geo l418 = {};
+            adreno_lpae_geometry ((uint32_t) 48u, (uint32_t) 12u, &l418);
+            const uint64_t prot418 = (uint64_t) (kAdrenoLpaePteValid | kAdrenoLpaePteAf);
+            const uint32_t l0Pa418 = adreno_lpae_lvl_idx (paBase418, 0u, &l418);
+            const uint32_t l1Pa418 = adreno_lpae_lvl_idx (paBase418, 1u, &l418);
+            const uint32_t l2Pa418 = adreno_lpae_lvl_idx (paBase418, 2u, &l418);
+            const uint32_t l0Al418 = adreno_lpae_lvl_idx (aliasBase418, 0u, &l418);
+            const uint32_t l1Al418 = adreno_lpae_lvl_idx (aliasBase418, 1u, &l418);
+            const uint32_t l2Al418 = adreno_lpae_lvl_idx (aliasBase418, 2u, &l418);
+            const uint32_t l0Io418 = adreno_lpae_lvl_idx (iovaBlock418, 0u, &l418);
+            const uint32_t l1Io418 = adreno_lpae_lvl_idx (iovaBlock418, 1u, &l418);
+            const uint32_t l2Io418 = adreno_lpae_lvl_idx (iovaBlock418, 2u, &l418);
+            const uint64_t paRoot418 = tblPa418 + (uint64_t) (4u * 4096u);
+            const uint64_t paL1_418 = tblPa418 + (uint64_t) (5u * 4096u);
+            const uint64_t paL2a418 = tblPa418 + (uint64_t) (6u * 4096u);
+            const uint64_t paL2b418 = tblPa418 + (uint64_t) (7u * 4096u);
+            const uint64_t paL2c418 = tblPa418 + (uint64_t) (8u * 4096u);
+            volatile uint64_t *tbl418 = (volatile uint64_t *) &s418Blob[4u * 4096u];
+            for (uint32_t i = 0u; i < 6u * 512u; ++i) tbl418[i] = 0ull;
+            volatile uint64_t *l1_418 = (volatile uint64_t *) &s418Blob[5u * 4096u];
+            volatile uint64_t *l2a418 = (volatile uint64_t *) &s418Blob[6u * 4096u];
+            volatile uint64_t *l2b418 = (volatile uint64_t *) &s418Blob[7u * 4096u];
+            volatile uint64_t *l2c418 = (volatile uint64_t *) &s418Blob[8u * 4096u];
+            tbl418[l0Pa418] = adreno_lpae_table_pte (paL1_418);
+            if (l0Al418 == l0Pa418) tbl418[l0Io418] = tbl418[l0Pa418];
+            else tbl418[l0Io418] = adreno_lpae_table_pte (paL1_418);
+            l1_418[l1Pa418] = adreno_lpae_table_pte (paL2a418);
+            l2a418[l2Pa418] = adreno_lpae_leaf_pte ((uint32_t) prot418, 2u, paBase418);
+            if (l1Al418 != l1Pa418) {
+                l1_418[l1Al418] = adreno_lpae_table_pte (paL2b418);
+                l2b418[l2Al418] = adreno_lpae_leaf_pte ((uint32_t) prot418, 2u, paBase418);
+                if (aliasWide418 != 0) {
+                    l2b418[l2Al418 + 1u] = adreno_lpae_leaf_pte ((uint32_t) prot418, 2u, paBase418 + (uint64_t) 0x200000ull);
+                    l2b418[l2Al418 + 2u] = adreno_lpae_leaf_pte ((uint32_t) prot418, 2u, paBase418 + (uint64_t) 0x400000ull);
+                    l2b418[l2Al418 + 3u] = adreno_lpae_leaf_pte ((uint32_t) prot418, 2u, paBase418 + (uint64_t) 0x600000ull);
                 }
             } else {
-                l2a415[l2Al415] = adreno_lpae_leaf_pte ((uint32_t) prot415, 2u, paBase415);
+                l2a418[l2Al418] = adreno_lpae_leaf_pte ((uint32_t) prot418, 2u, paBase418);
             }
-            if (l1Io415 != l1Pa415 && l1Io415 != l1Al415) {
-                l1_415[l1Io415] = adreno_lpae_table_pte (paL2c415);
+            if (l1Io418 != l1Pa418 && l1Io418 != l1Al418) {
+                l1_418[l1Io418] = adreno_lpae_table_pte (paL2c418);
             }
-            for (unsigned j415 = 0u; j415 < iovaLeaves415; ++j415) {
-                l2c415[l2Io415 + j415] = adreno_lpae_leaf_pte ((uint32_t) prot415, 2u,
-                                                              paBase415 + ((uint64_t) j415 << 21));
-            }
-            __asm__ volatile ("dsb sy" ::: "memory");
-            for (uintptr_t a415 = (uintptr_t) &s415Blob[0]; a415 < (uintptr_t) &s415Blob[10u * 4096u]; a415 += 64u) {
-                __asm__ volatile ("dc cvac, %0" :: "r" (a415) : "memory");
+            for (unsigned j418 = 0u; j418 < iovaLeaves418; ++j418) {
+                l2c418[l2Io418 + j418] = adreno_lpae_leaf_pte ((uint32_t) prot418, 2u,
+                                                              paBase418 + ((uint64_t) j418 << 21));
             }
             __asm__ volatile ("dsb sy" ::: "memory");
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%ub=hfi31_table mode=%u tblpa=%08x pabase=%08x alias=%08x off=%05x iova=%08x pub=%08x leaves=%u",
-                      (unsigned) mode415, (unsigned) mode415, (unsigned) tblPa415, (unsigned) paBase415,
-                      (unsigned) aliasBase415, (unsigned) off415, (unsigned) iovaTbl415, (unsigned) pubAddr415,
-                      (unsigned) iovaLeaves415);
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%uc=hfi31_walk mode=%u l0=%u/%u/%u l1=%u/%u/%u l2=%u/%u/%u d0=%llx da=%llx di=%llx",
-                      (unsigned) mode415, (unsigned) mode415, (unsigned) l0Pa415, (unsigned) l0Al415, (unsigned) l0Io415,
-                      (unsigned) l1Pa415, (unsigned) l1Al415, (unsigned) l1Io415,
-                      (unsigned) l2Pa415, (unsigned) l2Al415, (unsigned) l2Io415,
-                      (unsigned long long) tbl415[l0Pa415], (unsigned long long) l1_415[l1Al415],
-                      (unsigned long long) l2a415[l2Al415]);
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            uint32_t ias415 = 0u;
-            uint32_t oas415 = 0u;
-            uint32_t id0_415 = 0u;
-            struct adreno_iommu_id2 d415 = {};
+            for (uintptr_t a418 = (uintptr_t) &s418Blob[0]; a418 < (uintptr_t) &s418Blob[10u * 4096u]; a418 += 64u) {
+                __asm__ volatile ("dc cvac, %0" :: "r" (a418) : "memory");
+            }
+            __asm__ volatile ("dsb sy" ::: "memory");
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%ub=hfi32_table mode=%u tblpa=%08x pabase=%08x alias=%08x off=%05x iova=%08x pub=%08x leaves=%u",
+                      (unsigned) mode418, (unsigned) mode418, (unsigned) tblPa418, (unsigned) paBase418,
+                      (unsigned) aliasBase418, (unsigned) off418, (unsigned) iovaTbl418, (unsigned) pubAddr418,
+                      (unsigned) iovaLeaves418);
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%uc=hfi32_walk mode=%u l0=%u/%u/%u l1=%u/%u/%u l2=%u/%u/%u d0=%llx da=%llx di=%llx",
+                      (unsigned) mode418, (unsigned) mode418, (unsigned) l0Pa418, (unsigned) l0Al418, (unsigned) l0Io418,
+                      (unsigned) l1Pa418, (unsigned) l1Al418, (unsigned) l1Io418,
+                      (unsigned) l2Pa418, (unsigned) l2Al418, (unsigned) l2Io418,
+                      (unsigned long long) tbl418[l0Pa418], (unsigned long long) l1_418[l1Al418],
+                      (unsigned long long) l2a418[l2Al418]);
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            uint32_t ias418 = 0u;
+            uint32_t oas418 = 0u;
+            uint32_t id0_418 = 0u;
+            struct adreno_iommu_id2 d418 = {};
             {
-                const uint32_t id2w = rd32 (s415Smmu, 0x28u);
-                int ok415 = 0;
-                ias415 = (adreno_iommu_id2_decode (id2w, &d415) == 0) ? adreno_iommu_va_size (id2w, 2u, &ok415) : 0u;
-                oas415 = adreno_iommu_stage1_oas (id2w);
-                id0_415 = rd32 (s415Smmu, 0x20u);
+                const uint32_t id2w = rd32 (s418Smmu, 0x28u);
+                int ok418 = 0;
+                ias418 = (adreno_iommu_id2_decode (id2w, &d418) == 0) ? adreno_iommu_va_size (id2w, 2u, &ok418) : 0u;
+                oas418 = adreno_iommu_stage1_oas (id2w);
+                id0_418 = rd32 (s418Smmu, 0x20u);
             }
-            struct adreno_smmu_ctx_params p415;
-            p415.cbndx = cbndx415; p415.asid = 0u; p415.ttbr = paRoot415;
-            p415.ias = (ias415 >= 32u) ? ias415 : 36u;
-            p415.oas = (oas415 >= 32u) ? oas415 : 36u;
-            p415.coherent_walk = adreno_iommu_coherent_walk (id0_415, 0u);
-            p415.ttbr1 = 0u; p415.aarch64 = 1u; p415.vmid16 = 0u; p415.vmid = 0u;
-            struct adreno_smmu_ctx_write plan415[12];
-            struct adreno_install_write abs415[12];
-            uint32_t nplan415 = 0u, nabs415 = 0u;
-            const int plan415rc = adreno_smmu_ctx_plan (&p415, plan415, 12u, &nplan415);
-            int eae415 = 0;
-            for (uint32_t k415 = 0u; k415 < nplan415; ++k415) {
-                if (plan415[k415].gr1 == 0u && plan415[k415].offset == 0x0030u) {
-                    plan415[k415].value = (uint32_t) (plan415[k415].value | 0x80000000u);
-                    eae415 = 1;
+            struct adreno_smmu_ctx_params p418;
+            p418.cbndx = cbndx418; p418.asid = 0u; p418.ttbr = paRoot418;
+            p418.ias = (ias418 >= 32u) ? ias418 : 36u;
+            p418.oas = (oas418 >= 32u) ? oas418 : 36u;
+            p418.coherent_walk = adreno_iommu_coherent_walk (id0_418, 0u);
+            p418.ttbr1 = 0u; p418.aarch64 = 1u; p418.vmid16 = 0u; p418.vmid = 0u;
+            struct adreno_smmu_ctx_write plan418[12];
+            struct adreno_install_write abs418[12];
+            uint32_t nplan418 = 0u, nabs418 = 0u;
+            const int plan418rc = adreno_smmu_ctx_plan (&p418, plan418, 12u, &nplan418);
+            int eae418 = 0;
+            for (uint32_t k418 = 0u; k418 < nplan418; ++k418) {
+                if (plan418[k418].gr1 == 0u && plan418[k418].offset == 0x0030u) {
+                    plan418[k418].value = (uint32_t) (plan418[k418].value | 0x80000000u);
+                    eae418 = 1;
                 }
             }
-            const uint32_t abs415rc = adreno_install_absolute (&geo415, cbndx415, plan415, nplan415, abs415, 12u, &nabs415);
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%ud=hfi31_cbplan mode=%u plan=%d n=%u abs=%u nab=%u cbndx=%u cbbase=%04x ttbr=%08x eae=%d ias=%u oas=%u",
-                      (unsigned) mode415, (unsigned) mode415, plan415rc, (unsigned) nplan415, (unsigned) abs415rc,
-                      (unsigned) nabs415, (unsigned) cbndx415, (unsigned) cbBase415, (unsigned) paRoot415,
-                      eae415, (unsigned) ias415, (unsigned) oas415);
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            if (plan415rc != 0 || abs415rc != 0u) { gDone = true; return; }
-            for (uint32_t k415 = 0u; k415 < nabs415; ++k415) {
-                const uintptr_t r415frame = (abs415[k415].gr1 != 0u)
-                    ? static_cast<uintptr_t>(s415Smmu) + (static_cast<uintptr_t>(1u) << geo415.pgshift)
-                    : static_cast<uintptr_t>(s415Smmu);
-                volatile uint32_t *rw415 = (volatile uint32_t *) (r415frame + static_cast<uintptr_t>(abs415[k415].offset));
-                rw415[0] = abs415[k415].value;
-                if (abs415[k415].is_64bit) rw415[1] = abs415[k415].value_hi;
+            const uint32_t abs418rc = adreno_install_absolute (&geo418, cbndx418, plan418, nplan418, abs418, 12u, &nabs418);
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%ud=hfi32_cbplan mode=%u plan=%d n=%u abs=%u nab=%u cbndx=%u cbbase=%04x ttbr=%08x eae=%d ias=%u oas=%u",
+                      (unsigned) mode418, (unsigned) mode418, plan418rc, (unsigned) nplan418, (unsigned) abs418rc,
+                      (unsigned) nabs418, (unsigned) cbndx418, (unsigned) cbBase418, (unsigned) paRoot418,
+                      eae418, (unsigned) ias418, (unsigned) oas418);
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            if (plan418rc != 0 || abs418rc != 0u) { gDone = true; return; }
+            for (uint32_t k418 = 0u; k418 < nabs418; ++k418) {
+                const uintptr_t r418frame = (abs418[k418].gr1 != 0u)
+                    ? static_cast<uintptr_t>(s418Smmu) + (static_cast<uintptr_t>(1u) << geo418.pgshift)
+                    : static_cast<uintptr_t>(s418Smmu);
+                volatile uint32_t *rw418 = (volatile uint32_t *) (r418frame + static_cast<uintptr_t>(abs418[k418].offset));
+                rw418[0] = abs418[k418].value;
+                if (abs418[k418].is_64bit) rw418[1] = abs418[k418].value_hi;
             }
             __asm__ volatile ("dsb sy" ::: "memory");
-            volatile uint32_t *smr415 = (volatile uint32_t *) (static_cast<uintptr_t>(s415Smmu) + 0x800u);
-            volatile uint32_t *s2cr415 = (volatile uint32_t *) (static_cast<uintptr_t>(s415Smmu) + 0xc00u);
-            smr415[0] = 0u;
-            s2cr415[0] = 0u;
-            if (sid5On415 != 0) {
-                smr415[5] = (uint32_t) (0x80000000u | 5u);
-                s2cr415[5] = (uint32_t) cbndx415;
+            volatile uint32_t *smr418 = (volatile uint32_t *) (static_cast<uintptr_t>(s418Smmu) + 0x800u);
+            volatile uint32_t *s2cr418 = (volatile uint32_t *) (static_cast<uintptr_t>(s418Smmu) + 0xc00u);
+            smr418[0] = 0u;
+            s2cr418[0] = 0u;
+            smr418[1] = 0u;
+            s2cr418[1] = 0u;
+            if (routeMode418 == 3) {
+                smr418[0] = (uint32_t) (0x80000000u | 3u);
+                s2cr418[0] = (uint32_t) cbndx418;
+            } else if (routeMode418 == 34) {
+                smr418[0] = (uint32_t) (0x80000000u | 3u);
+                s2cr418[0] = (uint32_t) cbndx418;
+                smr418[1] = (uint32_t) (0x80000000u | 4u);
+                s2cr418[1] = (uint32_t) cbndx418;
             } else {
-                smr415[0] = (uint32_t) (0x80000000u | 4u);
-                s2cr415[0] = (uint32_t) cbndx415;
+                smr418[0] = (uint32_t) (0x80000000u | 4u);
+                s2cr418[0] = (uint32_t) cbndx418;
             }
             __asm__ volatile ("dsb sy" ::: "memory");
-            volatile uint32_t *fsr415 = (volatile uint32_t *) (static_cast<uintptr_t>(s415Smmu) + cbBase415 + 0x58u);
-            fsr415[0] = 0xffffffffu;
+            volatile uint32_t *fsr418 = (volatile uint32_t *) (static_cast<uintptr_t>(s418Smmu) + cbBase418 + 0x58u);
+            fsr418[0] = 0xffffffffu;
             __asm__ volatile ("dsb sy" ::: "memory");
-            *(volatile uint32_t *) (static_cast<uintptr_t>(s415Smmu) + 0x68u) = 1u;
-            *(volatile uint32_t *) (static_cast<uintptr_t>(s415Smmu) + 0x70u) = 1u;
+            *(volatile uint32_t *) (static_cast<uintptr_t>(s418Smmu) + 0x68u) = 1u;
+            *(volatile uint32_t *) (static_cast<uintptr_t>(s418Smmu) + 0x70u) = 1u;
             __asm__ volatile ("dsb sy" ::: "memory");
-            uint32_t tlbiStat415 = 0u;
+            uint32_t tlbiStat418 = 0u;
             for (uint32_t i = 0u; i < 20000u; ++i) {
-                tlbiStat415 = rd32 (s415Smmu, 0x74u);
-                if ((tlbiStat415 & 1u) == 0u) break;
+                tlbiStat418 = rd32 (s418Smmu, 0x74u);
+                if ((tlbiStat418 & 1u) == 0u) break;
                 IODelay (1u);
             }
-            const uint32_t t0l415 = rd32 (s415Smmu, cbBase415 + 0x20u);
-            const uint32_t t0h415 = rd32 (s415Smmu, cbBase415 + 0x24u);
-            const uint32_t sct415 = rd32 (s415Smmu, cbBase415 + 0x00u);
-            const uint32_t tcr415 = rd32 (s415Smmu, cbBase415 + 0x30u);
-            const uint32_t bar415 = rd32 (static_cast<uintptr_t>(s415Smmu) + (static_cast<uintptr_t>(1u) << geo415.pgshift), 0x000u);
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%ue=hfi31_cb mode=%u wrote=%u ttbr0=%08x/%08x sctlr=%08x tcr=%08x cbar=%08x tstat=%08x",
-                      (unsigned) mode415, (unsigned) mode415, (unsigned) nabs415, (unsigned) t0l415, (unsigned) t0h415,
-                      (unsigned) sct415, (unsigned) tcr415, (unsigned) bar415, (unsigned) tlbiStat415);
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%uf=hfi31_glob mode=%u scr0=%08x smr0=%08x s2cr0=%08x smr5=%08x s2cr5=%08x gfsr=%08x gfsynr1=%08x",
-                      (unsigned) mode415, (unsigned) mode415, (unsigned) rd32 (s415Smmu, 0x0u),
-                      (unsigned) rd32 (s415Smmu, 0x800u), (unsigned) rd32 (s415Smmu, 0xc00u),
-                      (unsigned) rd32 (s415Smmu, 0x814u), (unsigned) rd32 (s415Smmu, 0xc14u),
-                      (unsigned) rd32 (s415Smmu, 0x48u), (unsigned) rd32 (s415Smmu, 0x54u));
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            uint32_t parPa415 = 0u;
-            uint32_t parAl415 = 0u;
-            uint32_t parIo415 = 0u;
-            uint32_t atsr415 = 0u;
+            const uint32_t t0l418 = rd32 (s418Smmu, cbBase418 + 0x20u);
+            const uint32_t t0h418 = rd32 (s418Smmu, cbBase418 + 0x24u);
+            const uint32_t sct418 = rd32 (s418Smmu, cbBase418 + 0x00u);
+            const uint32_t tcr418 = rd32 (s418Smmu, cbBase418 + 0x30u);
+            const uint32_t bar418 = rd32 (static_cast<uintptr_t>(s418Smmu) + (static_cast<uintptr_t>(1u) << geo418.pgshift), 0x000u);
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%ue=hfi32_cb mode=%u wrote=%u ttbr0=%08x/%08x sctlr=%08x tcr=%08x cbar=%08x tstat=%08x",
+                      (unsigned) mode418, (unsigned) mode418, (unsigned) nabs418, (unsigned) t0l418, (unsigned) t0h418,
+                      (unsigned) sct418, (unsigned) tcr418, (unsigned) bar418, (unsigned) tlbiStat418);
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%uf=hfi32_glob mode=%u scr0=%08x smr0=%08x s2cr0=%08x smr1=%08x s2cr1=%08x gfsr=%08x gfsynr1=%08x",
+                      (unsigned) mode418, (unsigned) mode418, (unsigned) rd32 (s418Smmu, 0x0u),
+                      (unsigned) rd32 (s418Smmu, 0x800u), (unsigned) rd32 (s418Smmu, 0xc00u),
+                      (unsigned) rd32 (s418Smmu, 0x814u), (unsigned) rd32 (s418Smmu, 0xc14u),
+                      (unsigned) rd32 (s418Smmu, 0x48u), (unsigned) rd32 (s418Smmu, 0x54u));
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            uint32_t parPa418 = 0u;
+            uint32_t parAl418 = 0u;
+            uint32_t parIo418 = 0u;
+            uint32_t atsr418 = 0u;
             {
-                volatile uint32_t *at415 = (volatile uint32_t *) (static_cast<uintptr_t>(s415Smmu) + cbBase415 + 0x800u);
-                const uint32_t atAddrs[3] = { (uint32_t) tblPa415, (uint32_t) aliasBase415, (uint32_t) iovaTbl415 };
+                volatile uint32_t *at418 = (volatile uint32_t *) (static_cast<uintptr_t>(s418Smmu) + cbBase418 + 0x800u);
+                const uint32_t atAddrs[3] = { (uint32_t) tblPa418, (uint32_t) aliasBase418, (uint32_t) iovaTbl418 };
                 for (unsigned ai = 0u; ai < 3u; ++ai) {
-                    at415[0] = atAddrs[ai];
+                    at418[0] = atAddrs[ai];
                     __asm__ volatile ("dsb sy" ::: "memory");
                     for (uint32_t i = 0u; i < 20000u; ++i) {
-                        atsr415 = rd32 (s415Smmu, cbBase415 + 0x8f0u);
-                        if ((atsr415 & 1u) != 0u) break;
+                        atsr418 = rd32 (s418Smmu, cbBase418 + 0x8f0u);
+                        if ((atsr418 & 1u) != 0u) break;
                         IODelay (1u);
                     }
-                    const uint32_t par = rd32 (s415Smmu, cbBase415 + 0x50u);
-                    if (ai == 0u) parPa415 = par;
-                    else if (ai == 1u) parAl415 = par;
-                    else parIo415 = par;
+                    const uint32_t par = rd32 (s418Smmu, cbBase418 + 0x50u);
+                    if (ai == 0u) parPa418 = par;
+                    else if (ai == 1u) parAl418 = par;
+                    else parIo418 = par;
                 }
             }
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%ug=hfi31_at mode=%u par_pa=%08x par_alias=%08x par_iova=%08x atsr=%08x",
-                      (unsigned) mode415, (unsigned) mode415, (unsigned) parPa415, (unsigned) parAl415,
-                      (unsigned) parIo415, (unsigned) atsr415);
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            if (fullInit415 != 0) g415[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%ug=hfi32_at mode=%u par_pa=%08x par_alias=%08x par_iova=%08x atsr=%08x",
+                      (unsigned) mode418, (unsigned) mode418, (unsigned) parPa418, (unsigned) parAl418,
+                      (unsigned) parIo418, (unsigned) atsr418);
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            if (fullInit418 != 0) g418[ADRENO_GMU_BOOT_V1_GENERAL_7] = 1u;
             for (unsigned wi = 0u; wi < kAdrenoGmuImageWords; ++wi) {
-                g415[kAdrenoGmuItcmWord + wi] = adreno_gmu_image[wi];
+                g418[kAdrenoGmuItcmWord + wi] = adreno_gmu_image[wi];
                 if ((wi & 0xffu) == 0xffu) __asm__ volatile ("dsb sy" ::: "memory");
             }
             __asm__ volatile ("dsb sy" ::: "memory");
-            g415[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;
-            g415[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
-            if (fullInit415 != 0) {
-                g415[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = (uint32_t) pubAddr415;
-                g415[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
-                g415[ADRENO_GMU_BOOT_V1_AHB_FENCE_RANGE_0] = (uint32_t) 0x802800a0u;
-                g415[ADRENO_GMU_BOOT_V1_CM3_CFG] = ADRENO_GMU_BOOT_V1_CM3_CFG_VALUE;
-                g415[ADRENO_GMU_BOOT_V1_HFI_SFR_ADDR] = (uint32_t) 0x06030100u;
-                g415[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] = (uint32_t) (pubAddr415 + 3u * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
-                g415[ADRENO_GMU_BOOT_V1_PWR_COL_CP_RESP] = 0u;
-                g415[ADRENO_GMU_BOOT_V1_SYS_BUS_CONFIG] = 1u;
-                g415[ADRENO_GMU_BOOT_V1_ICACHE_CONFIG] = 1u;
-                g415[ADRENO_GMU_BOOT_V1_DCACHE_CONFIG] = 1u;
-                g415[ADRENO_GMU_BOOT_V1_PWR_COL_INTER_FRAME_CTRL] = (uint32_t) 0x09c40400u;
-                g415[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK] = (uint32_t) 0xffffffd6u;
-                g415[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = (uint32_t) 0xff7fffffu;
+            g418[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT] = 0u;
+            g418[ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG] = ADRENO_GMU_BOOT_V1_CM3_BOOT_CONFIG_VALUE;
+            if (fullInit418 != 0) {
+                g418[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = (uint32_t) pubAddr418;
+                g418[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                g418[ADRENO_GMU_BOOT_V1_AHB_FENCE_RANGE_0] = (uint32_t) 0x802800a0u;
+                g418[ADRENO_GMU_BOOT_V1_CM3_CFG] = ADRENO_GMU_BOOT_V1_CM3_CFG_VALUE;
+                g418[ADRENO_GMU_BOOT_V1_HFI_SFR_ADDR] = (uint32_t) 0x06030100u;
+                g418[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] = (uint32_t) (pubAddr418 + 3u * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+                g418[ADRENO_GMU_BOOT_V1_PWR_COL_CP_RESP] = 0u;
+                g418[ADRENO_GMU_BOOT_V1_SYS_BUS_CONFIG] = 1u;
+                g418[ADRENO_GMU_BOOT_V1_ICACHE_CONFIG] = 1u;
+                g418[ADRENO_GMU_BOOT_V1_DCACHE_CONFIG] = 1u;
+                g418[ADRENO_GMU_BOOT_V1_PWR_COL_INTER_FRAME_CTRL] = (uint32_t) 0x09c40400u;
+                g418[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK] = (uint32_t) 0xffffffd6u;
+                g418[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = (uint32_t) 0xff7fffffu;
                 __asm__ volatile ("dsb sy" ::: "memory");
                 IODelay (1u);
-                g415[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;
+                g418[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 1u;
                 __asm__ volatile ("dsb sy" ::: "memory");
                 IODelay (1u);
             }
-            g415[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;
+            g418[ADRENO_GMU_BOOT_V1_CM3_SYSRESET] = 0u;
             __asm__ volatile ("dsb sy" ::: "memory");
-            uint32_t fwNow415 = 0u;
+            uint32_t fwNow418 = 0u;
             for (uint32_t i = 0u; i < 20000u; ++i) {
-                fwNow415 = g415[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT];
-                if (fwNow415 == 0xbabefaceu) break;
+                fwNow418 = g418[ADRENO_GMU_BOOT_V1_CM3_FW_INIT_RESULT];
+                if (fwNow418 == 0xbabefaceu) break;
                 IODelay (1u);
             }
-            uint32_t sptp415 = 0u;
-            if (fullInit415 != 0) {
-                g415[ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL] = ADRENO_GMU_BOOT_V1_SPTPRAC_ON_VALUE;
+            uint32_t sptp418 = 0u;
+            if (fullInit418 != 0) {
+                g418[ADRENO_GMU_BOOT_V1_SPTPRAC_POWER_CONTROL] = ADRENO_GMU_BOOT_V1_SPTPRAC_ON_VALUE;
                 __asm__ volatile ("dsb sy" ::: "memory");
                 for (uint32_t i = 0u; i < 200u; ++i) {
-                    sptp415 = g415[ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS];
-                    if ((sptp415 & ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_MASK) == ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_PATTERN) break;
+                    sptp418 = g418[ADRENO_GMU_BOOT_V1_SPTPRAC_PWR_CLK_STATUS];
+                    if ((sptp418 & ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_MASK) == ADRENO_GMU_BOOT_V1_SPTPRAC_CLK_PATTERN) break;
                     IODelay (1u);
                 }
             }
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%uh=hfi31_gmuinit mode=%u fw=%08x fence=%08x cm3cfg=%08x sfr=%08x cpmsg=%08x aostat=%08x sptp=%08x",
-                      (unsigned) mode415, (unsigned) mode415, (unsigned) fwNow415,
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_AHB_FENCE_RANGE_0],
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_CM3_CFG],
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_HFI_SFR_ADDR],
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG],
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS],
-                      (unsigned) sptp415);
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            if (fullInit415 == 0) {
-                g415[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = (uint32_t) pubAddr415;
-                g415[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
-                g415[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] = (uint32_t) (pubAddr415 + 3u * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
-                g415[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = (uint32_t) 0xff7fffffu;
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%uh=hfi32_gmuinit mode=%u fw=%08x fence=%08x cm3cfg=%08x sfr=%08x cpmsg=%08x aostat=%08x sptp=%08x",
+                      (unsigned) mode418, (unsigned) mode418, (unsigned) fwNow418,
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_AHB_FENCE_RANGE_0],
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_CM3_CFG],
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_HFI_SFR_ADDR],
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG],
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS],
+                      (unsigned) sptp418);
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            if (fullInit418 == 0) {
+                g418[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR] = (uint32_t) pubAddr418;
+                g418[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO] = 1u;
+                g418[ADRENO_GMU_BOOT_V1_PWR_COL_CP_MSG] = (uint32_t) (pubAddr418 + 3u * (uint64_t) ADRENO_HFI_V1_PAGE_BYTES);
+                g418[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = (uint32_t) 0xff7fffffu;
                 __asm__ volatile ("dsb sy" ::: "memory");
             }
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%ui=hfi31_pub mode=%u pa=%08x qtbl=%08x qi=%08x mask=%08x preinfo=%08x preaostat=%08x",
-                      (unsigned) mode415, (unsigned) mode415, (unsigned) pubAddr415,
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR],
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO],
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK],
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO],
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS]);
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            const uint32_t fsrPre415 = rd32 (s415Smmu, cbBase415 + 0x58u);
-            const uint32_t ctlPre415 = g415[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
-            const uint32_t farPre415 = rd32 (s415Smmu, cbBase415 + 0x60u);
-            uint32_t ctl415 = 0u;
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%ui=hfi32_pub mode=%u pa=%08x qtbl=%08x qi=%08x mask=%08x preinfo=%08x preaostat=%08x",
+                      (unsigned) mode418, (unsigned) mode418, (unsigned) pubAddr418,
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR],
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO],
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK],
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO],
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS]);
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            const uint32_t fsrPre418 = rd32 (s418Smmu, cbBase418 + 0x58u);
+            const uint32_t ctlPre418 = g418[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
+            const uint32_t farPre418 = rd32 (s418Smmu, cbBase418 + 0x60u);
+            uint32_t ctl418 = 0u;
             uint32_t bit0409 = 0u;
-            uint32_t polls415 = 0u;
-            if (walkOff415 != 0) {
-                volatile uint32_t *sctlrOff415 = (volatile uint32_t *) (static_cast<uintptr_t>(s415Smmu) + cbBase415 + 0x00u);
-                sctlrOff415[0] = (uint32_t) (sct415 & ~1u);
+            uint32_t polls418 = 0u;
+            if (walkOff418 != 0) {
+                volatile uint32_t *sctlrOff418 = (volatile uint32_t *) (static_cast<uintptr_t>(s418Smmu) + cbBase418 + 0x00u);
+                sctlrOff418[0] = (uint32_t) (sct418 & ~1u);
                 __asm__ volatile ("dsb sy" ::: "memory");
             }
-            if (initOn415 != 0) {
-                if (maskAll415 != 0) {
-                    g415[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK] = 0xffffffffu;
-                    g415[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xffffffffu;
+            if (initOn418 != 0) {
+                if (maskAll418 != 0) {
+                    g418[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_MASK] = 0xffffffffu;
+                    g418[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xffffffffu;
                     __asm__ volatile ("dsb sy" ::: "memory");
                 }
-                g415[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
+                g418[ADRENO_GMU_BOOT_V1_HFI_CTRL_INIT] = 1u;
                 __asm__ volatile ("dsb sy" ::: "memory");
-                for (uint32_t i = 0u; i < pollMax415; ++i) {
-                    ++polls415;
-                    ctl415 = g415[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
-                    bit0409 = (ctl415 & 1u);
+                for (uint32_t i = 0u; i < pollMax418; ++i) {
+                    ++polls418;
+                    ctl418 = g418[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
+                    bit0409 = (ctl418 & 1u);
                     if (bit0409) break;
                     IODelay (1u);
                 }
             } else {
                 IODelay (200u);
-                ctl415 = g415[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
-                bit0409 = (ctl415 & 1u);
+                ctl418 = g418[ADRENO_GMU_BOOT_V1_HFI_CTRL_STATUS];
+                bit0409 = (ctl418 & 1u);
             }
             IODelay (20u);
             __asm__ volatile ("dsb sy" ::: "memory");
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%uj=hfi31_init mode=%u ctl=%08x bit0=%u polls=%u info=%08x aostat=%08x smr=%08x s2cr=%08x fsrpre=%08x farpre=%08x ctlpre=%08x",
-                      (unsigned) mode415, (unsigned) mode415, (unsigned) ctl415, (unsigned) bit0409, (unsigned) polls415,
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO],
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS],
-                      (unsigned) rd32 (s415Smmu, 0x800u), (unsigned) rd32 (s415Smmu, 0xc00u),
-                      (unsigned) fsrPre415, (unsigned) farPre415, (unsigned) ctlPre415);
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%uk=hfi31_late mode=%u fsr=%08x far=%08x fsynr0=%08x par=%08x info=%08x",
-                      (unsigned) mode415, (unsigned) mode415,
-                      (unsigned) rd32 (s415Smmu, cbBase415 + 0x58u),
-                      (unsigned) rd32 (s415Smmu, cbBase415 + 0x60u),
-                      (unsigned) rd32 (s415Smmu, cbBase415 + 0x68u),
-                      (unsigned) rd32 (s415Smmu, cbBase415 + 0x50u),
-                      (unsigned) g415[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO]);
-            IOLog ("enchilada-adreno: %s\n", r415Row);
-            snprintf (r415Row, sizeof r415Row,
-                      "gmu%ul=hfi31_gfault mode=%u gfsar=%08x gfsr=%08x synr0=%08x synr1=%08x synr2=%08x",
-                      (unsigned) mode415, (unsigned) mode415,
-                      (unsigned) rd32 (s415Smmu, 0x40u), (unsigned) rd32 (s415Smmu, 0x48u),
-                      (unsigned) rd32 (s415Smmu, 0x50u), (unsigned) rd32 (s415Smmu, 0x54u),
-                      (unsigned) rd32 (s415Smmu, 0x58u));
-            IOLog ("enchilada-adreno: %s\n", r415Row);
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%uj=hfi32_init mode=%u ctl=%08x bit0=%u polls=%u info=%08x aostat=%08x smr=%08x s2cr=%08x fsrpre=%08x farpre=%08x ctlpre=%08x",
+                      (unsigned) mode418, (unsigned) mode418, (unsigned) ctl418, (unsigned) bit0409, (unsigned) polls418,
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO],
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_AO_HOST_INTERRUPT_STATUS],
+                      (unsigned) rd32 (s418Smmu, 0x800u), (unsigned) rd32 (s418Smmu, 0xc00u),
+                      (unsigned) fsrPre418, (unsigned) farPre418, (unsigned) ctlPre418);
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%uk=hfi32_late mode=%u fsr=%08x far=%08x fsynr0=%08x par=%08x info=%08x",
+                      (unsigned) mode418, (unsigned) mode418,
+                      (unsigned) rd32 (s418Smmu, cbBase418 + 0x58u),
+                      (unsigned) rd32 (s418Smmu, cbBase418 + 0x60u),
+                      (unsigned) rd32 (s418Smmu, cbBase418 + 0x68u),
+                      (unsigned) rd32 (s418Smmu, cbBase418 + 0x50u),
+                      (unsigned) g418[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO]);
+            IOLog ("enchilada-adreno: %s\n", r418Row);
+            snprintf (r418Row, sizeof r418Row,
+                      "gmu%ul=hfi32_gfault mode=%u gfsar=%08x gfsr=%08x synr0=%08x synr1=%08x synr2=%08x",
+                      (unsigned) mode418, (unsigned) mode418,
+                      (unsigned) rd32 (s418Smmu, 0x40u), (unsigned) rd32 (s418Smmu, 0x48u),
+                      (unsigned) rd32 (s418Smmu, 0x50u), (unsigned) rd32 (s418Smmu, 0x54u),
+                      (unsigned) rd32 (s418Smmu, 0x58u));
+            IOLog ("enchilada-adreno: %s\n", r418Row);
             gDone = true;
             return;
         }
