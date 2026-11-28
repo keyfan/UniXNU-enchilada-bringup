@@ -10260,3 +10260,52 @@ CI **#459 `46115796876` success**（kernel `d2b199b329b3c0e1186fa9e5d9e032bba738
 150.3 **`fsr=0x402` 的 bit10**：SMMU-500 的 CB_FSR 中 bit10 是 stage 指示位；`0x402` 因此更像**一次 stage-2 的 translation fault**（FS 低 7 位 `0x02`），而我们从未编程 `CB_S2TTB0/VTCR`，stage-2 表为空 ⇒ 无论 S1 怎么改都必然 fault，这与 361/362/363 的观测**完全一致**。
 150.4 由此回看 R340：改 `S2CR0`（type=fault）或 `SMR0`（SID4 未识别）会整机死，说明这路 SID4 事务确实活跃且路由承重；R339 的 `sCR0` 位解（bit0=CLIENTPD，已使能）也不冲突。
 150.5 **R342 计划**：① 读 SMMU 全局故障寄存器组 `sGFAR(0x40)`/`sGFSR(0x48)`/`sGFSYNR0(0x50)`/`sGFSYNR1(0x54)`/`sGFSYNR2(0x58)`——`sGFSYNR1` 是**上一条全局故障的 SID**，可直接证实/否证 SID4；② 写 `S2CR0 = 1`（BYPASS）看机器是否存活、`info` 是否清零（若活，说明 fatal 的是翻译路径本身）；③ 同时把 `SMR1=0x80000005`/`S2CR1=0` 也置上，排除「GMU 其实是 SID5」。arg `enchilada-hfi15`，key 364..366。
+
+## 一百五十一、R342：全局故障组全零 ⇒ 流确实进 CB0；DMA 分配在早期块里直接致死
+
+**CI #460**（run `46118610027`，head `056130abf2c2`，payload 83,264,147 / kernel 79,006,392 / logs 3,834,919 B）编出 `r342-kernel/kernel.macho` sha256 `022a08dc783bec1ec46f006560b49d3ca24b254d31a2e9199f9d327abd2bf66f` 与 `r342-payload/payload.img` sha256 `7c034406c64e37b5ed1c599cc16f85e1dcc07593b7337d77d3cbe0f4a6e720da`。arg `enchilada-hfi15`，key 364..366。
+
+| 键 | 变化 | 结果 |
+|---|---|---|
+| 364 | 静态表 + 静态 HFI 页 + 标准路由 + 全局故障组 | 8/8 行落盘，34 s 回 adb |
+| 365 | LPAE 表改用 `armcpu_dma_alloc_writable(12*4096)` | **零行**，65 s 回 adb（陈旧窗口） |
+| 366 | 连 HFI 表页也用 DMA 缓冲 | **零行**，65 s 回 adb（陈旧窗口） |
+
+键 364 逐字读数（窗口 sha `3a87d3d8d1f4ea58ddd677c11a9d3ef7274a7b54260fd4e9a55b7ab13a4c6f5d`）：
+
+```
+gmu364f=hfi15_glob mode=364 scr0=00200626 smr0=80000004 smr1=00000000 smr2=00000000 s2cr0=00000000 s2cr1=000200ff s2cr2=000200ff gfsr=00000000
+gmu364h=hfi15_init mode=364 ctl=00000000 bit0=0 polls=200000 info=00800000 smr=80000004 s2cr=00000000
+gmu364i=hfi15_late mode=364 fsr=00000402 far=282fd000 fsynr0=00000021 par=00000000 info=00800000
+gmu364j=hfi15_gfault mode=364 gfsar=00000000 gfsr=00000000 synr0=00000000 synr1=00000000 synr2=00000000
+```
+
+**判决 151.1**：GR0 全局故障组（sGFAR 0x40 / sGFSR 0x48 / sGFSYNR0 0x50 / sGFSYNR1 0x54 / sGFSYNR2 0x58）**全零**。若 GMU 的 SID4 事务是「未识别流」，sGFSR 会记录 `0x00000002`（未识别流）且 sGFSYNR1 会给出该 SID。全零 ⇒ **流确实匹配 SMR0（SID4）→ CB0**，故障是 CB0 自身的 stage-1 walk 失败，不是路由缺口。
+
+**判决 151.2**：`SMR1/SMR2 = 0`（无效）、`S2CR1/S2CR2 = 0x000200ff`（type=2 FAULT、cbndx=0xff）是硬件上电默认值，说明我们只配置了 stream 0。
+
+**判决 151.3（工程约束）**：早期块（`if (stage >= 4u)` 之前）里调用 `armcpu_dma_alloc_writable` **直接致死整机**（365/366 均无任何行、65 s 才回 adb）。后续轮次不要在这个位置做 DMA 分配；表页只能用内核静态 `aligned(4096)` 缓冲 + `ml_static_vtop`。
+
+## 一百五十二、R343：此前 IOVA 试验「无效」的真相是偏移掩码写错 ⇒ 发布值指向了随机内核页
+
+R336/R337 的 IOVA 试验把偏移掩码写成 `0x1ffff`（128 KiB-1），本应 `0x1fffff`（2 MiB-1）。后果：`iovaVal = 0x60000000 + (tblPa & 0x1ffff)` = `0x6001d000`，而正确值应为 `0x600fd000`。树把 VA 块 `0x60000000` 映射到 `paBase = 0xa8200000`，于是 `0x6001d000` 实际解析到 `paBase + 0x1d000` —— **一个与 HFI 表无关的内核页**。CM3 读到垃圾 HFI 表头才整机死。
+
+由此得到一条此前缺失的关键事实：**GMU 的 VA 窗口是 `[0x60000000, 0x80000000)`**（`AdrenoGen1BackendV1.h:170` `kEnchiladaGen1GmuDummyIova = 0x60000000`），整段 < 2^31，正好解释为什么每一轮 CB0 的 `far` 都精确等于 `tblPa & 0x7fffffff` —— **CM3 的地址通路只保留 31 位**，它把表物理地址的高位丢掉了。
+
+R343 块（arg `enchilada-hfi16`，key 370..372）：370 = 发布 IOVA（`0x60000000 + (tblPa & 0x1fffff)`）+ 树把 VA 块 `0x60000000` 映到 `paBase` + 写 GR0 `0x608/0x60c/0x618` 三个 TLBI 寄存器为 0 + INIT + 200000 拍轮询；371 = 再加 `paBase` 的 identity 双分支；372 = 对照（发布原始 PA）。CI #461（run `46119779910`）编出 `r343-payload/payload.img` sha256 `323fe593884d1be33a7286ca22734b236095eeffa82bc12b56bc327f48423b00`。
+
+**键 370 上机：CAME BACK after 32 s（正常时长），但窗口 sha 仍是 `3a87d3d8…`（陈旧）、无任何 `gmu370*` 行** ⇒ 内核在日志落盘前就死。致死候选有两个：发布 IOVA，或写那三个 TLBI 寄存器。必须隔离。
+
+## 一百五十三、R344：把「发布 IOVA」与「写 TLBI」拆开（隔离实验，待上机）
+
+R344 块（arg `enchilada-hfi17`，key 373..375）在 R343 基础上只改分岔：
+
+- **373 = 写三个 TLBI 寄存器 + 发布物理址**（若此键也死 ⇒ TLBI 写本身致死）；
+- **374 = 发布 IOVA、完全不碰 TLBI**（若此键死 ⇒ 发布 IOVA 致死）；
+- **375 = 发布 IOVA + TLBI**（370 的复现，作一致性校验）。
+
+实现要点：`tlbiOn370 = (mode370 == 374u) ? 0 : 1`、`pubPa370 = (mode370 == 373u) ? 1 : 0`，三笔 TLBI 写包进 `if (tlbiOn370 != 0) { … }`；table 行标签改为 `tlbi=%d pubpa=%d`。应用后探针 +16,829 B。
+
+静态门全绿：probe 39/39、stage3 41/41、stage4 81/81、stage5 68/68、stage6 2594/2594、host 32/32。推送 commit `785a7940c615c579b0e648c20e124a93ce202807`（tree `74fb534fa44cf09275cb4867ed50e28ec75d5b82`），CI #462 run `46122080635`。
+
+**预期判读**：若 373 存活而 374 死 ⇒ 致死的是「发布 IOVA」这一步（那么 CM3 在该窗口内读 IOVA 会打到未映射处，说明我们的 alias 分支没生效或窗口不止一个 2 MiB 块）；若 373 也死 ⇒ TLBI 写（`0x608/0x60c/0x618`）在这颗 SMMU 上不是可写的安全寄存器。
