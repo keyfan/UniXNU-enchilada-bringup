@@ -3041,18 +3041,18 @@ extern "C" void enchilada_adreno_poll(void) {
         }
     }
     {
-        unsigned hfi16 = 0u;
-        if (PE_parse_boot_argn ("enchilada-hfi16", &hfi16, sizeof hfi16) && hfi16 >= 370u && hfi16 <= 372u) {
+        unsigned hfi17 = 0u;
+        if (PE_parse_boot_argn ("enchilada-hfi17", &hfi17, sizeof hfi17) && hfi17 >= 373u && hfi17 <= 375u) {
             static uintptr_t s370Win = 0u;
             static uintptr_t s370Gmu = 0u;
             static uintptr_t s370Smmu = 0u;
             static uint8_t s370Blob[8u * 4096u] __attribute__((aligned(4096)));
             char r370Row[460];
-            const unsigned mode370 = hfi16;
+            const unsigned mode370 = hfi17;
             if (s370Win == 0u) s370Win = (uintptr_t) armcpu_map_physical (ADRENO_DOMAIN_GPUCC_BASE, ADRENO_DOMAIN_GPUCC_SIZE);
             if (s370Gmu == 0u) s370Gmu = (uintptr_t) armcpu_map_physical (ADRENO_BOARD_GMU_BASE, ADRENO_BOARD_GMU_SIZE);
             if (s370Win == 0u || s370Gmu == 0u || !kAdrenoGmuBlobPresent || !(&ml_static_vtop)) {
-                snprintf (r370Row, sizeof r370Row, "gmu%ua=hfi16 ok=0 mode=%u reason=no-window-blob-or-vtop",
+                snprintf (r370Row, sizeof r370Row, "gmu%ua=hfi17 ok=0 mode=%u reason=no-window-blob-or-vtop",
                           (unsigned) mode370, (unsigned) mode370);
                 IOLog ("enchilada-adreno: %s\n", r370Row);
                 gDone = true;
@@ -3091,18 +3091,18 @@ extern "C" void enchilada_adreno_poll(void) {
             const uint32_t id1_370 = (s370Smmu != 0u) ? rd32 (s370Smmu, 0x24u) : 0u;
             const uint32_t geom370 = (s370Smmu != 0u) ? adreno_install_cb_geometry (id1_370, &geo370) : 1u;
             snprintf (r370Row, sizeof r370Row,
-                      "gmu%ua=hfi16_setup mode=%u cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d",
+                      "gmu%ua=hfi17_setup mode=%u cx=%08x cx_on=%d geom=%u pgshift=%u cb_base=%04x numcb=%u smmu=%d",
                       (unsigned) mode370, (unsigned) mode370, (unsigned) cx370, cxOn370, (unsigned) geom370,
                       (unsigned) geo370.pgshift, (unsigned) geo370.cb_base, (unsigned) geo370.num_context_banks,
                       (s370Smmu != 0u) ? 1 : 0);
             IOLog ("enchilada-adreno: %s\n", r370Row);
-            if (cxOn370 == 0) { IOLog ("enchilada-adreno: gmu%ub=hfi16 refused-cx-down fw=%08x\n", (unsigned) mode370, (unsigned) fwNow370); gDone = true; return; }
-            if (s370Smmu == 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi16 refused-no-smmu-window\n", (unsigned) mode370); gDone = true; return; }
-            if (geom370 != 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi16 refused-geometry\n", (unsigned) mode370); gDone = true; return; }
+            if (cxOn370 == 0) { IOLog ("enchilada-adreno: gmu%ub=hfi17 refused-cx-down fw=%08x\n", (unsigned) mode370, (unsigned) fwNow370); gDone = true; return; }
+            if (s370Smmu == 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi17 refused-no-smmu-window\n", (unsigned) mode370); gDone = true; return; }
+            if (geom370 != 0u) { IOLog ("enchilada-adreno: gmu%ub=hfi17 refused-geometry\n", (unsigned) mode370); gDone = true; return; }
             const uint32_t cbndx370 = 0u;
             const uint32_t cbBase370 = geo370.cb_base + (cbndx370 << geo370.pgshift);
-            const int dual370 = (mode370 == 371u) ? 1 : 0;
-            const int pubPa370 = (mode370 == 372u) ? 1 : 0;
+            const int tlbiOn370 = (mode370 == 374u) ? 0 : 1;
+            const int pubPa370 = (mode370 == 373u) ? 1 : 0;
             const uint64_t tblPa370 = (uint64_t) ml_static_vtop ((uintptr_t) &s370Blob[0]);
             const uint64_t paBase370 = tblPa370 & ~((uint64_t) 0x1fffffull);
             const uint64_t off370 = tblPa370 & (uint64_t) 0x1fffffull;
@@ -3147,7 +3147,7 @@ extern "C" void enchilada_adreno_poll(void) {
             tbl370[l0Iova370] = adreno_lpae_table_pte (paL1_370);
             l1_370[l1Iova370] = adreno_lpae_table_pte (paL2i370);
             l2i370[l2Iova370] = adreno_lpae_leaf_pte ((uint32_t) prot370, 2u, paBase370);
-            if (dual370 != 0) {
+            if (0) {
                 l1_370[l1Pa370] = adreno_lpae_table_pte (paL2p370);
                 l2p370[l2Pa370] = adreno_lpae_leaf_pte ((uint32_t) prot370, 2u, paBase370);
             }
@@ -3157,15 +3157,15 @@ extern "C" void enchilada_adreno_poll(void) {
             }
             __asm__ volatile ("dsb sy" ::: "memory");
             snprintf (r370Row, sizeof r370Row,
-                      "gmu%ub=hfi16_table mode=%u tblpa=%08x pabase=%08x off=%05x iova=%08x pub=%08x dual=%d pubpa=%d",
+                      "gmu%ub=hfi17_table mode=%u tblpa=%08x pabase=%08x off=%05x iova=%08x pub=%08x tlbi=%d pubpa=%d",
                       (unsigned) mode370, (unsigned) mode370, (unsigned) tblPa370, (unsigned) paBase370,
-                      (unsigned) off370, (unsigned) iovaTbl370, (unsigned) pub370, dual370, pubPa370);
+                      (unsigned) off370, (unsigned) iovaTbl370, (unsigned) pub370, tlbiOn370, pubPa370);
             IOLog ("enchilada-adreno: %s\n", r370Row);
             snprintf (r370Row, sizeof r370Row,
-                      "gmu%uc=hfi16_walk mode=%u l0=%u l1i=%u l1p=%u l2i=%u l2p=%u pte=%llx pte2=%llx",
+                      "gmu%uc=hfi17_walk mode=%u l0=%u l1i=%u l1p=%u l2i=%u l2p=%u pte=%llx pte2=%llx",
                       (unsigned) mode370, (unsigned) mode370, (unsigned) l0Iova370, (unsigned) l1Iova370,
                       (unsigned) l1Pa370, (unsigned) l2Iova370, (unsigned) l2Pa370,
-                      (unsigned long long) l2i370[l2Iova370], (unsigned long long) (dual370 ? l2p370[l2Pa370] : 0ull));
+                      (unsigned long long) l2i370[l2Iova370], (unsigned long long) 0ull);
             IOLog ("enchilada-adreno: %s\n", r370Row);
             uint32_t ias370 = 0u;
             uint32_t oas370 = 0u;
@@ -3197,7 +3197,7 @@ extern "C" void enchilada_adreno_poll(void) {
             }
             const uint32_t abs370rc = adreno_install_absolute (&geo370, cbndx370, plan370, nplan370, abs370, 12u, &nabs370);
             snprintf (r370Row, sizeof r370Row,
-                      "gmu%ud=hfi16_cbplan mode=%u plan=%d n=%u abs=%u nab=%u cbndx=%u cbbase=%04x ttbr=%08x eae=%d ias=%u oas=%u",
+                      "gmu%ud=hfi17_cbplan mode=%u plan=%d n=%u abs=%u nab=%u cbndx=%u cbbase=%04x ttbr=%08x eae=%d ias=%u oas=%u",
                       (unsigned) mode370, (unsigned) mode370, plan370rc, (unsigned) nplan370, (unsigned) abs370rc,
                       (unsigned) nabs370, (unsigned) cbndx370, (unsigned) cbBase370, (unsigned) paRoot370,
                       eae370, (unsigned) ias370, (unsigned) oas370);
@@ -3219,25 +3219,27 @@ extern "C" void enchilada_adreno_poll(void) {
             __asm__ volatile ("dsb sy" ::: "memory");
             volatile uint32_t *fsr370 = (volatile uint32_t *) (static_cast<uintptr_t>(s370Smmu) + cbBase370 + 0x58u);
             fsr370[0] = 0xffffffffu;
-            volatile uint32_t *tlb370 = (volatile uint32_t *) (static_cast<uintptr_t>(s370Smmu) + 0x608u);
-            tlb370[0] = 0u;
-            tlb370 = (volatile uint32_t *) (static_cast<uintptr_t>(s370Smmu) + 0x60cu);
-            tlb370[0] = 0u;
-            tlb370 = (volatile uint32_t *) (static_cast<uintptr_t>(s370Smmu) + 0x618u);
-            tlb370[0] = 0u;
-            __asm__ volatile ("dsb sy" ::: "memory");
+            if (tlbiOn370 != 0) {
+                volatile uint32_t *tlb370 = (volatile uint32_t *) (static_cast<uintptr_t>(s370Smmu) + 0x608u);
+                tlb370[0] = 0u;
+                tlb370 = (volatile uint32_t *) (static_cast<uintptr_t>(s370Smmu) + 0x60cu);
+                tlb370[0] = 0u;
+                tlb370 = (volatile uint32_t *) (static_cast<uintptr_t>(s370Smmu) + 0x618u);
+                tlb370[0] = 0u;
+                __asm__ volatile ("dsb sy" ::: "memory");
+            }
             const uint32_t t0l370 = rd32 (s370Smmu, cbBase370 + 0x20u);
             const uint32_t t0h370 = rd32 (s370Smmu, cbBase370 + 0x24u);
             const uint32_t sct370 = rd32 (s370Smmu, cbBase370 + 0x00u);
             const uint32_t tcr370 = rd32 (s370Smmu, cbBase370 + 0x30u);
             const uint32_t bar370 = rd32 (static_cast<uintptr_t>(s370Smmu) + (static_cast<uintptr_t>(1u) << geo370.pgshift), 0x000u);
             snprintf (r370Row, sizeof r370Row,
-                      "gmu%ue=hfi16_cb mode=%u wrote=%u ttbr0=%08x/%08x sctlr=%08x tcr=%08x cbar=%08x fw=%08x",
+                      "gmu%ue=hfi17_cb mode=%u wrote=%u ttbr0=%08x/%08x sctlr=%08x tcr=%08x cbar=%08x fw=%08x",
                       (unsigned) mode370, (unsigned) mode370, (unsigned) nabs370, (unsigned) t0l370, (unsigned) t0h370,
                       (unsigned) sct370, (unsigned) tcr370, (unsigned) bar370, (unsigned) fwNow370);
             IOLog ("enchilada-adreno: %s\n", r370Row);
             snprintf (r370Row, sizeof r370Row,
-                      "gmu%uf=hfi16_glob mode=%u scr0=%08x smr0=%08x s2cr0=%08x gfsr=%08x gfsynr1=%08x",
+                      "gmu%uf=hfi17_glob mode=%u scr0=%08x smr0=%08x s2cr0=%08x gfsr=%08x gfsynr1=%08x",
                       (unsigned) mode370, (unsigned) mode370, (unsigned) rd32 (s370Smmu, 0x0u),
                       (unsigned) rd32 (s370Smmu, 0x800u), (unsigned) rd32 (s370Smmu, 0xc00u),
                       (unsigned) rd32 (s370Smmu, 0x48u), (unsigned) rd32 (s370Smmu, 0x54u));
@@ -3248,7 +3250,7 @@ extern "C" void enchilada_adreno_poll(void) {
             g370[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_MASK] = 0xff7fffffu;
             __asm__ volatile ("dsb sy" ::: "memory");
             snprintf (r370Row, sizeof r370Row,
-                      "gmu%ug=hfi16_pub mode=%u pa=%08x qtbl=%08x qi=%08x mask=%08x preinfo=%08x",
+                      "gmu%ug=hfi17_pub mode=%u pa=%08x qtbl=%08x qi=%08x mask=%08x preinfo=%08x",
                       (unsigned) mode370, (unsigned) mode370, (unsigned) pub370,
                       (unsigned) g370[ADRENO_GMU_BOOT_V1_HFI_QTBL_ADDR],
                       (unsigned) g370[ADRENO_GMU_BOOT_V1_HFI_QTBL_INFO],
@@ -3270,13 +3272,13 @@ extern "C" void enchilada_adreno_poll(void) {
             IODelay (20u);
             __asm__ volatile ("dsb sy" ::: "memory");
             snprintf (r370Row, sizeof r370Row,
-                      "gmu%uh=hfi16_init mode=%u ctl=%08x bit0=%u polls=%u info=%08x smr=%08x s2cr=%08x",
+                      "gmu%uh=hfi17_init mode=%u ctl=%08x bit0=%u polls=%u info=%08x smr=%08x s2cr=%08x",
                       (unsigned) mode370, (unsigned) mode370, (unsigned) ctl370, (unsigned) bit0370, (unsigned) polls370,
                       (unsigned) g370[ADRENO_GMU_BOOT_V1_GMU2HOST_INTR_INFO],
                       (unsigned) rd32 (s370Smmu, 0x800u), (unsigned) rd32 (s370Smmu, 0xc00u));
             IOLog ("enchilada-adreno: %s\n", r370Row);
             snprintf (r370Row, sizeof r370Row,
-                      "gmu%ui=hfi16_late mode=%u fsr=%08x far=%08x fsynr0=%08x par=%08x info=%08x gfsr=%08x",
+                      "gmu%ui=hfi17_late mode=%u fsr=%08x far=%08x fsynr0=%08x par=%08x info=%08x gfsr=%08x",
                       (unsigned) mode370, (unsigned) mode370,
                       (unsigned) rd32 (s370Smmu, cbBase370 + 0x58u),
                       (unsigned) rd32 (s370Smmu, cbBase370 + 0x60u),
