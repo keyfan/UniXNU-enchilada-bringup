@@ -10309,3 +10309,246 @@ R344 块（arg `enchilada-hfi17`，key 373..375）在 R343 基础上只改分岔
 静态门全绿：probe 39/39、stage3 41/41、stage4 81/81、stage5 68/68、stage6 2594/2594、host 32/32。推送 commit `785a7940c615c579b0e648c20e124a93ce202807`（tree `74fb534fa44cf09275cb4867ed50e28ec75d5b82`），CI #462 run `46122080635`。
 
 **预期判读**：若 373 存活而 374 死 ⇒ 致死的是「发布 IOVA」这一步（那么 CM3 在该窗口内读 IOVA 会打到未映射处，说明我们的 alias 分支没生效或窗口不止一个 2 MiB 块）；若 373 也死 ⇒ TLBI 写（`0x608/0x60c/0x618`）在这颗 SMMU 上不是可写的安全寄存器。
+
+## 一百五十四、R345：AT 自译证明我们的 S1 页表完全正确；正确的 TLBI 不改变任何东西；发布 IOVA 必死
+
+**CI #463**（run `46127932095`，head `056130abf2c2`，payload 83,225,908 / kernel 79,006,584 / logs 3,796,416 B）编出 `r345-kernel/kernel.macho` sha256 `631ef3685915e4c50e8e30b6d1bc6bd6b67ee9f5271b5f8d44dd0091a7f967a8` 与 `r345-payload/payload.img` sha256 `1009fa82a86b3a528a713530de60c7ca81d9d7e090e747b2b82c5b6f0f1355c7`。arg `enchilada-hfi19`→实为 `enchilada-hfi18`，key 376..378。commit `25b2297882657918a07e2fa82c76794a36e0d39d`，tree `3edc07fdb09b9cbaf88b270c2c286e31b8a0196c`。
+
+R345 块与 hfi17 的差别只有四处：① 三分支树同时建 identity（`paBase`→`paBase`）、alias（`0x28200000`→`paBase`）、IOVA 块（`0x60000000`→`paBase`）；② 新增 `CB_ATS1PR`/`CB_ATSR`/`CB_PAR` 软件自译探针，依次译 `tblPa`、`aliasBase`、`iovaTbl` 三个地址；③ 写**正确**的 GR0 失效寄存器（`0x68 sTLBIALLNSNH=1`、`0x70 sTLBGSYNC=1`、轮询 `0x74 sTLBGSTATUS` bit0）而不是 hfi17 的 `0x608/0x60c/0x618` 保留区；④ 只有 378 才发布 IOVA。
+
+| 键 | 动作 | 结果 |
+|---|---|---|
+| 376 | 发布 PA + 不写 TLBI | 活，34 s 回 adb，11 行全落盘 |
+| 377 | 发布 PA + 正确 GR0 失效 | 活，34 s 回 adb，11 行全落盘 |
+| 378 | 发布 IOVA `0x600fd000` | 32 s 回 adb 但**窗口陈旧、零行** ⇒ 落盘前死 |
+
+键 376 逐字读数（窗口 sha `0c8c906fed87622c9545cd50ca782adcc28a5505475e27e4deb2550c11391349`）：
+
+```
+gmu376a=hfi18_setup mode=376 cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1
+gmu376b=hfi18_table mode=376 tblpa=a82fd000 pabase=a8200000 alias=28200000 off=fd000 iova=600fd000 pub=a82fd000 tlbi=0 pubiova=0
+gmu376c=hfi18_walk mode=376 l0=0/0/0 l1=2/0/1 l2=321/321/256 d0=a8302003 da=a8304003 di=a8200401
+gmu376d=hfi18_cbplan mode=376 plan=0 n=9 abs=0 nab=9 cbndx=0 cbbase=8000 ttbr=a8301000 eae=1 ias=48 oas=36
+gmu376e=hfi18_cb mode=376 wrote=9 ttbr0=a8301000/00000000 sctlr=00001067 tcr=80803510 cbar=0001f300 fw=babeface tlbi=0 tstat=00000000
+gmu376f=hfi18_glob mode=376 scr0=00200626 smr0=80000004 s2cr0=00000000 gfsr=00000000 gfsynr1=00000000
+gmu376g=hfi18_at mode=376 par_pa=a82fdb80 par_alias=a8200b80 par_iova=a82fdb80 atsr=00000000
+gmu376h=hfi18_pub mode=376 pa=a82fd000 qtbl=a82fd000 qi=00000001 mask=ff7fffff preinfo=00000000
+gmu376i=hfi18_init mode=376 ctl=00000000 bit0=0 polls=200000 info=00800000 smr=80000004 s2cr=00000000
+gmu376j=hfi18_late mode=376 fsr=00000402 far=282fd000 fsynr0=00000021 par=a82fdb80 info=00800000
+gmu376k=hfi18_gfault mode=376 gfsar=00000000 gfsr=00000000 synr0=00000000 synr1=00000000 synr2=00000000
+```
+
+**判决 154.1（本轮最重要）**：`gmu376g` 的 `CB_ATS1PR` 三笔自译**全部成功**——`PAR` 的 bit0（fault 标志）为 0：
+`0xa82fd000` → `0xa82fdb80`、`0x28200000` → `0xa8200b80`、`0x600fd000` → `0xa82fdb80`，`atsr=00000000`（完成后自动清零）。
+⇒ **我们的 S1 页表、描述符、TTBR0、TCR、SCTLR 全是对的**，硬件用我们编程的这套配置能把三个地址都译出来。这条读数把「页表写错了」这个假设彻底关闭。
+
+**判决 154.2**：既然表对，CB0 的 `fsr=00000402 far=282fd000` 就只能是**别的流**留下的，或者根本不是 stage-1 的错。`fsr` 的 `FORMAT=GENMASK(10,9)=0b10=2`，按 SMMU-500 规范是 stage-2 translation fault；但 `cbar=0001f300` 的 `CBAR_TYPE=0b01=S1_TRANS_S2_BYPASS`，理论上这个 CB 不做 stage-2。二者矛盾 ⇒ FSR 的 `far`/`fsynr0` 很可能属于**另一条 SID 的事务**，而不是 GMU 的。
+
+**判决 154.3**：`far=282fd000` 精确等于 `tblPa & 0x7fffffff`，说明 GMU 侧地址通路只保留 31 位。这与 `kEnchiladaGen1GmuDummyIova=0x60000000`、`[0x60000000,0x80000000)` 全段 < 2^31 一致。
+
+**判决 154.4（键 377）**：`gmu377e … tlbi=1 tstat=00000000` —— 正确写 `0x68 sTLBIALLNSNH=1` + `0x70 sTLBGSYNC=1` 后 `0x74 sTLBGSTATUS` bit0 立即为 0（失效已完成）。而 `gmu377i/gmu377j` 与 376 **逐字相同**（`ctl=00000000 bit0=0 info=00800000`、`fsr=00000402 far=282fd000`）⇒ **做一次正确的 TLB 失效对故障毫无影响**，故障不是陈旧 TLB 项。
+
+**判决 154.5（键 378）**：376 与 378 唯一差别就是发布值（PA `0xa82fd000` vs IOVA `0x600fd000`），而 AT 已证明 `0x600fd000` 能正常译到 `0xa82fd000`。378 却在日志落盘前就死 ⇒ **致死点不在 S1 walk，而在「CM3/GMU 拿到 `0x600fd000` 之后」**：要么 CM3 把它当物理地址直接访问（于是读到不存在的 PA），要么 GMU 侧还有一层我们没编程的 stage-2/IOMMU 归属。
+
+**工程约束（累计）**：① 早期块禁用 `armcpu_dma_alloc_writable`（R342 判决 151.3）；② GR0 的 TLBI 是 `0x64/0x68/0x6c/0x70/0x74`，`0x608/0x60c/0x618` 是 CB 侧窗口的偏移，写 GR0 的 `0x608` 属保留区（R345 用正确寄存器后 377 存活，反证了 hfi17 的写法有害）。
+
+## 一百五十五、DTS 指认 GMU 的 stream ID 是 5，我们历轮一直写 4 —— R346 的直接依据
+
+上游 SDM845 设备树（`arch/arm64/boot/dts/qcom/sdm845.dtsi`，取自 `.cache/adreno-a630-source`）：
+
+```
+gpu: gpu@5000000 {
+        compatible = "qcom,adreno-630.2", "qcom,adreno";
+        iommus = <&adreno_smmu 0>;
+        qcom,gmu = <&gmu>;
+};
+gmu: gmu@506a000 {
+        compatible = "qcom,adreno-gmu-630.2", "qcom,adreno-gmu";
+        reg-names = "gmu", "gmu_pdc", "gmu_pdc_seq";
+        iommus = <&adreno_smmu 5>;
+};
+```
+
+**判决 155.1**：GPU 本体用 SID **0**，GMU 用 SID **5**。我们历轮把 `SMR0` 写成 `0x80000004`（SID 4，来自 `GPU/AdrenoBoardInputs.c` 的 `kAdrenoBoardCtxGmuUser`），于是**只有 SID4 的流被路由进 CB0**，而 GMU 自己的 SID5 事务走的是**上电默认的 `S2CR5=0x000200ff`（TYPE=2 FAULT、CBNDX=0xff）**——直接 abort。
+
+**判决 155.2（与 R345 的 AT 结果自洽）**：这正好解释了那个悖论——「AT 证明我们的表能把 `0xa82fd000` 译出来，可 CB0 却持续报 `fsr=00000402 far=282fd000`」。CB0 里的那条 fault 属于**被我们误路由进来的 SID4 杂流**（某个我们不认识的 GPU/固件事务），而 GMU 真正需要的 SID5 事务在 GR0 就被 FAULT 掉、根本到不了 CB0，所以无论我们怎么改 CB0 的页表、TLBI、EAE，读数都纹丝不动——这与 R338→R341→R345 全部观测完全吻合。
+
+**判决 155.3（CB 索引的硬约束）**：`GR0_ID1=0x20008005` ⇒ `NUMCB=5`、`NUMS2CB=0`、`NUMPAGENDXB=2`、`PAGESIZE=0` ⇒ `pgshift=12`、`numpage=8` ⇒ **`cb_base=0x8000`，合法 CB 只有 CB0..CB4**（`CBn = 0x8000 + n*0x1000`）。**没有 CB5**。因此把 SID5 路由到 CB 时，`S2CR5` 的 `CBNDX` 只能取 0..4，不能再照搬「SID 号 = CB 号」。
+
+**判决 155.4（上游启动序列的完整清单）**：`a6xx_gmu.c:781 a6xx_gmu_fw_start` 的顺序是 ①RPMh 投票 ②搬固件 ③`CM3_FW_INIT_RESULT=0` ④`CM3_BOOT_CONFIG=0x02` ⑤`HFI_QTBL_ADDR=hfi.iova` ⑥`HFI_QTBL_INFO=1` ⑦`AHB_FENCE_RANGE_0=0x802800a0` ⑧`CM3_CFG=0x4052` ⑨`HFI_SFR_ADDR=chipid` ⑩`PWR_COL_CP_MSG=log.iova|(pages-1)` ⑪`SYS_BUS_CONFIG=1`/`ICACHE_CONFIG=1`/`DCACHE_CONFIG=1`/`PWR_COL_INTER_FRAME_CTRL=0x09c40400` ⑫`CM3_SYSRESET=1`→`0` 并轮询 `FW_INIT_RESULT==0xbabeface` ⑬`SPTPRAC_POWER_CONTROL=0x778000` + 轮询 `SPTPRAC_PWR_CLK_STATUS & 0x38 == 0x28` ⑭`HFI_CTRL_INIT=1` + 轮询 `HFI_CTRL_STATUS & 1`。我们历轮只做了 ③④⑤⑥⑫(部分)⑭，缺 ①②⑦⑧⑨⑪⑬ —— 这是「INIT 后 bit0 永不为 1」的第二个独立原因，与 SID 错误并行存在。
+
+**判决 155.5（`CM3_FAULT` 的正确归属）**：`a6xx_hfi_irq` 读的是 `GMU2HOST_INTR_INFO`（字索引 `0x5192`），检查 `CM3_FAULT = BIT(23) = 0x00800000`；它不是 `HFI_CTRL_STATUS`（`0x5180`）的位。历轮日志里的 `info=00800000` 来自 `0x5192`，位号对、但寄存器必须与 `ctl` 分开打印（R346 起已分开）。相应地 `a6xx_gmu_irq_enable` 会写 `AO_HOST_INTERRUPT_MASK = 0xffffffd6`（`~0x29`）与 `GMU2HOST_INTR_MASK = 0xff7fffff`（`~CM3_FAULT`），我们此前只写了后者。
+
+**a630 的 chipid 推导**：`a6xx_catalog.c` 的 a630 条目没有 `.gmu_chipid`，走 fallback `chipid = chip_id & 0xffff0000; chipid |= (chip_id<<4)&0xf000; chipid |= (chip_id<<8)&0x0f00;`，`chip_id=0x06030001` ⇒ **`0x06030100`**。
+
+## 一百五十六、R346：SID 5 路由直接致死，SID 4 才是活路；GMU 窗口对 fence/SFR/CP_MSG 是只读
+
+R345 之后最强的假设是「DTS 写 `iommus = <&adreno_smmu 5>`，我们一直用 SID 4，所以 GMU 的事务被
+`S2CR5` 的默认 FAULT 打掉了」。R346 直接验证这条假设：把路由从 `SMR0/S2CR0`（SID 4）改成
+`SMR5/S2CR5`（SID 5），其余（PA 发布、扩展 init）保持不变，用 379 打；380 是 SID 4 的同构对照。
+
+**键 379（SID 5）致死**：刷入后 36 s 回 adb，但窗口 sha 仍是 377 的旧值
+（`4e8383df…`），只有 GPUCC/stage2 两行，没有任何 `gmu379*` 行 ⇒ 内核在日志落盘前就死了。
+
+**键 380（SID 4 对照）存活**，12 行全出：
+
+```
+gmu380a=hfi19_setup mode=380 cx=80001fe0 cx_on=1 geom=0 pgshift=12 cb_base=8000 numcb=5 smmu=1 sid5=0 fullinit=1 pubiova=0 pollmax=2000
+gmu380f=hfi19_glob mode=380 scr0=00200626 smr0=80000004 s2cr0=00000000 smr5=80000003 s2cr5=30000305 gfsr=00000000 gfsynr1=00000000
+gmu380g=hfi19_at mode=380 par_pa=a82fdb80 par_alias=a8200b80 par_iova=a82fdb80 atsr=00000000
+gmu380h=hfi19_gmuinit mode=380 fw=babeface fence=00000000 cm3cfg=00004052 sfr=00000000 cpmsg=00000000 aostat=00000000 sptp=00000000
+gmu380j=hfi19_init mode=380 ctl=00000000 bit0=0 polls=2000 info=00800000 aostat=00000000 smr=80000004 s2cr=00000000
+gmu380k=hfi19_late mode=380 fsr=00000402 far=282fd000 fsynr0=00000021 par=a82fdb80 info=00800000
+```
+
+### 156.1 SID 5 不是答案，SID 4 才是
+
+三条证据同时指向「DTS 的 `5` 与这块硬件的实际流编号不一致」：
+
+1. **硬件默认值本身就不是 5**：`smr5` 读回 `80000003` ⇒ 索引 5 的 SMR 匹配的是 **SID 3**，不是 5。
+   `s2cr5` 读回 `30000305` ⇒ `TYPE=3`（保留值）、`CBNDX=5`（`numcb=5`，合法索引只有 0..4，**越界**）。
+   这是一组出厂就带着越界 CBNDX 的默认配置，说明索引 5 在本机没被设计成 GMU 的入口。
+2. **改成 SID 5 就死**：379 把 `SMR5` 指向 CB0、`S2CR5` 指向 CB0 之后，内核在日志落盘前整机死。
+   若 SID 5 真是 GMU 的流，这个改动应当是「修好」而不是「炸掉」。
+3. **SID 4 在 R331–R345 的每一轮都能回 adb**，并且 CB0 的 `fsr/far` 每轮都稳定给出同一组值。
+
+⇒ **结论：保留 SID 4 路由，放弃 DTS 的 `5` 作为下一步方向。** 这一条把 R345 之后最强的假设关掉了。
+
+### 156.2 GMU 窗口对 fence / SFR / CP_MSG 是只读的
+
+380 的 `gmuinit` 行把上游 `a6xx_gmu_fw_start` 里该写的寄存器全写了一遍，读回却是：
+
+| 寄存器 | 上游写入值 | 我们读回 |
+|---|---|---|
+| `AHB_FENCE_RANGE_0` | `0x802800a0` | **`00000000`** |
+| `HFI_SFR_ADDR` | `0x06030100` | **`00000000`** |
+| `PWR_COL_CP_MSG` | `pub+3*4096` | **`00000000`** |
+| `CM3_CFG` | `0x4052` | `00004052` ✔ |
+| `CM3_FW_INIT_RESULT` | — | `babeface` ✔ |
+
+`CM3_CFG` 和 `CM3_FW_INIT_RESULT` 能读回，说明窗口本身可写可读、地址没错；但 fence / SFR / CP_MSG
+三个读回 0。**这三个的共同点：它们都不在 CM3 的 TCM/ITCM 段，而是 AHB 侧的寄存器块**——
+在 SDM845 上，`AHB_FENCE_RANGE_0`（`0x9311`）和 `HFI_SFR_ADDR`（`0x5182`）落在 GMU 的
+"AHB wrapper" 区域，需要先让 AHB 时钟/电源域起来（上游由 `a6xx_rpmh_start` + GDSC 完成）才能写进去。
+我们历轮从未做 RPMh 投票，所以这些写是**丢进空气**的。
+
+⇒ 这解释了为什么「补全上游序列」没有让 `HFI_CTRL_STATUS` bit0 变 1：序列里最关键的三个写根本没落地。
+但它**不解释** `fsr=0x402`，因为 R347 已经证明扩展 init 与故障无关。
+
+## 一百五十七、R347：故障 100% 由写 `HFI_CTRL_INIT` 触发——不是预存，不是扩展 init 造成的
+
+R346 之后仍有一个未定的分歧：`fsr=0x402` 到底是「本来就有的陈旧故障」，还是「某个初始化动作产生的」。
+R347 用三键把它夹死。三键都发布 **PA**（不用 IOVA，避免引入 378 的死因），差别只在
+「有没有扩展 init」和「有没有写 `HFI_CTRL_INIT`」，并在 INIT 之前额外抓一次 `fsr/far/ctl`。
+
+| 键 | 扩展 init | `HFI_CTRL_INIT` | `fsrpre`（INIT 前） | `fsr`（最终） | `far` | `info` |
+|---|---|---|---|---|---|---|
+| 382 | 无 | **无** | `00000400` | **`00000400`** | `00000000` | `00000000` |
+| 383 | **有** | **无** | `00000400` | **`00000400`** | `00000000` | `00000000` |
+| 384 | 有 | **有** | `00000400` | **`00000402`** | `282fd000` | `00800000` |
+
+三键全部存活（32 s 回 adb，各自窗口 sha 不同，12 行全出），所以这是一组干净的对照。
+
+### 157.1 三条判决
+
+1. **故障不是预存的**：382/383 在完全没有 INIT 的情况下，`fsr` 一直是 `0x400`（`TF=0`），
+   `far=0`，`info=0`。R333 曾经以为「INIT 前 FSR 就是 0x400」，现在确认那是**没有故障**的干净值，
+   不是「一种故障」。
+2. **扩展 init 不产生故障**：383 把 fence/CM3_CFG/SFR/CP_MSG/SYSRESET/SPTPRAC 全做了一遍，
+   `fsr` 仍然是 `0x400`、`info=0`。
+3. **只有写 `HFI_CTRL_INIT` 才产生故障**：384 与 383 唯一的差别就是那一笔写，`fsr` 从 `0x400`
+   变成 `0x402`，`far` 从 0 变成 `0x282fd000`，`info` 从 0 变成 `0x00800000`（CM3_FAULT）。
+
+⇒ **故障 = CM3 收到 INIT 之后，真的去读队列表，那次读失败了。** 这也顺带解释了为什么
+「补全 init 序列」没有用：故障不是 init 缺失造成的，是 INIT 之后那次读造成的。
+
+### 157.2 与 R345 的 AT 自译合起来看
+
+R345 的 `CB_ATS1PR` 已经证明：`0xa82fd000`（PA）、`0x28200000`（alias）、`0x600fd000`（IOVA）
+三个地址在 CB0 的 walker 眼里**全部可译**（`PAR` bit0=0），`atsr=0` 无错。R347 又证明故障只在
+INIT 之后出现。两条合起来只剩一种解释：
+
+**CM3 发起的那笔事务，与 AT 命令发起的事务，属性不同。**
+
+AT（`CB_ATS1PR`）走的是「寄存器触发的、以 CB 当前 S1 配置为准的地址翻译」；而 CM3 是**总线主设备**，
+它发出的读带的是它自己的 `AxUSER`/`AxCACHE`/`AxPROT` 属性，且**流 ID 由硬件布线决定**。
+我们观测到 `far = 0x282fd000 = pub & 0x7fffffff`——CM3 把 31 位地址送进来了，
+而 `0x282fd000` 在 CB0 的树里**恰好**命中我们建的 alias 叶（`l2a[l2Al] = a8200401`），
+理论上应该译成功。它没有。
+
+⇒ 下一步不该再猜「表对不对」（AT 已证明对），而要问：**CM3 的这笔读，究竟被哪条 SMR 匹配、
+进了哪个 CB？** 我们已经知道 `gfsr=0`（没有未识别流的全局故障），说明它**匹配到了某条 SMR**。
+但 `CB0` 的 `fsr` 有记录、`gfsr` 没有 ⇒ 它进的就是 CB0，只是属性让它失败。
+`fsynr0=0x00000021` 解码：`PLVL=1`（EL1）、`PNU=1`（地址非特权未命中）——
+**`PNU=1` 是关键：这是一笔"非特权地址"的访问，且它 miss 了。**
+
+## 一百五十八、R348：IOVA 发布本身无害；IOVA + `HFI_CTRL_INIT` 必死
+
+R347 把故障时机定死之后，剩下的最大分歧是：`HFI_QTBL_ADDR = 0x600fd000`（IOVA）为什么会让整机死。
+R336/R337 当初以为「发布 IOVA 就崩」，但那一轮的偏移掩码写错（`0x1ffff` 应为 `0x1fffff`），
+发布值其实指向了随机内核页，所以那个结论不成立。R348 用三键重做，全部走 IOVA：
+
+| 键 | 发布值 | `HFI_CTRL_INIT` | 结果 | 窗口 sha |
+|---|---|---|---|---|
+| 385 | `0x600fd000` | **无** | **存活**，12 行全出 | `48139b6b…` |
+| 386 | `0x600fd000` | 有（poll 200，全中断屏蔽） | **死** | 仍是 385 的窗口 |
+| 387 | `0x600fd000` | 有（完整扩展 init） | **死** | 仍是 385 的窗口 |
+
+385 的读数：`gmu385i=hfi21_pub … qtbl=600fd000 qi=00000001 mask=ff7fffff`、
+`gmu385j … ctl=00000000 bit0=0 polls=0 info=00000000`、
+`gmu385k … fsr=00000400 far=00000000 fsynr0=00000000`。
+
+⇒ **判决：写 `HFI_QTBL_ADDR = 0x600fd000` 这个动作本身完全无害**（385 活了 32 s 正常收尾，
+`fsr` 干净）。**386/387 的死必须归因于 INIT 之后 CM3 真的去读那个 IOVA**。
+同时 386 把 `AO_HOST_INTERRUPT_MASK` 与 `GMU2HOST_INTR_MASK` 都写成 `0xffffffff`（全屏蔽），
+并且把轮询从 200000 缩到 200 拍，**依然死** ⇒ 死因不是中断风暴，也不是轮询太久，是硬件级挂死。
+
+## 一百五十九、R349：死因跟着「读成功」走，不跟着「读失败」走——这是本轮最锋利的一条
+
+R348 留下一个二选一：IOVA 那次读是**成功**了（然后固件往下走、撞上别的东西死），
+还是**失败**了（然后总线错误把 SoC 挂死）？R349 用三键把这两条路分开：
+
+| 键 | 发布值 | 表内容 | walker | 结果 |
+|---|---|---|---|---|
+| 388 | IOVA | 完整 | **`SCTLR.M=0` 关掉**（地址直通） | **死** |
+| 389 | IOVA | **全零表** | 开 | **死** |
+| 390 | **PA** | **全零表** | 开 | **存活**，12 行全出 |
+
+390 的读数（对照组，证明「全零表」本身不致死）：
+`gmu390j … ctl=00000000 bit0=0 polls=200 info=00800000`、
+`gmu390k … fsr=00000402 far=282fd000 fsynr0=00000021`、
+`gmu390l … gfsr=00000000`。
+
+### 159.1 把三组结果排成一张表，规律就出来了
+
+| 键 | 发布值 | 地址到 CM3 的样子 | SMMU 结果 | 整机 |
+|---|---|---|---|---|
+| 384 / 390 | PA `0xa82fd000` | **`0x282fd000`**（bit31 被丢掉） | **fault**（`fsr=0x402`, `far=282fd000`） | **活** |
+| 386 / 387 / 389 | IOVA `0x600fd000` | `0x600fd000`（本来 < 2^31） | **翻译成功**（AT 已证明） | **死** |
+| 388 | IOVA + `SCTLR.M=0` | `0x600fd000` 直通到物理 | 不翻译，直接读物理 | **死** |
+
+**存活的那一路，CM3 的读全部失败；致死的那一路，CM3 的读全部成功。**
+388 尤其关键：把 walker 关掉之后，`0x600fd000` 被当作物理地址直通，而 SDM845 的 DDR 从
+`0x80000000` 起，`0x600fd000` 不是 RAM —— 但 SCTLR.M=0 时它照样「成功」返回（读到设备/空洞），
+于是也死。**三条致死路径的共同点只有一条：CM3 拿到了「看起来正常」的数据。**
+
+### 159.2 为什么「读成功」反而会死
+
+PA 那一路，CM3 每次读都被 SMMU 挡下（`fsr=0x402`、`far=0x282fd000`），
+于是它**永远卡在「读不到队列表」这个状态**里，`HFI_CTRL_STATUS` bit0 一直是 0，但 SoC 是活的。
+IOVA 那一路，CM3 读到了真数据、队列表头合法（`size=120`、`qhdr0_offset=6`、`qhdr_size=12`、
+`num_queues=2`，与 `a6xx_hfi.c:795-855` 逐字一致），于是**它往下走了**——
+而下一步要碰的东西（AHB wrapper、`AHB_FENCE_RANGE_0`、`PWR_COL` 通道、AO 中断块）
+正是 R346 已经证明「写进去读回 0」的那一片区域。**固件走进一块我们从未点亮的硬件，SoC 挂死。**
+
+389（全零表）也死，是因为全零表的 `size=0` 同样让固件进入一条它自己的异常路径；
+388（直通到非 RAM 物理地址）也一样。三者都「拿到数据」，三者都死。
+
+### 159.3 下一步（R350）的两个具体抓手
+
+1. **把 `PWR_COL_CP_MSG` 落进已映射的 IOVA 范围**。我们只映射了 `0x60000000` 起的 **2 MiB**
+   （一个 level-2 block），而 `PWR_COL_CP_MSG = pub + 3*4096 = 0x602fd000` **落在映射之外**。
+   LPAE 的 level-2 表有 512 项、每项 2 MiB，一张表就能覆盖 1 GiB —— 只要把连续的叶项填上，
+   就能把 `[0x60000000, 0x61000000)` 全部映射进来，让表、两个队列、CP_MSG 都在范围内。
+2. **补 AHB/GDSC/RPMh**：R346 的读数（fence/SFR/CP_MSG 读回 0、`CM3_CFG` 正常）说明
+   GMU 窗口的 AHB wrapper 段没上电。上游靠 `a6xx_rpmh_start` + GDSC，我们从没做。
