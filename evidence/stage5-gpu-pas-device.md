@@ -10706,3 +10706,24 @@ gmu411k=hfi29_late mode=411 fsr=00000402 far=282fd000 fsynr0=00000021 par=a82fdb
 以及 `gcc_gpu_cfg_ahb_clk 0x71004` / `gcc_gpu_snoc_dvm_gfx_clk 0x71018`，而历轮只开过 GPUCC 的
 `0x1098`/`0x109c` 两支——GMU 的 AHB 访问通路很可能一直没上电，这正好解释
 `AHB_FENCE_RANGE_0`/`HFI_SFR_ADDR`/`PWR_COL_CP_MSG` 写进去读回 0。
+
+## 一百六十七、R357：三个键全死，但试验被继承的 `0xf0f` 与 IOVA 双重污染——本轮无结论
+
+R357 想验证「GMU 的 AHB 通路是否因为 GCC 侧 GPU 时钟没开而一直没上电」，于是补写
+`gcc_gpu_cfg_ahb_clk 0x71004`、`gcc_gpu_memnoc_gfx_clk 0x7100c`、`gcc_gpu_snoc_dvm_gfx_clk 0x71018`、
+`gcc_ddrss_gpu_axi_clk 0x44038`。三键（412 = 只开 cfg_ahb、413 = 再开 memnoc+snoc_dvm、
+414 = 全部四个 + IOVA）**全部死在日志落盘前**：窗口一律停在 R356 键 410 的
+`978165571cf328e3…`，无任何 `gmu412/413/414*` 行。
+
+**但这一轮不能作为 GCC 的证据**，因为生成器把 r350 的时钟模板一起继承了：
+
+1. `const int clkMode412 = (mode412 == 412u) ? 1 : ((mode412 == 413u) ? 2 : 3);`
+2. `if (clkMode412 != 0 && clkMode412 != 3) w412[0x1098u/4u] |= 0x00000f0fu;`
+
+于是 412（clkMode=1）与 413（clkMode=2）都写了 R350 已经证明有毒的 `0xf0f`（CX_GMU_CBCR 的
+wake/sleep 字段）——它们的死与 GCC 无关。414（clkMode=3）跳过了 `0xf0f`，但它是 IOVA 发布，
+而 IOVA + INIT 从 R348/R349 起就已经是必死的组合（409 刚复现过），所以 414 的死也不能归给 GCC。
+
+⇒ **R357 的结论是「实验设计被污染」，不是「GCC 写致死」。** 要干净地测 GCC，必须（a）彻底删掉
+`0xf0f` 那一行、（b）三键全部发布 PA（避免 IOVA 混淆）、（c）把「读」「盲写」「读-改-写」拆开——
+这正是 R358（`enchilada-hfi31`，key 415..417）的设计。
